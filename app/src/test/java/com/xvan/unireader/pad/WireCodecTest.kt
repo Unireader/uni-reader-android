@@ -6,7 +6,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的 31 条 canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**前 31 条** canonical 向量
+ * （Swift 那张表只允许在末尾追加新消息，故前缀行号恒定；末尾新增的消息 demo 不实现，不比对）。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）。
  * 编码类（auth/ping/pageTurn/scroll/hover/ink/erase）断言 encode 结果逐字节等于 hex；
  * 解码类（authOK/authFail/pong/page/layout/inkCancel/strokes/nack）断言 decode(hex) 字段正确。
