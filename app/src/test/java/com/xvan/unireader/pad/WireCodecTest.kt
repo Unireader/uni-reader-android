@@ -29,6 +29,10 @@ class WireCodecTest {
             5 to WireCodec.encodePing(1700000000000.0),
             // #9 pageTurn{dir:"next"}
             9 to WireCodec.encodePageTurn(WireCodec.DIR_NEXT),
+            // #10 mode{mode:"erase"}
+            10 to WireCodec.encodeMode(WireCodec.MODE_ERASE),
+            // #11 pen{index:3}
+            11 to WireCodec.encodePen(3),
             // #20 scroll{page:2, frac:0.5, t:123456}
             20 to WireCodec.encodeScroll(2, 0.5f, 123456.0),
             // #21 hover move{page:1, nx:0.5, ny:0.25}
@@ -70,6 +74,14 @@ class WireCodecTest {
         val m6 = WireCodec.decode(unhex(VECTORS[5])) as WireCodec.Msg.Pong
         assertEquals(1700000000000.0, m6.t, 0.0)
 
+        // #10 mode{mode:"erase"}（双向消息，解码回 mode 码）
+        val m10 = WireCodec.decode(unhex(VECTORS[9])) as WireCodec.Msg.ModeSel
+        assertEquals(WireCodec.MODE_ERASE, m10.mode)
+
+        // #11 pen{index:3}
+        val m11 = WireCodec.decode(unhex(VECTORS[10])) as WireCodec.Msg.PenSel
+        assertEquals(3, m11.index)
+
         // #12 page{v:5, index:2, count:100, w:612, h:792}
         val m12 = WireCodec.decode(unhex(VECTORS[11])) as WireCodec.Msg.Page
         assertEquals(5L, m12.v)
@@ -85,12 +97,37 @@ class WireCodecTest {
         assertEquals(2L, m13.count)
         assertEquals(listOf(612f to 792f, 595f to 842f), m13.pages)
 
+        // #14 viewport{page:3, frac:0.5, seq:7}（无 force → false）
+        val m14 = WireCodec.decode(unhex(VECTORS[13])) as WireCodec.Msg.Viewport
+        assertEquals(3L, m14.page)
+        assertEquals(0.5f, m14.frac, 0f)
+        assertEquals(7L, m14.seq)
+        assertEquals(false, m14.force)
+
+        // #15 viewport{page:3, frac:0.25, force:true}（seq 字段缺省为 0）
+        val m15 = WireCodec.decode(unhex(VECTORS[14])) as WireCodec.Msg.Viewport
+        assertEquals(3L, m15.page)
+        assertEquals(0.25f, m15.frac, 0f)
+        assertEquals(0L, m15.seq)
+        assertEquals(true, m15.force)
+
+        // #17 pens{active:1, list:[rgba(24,90,210,0.5) w8 ballpoint, rgba(255,214,40,0.25) w22 marker]}
+        val m17 = WireCodec.decode(unhex(VECTORS[16])) as WireCodec.Msg.Pens
+        assertEquals(1, m17.active)
+        assertEquals(2, m17.list.size)
+        assertEquals(WireCodec.Pen(24, 90, 210, 0.5f, 8f, 0), m17.list[0])
+        assertEquals(WireCodec.Pen(255, 214, 40, 0.25f, 22f, 2), m17.list[1])
+
         // #18 inkCancel
         assertTrue(WireCodec.decode(unhex(VECTORS[17])) is WireCodec.Msg.InkCancel)
 
-        // #19 strokes（1 条笔迹，只读个数）
+        // #19 strokes{1 条：page 1, rgba(20,20,20,1) w10 pencil, pts [[0.5,0.25,0.5],[0.75,0.125,1.0]]}
         val m19 = WireCodec.decode(unhex(VECTORS[18])) as WireCodec.Msg.Strokes
-        assertEquals(1L, m19.count)
+        assertEquals(1, m19.list.size)
+        val s19 = m19.list[0]
+        assertEquals(1L, s19.page)
+        assertEquals(WireCodec.Pen(20, 20, 20, 1.0f, 10f, 3), s19.pen)
+        assertEquals(listOf(WireCodec.Pt3(0.5f, 0.25f, 0.5f), WireCodec.Pt3(0.75f, 0.125f, 1.0f)), s19.pts)
 
         // #31 nack{seqs:[1, 2, 3000000000]}
         val m31 = WireCodec.decode(unhex(VECTORS[30])) as WireCodec.Msg.Nack

@@ -16,8 +16,12 @@ object WireCodec {
     const val OP_PING = 0x10
     const val OP_PONG = 0x11
     const val OP_PAGE_TURN = 0x21
+    const val OP_MODE = 0x22
+    const val OP_PEN = 0x23
     const val OP_PAGE = 0x30
     const val OP_LAYOUT = 0x31
+    const val OP_VIEWPORT = 0x32
+    const val OP_PENS = 0x34
     const val OP_INK_CANCEL = 0x35
     const val OP_STROKES = 0x36
     const val OP_SCROLL = 0x40
@@ -33,6 +37,16 @@ object WireCodec {
     const val DIR_PREV = 0
     const val DIR_NEXT = 1
 
+    /** mode（§2）：0=note 1=erase 2=page */
+    const val MODE_NOTE = 0
+    const val MODE_ERASE = 1
+    const val MODE_PAGE = 2
+
+    /** brush 编号 → 名字（§2：0=ballpoint 1=fountain 2=marker 3=pencil，越界回退 0） */
+    val BRUSH_NAMES = listOf("ballpoint", "fountain", "marker", "pencil")
+
+    fun brushName(code: Int): String = BRUSH_NAMES.getOrElse(code) { BRUSH_NAMES[0] }
+
     /** pen 原语：u8 r,g,b + f32 a + f32 w + u8 brush，共 12 字节。brush: 0=ballpoint 1=fountain 2=marker 3=pencil */
     data class Pen(val r: Int, val g: Int, val b: Int, val a: Float, val w: Float, val brush: Int)
 
@@ -41,6 +55,9 @@ object WireCodec {
 
     /** pt2：f32 x + f32 y（擦除点，无压感） */
     data class Pt2(val x: Float, val y: Float)
+
+    /** 一条成形笔迹（strokes 消息元素） */
+    data class Stroke(val page: Long, val pen: Pen, val pts: List<Pt3>)
 
     // ---------- 解码结果（u32 用 Long 承载无符号值） ----------
     sealed class Msg {
@@ -51,9 +68,16 @@ object WireCodec {
         data class Page(val v: Long, val index: Long, val count: Long, val w: Float, val h: Float) : Msg()
         data class Layout(val docId: String, val v: String, val count: Long, val pages: List<Pair<Float, Float>>) : Msg()
         data object InkCancel : Msg()
-        /** strokes 只读笔迹条数（e2e 计时用），不解析笔迹内容 */
-        data class Strokes(val count: Long) : Msg()
+        /** Mac 回传的全部成形笔迹（唯一真源） */
+        data class Strokes(val list: List<Stroke>) : Msg()
         data class Nack(val seqs: List<Long>) : Msg()
+        /** Mac 视口下发（force 绕过 seq 去重） */
+        data class Viewport(val page: Long, val frac: Float, val seq: Long, val force: Boolean) : Msg()
+        /** Mac 推送的收藏笔列表（运行时唯一源，整体替换本地） */
+        data class Pens(val active: Int, val list: List<Pen>) : Msg()
+        /** Mac 侧切笔/切模式回推 */
+        data class PenSel(val index: Int) : Msg()
+        data class ModeSel(val mode: Int) : Msg()
     }
 
     // ---------- Writer ----------
@@ -140,6 +164,16 @@ object WireCodec {
             val s = String(d, n, len, StandardCharsets.UTF_8)
             n += len; return s
         }
+
+        fun pen(): Pen = Pen(u8(), u8(), u8(), f32(), f32(), u8())
+
+        fun pts3(): List<Pt3> {
+            val m = u16()
+            val out = ArrayList<Pt3>(m)
+            var i = 0
+            while (i < m) { out.add(Pt3(f32(), f32(), f32())); i++ }
+            return out
+        }
     }
 
     // ---------- 编码（C→S） ----------
@@ -153,6 +187,14 @@ object WireCodec {
     /** dir: 0=prev 1=next */
     fun encodePageTurn(dir: Int): ByteArray =
         Writer().apply { u8(OP_PAGE_TURN); u8(dir) }.bytes()
+
+    /** mode: 0=note 1=erase 2=page */
+    fun encodeMode(mode: Int): ByteArray =
+        Writer().apply { u8(OP_MODE); u8(mode) }.bytes()
+
+    /** 切笔（index 进 pens 列表） */
+    fun encodePen(index: Int): ByteArray =
+        Writer().apply { u8(OP_PEN); u16(index) }.bytes()
 
     fun encodeScroll(page: Long, frac: Float, t: Double): ByteArray =
         Writer().apply { u8(OP_SCROLL); u32(page); f32(frac); f64(t) }.bytes()
@@ -199,7 +241,24 @@ object WireCodec {
                     Msg.Layout(docId, v, count, pages)
                 }
                 OP_INK_CANCEL -> Msg.InkCancel
-                OP_STROKES -> Msg.Strokes(r.u32())
+                OP_STROKES -> {
+                    val n = r.u32()
+                    val list = ArrayList<Stroke>()
+                    var i = 0L
+                    while (i < n && r.remaining > 0) { list.add(Stroke(r.u32(), r.pen(), r.pts3())); i++ }
+                    Msg.Strokes(list)
+                }
+                OP_VIEWPORT -> Msg.Viewport(r.u32(), r.f32(), r.u32(), r.u8() == 1)
+                OP_PENS -> {
+                    val active = r.u16()
+                    val pn = r.u16()
+                    val list = ArrayList<Pen>(pn)
+                    var i = 0
+                    while (i < pn && r.remaining >= 12) { list.add(r.pen()); i++ }
+                    Msg.Pens(active, list)
+                }
+                OP_PEN -> Msg.PenSel(r.u16())
+                OP_MODE -> Msg.ModeSel(r.u8())
                 OP_NACK -> {
                     val n = r.u16()
                     val seqs = ArrayList<Long>(n)

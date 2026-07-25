@@ -35,5 +35,9 @@ kotlin {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // zxing 的 appcompat 在 module metadata 里标记为可选，不随传递依赖打包；
+    // 缺 androidx.core 会在 CaptureManager.openCameraWithPermission 崩 NoClassDefFoundError(ContextCompat)
+    implementation("androidx.appcompat:appcompat:1.7.1")
     testImplementation("junit:junit:4.13.2")
 }
