@@ -205,8 +205,9 @@ object WireCodec {
     fun encodeHoverEnd(): ByteArray =
         Writer().apply { u8(OP_HOVER); u8(PH_END) }.bytes()
 
-    fun encodeInkBegin(page: Long, pen: Pen, pts: List<Pt3>): ByteArray =
-        Writer().apply { u8(OP_INK); u8(PH_BEGIN); u32(page); pen(pen); pts3(pts) }.bytes()
+    fun encodeInkBegin(page: Long, pen: Pen, pts: List<Pt3>, line: Boolean = false): ByteArray =
+        // 尾部 flags（bit0=line 直线/尺子笔）：尾部可选字节，旧解码端读完 pts 即止、天然忽略
+        Writer().apply { u8(OP_INK); u8(PH_BEGIN); u32(page); pen(pen); pts3(pts); u8(if (line) 1 else 0) }.bytes()
 
     fun encodeInkMove(pts: List<Pt3>): ByteArray =
         Writer().apply { u8(OP_INK); u8(PH_MOVE); pts3(pts) }.bytes()

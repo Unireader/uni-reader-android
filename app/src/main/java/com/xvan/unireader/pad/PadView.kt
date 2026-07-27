@@ -320,6 +320,15 @@ class PadView @JvmOverloads constructor(
             c.drawPath(path, strokePaint)
             lmx = mx; lmy = my; lpx = px; lpy = py
         }
+        // 补末段：上面每步只画到「相邻两点的中点」，末点从来没被连上——长笔画差这半段看不出来，
+        // 两点直线（尺子）就是整整少画一半（线尾追不上笔尖）。补一段 lastMid → 末点才落到笔尖。
+        if (pts.size > 1) {
+            strokePaint.strokeWidth = strokeWidthFor(t, pts.last().p, pen.w)
+            path.reset()
+            path.moveTo(lmx, lmy)
+            path.lineTo(lpx, lpy)
+            c.drawPath(path, strokePaint)
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
