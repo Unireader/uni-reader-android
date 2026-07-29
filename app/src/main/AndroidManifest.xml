@@ -36,6 +36,10 @@
             </intent-filter>
         </activity>
 
+        <!-- 模式1 独立版：书库列表 → 阅读 -->
+        <activity android:name=".local.LibraryActivity" android:exported="false" />
+        <activity android:name=".local.ReaderActivity" android:exported="false" />
+
         <!-- 模式2 输入板（原 MainActivity，现由 Launcher 启动） -->
         <activity
             android:name=".pad.PadActivity"

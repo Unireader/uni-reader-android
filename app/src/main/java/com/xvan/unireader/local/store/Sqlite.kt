@@ -14,7 +14,11 @@ import java.io.File
  * 自己的 `room_master_table` 并校验 identity hash——那是往共享库里拉屎，Mac 侧下次打开就多出
  * 一张不认识的表。这里只负责搬字节，DDL 一个字都不写（建库永远是 Mac 的事）。
  */
-class Db private constructor(private val db: SQLiteDatabase, val path: String) : Closeable {
+class Db private constructor(
+    private val db: SQLiteDatabase,
+    val path: String,
+    val readOnly: Boolean,
+) : Closeable {
 
     companion object {
         const val TAG = "UniReader/DB"
@@ -29,7 +33,7 @@ class Db private constructor(private val db: SQLiteDatabase, val path: String) :
                 if (readOnly) SQLiteDatabase.OPEN_READONLY
                 else SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING
             val raw = SQLiteDatabase.openDatabase(file.absolutePath, null, flags)
-            val d = Db(raw, file.absolutePath)
+            val d = Db(raw, file.absolutePath, readOnly)
             // busy_timeout 对齐 Mac 侧的 3000ms（`Sources/Store/SQLite.swift`）：工作区是单写者模型，
             // 但同一进程里后台渲染线程与主线程都可能读，锁等待给足时间比直接 SQLITE_BUSY 好。
             d.pragma("busy_timeout=3000")
@@ -84,12 +88,15 @@ class Db private constructor(private val db: SQLiteDatabase, val path: String) :
      * 就静默消失了——用户看到的是「笔记莫名少了几笔」，最难查的一类丢数据。
      */
     fun walCheckpointTruncate() {
+        // 只读连接上做不了：checkpoint 要写主库并截断 -wal，在只读连接（尤其 /sdcard 这类 FUSE 卷）
+        // 上会直接 SQLITE_IOERR_WRITE，把「只是想列个书单」变成「打不开工作区」。
+        if (readOnly) return
         val r = pragma("wal_checkpoint(TRUNCATE)")
         Log.i(TAG, "wal_checkpoint(TRUNCATE) → $r")
     }
 
     override fun close() {
-        if (!db.isReadOnly) runCatching { walCheckpointTruncate() }
+        runCatching { walCheckpointTruncate() }
             .onFailure { Log.w(TAG, "关库前 checkpoint 失败", it) }
         db.close()
     }

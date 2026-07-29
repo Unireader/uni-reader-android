@@ -33,7 +33,7 @@ class LibraryStore(private val db: Db) : Closeable {
                 // 否则「某些笔记不显示」会被当成渲染 bug 查很久。
                 Log.w(TAG, "schema_version=$v，本端按 v$SCHEMA_VERSION 解析——字段可能对不上")
             }
-            store.checkpoint()   // 打开即把 Mac 留下的 -wal 合并进主库（§9.2）
+            store.checkpoint()   // 打开即把 Mac 留下的 -wal 合并进主库（§9.2；只读连接自动跳过）
             return store
         }
     }

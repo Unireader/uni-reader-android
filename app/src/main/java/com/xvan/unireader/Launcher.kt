@@ -16,18 +16,13 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.xvan.unireader.local.PdfSource
+import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.Workspace
-import com.xvan.unireader.local.store.LibraryStore
-import com.xvan.unireader.local.store.NoteKind
 import com.xvan.unireader.pad.PadActivity
-import com.xvan.unireader.shared.brushName
 import java.io.File
-import kotlin.math.abs
 
 /**
  * 启动页：同一个 App 的两种模式二选一（ANDROID-STANDALONE-PLAN §3）。
@@ -333,121 +328,10 @@ class Launcher : Activity() {
             is Workspace.Check.OK -> {
                 Workspace.remember(this, dir.absolutePath)
                 refreshRecents()
-                showLibrary(c)
-            }
-        }
-    }
-
-    /**
-     * 打开库把内容读出来。M1 只把读到的东西摆明（M2 起换成真正的书库列表 + 阅读界面）——
-     * 但这一步是真读：`LibraryStore` 走的就是后续所有功能要用的那条路，读不出来当场就暴露。
-     */
-    private fun showLibrary(c: Workspace.Check.OK) {
-        val report = try {
-            LibraryStore.open(c.dir, readOnly = c.readOnly).use { store ->
-                val docs = store.allDocuments()
-                buildString {
-                    append("工作区：${store.workspaceName().ifEmpty { c.dir.name }}")
-                    if (c.readOnly) append("（只读）")
-                    append("\nschema v${store.meta("schema_version")}")
-                    if (c.walBytes > 0) append("　已合并 ${c.walBytes / 1024}KB WAL")
-                    append("\n\n${docs.size} 个文档：\n")
-                    for (d in docs) {
-                        val pdf = Workspace.firstOpenablePdf(c.dir, store, d.id)
-                        append("· ${d.title}\n")
-                        append("  ${d.pageCount} 页")
-                        append("　进度 第 ${d.readPage + 1} 页 ${(d.readFrac * 100).toInt()}%")
-                        append("　缩放 ${d.readZoom}\n")
-                        append("  笔迹 ${store.noteCount(d.id, NoteKind.INK)} 条")
-                        append("　注解 ${store.noteCount(d.id, NoteKind.TEXT)} 条")
-                        append("　高亮 ${store.noteCount(d.id, NoteKind.HIGHLIGHT)} 条\n")
-                        // 解码一遍：条数对不上就是 payload 有坏的，比 M2 画不出来时再查便宜
-                        val strokes = store.strokes(d.id)
-                        val brushes = strokes.groupingBy { brushName(it.pen.brush) }.eachCount()
-                        append("  解码 ${strokes.size} 条")
-                        if (strokes.isNotEmpty()) {
-                            append("（${brushes.entries.joinToString("，") { "${it.key}×${it.value}" }}）")
-                            append("　共 ${strokes.sumOf { it.pts.size }} 点")
-                        }
-                        append("\n")
-                        val layers = store.inkLayers(d.id)
-                        append("  图层 ${layers.size} 个：")
-                        append(layers.joinToString("，") { "${it.name}(${it.colorKey}${if (it.visible) "" else "·隐藏"})" })
-                        append("\n")
-                        append("  PDF：${pdf?.name ?: "路径失效（需在 Mac 上把文件拷进工作区）"}\n")
-                    }
-                    append("\n阅读界面与手写是 M2/M3 的内容，本版（M1 数据层）读到这一步。")
+                if (c.readOnly) {
+                    Log.w(TAG, "库文件只读：${c.db.absolutePath}")
                 }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "打开库失败", e)
-            "打开 ${Workspace.DB_REL} 失败：\n${e.message}\n\n" +
-                "若工作区在 FAT32/exFAT 的 U 盘上，WAL 可能建不起来——先拷到内部存储再试。"
-        }
-        AlertDialog.Builder(this)
-            .setTitle("工作区已打开")
-            .setMessage(report)
-            .setPositiveButton("好", null)
-            .setNeutralButton("打开第一个文档") { _, _ ->
-                // M2 中间态：先证明 Pdfium 这条路通（尺寸口径 + 出图），阅读界面随后
-                val pdf = LibraryStore.open(c.dir, readOnly = true).use { s ->
-                    s.allDocuments().firstOrNull()?.let { Workspace.firstOpenablePdf(c.dir, s, it.id) }
-                }
-                if (pdf == null) alert("没有可打开的 PDF", "文档的 location 都解析不到本机文件。")
-                else previewPdf(c.dir, pdf)
-            }
-            .show()
-    }
-
-    /**
-     * M2 中间验证：真开一次 PDF——取全页尺寸表（按 Mac 的 effectiveBox 口径）、打进 logcat 供
-     * §9.1 逐页比对，再渲一页出来看。M2 收尾时这段会被真正的阅读界面取代。
-     */
-    private fun previewPdf(workspaceDir: File, pdf: File) {
-        Log.i(TAG, "预览 PDF：${pdf.name}")
-        val src = try {
-            PdfSource(this, pdf)
-        } catch (e: Exception) {
-            Log.e(TAG, "Pdfium 打开失败", e)
-            alert("打不开 PDF", "${pdf.name}\n${e.message}")
-            return
-        }
-        src.logPageSizes()
-        val ratios = src.pageSizes.map { if (it[0] > 0f) it[1] / it[0] else 0f }
-        val head = buildString {
-            append("${pdf.name}\n${src.pageCount} 页　缓存上限 ${PdfSource.defaultCacheBytes() / 1024 / 1024}MB\n")
-            append("第 1 页 ${"%.2f".format(src.pageSizes[0][0])}×${"%.2f".format(src.pageSizes[0][1])} pt")
-            append("　宽高比 ${"%.6f".format(ratios[0])}\n")
-            val uniform = ratios.all { abs(it - ratios[0]) < 1e-6f }
-            append(if (uniform) "全部 ${src.pageCount} 页宽高比一致\n" else "各页宽高比不一（拼页/混排文档）\n")
-            append("\n尺寸表已打进 logcat（PAGESIZE 行），与 tools/dump-page-sizes.swift 的输出逐行 diff 即 §9.1 验收。")
-        }
-
-        // 渲第一页（在后台线程，回调切回主线程）
-        val img = ImageView(this)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), 0)
-            addView(hint(head))
-            addView(img, LinearLayout.LayoutParams(-1, dp(420)))
-        }
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("PDF 已打开")
-            .setView(ScrollView(this).apply { addView(box) })
-            .setPositiveButton("好", null)
-            .create()
-        dlg.setOnDismissListener { src.close() }
-        dlg.show()
-        src.request(0, dp(360)) { bmp ->
-            runOnUiThread {
-                if (bmp == null) {
-                    Log.e(TAG, "第 1 页渲染返回 null")
-                    img.visibility = View.GONE
-                } else {
-                    Log.i(TAG, "第 1 页位图 ${bmp.width}×${bmp.height}（${bmp.byteCount / 1024}KB）")
-                    img.setImageBitmap(bmp)
-                    img.adjustViewBounds = true
-                }
+                LibraryActivity.start(this, c.dir)
             }
         }
     }

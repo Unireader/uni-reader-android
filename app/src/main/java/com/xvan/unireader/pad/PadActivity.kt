@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -28,6 +29,7 @@ import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextNote
@@ -150,7 +152,22 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         barHeightPx = barH
         enterImmersive()
 
-        padView = PadView(this).apply { listener = this@PadActivity }
+        padView = PadView(this).apply {
+            listener = this@PadActivity
+            // 页图源（PageCanvasView 的注入口）：模式2 从 Mac 取整页 PNG，widthPx 由 Mac 定、这里忽略。
+            // 换文档后的在途回调按 null 丢弃——旧 v 的页图贴到新文档上就是花屏。
+            imageSource = object : PageImageSource {
+                override fun request(page: Int, widthPx: Int, cb: (Bitmap?) -> Unit) {
+                    val v = docV
+                    val f = fetcher ?: run { cb(null); return }
+                    f.fetch(page, v) { bmp -> cb(if (v == docV) bmp else null) }
+                }
+
+                override fun clear() {
+                    fetcher?.clear()
+                }
+            }
+        }
 
         dot = View(this)   // 连接状态点（绿=已认证）
         latText = TextView(this).apply {
@@ -637,15 +654,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onHudChanged() {
         refresh()
-    }
-
-    override fun requestImage(page: Int) {
-        val v = docV
-        fetcher?.fetch(page, v) { bmp ->
-            runOnUiThread {
-                if (v == docV) padView.setPageImage(page, bmp)   // 换文档后的在途回调丢弃
-            }
-        }
     }
 
     override fun onOpenNoteEditor(
