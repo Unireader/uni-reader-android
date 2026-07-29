@@ -2,6 +2,8 @@ package com.xvan.unireader.local
 
 import android.content.Context
 import android.util.Log
+import com.xvan.unireader.local.store.LibLocation
+import com.xvan.unireader.local.store.LibraryStore
 import java.io.File
 import org.json.JSONArray
 
@@ -75,6 +77,41 @@ object Workspace {
 
     /** 目录名以 .unrd 结尾 = 一眼可辨的工作区（不做强校验，真凭据是 library.sqlite） */
     fun looksLikeWorkspace(dir: File): Boolean = dir.name.endsWith(".unrd", ignoreCase = true)
+
+    /**
+     * 把一条 `location` 解析成本机文件。
+     *
+     * 首版只认两种（`ANDROID-STANDALONE-PLAN.md §6`）：
+     * - `in_workspace=1` → 工作区内相对路径（`PDFs/xxx.pdf`），随文件夹搬动仍有效，这是主路径；
+     * - 其余 → Mac 上的绝对路径，在安卓上必然不存在，**按路径失效处理**。
+     *
+     * `is_relative=1`（外置卷相对路径）同样按失效处理：那是「外部文件与工作区同在一块移动卷上」
+     * 的场景，安卓端的挂载点与 Mac 完全不同（`/storage/XXXX-XXXX` vs `/Volumes/…`），
+     * 靠猜挂载点去拼路径只会拼出一个「看着像对、其实指向别处」的文件。返回 null 让上层
+     * 提示用户「在 Mac 上把文件拷进工作区」，比默默打开错的文件好。
+     */
+    fun resolvePdf(workspaceDir: File, loc: LibLocation): File? {
+        if (loc.inWorkspace) {
+            val f = File(workspaceDir, loc.path)
+            return if (f.isFile) f else null.also {
+                Log.w(TAG, "工作区内文件缺失：${loc.path}")
+            }
+        }
+        if (loc.isRelative) {
+            Log.w(TAG, "location 是外置卷相对路径，首版不解析：${loc.path}")
+            return null
+        }
+        val abs = File(loc.path)
+        if (abs.isFile) return abs   // 极少数情况：路径恰好在安卓上也成立
+        Log.w(TAG, "绝对路径在本机不存在（多半是 Mac 上的路径）：${loc.path}")
+        return null
+    }
+
+    /** 取一个文档第一条能打开的 PDF（首版不做 variant 探测/合并，同 §6 的简化） */
+    fun firstOpenablePdf(workspaceDir: File, store: LibraryStore, documentId: String): File? =
+        store.locations(documentId).asSequence()
+            .mapNotNull { resolvePdf(workspaceDir, it) }
+            .firstOrNull()
 
     // ---------- 最近工作区（只存路径；能不能开每次现场校验） ----------
 

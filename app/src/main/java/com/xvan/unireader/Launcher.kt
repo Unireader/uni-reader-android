@@ -20,7 +20,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.xvan.unireader.local.Workspace
+import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.local.store.NoteKind
 import com.xvan.unireader.pad.PadActivity
+import com.xvan.unireader.shared.brushName
 import java.io.File
 
 /**
@@ -327,23 +330,58 @@ class Launcher : Activity() {
             is Workspace.Check.OK -> {
                 Workspace.remember(this, dir.absolutePath)
                 refreshRecents()
-                // M1 起这里改成 startActivity(LibraryActivity)；现在先把校验结果摆明
-                alert(
-                    "工作区校验通过",
-                    buildString {
-                        append("路径：${c.dir.absolutePath}\n")
-                        append("库文件：${c.db.length() / 1024} KB")
-                        if (c.readOnly) append("（只读）")
-                        append("\n")
-                        if (c.walBytes > 0) {
-                            append("未合并的 WAL：${c.walBytes / 1024} KB —— 搬运时必须连 -wal 一起拷\n")
-                        }
-                        append("PDFs/ 目录：${if (File(c.dir, Workspace.PDFS_DIR).isDirectory) "有" else "没有"}\n\n")
-                        append("文档列表与阅读界面是 M1/M2 的内容，本版（M0 骨架）只到这一步。")
-                    },
-                )
+                showLibrary(c)
             }
         }
+    }
+
+    /**
+     * 打开库把内容读出来。M1 只把读到的东西摆明（M2 起换成真正的书库列表 + 阅读界面）——
+     * 但这一步是真读：`LibraryStore` 走的就是后续所有功能要用的那条路，读不出来当场就暴露。
+     */
+    private fun showLibrary(c: Workspace.Check.OK) {
+        val report = try {
+            LibraryStore.open(c.dir, readOnly = c.readOnly).use { store ->
+                val docs = store.allDocuments()
+                buildString {
+                    append("工作区：${store.workspaceName().ifEmpty { c.dir.name }}")
+                    if (c.readOnly) append("（只读）")
+                    append("\nschema v${store.meta("schema_version")}")
+                    if (c.walBytes > 0) append("　已合并 ${c.walBytes / 1024}KB WAL")
+                    append("\n\n${docs.size} 个文档：\n")
+                    for (d in docs) {
+                        val pdf = Workspace.firstOpenablePdf(c.dir, store, d.id)
+                        append("· ${d.title}\n")
+                        append("  ${d.pageCount} 页")
+                        append("　进度 第 ${d.readPage + 1} 页 ${(d.readFrac * 100).toInt()}%")
+                        append("　缩放 ${d.readZoom}\n")
+                        append("  笔迹 ${store.noteCount(d.id, NoteKind.INK)} 条")
+                        append("　注解 ${store.noteCount(d.id, NoteKind.TEXT)} 条")
+                        append("　高亮 ${store.noteCount(d.id, NoteKind.HIGHLIGHT)} 条\n")
+                        // 解码一遍：条数对不上就是 payload 有坏的，比 M2 画不出来时再查便宜
+                        val strokes = store.strokes(d.id)
+                        val brushes = strokes.groupingBy { brushName(it.pen.brush) }.eachCount()
+                        append("  解码 ${strokes.size} 条")
+                        if (strokes.isNotEmpty()) {
+                            append("（${brushes.entries.joinToString("，") { "${it.key}×${it.value}" }}）")
+                            append("　共 ${strokes.sumOf { it.pts.size }} 点")
+                        }
+                        append("\n")
+                        val layers = store.inkLayers(d.id)
+                        append("  图层 ${layers.size} 个：")
+                        append(layers.joinToString("，") { "${it.name}(${it.colorKey}${if (it.visible) "" else "·隐藏"})" })
+                        append("\n")
+                        append("  PDF：${pdf?.name ?: "路径失效（需在 Mac 上把文件拷进工作区）"}\n")
+                    }
+                    append("\n阅读界面与手写是 M2/M3 的内容，本版（M1 数据层）读到这一步。")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "打开库失败", e)
+            "打开 ${Workspace.DB_REL} 失败：\n${e.message}\n\n" +
+                "若工作区在 FAT32/exFAT 的 U 盘上，WAL 可能建不起来——先拷到内部存储再试。"
+        }
+        alert("工作区已打开", report)
     }
 
     private fun alert(title: String, msg: String) {

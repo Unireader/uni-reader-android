@@ -52,8 +52,20 @@ data class Pt3(val x: Float, val y: Float, val p: Float)
 /** 无压感的点（擦除轨迹） */
 data class Pt2(val x: Float, val y: Float)
 
-/** 一条成形笔迹 */
-data class Stroke(val page: Long, val pen: Pen, val pts: List<Pt3>)
+/**
+ * 一条成形笔迹。
+ *
+ * `id`/`layerId` 只有模式1（本地开工作区）会填：擦除要靠 `note.id` 一一映射删除、图层显隐要靠
+ * `layerId` 过滤。模式2 里笔迹的真源在 Mac、删除也由 Mac 执行，线格式不传这两个字段，
+ * 因此保持默认空串——**判空即「本端不掌握这条笔迹的身份」**，别拿空串当有效 id 用。
+ */
+data class Stroke(
+    val page: Long,
+    val pen: Pen,
+    val pts: List<Pt3>,
+    val id: String = "",
+    val layerId: String = "",
+)
 
 /** 一条自由文字笔记（坐标与笔迹同系＝页内归一化） */
 data class TextNote(val id: String, val page: Long, val nx: Float, val ny: Float, val text: String)
