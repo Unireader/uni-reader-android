@@ -153,6 +153,7 @@ class ReaderActivity : Activity() {
             src.pageSizes.map { it[0] to it[1] },
             reset = true,
         )
+        loadInk(s)
         s.updateLastOpened(docId)
 
         // 进度复原：等**首次真实布局**之后再做（否则 offY 还是 width=0 时算的，滚过去等于滚到页顶），
@@ -173,6 +174,21 @@ class ReaderActivity : Activity() {
         )
         handler.postDelayed(saver, SAVE_INTERVAL_MS)
         return true
+    }
+
+    /**
+     * 读盘渲染笔迹：`note`(kind=2) → 中立 `Stroke` → 交给基类画（与模式2 同一个 `InkRenderer`，
+     * 所以「Mac 上写的笔迹在平板上长什么样」不取决于这里，取决于那份共用实现）。
+     *
+     * 按 `ink_layer.visible` 过滤：隐藏图层的笔迹不画，但**数据一条不动**——隐藏是显示状态，
+     * 不是删除。
+     */
+    private fun loadInk(s: LibraryStore) {
+        val hidden = s.inkLayers(docId).filter { !it.visible }.map { it.id }.toSet()
+        val all = s.strokes(docId)
+        val shown = if (hidden.isEmpty()) all else all.filter { it.layerId !in hidden }
+        canvas.setStrokes(shown)
+        Log.i(TAG, "笔迹 ${all.size} 条，隐藏 ${hidden.size} 个图层后画 ${shown.size} 条")
     }
 
     private fun refreshHud() {
