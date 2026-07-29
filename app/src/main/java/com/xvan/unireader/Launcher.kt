@@ -22,6 +22,7 @@ import android.widget.TextView
 import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.pad.PadActivity
+import com.xvan.unireader.shared.onSystemBarInsets
 import java.io.File
 
 /**
@@ -104,7 +105,9 @@ class Launcher : Activity() {
             ),
         )
 
-        setContentView(ScrollView(this).apply { addView(col) })
+        val scroll = ScrollView(this).apply { addView(col) }
+        setContentView(scroll)
+        scroll.onSystemBarInsets { top, bottom -> scroll.setPadding(0, top, 0, bottom) }
         refresh()
     }
 

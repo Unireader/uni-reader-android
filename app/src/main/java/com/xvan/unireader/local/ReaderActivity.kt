@@ -16,6 +16,10 @@ import android.widget.LinearLayout
 import android.widget.Space
 import android.widget.TextView
 import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.shared.MODE_ERASE
+import com.xvan.unireader.shared.onSystemBarInsets
+import com.xvan.unireader.shared.MODE_NOTE
+import com.xvan.unireader.shared.MODE_PAGE
 import java.io.File
 
 /**
@@ -45,6 +49,8 @@ class ReaderActivity : Activity() {
 
     private lateinit var canvas: LocalCanvasView
     private lateinit var pageLabel: TextView
+    private lateinit var modeBtn: Button
+    private lateinit var penBtn: Button
     private var store: LibraryStore? = null
     private var pdf: PdfSource? = null
     private var workspace: File? = null
@@ -90,36 +96,37 @@ class ReaderActivity : Activity() {
             setTextColor(Color.WHITE)
             setOnClickListener { showGotoPage() }
         }
+        modeBtn = barBtn("翻页") { cycleMode() }
+        penBtn = barBtn("笔") { canvas.cyclePen(); refreshHud() }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             isClickable = true   // 挡住触摸穿透到画布
             setBackgroundColor(0xE6161B22.toInt())
             setPadding(dp(10), 0, dp(10), 0)
-            addView(
-                Button(context).apply {
-                    text = "◀"
-                    isAllCaps = false
-                    setOnClickListener { canvas.turn(prev = true) }
-                },
-            )
-            addView(
-                Button(context).apply {
-                    text = "▶"
-                    isAllCaps = false
-                    setOnClickListener { canvas.turn(prev = false) }
-                },
-            )
+            addView(barBtn("◀") { canvas.turn(prev = true) })
+            addView(barBtn("▶") { canvas.turn(prev = false) })
+            addView(modeBtn)
+            addView(penBtn)
             addView(Space(context), LinearLayout.LayoutParams(0, 1, 1f))
             addView(pageLabel)
         }
-        setContentView(
-            FrameLayout(this).apply {
-                addView(canvas, FrameLayout.LayoutParams(-1, -1))
-                addView(bar, FrameLayout.LayoutParams(-1, barH, Gravity.TOP))
-            },
-        )
+        val root = FrameLayout(this).apply {
+            addView(canvas, FrameLayout.LayoutParams(-1, -1))
+            addView(bar, FrameLayout.LayoutParams(-1, barH, Gravity.TOP))
+        }
+        setContentView(root)
         canvas.setBarHeight(barH.toFloat())
+        // 顶栏避开状态栏：不处理的话按钮压在时钟上，点击会被系统栏吃掉（见 shared/Insets.kt）
+        root.onSystemBarInsets { top, _ ->
+            val lp = bar.layoutParams as FrameLayout.LayoutParams
+            if (lp.height != barH + top) {
+                lp.height = barH + top
+                bar.layoutParams = lp
+                bar.setPadding(dp(10), top, dp(10), 0)
+                canvas.setBarHeight((barH + top).toFloat())
+            }
+        }
     }
 
     private fun open(ws: File): Boolean {
@@ -153,7 +160,14 @@ class ReaderActivity : Activity() {
             src.pageSizes.map { it[0] to it[1] },
             reset = true,
         )
-        loadInk(s)
+        // 落库上下文 + 当前作画图层（老文档可能没有图层行，补一条默认层，同 Mac 的行为）
+        s.ensureDefaultLayer(docId)
+        canvas.store = s
+        canvas.documentId = docId
+        canvas.activeLayerId =
+            s.inkLayers(docId).firstOrNull()?.id ?: com.xvan.unireader.local.store.LibInkLayer.DEFAULT_ID
+        canvas.setMode(MODE_PAGE)
+        canvas.reloadStrokes()
         s.updateLastOpened(docId)
 
         // 进度复原：等**首次真实布局**之后再做（否则 offY 还是 width=0 时算的，滚过去等于滚到页顶），
@@ -176,24 +190,34 @@ class ReaderActivity : Activity() {
         return true
     }
 
+    private fun barBtn(label: String, onClick: () -> Unit) = Button(this).apply {
+        text = label
+        isAllCaps = false
+        setOnClickListener { onClick() }
+    }
+
     /**
-     * 读盘渲染笔迹：`note`(kind=2) → 中立 `Stroke` → 交给基类画（与模式2 同一个 `InkRenderer`，
-     * 所以「Mac 上写的笔迹在平板上长什么样」不取决于这里，取决于那份共用实现）。
-     *
-     * 按 `ink_layer.visible` 过滤：隐藏图层的笔迹不画，但**数据一条不动**——隐藏是显示状态，
-     * 不是删除。
+     * 阅读默认 `MODE_PAGE`（笔也用来平移）——一打开就是写字模式的话，随手一碰就是一道墨。
+     * 只在 翻页/笔记/擦除 三态间轮换：框选移动是 M4 的事（它的提交钩子还没落库）。
      */
-    private fun loadInk(s: LibraryStore) {
-        val hidden = s.inkLayers(docId).filter { !it.visible }.map { it.id }.toSet()
-        val all = s.strokes(docId)
-        val shown = if (hidden.isEmpty()) all else all.filter { it.layerId !in hidden }
-        canvas.setStrokes(shown)
-        Log.i(TAG, "笔迹 ${all.size} 条，隐藏 ${hidden.size} 个图层后画 ${shown.size} 条")
+    private fun cycleMode() {
+        val next = when (canvas.mode) {
+            MODE_PAGE -> MODE_NOTE
+            MODE_NOTE -> MODE_ERASE
+            else -> MODE_PAGE
+        }
+        canvas.setMode(next)
+        refreshHud()
     }
 
     private fun refreshHud() {
+        // 每帧都会调（滚动/缩放都触发），文本没变就别碰：十来个控件乘 60fps 就是白烧的一帧
         val s = "${canvas.hudPage()}　${canvas.hudZoom()}"
-        if (pageLabel.text?.toString() != s) pageLabel.text = s   // 每帧都会调，文本没变就别碰
+        if (pageLabel.text?.toString() != s) pageLabel.text = s
+        val m = canvas.modeLabel()
+        if (modeBtn.text?.toString() != m) modeBtn.text = m
+        val p = if (canvas.mode == MODE_NOTE) canvas.penLabel() else "笔"
+        if (penBtn.text?.toString() != p) penBtn.text = p
     }
 
     private fun showGotoPage() {

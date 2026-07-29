@@ -685,7 +685,14 @@ open class PageCanvasView @JvmOverloads constructor(
             if (s.page.toInt() != loc.page) { out.add(s); continue }
             var anyHit = false
             var seg = ArrayList<Pt3>()
-            fun flush() { if (seg.isNotEmpty()) { out.add(Stroke(s.page, s.pen, seg)); seg = ArrayList() } }
+            // 切出来的段**必须带上原笔迹的 id/layerId**：模式1 要靠它把「删原条 + 插若干段」
+            // 映射回 note 表（模式2 用不到，真源在 Mac）。丢了 id 就只能整篇重写笔迹。
+            fun flush() {
+                if (seg.isNotEmpty()) {
+                    out.add(Stroke(s.page, s.pen, seg, s.id, s.layerId))
+                    seg = ArrayList()
+                }
+            }
             for (pt in s.pts) {
                 val dx = pt.x - loc.nx
                 val dy = pt.y - loc.ny

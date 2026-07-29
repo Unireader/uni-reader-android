@@ -13,6 +13,7 @@ import android.widget.TextView
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteKind
+import com.xvan.unireader.shared.onSystemBarInsets
 import java.io.File
 
 /**
@@ -62,7 +63,9 @@ class LibraryActivity : Activity() {
             addView(header)
             addView(list)
         }
-        setContentView(ScrollView(this).apply { addView(col) })
+        val scroll = ScrollView(this).apply { addView(col) }
+        setContentView(scroll)
+        scroll.onSystemBarInsets { top, bottom -> scroll.setPadding(0, top, 0, bottom) }
     }
 
     override fun onResume() {
