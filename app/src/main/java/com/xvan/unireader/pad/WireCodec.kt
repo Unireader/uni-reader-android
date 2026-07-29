@@ -15,19 +15,36 @@ object WireCodec {
     const val OP_AUTH_FAIL = 0x03
     const val OP_PING = 0x10
     const val OP_PONG = 0x11
+    const val OP_LATENCY = 0x12
+    const val OP_SELECT_DOC = 0x20
     const val OP_PAGE_TURN = 0x21
     const val OP_MODE = 0x22
     const val OP_PEN = 0x23
+    const val OP_TEXT_NOTE = 0x24
+    const val OP_PENSET = 0x25
+    const val OP_LAYER_SELECT = 0x26
+    const val OP_LAYER_VISIBLE = 0x27
+    const val OP_LAYER_ADD = 0x28
+    const val OP_GOTO_PAGE = 0x29
     const val OP_PAGE = 0x30
     const val OP_LAYOUT = 0x31
     const val OP_VIEWPORT = 0x32
+    const val OP_DOCS = 0x33
     const val OP_PENS = 0x34
     const val OP_INK_CANCEL = 0x35
     const val OP_STROKES = 0x36
+    const val OP_RADIAL = 0x37
+    const val OP_PRESS_RING = 0x38
+    const val OP_NOTES = 0x39
+    const val OP_LAYERS = 0x3A
     const val OP_SCROLL = 0x40
     const val OP_HOVER = 0x41
     const val OP_INK = 0x42
     const val OP_ERASE = 0x43
+    const val OP_PROBE = 0x44
+    const val OP_PAD_GEOM = 0x45
+    const val OP_ERASER = 0x46
+    const val OP_LASSO_MOVE = 0x47
     const val OP_NACK = 0x50
 
     // phase / dir（§2）
@@ -37,10 +54,20 @@ object WireCodec {
     const val DIR_PREV = 0
     const val DIR_NEXT = 1
 
-    /** mode（§2）：0=note 1=erase 2=page */
+    /** mode（§2）：0=note 1=erase 2=page 3=lasso */
     const val MODE_NOTE = 0
     const val MODE_ERASE = 1
     const val MODE_PAGE = 2
+    const val MODE_LASSO = 3
+
+    /** textNote.op（§4.1）：0=upsert 1=delete（空文本 upsert 等价 delete） */
+    const val NOTE_UPSERT = 0
+    const val NOTE_DELETE = 1
+
+    /** radial 扇区 kind（§4.2）：0=pen 1=erase 2=page */
+    const val RK_PEN = 0
+    const val RK_ERASE = 1
+    const val RK_PAGE = 2
 
     /** brush 编号 → 名字（§2：0=ballpoint 1=fountain 2=marker 3=pencil，越界回退 0） */
     val BRUSH_NAMES = listOf("ballpoint", "fountain", "marker", "pencil")
@@ -58,6 +85,18 @@ object WireCodec {
 
     /** 一条成形笔迹（strokes 消息元素） */
     data class Stroke(val page: Long, val pen: Pen, val pts: List<Pt3>)
+
+    /** 文档列表项（docs 消息元素） */
+    data class DocEntry(val id: String, val title: String)
+
+    /** 一条自由文字笔记（notes 消息元素；坐标与笔迹同系＝页内归一化） */
+    data class TextNote(val id: String, val page: Long, val nx: Float, val ny: Float, val text: String)
+
+    /** 一个笔迹图层（layers 消息元素；r/g/b 只是列表色点标识，与笔画墨色无关） */
+    data class Layer(val r: Int, val g: Int, val b: Int, val visible: Boolean, val name: String)
+
+    /** 环形选笔盘的一个扇区（kind 见 RK_*；kind≠pen 时 pen 字节是占位 0） */
+    data class RadialItem(val kind: Int, val pen: Pen)
 
     // ---------- 解码结果（u32 用 Long 承载无符号值） ----------
     sealed class Msg {
@@ -78,6 +117,25 @@ object WireCodec {
         /** Mac 侧切笔/切模式回推 */
         data class PenSel(val index: Int) : Msg()
         data class ModeSel(val mode: Int) : Msg()
+        /** Mac 的文档列表（following=true 时平板下拉显示「跟随 Mac」） */
+        data class Docs(val following: Boolean, val selected: String, val list: List<DocEntry>) : Msg()
+        /** 文字笔记全量镜像（Mac 唯一真源，平板不落库） */
+        data class Notes(val list: List<TextNote>) : Msg()
+        /** 图层表全量镜像（按下标对齐，active = 当前作画图层下标） */
+        data class Layers(val active: Int, val list: List<Layer>) : Msg()
+        /** 环形选笔盘状态镜像（Mac 唯一判定方，平板照画）；open=false 时其余字段无意义 */
+        data class Radial(
+            val open: Boolean,
+            val page: Long,
+            val cx: Float,
+            val cy: Float,
+            val highlight: Int,   // -1 = 指针在中心取消区（线上 0xFFFF）
+            val items: List<RadialItem>,
+        ) : Msg()
+        /** 长按进度环（环形盘前置动画）；on=false 时其余字段无意义 */
+        data class PressRing(val on: Boolean, val page: Long, val nx: Float, val ny: Float) : Msg()
+        /** 橡皮设置（双向；size = 归一化半径＝页宽比，mode 0=整笔 1=局部） */
+        data class Eraser(val size: Float, val mode: Int, val ring: Boolean) : Msg()
     }
 
     // ---------- Writer ----------
@@ -221,6 +279,65 @@ object WireCodec {
     fun encodeEraseEnd(): ByteArray =
         Writer().apply { u8(OP_ERASE); u8(PH_END) }.bytes()
 
+    // probe：擦除/翻页模式下与主流平行上报笔位置，Mac 据此做长按检测 → 环形选笔盘
+    // （笔记模式不发 probe，Mac 直接拿 ink 流判长按，见 capture.html/input.ts）
+
+    fun encodeProbeBegin(page: Long, pts: List<Pt2>): ByteArray =
+        Writer().apply { u8(OP_PROBE); u8(PH_BEGIN); u32(page); pts2(pts) }.bytes()
+
+    fun encodeProbeMove(pts: List<Pt2>): ByteArray =
+        Writer().apply { u8(OP_PROBE); u8(PH_MOVE); pts2(pts) }.bytes()
+
+    fun encodeProbeEnd(): ByteArray =
+        Writer().apply { u8(OP_PROBE); u8(PH_END) }.bytes()
+
+    /** 回报本端测得的 rtt，Mac 面板显示 */
+    fun encodeLatency(ms: Float): ByteArray =
+        Writer().apply { u8(OP_LATENCY); f32(ms) }.bytes()
+
+    /** 选文档（"" = 跟随 Mac） */
+    fun encodeSelectDoc(id: String): ByteArray =
+        Writer().apply { u8(OP_SELECT_DOC); str(id) }.bytes()
+
+    /** 跳页（0-based；平板 UI 输入的是 1-based，调用方先减一） */
+    fun encodeGotoPage(page: Long): ByteArray =
+        Writer().apply { u8(OP_GOTO_PAGE); u32(page) }.bytes()
+
+    /** 平板上报自己的内容页宽（px），Mac 环形盘的像素判定基准；值变才发 */
+    fun encodePadGeom(pageW: Float): ByteArray =
+        Writer().apply { u8(OP_PAD_GEOM); f32(pageW) }.bytes()
+
+    /** 文字笔记增删（op 见 NOTE_*；空文本 upsert 被 Mac 视为 delete） */
+    fun encodeTextNote(id: String, op: Int, page: Long, nx: Float, ny: Float, text: String): ByteArray =
+        Writer().apply { u8(OP_TEXT_NOTE); str(id); u8(op); u32(page); f32(nx); f32(ny); str(text) }.bytes()
+
+    /** 改笔宽后整表上行（Mac 按下标对齐写回；数目不符 Mac 整包丢弃） */
+    fun encodePenset(active: Int, list: List<Pen>): ByteArray =
+        Writer().apply { u8(OP_PENSET); u16(active); u16(list.size); for (p in list) pen(p) }.bytes()
+
+    /** 橡皮设置上行（size = 归一化半径，mode 0=整笔 1=局部） */
+    fun encodeEraser(size: Float, mode: Int, ring: Boolean): ByteArray =
+        Writer().apply { u8(OP_ERASER); f32(size); u8(mode); u8(if (ring) 1 else 0) }.bytes()
+
+    /** 图层请求：切换当前作画图层（index = layers 列表下标） */
+    fun encodeLayerSelect(index: Int): ByteArray =
+        Writer().apply { u8(OP_LAYER_SELECT); u16(index) }.bytes()
+
+    /** 图层请求：显示/隐藏某层 */
+    fun encodeLayerVisible(index: Int, visible: Boolean): ByteArray =
+        Writer().apply { u8(OP_LAYER_VISIBLE); u16(index); u8(if (visible) 1 else 0) }.bytes()
+
+    /** 图层请求：新建（名字/颜色/顺序由 Mac 决定，追加后即为当前作画图层） */
+    fun encodeLayerAdd(): ByteArray =
+        Writer().apply { u8(OP_LAYER_ADD) }.bytes()
+
+    /** 框选移动提交：框选矩形（Mac 用真源复判命中）+ 位移，均页内归一化 */
+    fun encodeLassoMove(
+        page: Long, x0: Float, y0: Float, x1: Float, y1: Float, dx: Float, dy: Float,
+    ): ByteArray = Writer().apply {
+        u8(OP_LASSO_MOVE); u32(page); f32(x0); f32(y0); f32(x1); f32(y1); f32(dx); f32(dy)
+    }.bytes()
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -260,6 +377,51 @@ object WireCodec {
                 }
                 OP_PEN -> Msg.PenSel(r.u16())
                 OP_MODE -> Msg.ModeSel(r.u8())
+                OP_DOCS -> {
+                    val following = r.u8() == 1
+                    val selected = r.str()
+                    val n = r.u16()
+                    val list = ArrayList<DocEntry>(n)
+                    var i = 0
+                    while (i < n && r.remaining >= 4) { list.add(DocEntry(r.str(), r.str())); i++ }
+                    Msg.Docs(following, selected, list)
+                }
+                OP_NOTES -> {
+                    val n = r.u16()
+                    val list = ArrayList<TextNote>(n)
+                    var i = 0
+                    while (i < n && r.remaining > 0) {
+                        list.add(TextNote(r.str(), r.u32(), r.f32(), r.f32(), r.str())); i++
+                    }
+                    Msg.Notes(list)
+                }
+                OP_LAYERS -> {
+                    val active = r.u16()
+                    val n = r.u16()
+                    val list = ArrayList<Layer>(n)
+                    var i = 0
+                    while (i < n && r.remaining > 0) {
+                        list.add(Layer(r.u8(), r.u8(), r.u8(), r.u8() == 1, r.str())); i++
+                    }
+                    Msg.Layers(active, list)
+                }
+                OP_RADIAL -> {
+                    if (r.u8() != 1) Msg.Radial(false, 0, 0f, 0f, -1, emptyList())
+                    else {
+                        val page = r.u32(); val cx = r.f32(); val cy = r.f32()
+                        val hl = r.u16()
+                        val n = r.u16()
+                        val items = ArrayList<RadialItem>(n)
+                        var i = 0
+                        while (i < n && r.remaining >= 13) { items.add(RadialItem(r.u8(), r.pen())); i++ }
+                        // 0xFFFF = 指针在中心取消区 → 对象里是 -1（同 JS/Swift）
+                        Msg.Radial(true, page, cx, cy, if (hl == 0xFFFF) -1 else hl, items)
+                    }
+                }
+                OP_PRESS_RING ->
+                    if (r.u8() != 1) Msg.PressRing(false, 0, 0f, 0f)
+                    else Msg.PressRing(true, r.u32(), r.f32(), r.f32())
+                OP_ERASER -> Msg.Eraser(r.f32(), r.u8(), r.u8() != 0)
                 OP_NACK -> {
                     val n = r.u16()
                     val seqs = ArrayList<Long>(n)

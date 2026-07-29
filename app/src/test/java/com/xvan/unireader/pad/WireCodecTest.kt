@@ -6,12 +6,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**前 31 条** canonical 向量
- * （Swift 那张表只允许在末尾追加新消息，故前缀行号恒定；末尾新增的消息 demo 不实现，不比对）。
- * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）。
- * 编码类（auth/ping/pageTurn/scroll/hover/ink/erase）断言 encode 结果逐字节等于 hex；
- * 解码类（authOK/authFail/pong/page/layout/inkCancel/strokes/nack）断言 decode(hex) 字段正确。
- * demo 不实现的消息（latency/selectDoc/mode/pen/viewport/docs/pens/probe）对应向量行不参与比对。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 51 条** canonical 向量。
+ * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
+ * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
+ * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
+ * 只有 S→C 的 page/layout/viewport/... 不做编码比对（平板永远不发它们），反之亦然。
  */
 class WireCodecTest {
 
@@ -50,6 +49,45 @@ class WireCodecTest {
             26 to WireCodec.encodeEraseMove(1, listOf(WireCodec.Pt2(0.5f, 0.5f), WireCodec.Pt2(0.25f, 0.25f))),
             // #27 erase end
             27 to WireCodec.encodeEraseEnd(),
+            // #7 latency{ms:42}
+            7 to WireCodec.encodeLatency(42f),
+            // #8 selectDoc{id:"1A2B"}
+            8 to WireCodec.encodeSelectDoc("1A2B"),
+            // #28 probe begin{page:2, pts:[[0.5,0.5]]}
+            28 to WireCodec.encodeProbeBegin(2, listOf(WireCodec.Pt2(0.5f, 0.5f))),
+            // #29 probe move{pts:[[0.25,0.25]]}
+            29 to WireCodec.encodeProbeMove(listOf(WireCodec.Pt2(0.25f, 0.25f))),
+            // #30 probe end
+            30 to WireCodec.encodeProbeEnd(),
+            // #35 padGeom{pageW:1024}
+            35 to WireCodec.encodePadGeom(1024f),
+            // #38 textNote upsert{id:"n1", page:2, nx:0.5, ny:0.25, text:"批注"}
+            38 to WireCodec.encodeTextNote("n1", WireCodec.NOTE_UPSERT, 2, 0.5f, 0.25f, "批注"),
+            // #39 textNote delete{id:"n1", page:2, nx:0.5, ny:0.25, text:""}
+            39 to WireCodec.encodeTextNote("n1", WireCodec.NOTE_DELETE, 2, 0.5f, 0.25f, ""),
+            // #41 penset{active:1, list:[ballpoint w8, marker w22]}（布局同 pens）
+            41 to WireCodec.encodePenset(
+                1,
+                listOf(pen, WireCodec.Pen(255, 214, 40, 0.25f, 22f, 2)),
+            ),
+            // #42 eraser{size:0.02, mode:1(局部), ring:1}
+            42 to WireCodec.encodeEraser(0.02f, 1, true),
+            // #43 eraser{size:0.5, mode:0(整笔), ring:0}
+            43 to WireCodec.encodeEraser(0.5f, 0, false),
+            // #44 ink begin 带 line=true（尺子笔：整笔恒为两点）
+            44 to WireCodec.encodeInkBegin(0, pen, listOf(WireCodec.Pt3(0.5f, 0.5f, 0.5f)), line = true),
+            // #46 layerSelect{index:1}
+            46 to WireCodec.encodeLayerSelect(1),
+            // #47 layerVisible{index:0, visible:false}
+            47 to WireCodec.encodeLayerVisible(0, false),
+            // #48 layerAdd
+            48 to WireCodec.encodeLayerAdd(),
+            // #49 mode{mode:"lasso"}
+            49 to WireCodec.encodeMode(WireCodec.MODE_LASSO),
+            // #50 lassoMove{page:2, box(0.2,0.3)-(0.6,0.5), d(0.1,-0.05)}
+            50 to WireCodec.encodeLassoMove(2, 0.2f, 0.3f, 0.6f, 0.5f, 0.1f, -0.05f),
+            // #51 gotoPage{page:42}
+            51 to WireCodec.encodeGotoPage(42),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -133,6 +171,81 @@ class WireCodecTest {
         // #31 nack{seqs:[1, 2, 3000000000]}
         val m31 = WireCodec.decode(unhex(VECTORS[30])) as WireCodec.Msg.Nack
         assertEquals(listOf(1L, 2L, 3000000000L), m31.seqs)
+
+        // #16 docs{list:[{a,T1},{b,标题}], selected:"a", following:false}
+        val m16 = WireCodec.decode(unhex(VECTORS[15])) as WireCodec.Msg.Docs
+        assertEquals(false, m16.following)
+        assertEquals("a", m16.selected)
+        assertEquals(listOf(WireCodec.DocEntry("a", "T1"), WireCodec.DocEntry("b", "标题")), m16.list)
+
+        // #32 radial{open:false}
+        val m32 = WireCodec.decode(unhex(VECTORS[31])) as WireCodec.Msg.Radial
+        assertEquals(false, m32.open)
+
+        // #33 radial{open, page:4, cx:0.5, cy:0.25, highlight:2, items:[pen, erase, page]}
+        val m33 = WireCodec.decode(unhex(VECTORS[32])) as WireCodec.Msg.Radial
+        assertTrue(m33.open)
+        assertEquals(4L, m33.page)
+        assertEquals(0.5f, m33.cx, 0f)
+        assertEquals(0.25f, m33.cy, 0f)
+        assertEquals(2, m33.highlight)
+        assertEquals(3, m33.items.size)
+        assertEquals(WireCodec.RK_PEN, m33.items[0].kind)
+        assertEquals(pen, m33.items[0].pen)
+        assertEquals(WireCodec.RK_ERASE, m33.items[1].kind)
+        assertEquals(WireCodec.RK_PAGE, m33.items[2].kind)
+
+        // #34 radial{open, highlight:-1(线上 0xFFFF＝中心取消区), items:[]}
+        val m34 = WireCodec.decode(unhex(VECTORS[33])) as WireCodec.Msg.Radial
+        assertTrue(m34.open)
+        assertEquals(-1, m34.highlight)
+        assertEquals(0, m34.items.size)
+
+        // #36 pressRing{on:false}
+        val m36 = WireCodec.decode(unhex(VECTORS[35])) as WireCodec.Msg.PressRing
+        assertEquals(false, m36.on)
+
+        // #37 pressRing{on:true, page:3, nx:0.5, ny:0.25}
+        val m37 = WireCodec.decode(unhex(VECTORS[36])) as WireCodec.Msg.PressRing
+        assertTrue(m37.on)
+        assertEquals(3L, m37.page)
+        assertEquals(0.5f, m37.nx, 0f)
+        assertEquals(0.25f, m37.ny, 0f)
+
+        // #40 notes{list:[{n1,0,0.5,0.5,"hello"},{n2,3,0.25,0.75,"笔记"}]}
+        val m40 = WireCodec.decode(unhex(VECTORS[39])) as WireCodec.Msg.Notes
+        assertEquals(
+            listOf(
+                WireCodec.TextNote("n1", 0, 0.5f, 0.5f, "hello"),
+                WireCodec.TextNote("n2", 3, 0.25f, 0.75f, "笔记"),
+            ),
+            m40.list,
+        )
+
+        // #42/#43 eraser（双向消息，S→C 方向解码）
+        val m42 = WireCodec.decode(unhex(VECTORS[41])) as WireCodec.Msg.Eraser
+        assertEquals(0.02f, m42.size, 0f)
+        assertEquals(1, m42.mode)
+        assertTrue(m42.ring)
+        val m43 = WireCodec.decode(unhex(VECTORS[42])) as WireCodec.Msg.Eraser
+        assertEquals(0.5f, m43.size, 0f)
+        assertEquals(0, m43.mode)
+        assertEquals(false, m43.ring)
+
+        // #45 layers{active:1, list:[老师批注(可见), My Notes(隐藏)]}
+        val m45 = WireCodec.decode(unhex(VECTORS[44])) as WireCodec.Msg.Layers
+        assertEquals(1, m45.active)
+        assertEquals(
+            listOf(
+                WireCodec.Layer(255, 149, 0, true, "老师批注"),
+                WireCodec.Layer(0, 122, 255, false, "My Notes"),
+            ),
+            m45.list,
+        )
+
+        // #49 mode{mode:"lasso"}（第 4 态）
+        val m49 = WireCodec.decode(unhex(VECTORS[48])) as WireCodec.Msg.ModeSel
+        assertEquals(WireCodec.MODE_LASSO, m49.mode)
     }
 
     @Test
@@ -141,6 +254,12 @@ class WireCodecTest {
         val m = WireCodec.decode(byteArrayOf(WireCodec.OP_AUTH_OK.toByte())) as WireCodec.Msg.AuthOK
         assertEquals(0L, m.session)
         assertEquals(0, m.udpPort)
+    }
+
+    /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
+    @Test
+    fun vectorTableSize() {
+        assertEquals(51, VECTORS.size)
     }
 
     @Test
@@ -153,7 +272,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 31 行 */
+        /** spike/wire-vectors-swift.txt 原样 51 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -186,6 +305,26 @@ class WireCodecTest {
             "440101000000803e0000803e",
             "4402",
             "5003000100000002000000005ed0b2",
+            "3700",
+            "3701040000000000003f0000803e0200030000185ad20000003f0000004100010000000000803f0000000000020000000000803f0000000000",
+            "3701000000000000803e0000403fffff0000",
+            "4500008044",
+            "3800",
+            "3801030000000000003f0000803e",
+            "2402006e3100020000000000003f0000803e0600e689b9e6b3a8",
+            "2402006e3101020000000000003f0000803e0000",
+            "39020002006e31000000000000003f0000003f050068656c6c6f02006e32030000000000803e0000403f0600e7ac94e8aeb0",
+            "2501000200185ad20000003f0000004100ffd6280000803e0000b04102",
+            "460ad7a33c0101",
+            "460000003f0000",
+            "420000000000185ad20000003f000000410001000000003f0000003f0000003f01",
+            "3a01000200ff9500010c00e88081e5b888e689b9e6b3a8007aff0008004d79204e6f746573",
+            "260100",
+            "27000000",
+            "28",
+            "2203",
+            "4702000000cdcc4c3e9a99993e9a99193f0000003fcdcccc3dcdcc4cbd",
+            "292a000000",
         )
     }
 }

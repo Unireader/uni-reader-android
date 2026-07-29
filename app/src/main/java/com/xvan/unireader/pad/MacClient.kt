@@ -1,5 +1,7 @@
 package com.xvan.unireader.pad
 
+import android.os.Handler
+import android.os.Looper
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -10,16 +12,29 @@ import okio.ByteString.Companion.toByteString
 
 /**
  * OkHttp WebSocket 可靠通道（ws://host:8771，二进制帧 = ByteString）。
- * 连接上立刻发 auth(token)；收帧经 WireCodec 解码后路由给回调。
- * 旧 `page` 消息在方案 B 下忽略（布局由 layout 驱动，capture.html 同款）。
- * 回调全在 OkHttp 后台线程，调用方负责切主线程。
+ * 连上立刻发 auth(token)；收帧经 WireCodec 解码后路由给回调。
+ *
+ * 自愈机制照搬 `web/src/lib/ws.ts`（平板放桌上一整天，断了必须自己回来）：
+ * - **自动重连**：断开/失败后 1.5s 起步、翻倍退避封顶 10s；authOK 后重置退避。
+ * - **心跳看门狗**：1s 一发 ping；5s 收不到 pong 就判定半开连接（锁屏/切网/Mac 睡眠后
+ *   onClosed 迟迟不触发）主动 close 再走重连。
+ * 重连后 Mac 会补发全量状态（layout/strokes/pens/layers/notes），调用方无需自己补。
+ *
+ * 线程：解码在 OkHttp 后台线程（不占主线程），**路由与全部内部状态一律 post 到主线程**——
+ * ws/retry/ping 三组状态被两条线程读写过一次就会出玄学（重连打架、心跳双开），统一到主线程最省心。
+ * 故回调也都在主线程。旧 `page` 消息在方案 B 下忽略（布局由 layout 驱动）。
  */
-class MacClient(host: String, token: String, private val cb: Callback) {
+class MacClient(
+    private val host: String,
+    private val token: String,
+    private val cb: Callback,
+) {
 
     interface Callback {
         fun onAuthOK(session: Long, udpPort: Int)
         fun onAuthFail()
-        fun onPong(t: Double)
+        /** 一轮 ping/pong 测得的 rtt（ms） */
+        fun onRtt(ms: Double)
         fun onLayout(docId: String, v: String, count: Long, pages: List<Pair<Float, Float>>)
         fun onViewport(page: Long, frac: Float, seq: Long, force: Boolean)
         fun onPens(active: Int, list: List<WireCodec.Pen>)
@@ -28,53 +43,166 @@ class MacClient(host: String, token: String, private val cb: Callback) {
         fun onInkCancel()
         fun onStrokes(list: List<WireCodec.Stroke>)
         fun onNack(seqs: List<Long>)
-        fun onError(msg: String)
+        fun onDocs(following: Boolean, selected: String, list: List<WireCodec.DocEntry>)
+        fun onNotes(list: List<WireCodec.TextNote>)
+        fun onLayers(active: Int, list: List<WireCodec.Layer>)
+        fun onRadial(m: WireCodec.Msg.Radial)
+        fun onPressRing(m: WireCodec.Msg.PressRing)
+        fun onEraser(size: Float, mode: Int, ring: Boolean)
+        /** 连接断开（含自动重连中的每一次失败）；msg 供顶栏显示 */
+        fun onDisconnected(msg: String)
+    }
+
+    companion object {
+        const val RETRY_MIN = 1500L
+        const val RETRY_MAX = 10_000L
+        const val PING_MS = 1000L
+        const val PONG_TIMEOUT_MS = 5000L
     }
 
     private val client = OkHttpClient()
+    private val handler = Handler(Looper.getMainLooper())
+
+    // 以下全部只在主线程读写（`send`/`isConnected` 也只从主线程调用）
     private var ws: WebSocket? = null
+    @Volatile private var closed = false          // 调用方主动 close()，不再重连
+    private var retryDelay = RETRY_MIN
+    private var retryScheduled = false
+    private var pingRunning = false
+    private var lastPong = 0L
 
     init {
-        val req = Request.Builder().url("ws://$host:8771").build()
-        ws = client.newWebSocket(req, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(WireCodec.encodeAuth(token).toByteString())
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                when (val m = WireCodec.decode(bytes.toByteArray())) {
-                    is WireCodec.Msg.AuthOK -> cb.onAuthOK(m.session, m.udpPort)
-                    WireCodec.Msg.AuthFail -> cb.onAuthFail()
-                    is WireCodec.Msg.Pong -> cb.onPong(m.t)
-                    is WireCodec.Msg.Layout -> cb.onLayout(m.docId, m.v, m.count, m.pages)
-                    is WireCodec.Msg.Viewport -> cb.onViewport(m.page, m.frac, m.seq, m.force)
-                    is WireCodec.Msg.Pens -> cb.onPens(m.active, m.list)
-                    is WireCodec.Msg.PenSel -> cb.onPenSel(m.index)
-                    is WireCodec.Msg.ModeSel -> cb.onModeSel(m.mode)
-                    WireCodec.Msg.InkCancel -> cb.onInkCancel()
-                    is WireCodec.Msg.Strokes -> cb.onStrokes(m.list)
-                    is WireCodec.Msg.Nack -> cb.onNack(m.seqs)
-                    else -> {}   // page/docs 等 demo 不消费，忽略
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                cb.onError("WS 失败: ${t.message ?: t.javaClass.simpleName}")
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                cb.onError("WS 已断开 ($code)")
-            }
-        })
+        connect()
     }
 
-    /** 发可靠帧（auth 之外的控制/心跳：mode、pen、ping 等） */
+    private fun connect() {
+        if (closed) return
+        val req = Request.Builder().url("ws://$host:8771").build()
+        ws = client.newWebSocket(req, Listener())
+    }
+
+    private inner class Listener : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            webSocket.send(WireCodec.encodeAuth(token).toByteString())
+        }
+
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            // 解码留在后台线程；路由与状态改动一律回主线程（并丢弃旧实例的迟到事件）
+            val m = WireCodec.decode(bytes.toByteArray()) ?: return
+            handler.post { if (webSocket === ws) route(m) }
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            val why = t.message ?: t.javaClass.simpleName
+            handler.post { if (webSocket === ws) dropped("连接失败：$why") }
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            handler.post { if (webSocket === ws) dropped("已断开 ($code)") }
+        }
+    }
+
+    private fun route(m: WireCodec.Msg) {
+        when (m) {
+            is WireCodec.Msg.AuthOK -> {
+                retryDelay = RETRY_MIN
+                startPing()
+                cb.onAuthOK(m.session, m.udpPort)
+            }
+            WireCodec.Msg.AuthFail -> cb.onAuthFail()
+            is WireCodec.Msg.Pong -> {
+                lastPong = System.currentTimeMillis()
+                val rtt = lastPong - m.t
+                send(WireCodec.encodeLatency(rtt.toFloat()))   // 回报给 Mac 面板显示
+                cb.onRtt(rtt)
+            }
+            is WireCodec.Msg.Layout -> cb.onLayout(m.docId, m.v, m.count, m.pages)
+            is WireCodec.Msg.Viewport -> cb.onViewport(m.page, m.frac, m.seq, m.force)
+            is WireCodec.Msg.Pens -> cb.onPens(m.active, m.list)
+            is WireCodec.Msg.PenSel -> cb.onPenSel(m.index)
+            is WireCodec.Msg.ModeSel -> cb.onModeSel(m.mode)
+            WireCodec.Msg.InkCancel -> cb.onInkCancel()
+            is WireCodec.Msg.Strokes -> cb.onStrokes(m.list)
+            is WireCodec.Msg.Nack -> cb.onNack(m.seqs)
+            is WireCodec.Msg.Docs -> cb.onDocs(m.following, m.selected, m.list)
+            is WireCodec.Msg.Notes -> cb.onNotes(m.list)
+            is WireCodec.Msg.Layers -> cb.onLayers(m.active, m.list)
+            is WireCodec.Msg.Radial -> cb.onRadial(m)
+            is WireCodec.Msg.PressRing -> cb.onPressRing(m)
+            is WireCodec.Msg.Eraser -> cb.onEraser(m.size, m.mode, m.ring)
+            else -> {}   // page 等不消费的消息忽略
+        }
+    }
+
+    /** 断开统一入口：停心跳、通知调用方、排重连 */
+    private fun dropped(msg: String) {
+        ws = null
+        pingRunning = false
+        cb.onDisconnected(msg)
+        scheduleRetry()
+    }
+
+    private fun scheduleRetry() {
+        if (closed || retryScheduled) return
+        retryScheduled = true
+        val delay = retryDelay
+        retryDelay = (retryDelay * 2).coerceAtMost(RETRY_MAX)
+        handler.postDelayed({
+            retryScheduled = false
+            if (!closed && ws == null) connect()
+        }, delay)
+    }
+
+    private fun startPing() {
+        lastPong = System.currentTimeMillis()
+        if (pingRunning) return
+        pingRunning = true
+        val tick = object : Runnable {
+            override fun run() {
+                if (closed || !pingRunning) return
+                // 看门狗：半开连接（锁屏/切网/Mac 睡眠后 onClosed 迟迟不触发）超时即杀掉重连
+                if (System.currentTimeMillis() - lastPong > PONG_TIMEOUT_MS) {
+                    val w = ws
+                    ws = null
+                    pingRunning = false
+                    try { w?.cancel() } catch (_: Exception) {}
+                    cb.onDisconnected("心跳超时，重连中…")
+                    scheduleRetry()
+                    return
+                }
+                send(WireCodec.encodePing(System.currentTimeMillis().toDouble()))
+                handler.postDelayed(this, PING_MS)
+            }
+        }
+        handler.post(tick)
+    }
+
+    /** 回前台/网络恢复：断了立刻重连（不等退避计时器） */
+    fun connectNow() {
+        if (closed) return
+        if (ws == null) { retryDelay = RETRY_MIN; connect() }
+        else if (System.currentTimeMillis() - lastPong > PONG_TIMEOUT_MS) {
+            val w = ws
+            ws = null
+            pingRunning = false
+            try { w?.cancel() } catch (_: Exception) {}
+            retryDelay = RETRY_MIN
+            connect()
+        }
+    }
+
+    val isConnected: Boolean get() = ws != null
+
+    /** 发可靠帧（mode/pen/padGeom/textNote/penset/eraser/图层请求/lassoMove/gotoPage/ping…） */
     fun send(frame: ByteArray) {
         ws?.send(frame.toByteString())
     }
 
     /** 关闭 WS 并释放 OkHttp 线程（不 shutdown 的话 dispatcher 线程会拖着进程） */
     fun close() {
+        closed = true
+        pingRunning = false
+        handler.removeCallbacksAndMessages(null)
         ws?.close(1000, null)
         ws = null
         client.dispatcher.executorService.shutdown()
