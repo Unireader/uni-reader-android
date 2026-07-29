@@ -1,5 +1,15 @@
 package com.xvan.unireader.pad
 
+import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.MODE_ERASE
+import com.xvan.unireader.shared.MODE_LASSO
+import com.xvan.unireader.shared.Pen
+import com.xvan.unireader.shared.Pt2
+import com.xvan.unireader.shared.Pt3
+import com.xvan.unireader.shared.RK_ERASE
+import com.xvan.unireader.shared.RK_PAGE
+import com.xvan.unireader.shared.RK_PEN
+import com.xvan.unireader.shared.TextNote
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -18,7 +28,7 @@ class WireCodecTest {
     private fun unhex(s: String) = ByteArray(s.length / 2) { s.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
 
     /** canonical 笔：rgba(24,90,210,0.5) w8 ballpoint（Swift 表 #17/#23 同款） */
-    private val pen = WireCodec.Pen(24, 90, 210, 0.5f, 8f, 0)
+    private val pen = Pen(24, 90, 210, 0.5f, 8f, 0)
 
     @Test
     fun encodeVectors() {
@@ -30,7 +40,7 @@ class WireCodecTest {
             // #9 pageTurn{dir:"next"}
             9 to WireCodec.encodePageTurn(WireCodec.DIR_NEXT),
             // #10 mode{mode:"erase"}
-            10 to WireCodec.encodeMode(WireCodec.MODE_ERASE),
+            10 to WireCodec.encodeMode(MODE_ERASE),
             // #11 pen{index:3}
             11 to WireCodec.encodePen(3),
             // #20 scroll{page:2, frac:0.5, t:123456}
@@ -40,13 +50,13 @@ class WireCodecTest {
             // #22 hover end
             22 to WireCodec.encodeHoverEnd(),
             // #23 ink begin{page:0, pen, pts:[[0.5,0.5,0.5]]}
-            23 to WireCodec.encodeInkBegin(0, pen, listOf(WireCodec.Pt3(0.5f, 0.5f, 0.5f))),
+            23 to WireCodec.encodeInkBegin(0, pen, listOf(Pt3(0.5f, 0.5f, 0.5f))),
             // #24 ink move{pts:[[0.25,0.75,0.5],[0.5,0.5,1.0]]}
-            24 to WireCodec.encodeInkMove(listOf(WireCodec.Pt3(0.25f, 0.75f, 0.5f), WireCodec.Pt3(0.5f, 0.5f, 1.0f))),
+            24 to WireCodec.encodeInkMove(listOf(Pt3(0.25f, 0.75f, 0.5f), Pt3(0.5f, 0.5f, 1.0f))),
             // #25 ink end
             25 to WireCodec.encodeInkEnd(),
             // #26 erase move{page:1, pts:[[0.5,0.5],[0.25,0.25]]}
-            26 to WireCodec.encodeEraseMove(1, listOf(WireCodec.Pt2(0.5f, 0.5f), WireCodec.Pt2(0.25f, 0.25f))),
+            26 to WireCodec.encodeEraseMove(1, listOf(Pt2(0.5f, 0.5f), Pt2(0.25f, 0.25f))),
             // #27 erase end
             27 to WireCodec.encodeEraseEnd(),
             // #7 latency{ms:42}
@@ -54,9 +64,9 @@ class WireCodecTest {
             // #8 selectDoc{id:"1A2B"}
             8 to WireCodec.encodeSelectDoc("1A2B"),
             // #28 probe begin{page:2, pts:[[0.5,0.5]]}
-            28 to WireCodec.encodeProbeBegin(2, listOf(WireCodec.Pt2(0.5f, 0.5f))),
+            28 to WireCodec.encodeProbeBegin(2, listOf(Pt2(0.5f, 0.5f))),
             // #29 probe move{pts:[[0.25,0.25]]}
-            29 to WireCodec.encodeProbeMove(listOf(WireCodec.Pt2(0.25f, 0.25f))),
+            29 to WireCodec.encodeProbeMove(listOf(Pt2(0.25f, 0.25f))),
             // #30 probe end
             30 to WireCodec.encodeProbeEnd(),
             // #35 padGeom{pageW:1024}
@@ -68,14 +78,14 @@ class WireCodecTest {
             // #41 penset{active:1, list:[ballpoint w8, marker w22]}（布局同 pens）
             41 to WireCodec.encodePenset(
                 1,
-                listOf(pen, WireCodec.Pen(255, 214, 40, 0.25f, 22f, 2)),
+                listOf(pen, Pen(255, 214, 40, 0.25f, 22f, 2)),
             ),
             // #42 eraser{size:0.02, mode:1(局部), ring:1}
             42 to WireCodec.encodeEraser(0.02f, 1, true),
             // #43 eraser{size:0.5, mode:0(整笔), ring:0}
             43 to WireCodec.encodeEraser(0.5f, 0, false),
             // #44 ink begin 带 line=true（尺子笔：整笔恒为两点）
-            44 to WireCodec.encodeInkBegin(0, pen, listOf(WireCodec.Pt3(0.5f, 0.5f, 0.5f)), line = true),
+            44 to WireCodec.encodeInkBegin(0, pen, listOf(Pt3(0.5f, 0.5f, 0.5f)), line = true),
             // #46 layerSelect{index:1}
             46 to WireCodec.encodeLayerSelect(1),
             // #47 layerVisible{index:0, visible:false}
@@ -83,7 +93,7 @@ class WireCodecTest {
             // #48 layerAdd
             48 to WireCodec.encodeLayerAdd(),
             // #49 mode{mode:"lasso"}
-            49 to WireCodec.encodeMode(WireCodec.MODE_LASSO),
+            49 to WireCodec.encodeMode(MODE_LASSO),
             // #50 lassoMove{page:2, box(0.2,0.3)-(0.6,0.5), d(0.1,-0.05)}
             50 to WireCodec.encodeLassoMove(2, 0.2f, 0.3f, 0.6f, 0.5f, 0.1f, -0.05f),
             // #51 gotoPage{page:42}
@@ -115,7 +125,7 @@ class WireCodecTest {
 
         // #10 mode{mode:"erase"}（双向消息，解码回 mode 码）
         val m10 = WireCodec.decode(unhex(VECTORS[9])) as WireCodec.Msg.ModeSel
-        assertEquals(WireCodec.MODE_ERASE, m10.mode)
+        assertEquals(MODE_ERASE, m10.mode)
 
         // #11 pen{index:3}
         val m11 = WireCodec.decode(unhex(VECTORS[10])) as WireCodec.Msg.PenSel
@@ -154,8 +164,8 @@ class WireCodecTest {
         val m17 = WireCodec.decode(unhex(VECTORS[16])) as WireCodec.Msg.Pens
         assertEquals(1, m17.active)
         assertEquals(2, m17.list.size)
-        assertEquals(WireCodec.Pen(24, 90, 210, 0.5f, 8f, 0), m17.list[0])
-        assertEquals(WireCodec.Pen(255, 214, 40, 0.25f, 22f, 2), m17.list[1])
+        assertEquals(Pen(24, 90, 210, 0.5f, 8f, 0), m17.list[0])
+        assertEquals(Pen(255, 214, 40, 0.25f, 22f, 2), m17.list[1])
 
         // #18 inkCancel
         assertTrue(WireCodec.decode(unhex(VECTORS[17])) is WireCodec.Msg.InkCancel)
@@ -165,8 +175,8 @@ class WireCodecTest {
         assertEquals(1, m19.list.size)
         val s19 = m19.list[0]
         assertEquals(1L, s19.page)
-        assertEquals(WireCodec.Pen(20, 20, 20, 1.0f, 10f, 3), s19.pen)
-        assertEquals(listOf(WireCodec.Pt3(0.5f, 0.25f, 0.5f), WireCodec.Pt3(0.75f, 0.125f, 1.0f)), s19.pts)
+        assertEquals(Pen(20, 20, 20, 1.0f, 10f, 3), s19.pen)
+        assertEquals(listOf(Pt3(0.5f, 0.25f, 0.5f), Pt3(0.75f, 0.125f, 1.0f)), s19.pts)
 
         // #31 nack{seqs:[1, 2, 3000000000]}
         val m31 = WireCodec.decode(unhex(VECTORS[30])) as WireCodec.Msg.Nack
@@ -190,10 +200,10 @@ class WireCodecTest {
         assertEquals(0.25f, m33.cy, 0f)
         assertEquals(2, m33.highlight)
         assertEquals(3, m33.items.size)
-        assertEquals(WireCodec.RK_PEN, m33.items[0].kind)
+        assertEquals(RK_PEN, m33.items[0].kind)
         assertEquals(pen, m33.items[0].pen)
-        assertEquals(WireCodec.RK_ERASE, m33.items[1].kind)
-        assertEquals(WireCodec.RK_PAGE, m33.items[2].kind)
+        assertEquals(RK_ERASE, m33.items[1].kind)
+        assertEquals(RK_PAGE, m33.items[2].kind)
 
         // #34 radial{open, highlight:-1(线上 0xFFFF＝中心取消区), items:[]}
         val m34 = WireCodec.decode(unhex(VECTORS[33])) as WireCodec.Msg.Radial
@@ -216,8 +226,8 @@ class WireCodecTest {
         val m40 = WireCodec.decode(unhex(VECTORS[39])) as WireCodec.Msg.Notes
         assertEquals(
             listOf(
-                WireCodec.TextNote("n1", 0, 0.5f, 0.5f, "hello"),
-                WireCodec.TextNote("n2", 3, 0.25f, 0.75f, "笔记"),
+                TextNote("n1", 0, 0.5f, 0.5f, "hello"),
+                TextNote("n2", 3, 0.25f, 0.75f, "笔记"),
             ),
             m40.list,
         )
@@ -237,15 +247,15 @@ class WireCodecTest {
         assertEquals(1, m45.active)
         assertEquals(
             listOf(
-                WireCodec.Layer(255, 149, 0, true, "老师批注"),
-                WireCodec.Layer(0, 122, 255, false, "My Notes"),
+                Layer(255, 149, 0, true, "老师批注"),
+                Layer(0, 122, 255, false, "My Notes"),
             ),
             m45.list,
         )
 
         // #49 mode{mode:"lasso"}（第 4 态）
         val m49 = WireCodec.decode(unhex(VECTORS[48])) as WireCodec.Msg.ModeSel
-        assertEquals(WireCodec.MODE_LASSO, m49.mode)
+        assertEquals(MODE_LASSO, m49.mode)
     }
 
     @Test

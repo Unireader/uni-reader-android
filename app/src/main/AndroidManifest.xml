@@ -1,22 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!--
+      模式1 独立版要直接打开任意路径下的 .unrd 工作区（含 U 盘/SD/同步目录），且用的是裸
+      SQLiteDatabase（需要真实文件路径，SAF 的 tree Uri 给不了）→ 只能走全盘文件权限。
+      API 30+ 用 MANAGE_EXTERNAL_STORAGE（要用户去系统设置里单独授予，国产 ROM 还会警告）；
+      API 26~29 回落到 READ/WRITE_EXTERNAL_STORAGE + requestLegacyExternalStorage。
+      自用侧载，不上商店，所以不受商店对该权限的审核限制（ANDROID-STANDALONE-PLAN §4）。
+    -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
     <application
-        android:label="UniReader Pad"
+        android:label="UniReader"
+        android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="true">
+
+        <!-- 启动页：打开工作区（模式1）/ 连 Mac 当输入板（模式2） -->
         <activity
-            android:name=".MainActivity"
+            android:name=".Launcher"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 模式2 输入板（原 MainActivity，现由 Launcher 启动） -->
+        <activity
+            android:name=".pad.PadActivity"
+            android:exported="false" />
     </application>
 
 </manifest>

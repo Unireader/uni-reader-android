@@ -14,6 +14,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.Pen
+import com.xvan.unireader.shared.brushName
 import kotlin.math.roundToInt
 
 /**
@@ -41,7 +45,7 @@ object PadPanels {
         setPadding(a.dp(20), a.dp(12), a.dp(20), a.dp(4))
     }
 
-    private fun penColor(p: WireCodec.Pen) =
+    private fun penColor(p: Pen) =
         Color.argb((p.a * 255).roundToInt().coerceIn(0, 255), p.r, p.g, p.b)
 
     // ---------- 笔宽 + 橡皮设置（网页 PenStat 弹层） ----------
@@ -68,7 +72,7 @@ object PadPanels {
                 LinearLayout.LayoutParams(a.dp(14), a.dp(14)).apply { marginEnd = a.dp(8) },
             )
             row.addView(
-                label(a, PadConst.brushLabel(WireCodec.brushName(pen.brush)), 13f),
+                label(a, PadConst.brushLabel(brushName(pen.brush)), 13f),
                 LinearLayout.LayoutParams(a.dp(64), LinearLayout.LayoutParams.WRAP_CONTENT),
             )
             val value = label(a, "${pen.w.roundToInt()}", 13f)
@@ -176,7 +180,7 @@ object PadPanels {
      */
     fun showLayerPanel(
         a: Activity,
-        layers: List<WireCodec.Layer>,
+        layers: List<Layer>,
         activeIdx: Int,
         onSelect: (Int) -> Unit,
         onToggleVisible: (Int, Boolean) -> Unit,

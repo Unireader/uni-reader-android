@@ -23,6 +23,15 @@ import android.widget.LinearLayout
 import android.widget.Space
 import android.widget.TextView
 import com.google.zxing.integration.android.IntentIntegrator
+import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.MODE_ERASE
+import com.xvan.unireader.shared.MODE_LASSO
+import com.xvan.unireader.shared.MODE_NOTE
+import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.Pen
+import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextNote
+import com.xvan.unireader.shared.brushName
 
 /**
  * 主界面：全屏 PadView + 顶栏（连接点、延迟、文档、页码/缩放、◀▶、模式、笔、夜间、文字、尺子、
@@ -32,7 +41,7 @@ import com.google.zxing.integration.android.IntentIntegrator
  *
  * 侧键：PageUp 切模式 / PageDown 切笔 / Esc 清框选（对齐网页的 keydown 分支）。
  */
-class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
+class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     companion object {
         const val REQ_CAMERA = 42
@@ -71,7 +80,7 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
     private var docs = listOf<WireCodec.DocEntry>()
     private var docSelected = ""
     private var docFollowing = true
-    private var layers = listOf<WireCodec.Layer>()
+    private var layers = listOf<Layer>()
     private var layerIdx = 0
 
     // —— 量化指标（rtt/e2e/nackRTT/mv-s，照 udp-pad-sim.py refresh）——
@@ -141,7 +150,7 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
         barHeightPx = barH
         enterImmersive()
 
-        padView = PadView(this).apply { listener = this@MainActivity }
+        padView = PadView(this).apply { listener = this@PadActivity }
 
         dot = View(this)   // 连接状态点（绿=已认证）
         latText = TextView(this).apply {
@@ -150,13 +159,13 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
         pageLabel = TextView(this).apply {
             text = "— / —"; textSize = 13f; setTextColor(Color.WHITE)
             setOnClickListener {
-                PadPanels.showGotoPage(this@MainActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
+                PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
             }
         }
         val docsBtn = Button(this).apply {
             text = "文档"
             setOnClickListener {
-                PadPanels.showDocsPicker(this@MainActivity, docs, docSelected, docFollowing) {
+                PadPanels.showDocsPicker(this@PadActivity, docs, docSelected, docFollowing) {
                     client?.send(WireCodec.encodeSelectDoc(it))
                 }
             }
@@ -201,7 +210,7 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
             addView(dot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(10) })
             addView(latText)
             addView(docsBtn, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
-            addView(Space(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f))
+            addView(Space(this@PadActivity), LinearLayout.LayoutParams(0, 1, 1f))
             addView(pageLabel, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
             addView(btnScroll, LinearLayout.LayoutParams(-2, -1))
         }
@@ -209,13 +218,13 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
         // 左下状态胶囊：笔/橡皮 与 图层（对应网页 PenStat / LayerStat）
         penStat = capsule().apply {
             setOnClickListener {
-                PadPanels.showPenPanel(this@MainActivity, padView, ::schedulePenset, ::scheduleEraser)
+                PadPanels.showPenPanel(this@PadActivity, padView, ::schedulePenset, ::scheduleEraser)
             }
         }
         layerStat = capsule().apply {
             setOnClickListener {
                 PadPanels.showLayerPanel(
-                    this@MainActivity, layers, layerIdx,
+                    this@PadActivity, layers, layerIdx,
                     onSelect = { client?.send(WireCodec.encodeLayerSelect(it)) },
                     onToggleVisible = { i, v -> client?.send(WireCodec.encodeLayerVisible(i, v)) },
                     onAdd = { client?.send(WireCodec.encodeLayerAdd()) },
@@ -469,11 +478,11 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
         val pen = padView.curPenOrNull()
         penStat.setTextIfChanged(
             when (padView.mode) {
-                WireCodec.MODE_NOTE ->
-                    if (pen != null) "${PadConst.brushLabel(WireCodec.brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
+                MODE_NOTE ->
+                    if (pen != null) "${PadConst.brushLabel(brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
                     else "笔记"
-                WireCodec.MODE_ERASE -> "橡皮擦"
-                WireCodec.MODE_LASSO -> "框选移动"
+                MODE_ERASE -> "橡皮擦"
+                MODE_LASSO -> "框选移动"
                 else -> "翻页 · 拖动平移"
             }
         )
@@ -542,7 +551,7 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
         refresh()
     }
 
-    override fun onPens(active: Int, list: List<WireCodec.Pen>) = runOnUiThread {
+    override fun onPens(active: Int, list: List<Pen>) = runOnUiThread {
         padView.setPens(list, active)
         refresh()
     }
@@ -561,7 +570,7 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
         padView.onInkCancel()
     }
 
-    override fun onStrokes(list: List<WireCodec.Stroke>) = runOnUiThread {
+    override fun onStrokes(list: List<Stroke>) = runOnUiThread {
         // ink end 发出 → 收到 strokes 广播 = e2e
         if (tEnd > 0) {
             e2e = (System.currentTimeMillis() - tEnd).toDouble()
@@ -582,11 +591,11 @@ class MainActivity : Activity(), MacClient.Callback, PadView.Listener {
         docs = list
     }
 
-    override fun onNotes(list: List<WireCodec.TextNote>) = runOnUiThread {
+    override fun onNotes(list: List<TextNote>) = runOnUiThread {
         padView.setNotes(list)
     }
 
-    override fun onLayers(active: Int, list: List<WireCodec.Layer>) = runOnUiThread {
+    override fun onLayers(active: Int, list: List<Layer>) = runOnUiThread {
         layers = list
         layerIdx = active.coerceIn(0, maxOf(0, list.size - 1))
         refresh()

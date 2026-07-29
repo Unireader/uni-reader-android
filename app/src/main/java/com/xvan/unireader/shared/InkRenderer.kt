@@ -1,4 +1,4 @@
-package com.xvan.unireader.pad
+package com.xvan.unireader.shared
 
 import android.graphics.Canvas
 import android.graphics.Color
@@ -35,19 +35,19 @@ class InkRenderer(private val density: Float) {
     fun drawStroke(
         c: Canvas,
         page: Int,
-        pen: WireCodec.Pen,
-        pts: List<WireCodec.Pt3>,
+        pen: Pen,
+        pts: List<Pt3>,
         m: PageMapper,
         ox: Float = 0f,
         oy: Float = 0f,
     ) {
         if (pts.isEmpty()) return
-        val t = WireCodec.brushName(pen.brush)
+        val t = brushName(pen.brush)
         val alpha = (pen.a * 255f * PadConst.opacityMultFor(t)).roundToInt().coerceIn(0, 255)
         val color = Color.argb(alpha, pen.r, pen.g, pen.b)
 
-        fun vx(p: WireCodec.Pt3) = m.viewX(page, (p.x + ox).coerceIn(0f, 1f))
-        fun vy(p: WireCodec.Pt3) = m.viewY(page, (p.y + oy).coerceIn(0f, 1f))
+        fun vx(p: Pt3) = m.viewX(page, (p.x + ox).coerceIn(0f, 1f))
+        fun vy(p: Pt3) = m.viewY(page, (p.y + oy).coerceIn(0f, 1f))
         fun width(p: Float) = PadConst.strokeWidthFor(t, p, pen.w) * density
 
         var lpx = vx(pts[0])

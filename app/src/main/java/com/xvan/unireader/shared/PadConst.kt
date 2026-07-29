@@ -1,4 +1,4 @@
-package com.xvan.unireader.pad
+package com.xvan.unireader.shared
 
 import kotlin.math.PI
 import kotlin.math.abs
@@ -27,7 +27,7 @@ object PadConst {
     const val DEAD = 8f         // 单指平移死区（dp）
     const val LASSO_DEAD = 2f   // 框选手势最小拖动距离（dp），同 Mac `DragGesture(minimumDistance: 2)`
 
-    /** 工具模式标签，下标 = WireCodec.MODE_*（0 笔记 / 1 擦除 / 2 翻页 / 3 框选） */
+    /** 工具模式标签，下标 = MODE_*（0 笔记 / 1 擦除 / 2 翻页 / 3 框选） */
     val MODE_LABELS = listOf("笔记", "擦除", "翻页", "框选")
 
     val BRUSH_LABELS = mapOf(

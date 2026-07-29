@@ -14,6 +14,20 @@ import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import com.xvan.unireader.shared.InkRenderer
+import com.xvan.unireader.shared.MODE_ERASE
+import com.xvan.unireader.shared.MODE_LASSO
+import com.xvan.unireader.shared.MODE_NOTE
+import com.xvan.unireader.shared.MODE_PAGE
+import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.PadOverlays
+import com.xvan.unireader.shared.PageMapper
+import com.xvan.unireader.shared.Pen
+import com.xvan.unireader.shared.Pt2
+import com.xvan.unireader.shared.Pt3
+import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextNote
+import com.xvan.unireader.shared.brushName
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -59,10 +73,10 @@ class PadView @JvmOverloads constructor(
 
         /** 内置兜底笔（Mac PenPresets.defaults；首连前用，pens 消息到达后整体替换） */
         val FALLBACK_PENS = listOf(
-            WireCodec.Pen(24, 90, 210, 0.95f, 8f, 0),     // 蓝 ballpoint
-            WireCodec.Pen(220, 40, 40, 0.95f, 9f, 1),     // 红 fountain
-            WireCodec.Pen(20, 20, 20, 0.95f, 10f, 3),     // 黑 pencil
-            WireCodec.Pen(255, 214, 40, 0.40f, 22f, 2),   // 荧光 marker
+            Pen(24, 90, 210, 0.95f, 8f, 0),     // 蓝 ballpoint
+            Pen(220, 40, 40, 0.95f, 9f, 1),     // 红 fountain
+            Pen(20, 20, 20, 0.95f, 10f, 3),     // 黑 pencil
+            Pen(255, 214, 40, 0.40f, 22f, 2),   // 荧光 marker
         )
     }
 
@@ -78,7 +92,7 @@ class PadView @JvmOverloads constructor(
     private val overlays = PadOverlays(density)
 
     // —— 工具状态（Mac 推送为运行时唯一源，内置 4 支仅兜底） ——
-    var mode = WireCodec.MODE_NOTE
+    var mode = MODE_NOTE
         private set
     var penIndex = 0
         private set
@@ -104,17 +118,17 @@ class PadView @JvmOverloads constructor(
     var zoomLocked = false
         private set
 
-    fun penList(): List<WireCodec.Pen> = pens
-    fun curPenOrNull(): WireCodec.Pen? = pens.getOrNull(penIndex)
+    fun penList(): List<Pen> = pens
+    fun curPenOrNull(): Pen? = pens.getOrNull(penIndex)
     fun modeLabel(): String = PadConst.MODE_LABELS.getOrElse(mode) { "笔记" }
-    fun penLabel(): String = PadConst.brushLabel(WireCodec.brushName(pens[penIndex].brush))
+    fun penLabel(): String = PadConst.brushLabel(brushName(pens[penIndex].brush))
 
     private fun curPenPreset() = pens[penIndex]
 
     /** 本地切模式 → 同步给 Mac；切走框选即放弃选中（残留高亮框会误导） */
     fun cycleMode() {
         if (activePen) endPen()   // 切换前正常收笔
-        val leavingLasso = mode == WireCodec.MODE_LASSO
+        val leavingLasso = mode == MODE_LASSO
         mode = (mode + 1) % PadConst.MODE_LABELS.size
         eraserRingAt = null
         if (leavingLasso) clearLasso()
@@ -126,9 +140,9 @@ class PadView @JvmOverloads constructor(
 
     /** 非笔模式按切笔键 = 恢复之前那支笔，不轮替下一支；笔模式下才轮替（同 capture.ts cyclePen） */
     fun cyclePen() {
-        if (mode == WireCodec.MODE_NOTE) penIndex = (penIndex + 1) % pens.size
-        if (mode == WireCodec.MODE_LASSO) clearLasso()
-        mode = WireCodec.MODE_NOTE
+        if (mode == MODE_NOTE) penIndex = (penIndex + 1) % pens.size
+        if (mode == MODE_LASSO) clearLasso()
+        mode = MODE_NOTE
         listener?.sendCtl(WireCodec.encodePen(penIndex))
         listener?.sendCtl(WireCodec.encodeMode(mode))
         invalidate()
@@ -172,7 +186,7 @@ class PadView @JvmOverloads constructor(
     }
 
     /** 收 pens：整体替换本地列表（Mac 画布悬浮工具条实时增删改后推下来） */
-    fun setPens(list: List<WireCodec.Pen>, active: Int) {
+    fun setPens(list: List<Pen>, active: Int) {
         pens.clear()
         pens.addAll(list)
         if (pens.isEmpty()) pens.addAll(FALLBACK_PENS)
@@ -199,7 +213,7 @@ class PadView @JvmOverloads constructor(
     /** 收 mode：Mac 侧切模式回推（悬浮工具条/环形盘选笔后回 note） */
     fun setMode(m: Int) {
         if (m in PadConst.MODE_LABELS.indices && m != mode) {
-            if (mode == WireCodec.MODE_LASSO) clearLasso()   // 被 Mac 切走框选工具：同本地切模式
+            if (mode == MODE_LASSO) clearLasso()   // 被 Mac 切走框选工具：同本地切模式
             mode = m
             eraserRingAt = null
             invalidate()
@@ -336,7 +350,7 @@ class PadView @JvmOverloads constructor(
     fun hudPage(): String = if (pageCount > 0) "${topVisiblePage() + 1} / $pageCount" else "— / —"
     fun hudZoom(): String = "${(zoom * 100).roundToInt()}%"
 
-    // —— 页图（可见 + 上下各一屏预取；MainActivity 经 PageFetcher 取回 setPageImage） ——
+    // —— 页图（可见 + 上下各一屏预取；PadActivity 经 PageFetcher 取回 setPageImage） ——
     private val images = HashMap<Int, Bitmap>()
     private val requested = HashSet<Int>()
 
@@ -401,11 +415,11 @@ class PadView @JvmOverloads constructor(
         if (page in 0 until pageCount) barH + offY[page] + ny * dispH[page] - scrollY else -1e6f
 
     // —— 笔迹（Mac 回传 strokes = 唯一真源；cur = 本地正在写的半笔即时回显） ——
-    private val strokes = ArrayList<WireCodec.Stroke>()
+    private val strokes = ArrayList<Stroke>()
     private var curActive = false
     private var curPage = 0
     private var curStrokePen = FALLBACK_PENS[0]
-    private val curPts = ArrayList<WireCodec.Pt3>()
+    private val curPts = ArrayList<Pt3>()
     private var radialActive = false   // Mac 已把半笔转成环形选笔盘：本地撤半笔、不再画（位置照发）
 
     private fun clearCur() {
@@ -413,7 +427,7 @@ class PadView @JvmOverloads constructor(
         curPts.clear()
     }
 
-    fun setStrokes(list: List<WireCodec.Stroke>) {
+    fun setStrokes(list: List<Stroke>) {
         strokes.clear()
         strokes.addAll(list)
         if (!activePen) clearCur()   // 正在写的这笔不清，避免闪断
@@ -429,9 +443,9 @@ class PadView @JvmOverloads constructor(
     }
 
     // —— 文字笔记（Mac 下发全量镜像；本地只乐观更新，回传即整体替换） ——
-    private val notes = ArrayList<WireCodec.TextNote>()
+    private val notes = ArrayList<TextNote>()
 
-    fun setNotes(list: List<WireCodec.TextNote>) {
+    fun setNotes(list: List<TextNote>) {
         notes.clear()
         notes.addAll(list)
         if (lassoCommitted) clearLasso()
@@ -443,7 +457,7 @@ class PadView @JvmOverloads constructor(
         listener?.sendCtl(
             WireCodec.encodeTextNote(id, WireCodec.NOTE_UPSERT, page.toLong(), nx, ny, text)
         )
-        val rec = WireCodec.TextNote(id, page.toLong(), nx, ny, text)
+        val rec = TextNote(id, page.toLong(), nx, ny, text)
         val i = notes.indexOfFirst { it.id == id }
         if (i >= 0) notes[i] = rec else notes.add(rec)
         invalidate()
@@ -555,7 +569,7 @@ class PadView @JvmOverloads constructor(
 
         // 橡皮尺寸圆环（擦除模式 + 开关开 + 有笔尖位置）
         val ringAt = eraserRingAt
-        if (eraserRing && ringAt != null && mode == WireCodec.MODE_ERASE) {
+        if (eraserRing && ringAt != null && mode == MODE_ERASE) {
             overlays.drawEraserRing(canvas, ringAt[0], ringAt[1], eraserSize * pw())
         }
 
@@ -623,12 +637,12 @@ class PadView @JvmOverloads constructor(
         }
         // 局部：剔除命中点，连续未命中段各成新笔迹（空 = 整笔消除）
         var changed = false
-        val out = ArrayList<WireCodec.Stroke>(strokes.size)
+        val out = ArrayList<Stroke>(strokes.size)
         for (s in strokes) {
             if (s.page.toInt() != loc.page) { out.add(s); continue }
             var anyHit = false
-            var seg = ArrayList<WireCodec.Pt3>()
-            fun flush() { if (seg.isNotEmpty()) { out.add(WireCodec.Stroke(s.page, s.pen, seg)); seg = ArrayList() } }
+            var seg = ArrayList<Pt3>()
+            fun flush() { if (seg.isNotEmpty()) { out.add(Stroke(s.page, s.pen, seg)); seg = ArrayList() } }
             for (pt in s.pts) {
                 val dx = pt.x - loc.nx
                 val dy = pt.y - loc.ny
@@ -911,10 +925,10 @@ class PadView @JvmOverloads constructor(
     }
 
     // —— 批缓冲（8ms flush；erase 点带页号，flush 时按页分组发送） ——
-    private val inkBatch = ArrayList<WireCodec.Pt3>()
+    private val inkBatch = ArrayList<Pt3>()
     private data class ErasePt(val x: Float, val y: Float, val page: Int)
     private val eraseBatch = ArrayList<ErasePt>()
-    private val probeBatch = ArrayList<WireCodec.Pt2>()
+    private val probeBatch = ArrayList<Pt2>()
     private val flusher = object : Runnable {
         override fun run() {
             flushBatch()
@@ -930,8 +944,8 @@ class PadView @JvmOverloads constructor(
         }
         if (eraseBatch.isNotEmpty()) {
             // 擦除点带页号：按页分组发送，Mac 端据此只删对应页的笔迹
-            val byPage = LinkedHashMap<Int, MutableList<WireCodec.Pt2>>()
-            for (pt in eraseBatch) byPage.getOrPut(pt.page) { ArrayList() }.add(WireCodec.Pt2(pt.x, pt.y))
+            val byPage = LinkedHashMap<Int, MutableList<Pt2>>()
+            for (pt in eraseBatch) byPage.getOrPut(pt.page) { ArrayList() }.add(Pt2(pt.x, pt.y))
             eraseBatch.clear()
             for ((pg, pts) in byPage) {
                 listener?.sendRel(WireCodec.encodeEraseMove(pg.toLong(), pts))
@@ -951,7 +965,7 @@ class PadView @JvmOverloads constructor(
     // —— 指针：笔=画/擦/平移/框选，手指=平移/双指缩放 ——
     private var activePen = false
     private var penId = -1
-    private var penMode = WireCodec.MODE_NOTE
+    private var penMode = MODE_NOTE
     private var penX = 0f
     private var penY = 0f
     private var drawPage = 0
@@ -1154,9 +1168,9 @@ class PadView @JvmOverloads constructor(
         radialActive = false
         endHover()
 
-        if (mode == WireCodec.MODE_PAGE) {
+        if (mode == MODE_PAGE) {
             // 翻页模式：笔拖动平移画面（同时起探针流，供 Mac 检测长按呼出选笔盘）
-            penMode = WireCodec.MODE_PAGE
+            penMode = MODE_PAGE
             penX = x; penY = y
             vx = 0f; vy = 0f; lastMoveT = e.eventTime
             val ploc = locate(x, y)
@@ -1168,14 +1182,14 @@ class PadView @JvmOverloads constructor(
         if (loc == null) { activePen = false; penId = -1; return }
         penMode = mode
         when (mode) {
-            WireCodec.MODE_NOTE -> {
+            MODE_NOTE -> {
                 drawPage = loc.page
                 curPage = loc.page
                 curStrokePen = curPenPreset()
                 // 尺子开关按**落笔那一刻**锁进这一笔（中途改开关不影响正在写的这笔），并随 begin 上报：
                 // Mac 据此把后续 move 当「替换终点」而不是追加点，两端才都是同一条两点直线。
                 lineStroke = rulerOn
-                val pt = WireCodec.Pt3(loc.nx, loc.ny, e.getPressure(idx))
+                val pt = Pt3(loc.nx, loc.ny, e.getPressure(idx))
                 curPts.clear()
                 curPts.add(pt)
                 curActive = true
@@ -1184,13 +1198,13 @@ class PadView @JvmOverloads constructor(
                     WireCodec.encodeInkBegin(loc.page.toLong(), curStrokePen, listOf(pt), lineStroke)
                 )
             }
-            WireCodec.MODE_ERASE -> {
+            MODE_ERASE -> {
                 eraseHit(x, y)
                 eraseBatch.add(ErasePt(loc.nx, loc.ny, loc.page))
                 if (eraserRing) { eraserRingAt = floatArrayOf(x, y); invalidate() }
                 beginProbe(loc.page, loc.nx, loc.ny)
             }
-            WireCodec.MODE_LASSO -> {
+            MODE_LASSO -> {
                 // 落笔点记下来即可：拖动形态（框选/移动）在越过死区那一刻才判定
                 // （镜像 Mac `DragGesture(minimumDistance: 2)` 起点一次性判定，纯点击不触发手势）
                 lassoAnchorPage = loc.page
@@ -1206,7 +1220,7 @@ class PadView @JvmOverloads constructor(
     private fun beginProbe(page: Int, nx: Float, ny: Float) {
         probing = true
         probePage = page
-        listener?.sendRel(WireCodec.encodeProbeBegin(page.toLong(), listOf(WireCodec.Pt2(nx, ny))))
+        listener?.sendRel(WireCodec.encodeProbeBegin(page.toLong(), listOf(Pt2(nx, ny))))
     }
 
     /** 写/擦出页边界时把坐标 clamp 在起笔页内（capture 同款） */
@@ -1225,15 +1239,15 @@ class PadView @JvmOverloads constructor(
         val p = if (historical) e.getHistoricalPressure(pi, h) else e.getPressure(pi)
         val now = if (historical) e.getHistoricalEventTime(h) else e.eventTime
 
-        if (penMode == WireCodec.MODE_LASSO) { handleLassoMove(x, y); return }
+        if (penMode == MODE_LASSO) { handleLassoMove(x, y); return }
 
         val loc = locate(x, y)
 
-        if (penMode == WireCodec.MODE_PAGE) {
+        if (penMode == MODE_PAGE) {
             // 环形盘开着时只发探针不平移
             if (probing) {
                 clampToPage(x, y, loc, probePage, tmp2)
-                probeBatch.add(WireCodec.Pt2(tmp2[0], tmp2[1]))
+                probeBatch.add(Pt2(tmp2[0], tmp2[1]))
             }
             if (radialActive) return
             val dx = penX - x
@@ -1246,7 +1260,7 @@ class PadView @JvmOverloads constructor(
             return
         }
 
-        if (penMode == WireCodec.MODE_NOTE) {
+        if (penMode == MODE_NOTE) {
             clampToPage(x, y, loc, drawPage, tmp2)
             var nx = tmp2[0]
             var ny = tmp2[1]
@@ -1260,18 +1274,18 @@ class PadView @JvmOverloads constructor(
                 nx = snapOut[0]; ny = snapOut[1]
                 curPts.clear()
                 curPts.add(a)
-                curPts.add(WireCodec.Pt3(nx, ny, p))
+                curPts.add(Pt3(nx, ny, p))
                 inkBatch.clear()
-                inkBatch.add(WireCodec.Pt3(nx, ny, p))
+                inkBatch.add(Pt3(nx, ny, p))
                 invalidate()
                 return
             }
             // 环形盘激活后本地不再画（笔移是在选笔），但位置照发让 Mac 驱动高亮
             if (!radialActive && curActive) {
-                curPts.add(WireCodec.Pt3(nx, ny, p))
+                curPts.add(Pt3(nx, ny, p))
                 invalidate()
             }
-            inkBatch.add(WireCodec.Pt3(nx, ny, p))
+            inkBatch.add(Pt3(nx, ny, p))
             return
         }
 
@@ -1283,25 +1297,25 @@ class PadView @JvmOverloads constructor(
         }
         if (probing) {
             clampToPage(x, y, loc, probePage, tmp2)
-            probeBatch.add(WireCodec.Pt2(tmp2[0], tmp2[1]))
+            probeBatch.add(Pt2(tmp2[0], tmp2[1]))
         }
     }
 
     private fun endPen() {
         when (penMode) {
-            WireCodec.MODE_NOTE -> {
+            MODE_NOTE -> {
                 if (radialActive) clearCur()
                 flushBatch()
                 listener?.onInkEndSent()
                 listener?.sendRel(WireCodec.encodeInkEnd())
                 // 不本地落 strokes（Mac 才是真源，稍后回传）；cur 先留着，等 strokes 再清
             }
-            WireCodec.MODE_ERASE -> {
+            MODE_ERASE -> {
                 if (radialActive) { inkBatch.clear(); eraseBatch.clear() } else flushBatch()
                 listener?.sendRel(WireCodec.encodeEraseEnd())
             }
-            WireCodec.MODE_PAGE -> if (!radialActive) startMomentum()   // 环形盘选择不甩动
-            WireCodec.MODE_LASSO -> finishLasso()
+            MODE_PAGE -> if (!radialActive) startMomentum()   // 环形盘选择不甩动
+            MODE_LASSO -> finishLasso()
         }
         if (probing) {   // 收尾探针流，Mac 据此提交/取消环形盘
             if (probeBatch.isNotEmpty()) {
@@ -1328,12 +1342,12 @@ class PadView @JvmOverloads constructor(
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE -> {
-                if (!activePen && mode != WireCodec.MODE_PAGE) {
+                if (!activePen && mode != MODE_PAGE) {
                     val loc = locate(e.getX(0), e.getY(0))
                     if (loc != null) {
                         reportHover(loc.page, loc.nx, loc.ny)
                         // 擦除模式：悬停时也显示橡皮尺寸圆环
-                        if (mode == WireCodec.MODE_ERASE && eraserRing) {
+                        if (mode == MODE_ERASE && eraserRing) {
                             eraserRingAt = floatArrayOf(e.getX(0), e.getY(0))
                             invalidate()
                         }

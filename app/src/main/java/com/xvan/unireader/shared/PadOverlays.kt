@@ -1,4 +1,4 @@
-package com.xvan.unireader.pad
+package com.xvan.unireader.shared
 
 import android.graphics.Canvas
 import android.graphics.Color
@@ -131,23 +131,23 @@ class PadOverlays(private val density: Float) {
 
     // ---------- 环形选笔盘 ----------
 
-    private val toolLabel = mapOf(WireCodec.RK_ERASE to "橡皮", WireCodec.RK_PAGE to "翻页")
+    private val toolLabel = mapOf(RK_ERASE to "橡皮", RK_PAGE to "翻页")
 
     /** 选中扇区的填充色：笔用自身颜色但**丢掉透明度**（荧光笔 alpha 很低，照抄会看不见高亮） */
-    private fun tintOf(item: WireCodec.RadialItem): Int = when (item.kind) {
-        WireCodec.RK_ERASE -> Color.argb(235, 245, 140, 51)
-        WireCodec.RK_PAGE -> Color.argb(235, 64, 184, 179)
+    private fun tintOf(item: RadialItem): Int = when (item.kind) {
+        RK_ERASE -> Color.argb(235, 245, 140, 51)
+        RK_PAGE -> Color.argb(235, 64, 184, 179)
         else -> Color.argb(235, item.pen.r, item.pen.g, item.pen.b)
     }
 
-    private fun penColor(pen: WireCodec.Pen) =
+    private fun penColor(pen: Pen) =
         Color.argb((pen.a * 255f).roundToInt().coerceIn(0, 255), pen.r, pen.g, pen.b)
 
-    private fun contrastOn(pen: WireCodec.Pen): Int =
+    private fun contrastOn(pen: Pen): Int =
         if ((0.299f * pen.r + 0.587f * pen.g + 0.114f * pen.b) / 255f > 0.62f) Color.BLACK else Color.WHITE
 
     /** 画整个盘（盘心在 cx/cy）。items 为空 = 只有盘底，不画扇区。 */
-    fun drawRadial(c: Canvas, cx: Float, cy: Float, highlight: Int, items: List<WireCodec.RadialItem>) {
+    fun drawRadial(c: Canvas, cx: Float, cy: Float, highlight: Int, items: List<RadialItem>) {
         if (items.isEmpty()) return
         val outer = dp(PadConst.RD.OUTER)
         val inner = dp(PadConst.RD.INNER)
@@ -195,7 +195,7 @@ class PadOverlays(private val density: Float) {
     }
 
     /** 中心 hub：既是取消区，也回显当前指向项（下发的 items 没有笔名，故显示笔型 + 粗细） */
-    private fun drawHub(c: Canvas, cx: Float, cy: Float, hub: Float, sel: WireCodec.RadialItem?) {
+    private fun drawHub(c: Canvas, cx: Float, cy: Float, hub: Float, sel: RadialItem?) {
         p.style = Paint.Style.FILL
         p.color = Color.argb(
             ((if (sel != null) PadConst.RD.HUB_DIM else PadConst.RD.HUB_DIM + 0.06f) * 255).roundToInt(),
@@ -209,10 +209,10 @@ class PadOverlays(private val density: Float) {
 
         val title = when {
             sel == null -> "取消"
-            sel.kind == WireCodec.RK_PEN -> PadConst.brushLabel(WireCodec.brushName(sel.pen.brush))
+            sel.kind == RK_PEN -> PadConst.brushLabel(brushName(sel.pen.brush))
             else -> toolLabel[sel.kind] ?: ""
         }
-        val sub = if (sel != null && sel.kind == WireCodec.RK_PEN)
+        val sub = if (sel != null && sel.kind == RK_PEN)
             "${(sel.pen.w * 100).roundToInt() / 100f}pt" else ""
 
         // hub 底很淡，文字靠一层阴影保可读（功能性描边，不是装饰）
@@ -234,9 +234,9 @@ class PadOverlays(private val density: Float) {
      * 扇区图标统一形制：一枚彩色圆片 + 符号（跟 Mac 端 `disc` 对齐）。
      * 盘底透着页面内容，裸符号会被白页吞掉，所以每个图标都自带底片。
      */
-    private fun drawIcon(c: Canvas, x: Float, y: Float, item: WireCodec.RadialItem, on: Boolean) {
+    private fun drawIcon(c: Canvas, x: Float, y: Float, item: RadialItem, on: Boolean) {
         val r = dp(if (on) 17f else 14f)
-        val isPen = item.kind == WireCodec.RK_PEN
+        val isPen = item.kind == RK_PEN
         p.style = Paint.Style.FILL
         p.color = if (isPen) penColor(item.pen) else tintOf(item)
         c.drawCircle(x, y, r, p)
@@ -260,7 +260,7 @@ class PadOverlays(private val density: Float) {
                 path.close()
                 c.drawPath(path, p)
             }
-            item.kind == WireCodec.RK_ERASE -> {
+            item.kind == RK_ERASE -> {
                 c.rotate(-36f)
                 val k = r / dp(17f)
                 rectIcon.set(-9f * k, -5.5f * k, 9f * k, 5.5f * k)

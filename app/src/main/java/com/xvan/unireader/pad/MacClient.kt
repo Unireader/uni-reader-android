@@ -2,6 +2,10 @@ package com.xvan.unireader.pad
 
 import android.os.Handler
 import android.os.Looper
+import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.Pen
+import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextNote
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -37,15 +41,15 @@ class MacClient(
         fun onRtt(ms: Double)
         fun onLayout(docId: String, v: String, count: Long, pages: List<Pair<Float, Float>>)
         fun onViewport(page: Long, frac: Float, seq: Long, force: Boolean)
-        fun onPens(active: Int, list: List<WireCodec.Pen>)
+        fun onPens(active: Int, list: List<Pen>)
         fun onPenSel(index: Int)
         fun onModeSel(mode: Int)
         fun onInkCancel()
-        fun onStrokes(list: List<WireCodec.Stroke>)
+        fun onStrokes(list: List<Stroke>)
         fun onNack(seqs: List<Long>)
         fun onDocs(following: Boolean, selected: String, list: List<WireCodec.DocEntry>)
-        fun onNotes(list: List<WireCodec.TextNote>)
-        fun onLayers(active: Int, list: List<WireCodec.Layer>)
+        fun onNotes(list: List<TextNote>)
+        fun onLayers(active: Int, list: List<Layer>)
         fun onRadial(m: WireCodec.Msg.Radial)
         fun onPressRing(m: WireCodec.Msg.PressRing)
         fun onEraser(size: Float, mode: Int, ring: Boolean)

@@ -1,5 +1,12 @@
 package com.xvan.unireader.pad
 
+import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.Pen
+import com.xvan.unireader.shared.Pt2
+import com.xvan.unireader.shared.Pt3
+import com.xvan.unireader.shared.RadialItem
+import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextNote
 import java.nio.charset.StandardCharsets
 
 /**
@@ -54,49 +61,17 @@ object WireCodec {
     const val DIR_PREV = 0
     const val DIR_NEXT = 1
 
-    /** mode（§2）：0=note 1=erase 2=page 3=lasso */
-    const val MODE_NOTE = 0
-    const val MODE_ERASE = 1
-    const val MODE_PAGE = 2
-    const val MODE_LASSO = 3
-
     /** textNote.op（§4.1）：0=upsert 1=delete（空文本 upsert 等价 delete） */
     const val NOTE_UPSERT = 0
     const val NOTE_DELETE = 1
 
-    /** radial 扇区 kind（§4.2）：0=pen 1=erase 2=page */
-    const val RK_PEN = 0
-    const val RK_ERASE = 1
-    const val RK_PAGE = 2
+    // 消息里出现的对象类型（Pen/Pt3/Pt2/Stroke/TextNote/Layer/RadialItem）与 mode/RK/brush 的
+    // 编号↔名字映射都在 shared/Ink.kt——它们不只属于线格式，模式1（本地开工作区）同样要用。
+    // 本文件只管**字节布局**（§2/§4）：pen = u8 r,g,b + f32 a + f32 w + u8 brush 共 12 字节，
+    // pt3 = f32 x,y,pressure，pt2 = f32 x,y。
 
-    /** brush 编号 → 名字（§2：0=ballpoint 1=fountain 2=marker 3=pencil，越界回退 0） */
-    val BRUSH_NAMES = listOf("ballpoint", "fountain", "marker", "pencil")
-
-    fun brushName(code: Int): String = BRUSH_NAMES.getOrElse(code) { BRUSH_NAMES[0] }
-
-    /** pen 原语：u8 r,g,b + f32 a + f32 w + u8 brush，共 12 字节。brush: 0=ballpoint 1=fountain 2=marker 3=pencil */
-    data class Pen(val r: Int, val g: Int, val b: Int, val a: Float, val w: Float, val brush: Int)
-
-    /** pt3：f32 x + f32 y + f32 pressure（页内归一化 + 压感） */
-    data class Pt3(val x: Float, val y: Float, val p: Float)
-
-    /** pt2：f32 x + f32 y（擦除点，无压感） */
-    data class Pt2(val x: Float, val y: Float)
-
-    /** 一条成形笔迹（strokes 消息元素） */
-    data class Stroke(val page: Long, val pen: Pen, val pts: List<Pt3>)
-
-    /** 文档列表项（docs 消息元素） */
+    /** 文档列表项（docs 消息元素；纯线格式概念——模式1 的文档列表来自 SQLite，不走这里） */
     data class DocEntry(val id: String, val title: String)
-
-    /** 一条自由文字笔记（notes 消息元素；坐标与笔迹同系＝页内归一化） */
-    data class TextNote(val id: String, val page: Long, val nx: Float, val ny: Float, val text: String)
-
-    /** 一个笔迹图层（layers 消息元素；r/g/b 只是列表色点标识，与笔画墨色无关） */
-    data class Layer(val r: Int, val g: Int, val b: Int, val visible: Boolean, val name: String)
-
-    /** 环形选笔盘的一个扇区（kind 见 RK_*；kind≠pen 时 pen 字节是占位 0） */
-    data class RadialItem(val kind: Int, val pen: Pen)
 
     // ---------- 解码结果（u32 用 Long 承载无符号值） ----------
     sealed class Msg {
