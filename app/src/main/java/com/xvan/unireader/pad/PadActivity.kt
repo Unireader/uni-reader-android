@@ -29,11 +29,14 @@ import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextNote
 import com.xvan.unireader.shared.brushName
+import com.xvan.unireader.shared.capsule
+import com.xvan.unireader.shared.setTextIfChanged
 
 /**
  * 主界面：全屏 PadView + 顶栏（连接点、延迟、文档、页码/缩放、◀▶、模式、笔、夜间、文字、尺子、
@@ -182,7 +185,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         val docsBtn = Button(this).apply {
             text = "文档"
             setOnClickListener {
-                PadPanels.showDocsPicker(this@PadActivity, docs, docSelected, docFollowing) {
+                PadDocsPicker.show(this@PadActivity, docs, docSelected, docFollowing) {
                     client?.send(WireCodec.encodeSelectDoc(it))
                 }
             }
@@ -233,18 +236,19 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
 
         // 左下状态胶囊：笔/橡皮 与 图层（对应网页 PenStat / LayerStat）
-        penStat = capsule().apply {
+        penStat = capsule(this).apply {
             setOnClickListener {
                 PadPanels.showPenPanel(this@PadActivity, padView, ::schedulePenset, ::scheduleEraser)
             }
         }
-        layerStat = capsule().apply {
+        layerStat = capsule(this).apply {
             setOnClickListener {
                 PadPanels.showLayerPanel(
                     this@PadActivity, layers, layerIdx,
                     onSelect = { client?.send(WireCodec.encodeLayerSelect(it)) },
                     onToggleVisible = { i, v -> client?.send(WireCodec.encodeLayerVisible(i, v)) },
                     onAdd = { client?.send(WireCodec.encodeLayerAdd()) },
+                    emptyHint = "（还没收到 Mac 的图层表）",
                 )
             }
         }
@@ -283,17 +287,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         setDot(false)
         applyGraphVisibility()
         refresh()
-    }
-
-    private fun capsule(): TextView = TextView(this).apply {
-        textSize = 13f
-        setTextColor(0xFFE6EDF3.toInt())
-        setPadding(dp(12), dp(6), dp(12), dp(6))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(999).toFloat()
-            setColor(0xD9161B22.toInt())
-            setStroke(dp(1), 0xFF30363D.toInt())
-        }
     }
 
     private fun setDot(on: Boolean) {
@@ -465,14 +458,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     // ---------- 顶栏状态 ----------
 
-    /**
-     * `refresh()` 挂在 `onHudChanged` 上，**滚动/缩放的每一帧都会调**——所以一律走
-     * `setTextIfChanged`：文本没变就不碰 TextView。直接 setText 即便内容相同也会触发
-     * measure/layout，十来个控件乘 60fps 就是白烧的一帧预算（同款坑见 Mac 端逐帧 @Published）。
-     */
-    private fun TextView.setTextIfChanged(s: String) {
-        if (text?.toString() != s) text = s
-    }
+    // `refresh()` 挂在 `onHudChanged` 上，**滚动/缩放的每一帧都会调**——所以一律走
+    // `setTextIfChanged`（shared/Widgets.kt）。
 
     private fun refresh() {
         val u = udp

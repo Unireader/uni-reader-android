@@ -203,11 +203,8 @@ class LibraryStore(private val db: Db) : Closeable {
         arrayOf(documentId),
     ) { inkLayer(it) }
 
-    /** 图层表 → 中立模型（色点用色板换算，见 [Palette]），供面板与线格式共用同一形状 */
-    fun layersForUi(documentId: String): List<Layer> = inkLayers(documentId).map {
-        val rgb = Palette.rgb(it.colorKey)
-        Layer(rgb[0], rgb[1], rgb[2], it.visible, it.name)
-    }
+    /** 图层表 → 中立模型（供面板与线格式共用同一形状）。转换本身见 [toUiLayers] */
+    fun layersForUi(documentId: String): List<Layer> = inkLayers(documentId).toUiLayers()
 
     fun upsertInkLayer(l: LibInkLayer) {
         db.exec(

@@ -1,4 +1,4 @@
-package com.xvan.unireader.pad
+package com.xvan.unireader.shared
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -14,20 +14,23 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
-import com.xvan.unireader.shared.Layer
-import com.xvan.unireader.shared.PadConst
-import com.xvan.unireader.shared.Pen
-import com.xvan.unireader.shared.brushName
 import kotlin.math.roundToInt
 
 /**
- * 各弹层面板（对应网页的 PenStat / LayerStat / TextNoteEditor / 页码输入 / 文档下拉）。
+ * 各弹层面板（对应网页的 PenStat / LayerStat / TextNoteEditor / 页码输入）。
  * 网页那边是锚定在胶囊上的毛玻璃 popover，这里退化成系统对话框——平板上单手可达，
- * 且不用自己处理外点关闭/焦点/输入法。行为（可改什么、怎么上行）与网页一一对应。
+ * 且不用自己处理外点关闭/焦点/输入法。行为（可改什么）与网页一一对应。
+ *
+ * **两种模式共用这一份**（`ANDROID-STANDALONE-PLAN.md §5.1`）：面板只描述「用户改了什么」，
+ * 通过回调交给宿主——模式2 编成线格式帧发给 Mac 等权威回推，模式1 直接落 SQLite。
+ * 图层的接口一律**按下标**（`onSelect(i)`/`onToggleVisible(i, v)`），因为线格式就是按下标发的；
+ * 模式1 那边自己拿下标去 `LibInkLayer` 列表换 id。
+ *
+ * 文档下拉不在这儿——那是纯线格式概念（模式1 的书库来自 SQLite），留在 `pad/PadDocsPicker.kt`。
  */
 object PadPanels {
 
-    private fun Activity.dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
+    internal fun Activity.dp(v: Int) = (v * resources.displayMetrics.density).roundToInt()
 
     private fun swatch(a: Activity, color: Int): View = View(a).apply {
         background = GradientDrawable().apply {
@@ -51,14 +54,16 @@ object PadPanels {
     // ---------- 笔宽 + 橡皮设置（网页 PenStat 弹层） ----------
 
     /**
-     * 笔宽 2~40（改动即时本地生效，`onPenset` 由调用方防抖上行 penset）；
-     * 橡皮整笔/局部 + 直径（页宽 %）+ 尺寸圆环开关（防抖上行 eraser，与 Mac PenRack 橡皮 popover 双向同步）。
+     * 笔宽 2~40（改动即时本地生效）；橡皮整笔/局部 + 直径（页宽 %）+ 尺寸圆环开关。
+     *
+     * @param onPenset 笔宽变了。模式2 用来防抖上行 `penset`；模式1 只有本地状态，传空即可。
+     * @param onEraser 橡皮设置变了。模式2 防抖上行 `eraser`（与 Mac PenRack 的橡皮 popover 双向同步）。
      */
     fun showPenPanel(
         a: Activity,
-        pad: PadView,
-        onPenset: () -> Unit,
-        onEraser: () -> Unit,
+        pad: PageCanvasView,
+        onPenset: () -> Unit = {},
+        onEraser: () -> Unit = {},
     ) {
         val root = column(a)
         root.addView(label(a, "笔宽", 13f).apply { setTextColor(Color.GRAY) })
@@ -175,8 +180,9 @@ object PadPanels {
     // ---------- 图层（网页 LayerStat 弹层） ----------
 
     /**
-     * 切换作画图层 / 显示隐藏 / 新建——三者都只是「请求」，图层的增删改全部由 Mac 判定，
-     * 发完不本地抢改列表，等 Mac 广播 layers 回权威状态。
+     * 切换作画图层 / 显示隐藏 / 新建。三个回调都只表达「用户点了什么」：
+     * - 模式2：编帧上行，**不本地抢改列表**，等 Mac 广播 `layers` 回权威状态；
+     * - 模式1：宿主自己写 `ink_layer` 表再重读（真源就在进程内）。
      */
     fun showLayerPanel(
         a: Activity,
@@ -185,10 +191,12 @@ object PadPanels {
         onSelect: (Int) -> Unit,
         onToggleVisible: (Int, Boolean) -> Unit,
         onAdd: () -> Unit,
+        /** 空表时的说明。两模式的「为什么空」不是一回事，所以由宿主给文案 */
+        emptyHint: String = "（还没有图层）",
     ) {
         val root = column(a)
         if (layers.isEmpty()) {
-            root.addView(label(a, "（还没收到 Mac 的图层表）", 13f).apply { setTextColor(Color.GRAY) })
+            root.addView(label(a, emptyHint, 13f).apply { setTextColor(Color.GRAY) })
         }
         val dlg = AlertDialog.Builder(a).setTitle("图层").setPositiveButton("完成", null)
         lateinit var dialog: AlertDialog
@@ -259,32 +267,6 @@ object PadPanels {
             .setView(column(a).apply { addView(edit) })
             .setPositiveButton("跳转") { _, _ ->
                 edit.text.toString().trim().toIntOrNull()?.let { onGo(it) }
-            }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    // ---------- 文档选择（网页顶栏下拉） ----------
-
-    /** 第一项固定是「跟随 Mac」（发 selectDoc "" ） */
-    fun showDocsPicker(
-        a: Activity,
-        docs: List<WireCodec.DocEntry>,
-        selected: String,
-        following: Boolean,
-        onSelect: (String) -> Unit,
-    ) {
-        val titles = ArrayList<String>()
-        val ids = ArrayList<String>()
-        titles.add("⟳ 跟随 Mac")
-        ids.add("")
-        for (d in docs) { titles.add(d.title); ids.add(d.id) }
-        val checked = if (following) 0 else ids.indexOf(selected).coerceAtLeast(0)
-        AlertDialog.Builder(a)
-            .setTitle("文档")
-            .setSingleChoiceItems(titles.toTypedArray(), checked) { dlg, which ->
-                onSelect(ids[which])
-                dlg.dismiss()
             }
             .setNegativeButton("取消", null)
             .show()

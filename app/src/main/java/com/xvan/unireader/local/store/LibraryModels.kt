@@ -1,5 +1,6 @@
 package com.xvan.unireader.local.store
 
+import com.xvan.unireader.shared.Layer
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -112,6 +113,18 @@ data class LibInkLayer(
          */
         const val DEFAULT_ID = "00000000-0000-0000-0000-000000000001"
     }
+}
+
+/**
+ * 图层表 → 面板用的中立模型（`shared.Layer`，色点用 [Palette] 换算）。
+ *
+ * 面板（`shared/PadPanels.showLayerPanel`）是**按下标**交互的——线格式就是按下标发的，模式1
+ * 也照这个接口用。所以给面板的列表与宿主用来换 id 的列表**必须是同一个列表映射出来的**；
+ * 各自查一次库看着等价，实则给了两条能分叉的路，而错位的表现是「点了图层 2 改到了图层 3」。
+ */
+fun List<LibInkLayer>.toUiLayers(): List<Layer> = map {
+    val rgb = Palette.rgb(it.colorKey)
+    Layer(rgb[0], rgb[1], rgb[2], it.visible, it.name)
 }
 
 /**

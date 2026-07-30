@@ -19,13 +19,20 @@ import android.widget.TextView
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.local.store.toUiLayers
 import com.xvan.unireader.shared.Bg
 import com.xvan.unireader.shared.MODE_ERASE
-import com.xvan.unireader.shared.onSystemBarInsets
+import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.MODE_PAGE
+import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.brushName
+import com.xvan.unireader.shared.capsule
+import com.xvan.unireader.shared.onSystemBarInsets
 import com.xvan.unireader.shared.runInBackground
+import com.xvan.unireader.shared.setTextIfChanged
 import java.io.File
 
 /**
@@ -62,8 +69,8 @@ class ReaderActivity : Activity() {
         val store: LibraryStore,
         val doc: LibDocument,
         val pdf: PdfSource,
-        val activeLayerId: String,
-        val hiddenLayerIds: Set<String>,
+        /** 整张图层表：画布要它的可见性过滤，图层面板要它的 id（面板本身按下标交互） */
+        val layers: List<LibInkLayer>,
         val strokes: List<Stroke>,
     ) {
         /**
@@ -82,7 +89,12 @@ class ReaderActivity : Activity() {
     private lateinit var modeBtn: Button
     private lateinit var penBtn: Button
     private lateinit var openingLabel: TextView
+    private lateinit var penStat: TextView
+    private lateinit var layerStat: TextView
     private var store: LibraryStore? = null
+
+    /** 当前文档的图层表（`ink_layer` 的内存镜像）。改完一律重读，不本地推算 */
+    private var layers = listOf<LibInkLayer>()
     private var pdf: PdfSource? = null
     private var workspace: File? = null
     private var docId = ""
@@ -129,6 +141,11 @@ class ReaderActivity : Activity() {
         }
         modeBtn = barBtn("翻页") { cycleMode() }
         penBtn = barBtn("笔") { canvas.cyclePen(); refreshHud() }
+        // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）
+        penStat = capsule(this).apply {
+            setOnClickListener { PadPanels.showPenPanel(this@ReaderActivity, canvas) }
+        }
+        layerStat = capsule(this).apply { setOnClickListener { showLayers() } }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -147,6 +164,11 @@ class ReaderActivity : Activity() {
             textSize = 15f
             setTextColor(0xFF6B6B6B.toInt())
         }
+        val capsules = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(layerStat, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
+            addView(penStat)
+        }
         val root = FrameLayout(this).apply {
             addView(canvas, FrameLayout.LayoutParams(-1, -1))
             addView(bar, FrameLayout.LayoutParams(-1, barH, Gravity.TOP))
@@ -154,17 +176,29 @@ class ReaderActivity : Activity() {
                 openingLabel,
                 FrameLayout.LayoutParams(-2, -2, Gravity.CENTER),
             )
+            addView(
+                capsules,
+                FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply {
+                    leftMargin = dp(10); bottomMargin = dp(10)
+                },
+            )
         }
         setContentView(root)
         canvas.setBarHeight(barH.toFloat())
-        // 顶栏避开状态栏：不处理的话按钮压在时钟上，点击会被系统栏吃掉（见 shared/Insets.kt）
-        root.onSystemBarInsets { top, _ ->
+        // 顶栏避开状态栏：不处理的话按钮压在时钟上，点击会被系统栏吃掉（见 shared/Insets.kt）。
+        // 胶囊同理要避开底部导航栏——模式2 不用管这个（它整屏沉浸），模式1 有系统栏。
+        root.onSystemBarInsets { top, bottom ->
             val lp = bar.layoutParams as FrameLayout.LayoutParams
             if (lp.height != barH + top) {
                 lp.height = barH + top
                 bar.layoutParams = lp
                 bar.setPadding(dp(10), top, dp(10), 0)
                 canvas.setBarHeight((barH + top).toFloat())
+            }
+            val clp = capsules.layoutParams as FrameLayout.LayoutParams
+            if (clp.bottomMargin != dp(10) + bottom) {
+                clp.bottomMargin = dp(10) + bottom
+                capsules.layoutParams = clp
             }
         }
     }
@@ -198,14 +232,12 @@ class ReaderActivity : Activity() {
             src.logPageSizes()   // §9.1 的比对凭据：与 tools/dump-page-sizes.swift 的输出逐行 diff
             // 落库上下文 + 当前作画图层（老文档可能没有图层行，补一条默认层，同 Mac 的行为）
             s.ensureDefaultLayer(docId)
-            val layers = s.inkLayers(docId)
             s.updateLastOpened(docId)
             return Opened(
                 store = s,
                 doc = doc,
                 pdf = src,
-                activeLayerId = layers.firstOrNull()?.id ?: LibInkLayer.DEFAULT_ID,
-                hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toSet(),
+                layers = s.inkLayers(docId),
                 strokes = s.strokes(docId),
             )
         } catch (e: Throwable) {
@@ -244,9 +276,10 @@ class ReaderActivity : Activity() {
         )
         canvas.store = o.store
         canvas.documentId = docId
-        canvas.activeLayerId = o.activeLayerId
+        layers = o.layers
+        canvas.activeLayerId = layers.firstOrNull()?.id ?: LibInkLayer.DEFAULT_ID
         canvas.setMode(MODE_PAGE)
-        canvas.applyStrokes(o.strokes, o.hiddenLayerIds)
+        canvas.applyStrokes(o.strokes, hiddenLayerIds())
         Log.i(
             TAG,
             "打开《${doc.title}》${o.pdf.pageCount} 页 笔迹 ${o.strokes.size} 条，" +
@@ -291,31 +324,76 @@ class ReaderActivity : Activity() {
         refreshHud()
     }
 
+    /** 每帧都会调（滚动/缩放都触发），一律走 `setTextIfChanged`——见 shared/Widgets.kt */
     private fun refreshHud() {
-        // 每帧都会调（滚动/缩放都触发），文本没变就别碰：十来个控件乘 60fps 就是白烧的一帧
-        val s = "${canvas.hudPage()}　${canvas.hudZoom()}"
-        if (pageLabel.text?.toString() != s) pageLabel.text = s
-        val m = canvas.modeLabel()
-        if (modeBtn.text?.toString() != m) modeBtn.text = m
-        val p = if (canvas.mode == MODE_NOTE) canvas.penLabel() else "笔"
-        if (penBtn.text?.toString() != p) penBtn.text = p
+        pageLabel.setTextIfChanged("${canvas.hudPage()}　${canvas.hudZoom()}")
+        modeBtn.setTextIfChanged(canvas.modeLabel())
+        penBtn.setTextIfChanged(if (canvas.mode == MODE_NOTE) canvas.penLabel() else "笔")
+        // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
+        val pen = canvas.curPenOrNull()
+        penStat.setTextIfChanged(
+            when (canvas.mode) {
+                MODE_NOTE ->
+                    if (pen != null) "${PadConst.brushLabel(brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
+                    else "笔记"
+                MODE_ERASE -> "橡皮擦"
+                MODE_LASSO -> "框选移动"
+                else -> "翻页 · 拖动平移"
+            },
+        )
+        layerStat.setTextIfChanged(activeLayer()?.let { "图层：${it.name}" } ?: "图层")
+    }
+
+    // ---------- 图层（面板与模式2 共用一份，见 shared/PadPanels.kt） ----------
+
+    private fun activeLayer(): LibInkLayer? = layers.firstOrNull { it.id == canvas.activeLayerId }
+
+    private fun hiddenLayerIds(): Set<String> =
+        layers.filter { !it.visible }.map { it.id }.toSet()
+
+    /**
+     * 模式2 里这三件事只是「请求」，由 Mac 判定后广播权威状态回来；模式1 的真源就在进程内，
+     * 所以**直接写 `ink_layer` 表再整表重读**——不本地推算列表，避免内存镜像与库里悄悄分叉。
+     *
+     * 面板按**下标**回调（线格式就是按下标发的），这里用下标换 id。
+     */
+    private fun showLayers() {
+        val s = store ?: return
+        PadPanels.showLayerPanel(
+            this, layers.toUiLayers(), layers.indexOfFirst { it.id == canvas.activeLayerId },
+            onSelect = { i ->
+                layers.getOrNull(i)?.let {
+                    canvas.activeLayerId = it.id
+                    Log.i(TAG, "作画图层 → ${it.name}")
+                    refreshHud()
+                }
+            },
+            onToggleVisible = { i, visible ->
+                layers.getOrNull(i)?.let { l ->
+                    runCatching { s.upsertInkLayer(l.copy(visible = visible)) }
+                        .onFailure { Log.e(TAG, "写图层可见性失败", it) }
+                    layers = s.inkLayers(docId)
+                    // 隐藏的图层数据一条不动，只是不画（同 Mac 的 broadcastStrokes 过滤口径）
+                    canvas.reloadStrokes()
+                    refreshHud()
+                }
+            },
+            onAdd = {
+                val l = runCatching { s.addInkLayer(docId) }
+                    .onFailure { Log.e(TAG, "新建图层失败", it) }
+                    .getOrNull() ?: return@showLayerPanel
+                layers = s.inkLayers(docId)
+                canvas.activeLayerId = l.id   // 新建即切过去（同 Mac 的 layerAdd）
+                Log.i(TAG, "新建图层 ${l.name}，已设为作画图层")
+                refreshHud()
+            },
+        )
     }
 
     private fun showGotoPage() {
         val n = canvas.pageCountOrZero()
         if (n <= 0) return
-        val input = android.widget.EditText(this).apply {
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            hint = "1 ~ $n"
-        }
-        android.app.AlertDialog.Builder(this)
-            .setTitle("跳到第几页")
-            .setView(input)
-            .setPositiveButton("跳转") { _, _ ->
-                input.text.toString().toIntOrNull()?.let { canvas.gotoPage(it) }
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        PadPanels.showGotoPage(this, n) { canvas.gotoPage(it) }
     }
 
     // ---------- 进度落库 ----------

@@ -151,7 +151,10 @@ class LocalCanvasView @JvmOverloads constructor(
      * 笔迹和图层可见性是和页尺寸表一起在后台读出来的（§9.5——首屏不能有读库 I/O）。
      */
     fun applyStrokes(all: List<Stroke>, hiddenLayerIds: Set<String>) {
-        setStrokes(if (hiddenLayerIds.isEmpty()) all else all.filter { it.layerId !in hiddenLayerIds })
+        val shown = if (hiddenLayerIds.isEmpty()) all else all.filter { it.layerId !in hiddenLayerIds }
+        // 「笔迹少了几笔」这类问题不打点就只能靠猜：可见/总数分开记，一眼看出是没读到还是被图层滤掉了
+        Log.i(TAG, "回推笔迹 可见=${shown.size}/${all.size} 隐藏图层=${hiddenLayerIds.size}")
+        setStrokes(shown)
         onInkChanged?.invoke()
     }
 
