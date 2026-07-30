@@ -23,6 +23,7 @@ import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.pad.PadActivity
 import com.xvan.unireader.shared.onSystemBarInsets
+import com.xvan.unireader.shared.runInBackground
 import java.io.File
 
 /**
@@ -44,6 +45,12 @@ class Launcher : Activity() {
     private lateinit var permText: TextView
     private lateinit var permBtn: Button
     private lateinit var recentBox: LinearLayout
+
+    /** 「正在打开…」。持有它是为了在 [onDestroy] 里收掉，否则校验没回来就退出会 leak window */
+    private var busyDlg: AlertDialog? = null
+
+    /** 目录浏览器的当前请求令牌：用户点得比慢卷读得快，回来的旧结果要丢掉 */
+    private var browseToken: Any? = null
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -254,6 +261,9 @@ class Launcher : Activity() {
      * 极简目录浏览器。为什么不用系统的 `ACTION_OPEN_DOCUMENT_TREE`：它返回 SAF 的 tree Uri，
      * 而裸 `SQLiteDatabase` 要真实文件路径（`content://` 打不开），把 Uri 反推成路径又是各家 ROM
      * 各不相同的猜谜游戏。既然已经要了全盘权限，直接用 `File` 列目录最可预期。
+     *
+     * 列目录走后台（§9.5）：`listFiles` 加上逐个 `isDirectory` 的 stat，在 U 盘/同步盘上是秒级，
+     * 而用户是一级一级点进去的——每一级都卡一下，整个选目录过程就在反复触发 ANR 观察窗。
      */
     private fun browse(start: File) {
         var cur = start
@@ -278,28 +288,29 @@ class Launcher : Activity() {
                     },
                 )
             }
-            val kids = cur.listFiles()
-            if (kids == null) {
-                list.addView(hint("无法读取此目录（没有权限，或不是真实目录）"))
-                return
-            }
-            val dirs = kids.filter { it.isDirectory }.sortedBy { it.name.lowercase() }
-            if (dirs.isEmpty()) list.addView(hint("（没有子文件夹）"))
-            for (d in dirs) {
-                val isWs = Workspace.looksLikeWorkspace(d)
-                list.addView(
-                    row(if (isWs) "📘  ${d.name}" else "📁  ${d.name}") {
-                        // .unrd 点进去没意义（里面只有 UniReader/ 和 PDFs/），直接当选中处理
-                        if (isWs) {
-                            dlg.dismiss()
-                            openWorkspace(d)
-                        } else {
-                            cur = d
-                            render()
-                        }
-                    },
-                )
-            }
+            val waiting = hint("正在读取目录…")
+            list.addView(waiting)
+            val dir = cur
+            val token = Any()
+            browseToken = token
+            runInBackground(
+                what = "列目录 ${dir.name}",
+                // 过滤与排序也在后台：`isDirectory` 是每个条目一次 stat，才是慢的那部分
+                work = { dir.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() } },
+                ok = { dirs ->
+                    // 用户可能已经点进别的目录、或把窗关了——旧结果直接丢
+                    if (browseToken === token && dlg.isShowing) fill(list, waiting, dirs, dlg) { d ->
+                        cur = d
+                        render()
+                    }
+                },
+                fail = {
+                    if (browseToken === token && dlg.isShowing) {
+                        list.removeView(waiting)
+                        list.addView(hint("读取目录失败：${it.message}"))
+                    }
+                },
+            )
         }
 
         dlg.setOnShowListener {
@@ -308,8 +319,39 @@ class Launcher : Activity() {
                 openWorkspace(cur)
             }
         }
+        dlg.setOnDismissListener { browseToken = null }
         render()
         dlg.show()
+    }
+
+    /** 把后台列出的子目录填进浏览器（`.unrd` 用书本图标，点它等于选中） */
+    private fun fill(
+        list: LinearLayout,
+        waiting: View,
+        dirs: List<File>?,
+        dlg: AlertDialog,
+        onEnter: (File) -> Unit,
+    ) {
+        list.removeView(waiting)
+        if (dirs == null) {
+            list.addView(hint("无法读取此目录（没有权限，或不是真实目录）"))
+            return
+        }
+        if (dirs.isEmpty()) list.addView(hint("（没有子文件夹）"))
+        for (d in dirs) {
+            val isWs = Workspace.looksLikeWorkspace(d)
+            list.addView(
+                row(if (isWs) "📘  ${d.name}" else "📁  ${d.name}") {
+                    // .unrd 点进去没意义（里面只有 UniReader/ 和 PDFs/），直接当选中处理
+                    if (isWs) {
+                        dlg.dismiss()
+                        openWorkspace(d)
+                    } else {
+                        onEnter(d)
+                    }
+                },
+            )
+        }
     }
 
     private fun row(text: String, onClick: () -> Unit) = TextView(this).apply {
@@ -320,23 +362,64 @@ class Launcher : Activity() {
         setOnClickListener { onClick() }
     }
 
+    /**
+     * 校验走后台（§9.5）：`Workspace.check` 那几个 `exists/isFile/canRead/length` 在 `/sdcard`
+     * （FUSE）冷缓存下实测 2.1 秒，U 盘上更久。期间压一个不可取消的「正在打开…」——
+     * 不压的话界面看着没反应，用户会连点，连点就会开出两个 [LibraryActivity]。
+     */
     private fun openWorkspace(dir: File) {
+        if (busyDlg != null) return
         Log.i(TAG, "尝试打开工作区：${dir.absolutePath}")
-        when (val c = Workspace.check(dir)) {
-            is Workspace.Check.Bad -> {
-                Workspace.forget(this, dir.absolutePath)   // 失效的最近项别再留着
-                refreshRecents()
-                alert("打不开这个工作区", c.reason)
-            }
-            is Workspace.Check.OK -> {
-                Workspace.remember(this, dir.absolutePath)
-                refreshRecents()
-                if (c.readOnly) {
-                    Log.w(TAG, "库文件只读：${c.db.absolutePath}")
+        busyDlg = busy("正在打开 ${dir.name}…")
+        runInBackground(
+            what = "校验工作区 ${dir.name}",
+            work = { Workspace.check(dir) },
+            ok = { c ->
+                dismissBusy()
+                when (c) {
+                    is Workspace.Check.Bad -> {
+                        Workspace.forget(this, dir.absolutePath)   // 失效的最近项别再留着
+                        refreshRecents()
+                        alert("打不开这个工作区", c.reason)
+                    }
+                    is Workspace.Check.OK -> {
+                        Workspace.remember(this, dir.absolutePath)
+                        refreshRecents()
+                        if (c.readOnly) {
+                            Log.w(TAG, "库文件只读：${c.db.absolutePath}")
+                        }
+                        LibraryActivity.start(this, c.dir)
+                    }
                 }
-                LibraryActivity.start(this, c.dir)
-            }
+            },
+            fail = {
+                dismissBusy()
+                alert("打不开这个工作区", "校验时出错：${it.message}")
+            },
+        )
+    }
+
+    private fun busy(msg: String): AlertDialog {
+        val tv = TextView(this).apply {
+            text = msg
+            textSize = 15f
+            setTextColor(0xFF1A1A1A.toInt())
+            setPadding(dp(24), dp(24), dp(24), dp(24))
         }
+        return AlertDialog.Builder(this).setView(tv).setCancelable(false).create()
+            .also { it.show() }
+    }
+
+    private fun dismissBusy() {
+        busyDlg?.dismiss()
+        busyDlg = null
+    }
+
+    override fun onDestroy() {
+        // 校验还没回来就退出：窗口先收掉，否则 WindowLeaked
+        busyDlg?.dismiss()
+        busyDlg = null
+        super.onDestroy()
     }
 
     private fun alert(title: String, msg: String) {

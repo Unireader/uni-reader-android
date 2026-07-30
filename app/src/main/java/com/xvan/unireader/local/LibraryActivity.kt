@@ -14,6 +14,7 @@ import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteKind
 import com.xvan.unireader.shared.onSystemBarInsets
+import com.xvan.unireader.shared.runInBackground
 import java.io.File
 
 /**
@@ -21,6 +22,10 @@ import java.io.File
  *
  * 每次 `onResume` 重读一遍库——从阅读界面退回来时进度已经变了，缓存一份反而要自己同步。
  * 列表规模是「一个人的书架」，几十条，重读的开销可以忽略。
+ *
+ * 但**读库本身不能在主线程**（§9.5）：`LibraryStore.open` 在慢卷上是秒级，每个文档还要一次
+ * `firstOpenablePdf`（逐条 location 做 `isFile`）。所以读盘在后台整批做完出一个 [Snapshot]，
+ * 主线程只建 View。
  */
 class LibraryActivity : Activity() {
 
@@ -36,9 +41,16 @@ class LibraryActivity : Activity() {
         }
     }
 
+    /** 一行要显示的全部东西，全在后台备好（主线程不再碰库） */
+    private class Row(val doc: LibDocument, val ink: Int, val pdfOk: Boolean)
+    private class Snapshot(val info: String, val rows: List<Row>)
+
     private lateinit var list: LinearLayout
     private lateinit var header: TextView
     private var workspace: File? = null
+
+    /** 只认最后一次 reload 的结果：`onResume` 可能在前一次读盘还没回来时又触发一次 */
+    private var loadToken: Any? = null
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -75,28 +87,52 @@ class LibraryActivity : Activity() {
 
     private fun reload() {
         val ws = workspace ?: return
-        list.removeAllViews()
-        val docs: List<LibDocument>
-        val info: String
-        try {
-            LibraryStore.open(ws, readOnly = true).use { store ->
-                docs = store.allDocuments()
-                info = "${store.workspaceName().ifEmpty { ws.name }}　${docs.size} 个文档"
-                for (d in docs) {
-                    val ink = store.noteCount(d.id, NoteKind.INK)
-                    val pdfOk = Workspace.firstOpenablePdf(ws, store, d.id) != null
-                    list.addView(row(d, ink, pdfOk))
-                    list.addView(divider())
+        val token = Any()
+        loadToken = token
+        // 首次才显示「正在读取」：从阅读界面退回来时保留旧列表，读完再整体换掉——
+        // 先清空的话每次返回都会闪一下白屏（慢卷上闪好几秒）
+        if (list.childCount == 0) header.text = "正在读取工作区…"
+        runInBackground(
+            what = "读库 ${ws.name}",
+            work = { read(ws) },
+            ok = { snap ->
+                if (loadToken === token) render(ws, snap)
+            },
+            fail = { e ->
+                if (loadToken === token) {
+                    Log.e(TAG, "读库失败", e)
+                    list.removeAllViews()
+                    header.text = "打不开工作区：${e.message}"
                 }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "读库失败", e)
-            header.text = "打不开工作区：${e.message}"
-            return
+            },
+        )
+    }
+
+    /** 后台线程：一次把库读干净就关掉连接，`store` 不外泄给主线程（它非线程安全） */
+    private fun read(ws: File): Snapshot =
+        LibraryStore.open(ws, readOnly = true).use { store ->
+            val docs = store.allDocuments()
+            Snapshot(
+                info = "${store.workspaceName().ifEmpty { ws.name }}　${docs.size} 个文档",
+                rows = docs.map { d ->
+                    Row(
+                        doc = d,
+                        ink = store.noteCount(d.id, NoteKind.INK),
+                        pdfOk = Workspace.firstOpenablePdf(ws, store, d.id) != null,
+                    )
+                },
+            )
         }
+
+    private fun render(ws: File, snap: Snapshot) {
+        list.removeAllViews()
         title = ws.name
-        header.text = info
-        if (docs.isEmpty()) {
+        header.text = snap.info
+        for (r in snap.rows) {
+            list.addView(row(r.doc, r.ink, r.pdfOk))
+            list.addView(divider())
+        }
+        if (snap.rows.isEmpty()) {
             list.addView(
                 TextView(this).apply {
                     text = "这个工作区还没有文档。先在 Mac 上导入 PDF 并「拷进工作区」，再把整个 .unrd 搬过来。"

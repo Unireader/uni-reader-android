@@ -317,6 +317,7 @@ open class PageCanvasView @JvmOverloads constructor(
             onDocumentReset()
         }
         onGeomChanged()
+        maybeFirstGeometry()   // 页表可能比首次布局还晚到（模式1 的打开是异步的，见 §9.5）
     }
 
     /** 换文档时子类要清的自家状态（模式2：Mac 视口序号 vpSeq） */
@@ -362,10 +363,20 @@ open class PageCanvasView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         onGeomChanged()
-        if (!firstGeometryDone && w > 0 && pageCount > 0) {
-            firstGeometryDone = true
-            onFirstGeometry?.invoke()
-        }
+        maybeFirstGeometry()
+    }
+
+    /**
+     * 「视口有尺寸」+「页表已到」两件都齐了才算几何首次就绪，**谁后到都算**。
+     *
+     * 原先只在 [onSizeChanged] 里判，隐含假设是页表先到。模式1 改成后台打开（§9.5）后顺序反了：
+     * 布局时 `pageCount` 还是 0、页表 1.4 秒后才来，钩子于是永不触发——表现是阅读进度**静默**
+     * 不复原（每次打开都停在页顶），而日志里照旧写着「复原到第 8 页」。
+     */
+    private fun maybeFirstGeometry() {
+        if (firstGeometryDone || width <= 0 || pageCount <= 0) return
+        firstGeometryDone = true
+        onFirstGeometry?.invoke()
     }
 
     /**

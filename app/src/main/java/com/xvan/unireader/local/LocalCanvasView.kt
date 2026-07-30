@@ -9,6 +9,7 @@ import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
+import com.xvan.unireader.shared.Stroke
 
 /**
  * 模式1（本地开工作区）的画布：`PageCanvasView` + 「提交给本机 SQLite」。
@@ -142,8 +143,15 @@ class LocalCanvasView @JvmOverloads constructor(
     fun reloadStrokes() {
         val s = store ?: return
         val hidden = s.inkLayers(documentId).filter { !it.visible }.map { it.id }.toSet()
-        val all = s.strokes(documentId)
-        setStrokes(if (hidden.isEmpty()) all else all.filter { it.layerId !in hidden })
+        applyStrokes(s.strokes(documentId), hidden)
+    }
+
+    /**
+     * 回推一批**已经读好**的笔迹。打开文档时走这条：那时 `store` 还在后台线程手里，
+     * 笔迹和图层可见性是和页尺寸表一起在后台读出来的（§9.5——首屏不能有读库 I/O）。
+     */
+    fun applyStrokes(all: List<Stroke>, hiddenLayerIds: Set<String>) {
+        setStrokes(if (hiddenLayerIds.isEmpty()) all else all.filter { it.layerId !in hiddenLayerIds })
         onInkChanged?.invoke()
     }
 

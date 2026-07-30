@@ -16,7 +16,11 @@ import java.util.UUID
  * 与 Mac 端的**唯一区别**：这里不建表、不迁移（见 [Db.open] 的说明）。SQL 语句逐条照抄 Mac，
  * 包括 `ORDER BY`——列表顺序不一致会让「Mac 上第 3 个文档」和平板上的第 3 个不是同一本。
  *
- * 非线程安全：主线程用。后台渲染线程只碰 [PdfSource]（M2），不碰这里。
+ * **非线程安全，同一时刻只能有一个线程用它**。实际的交接是：在后台线程 [open]（开库 +
+ * `wal_checkpoint` 在慢卷上是秒级，不能放主线程——§9.5），交给主线程独占使用（读写笔迹、写进度），
+ * 界面销毁时再由后台线程 [close]（同样含 checkpoint）。每次交接都经过 `Handler`/`Executor`，
+ * 有 happens-before，不需要额外加锁；但**别在主线程还用着的时候另起线程读它**。
+ * 后台渲染线程只碰 [com.xvan.unireader.local.PdfSource]，不碰这里。
  */
 class LibraryStore(private val db: Db) : Closeable {
 
