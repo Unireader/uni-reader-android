@@ -5,11 +5,14 @@ import android.util.AttributeSet
 import android.util.Log
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 模式1（本地开工作区）的画布：`PageCanvasView` + 「提交给本机 SQLite」。
@@ -24,10 +27,6 @@ class LocalCanvasView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : PageCanvasView(context, attrs) {
-
-    companion object {
-        const val TAG = "UniReader/Canvas"
-    }
 
     /** 落库目标。未设置（还没打开文档）时所有提交都丢弃，不崩 */
     var store: LibraryStore? = null
@@ -158,6 +157,45 @@ class LocalCanvasView @JvmOverloads constructor(
         onInkChanged?.invoke()
     }
 
-    // 擦除的 move 帧不落库（一笔擦完再算差异）；probe/hover/框选提交留给 M4/M6
+    // ---------- 框选移动 ----------
+
+    /**
+     * 框选移动的**权威执行**（M4）：与 Mac `AppModel.applyLassoMove` 逐条对齐——
+     * 只动锚定页、`dx/dy` 全零不动、退化成线/点的框（宽或高为 0）不动、命中口径是「任一点落框内」、
+     * 平移走 [InkEdit.translated]（逐点 clamp）。
+     *
+     * 钩子只给 `box` 不给下标，是因为模式2 要把它发给 Mac 复判（不信任客户端的本地判定）。
+     * 模式1 的真源就在进程内，所以照同一口径拿 `strokes` 重判一次——它已按可见图层过滤过
+     * （见 `applyStrokes`），与 Mac 的 `vis.contains(layerId)` 同效：**隐藏图层的笔迹不会被移走**，
+     * 否则用户会移动到自己看不见的东西。
+     *
+     * 文字注解那一半留给 M5：模式1 还没把 `note`（kind=0）读进 `notes`，这里的 `notes` 恒为空。
+     */
+    override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float) {
+        val s = store ?: return
+        if (dx == 0f && dy == 0f) return
+        val x0 = min(box[0], box[2]); val x1 = max(box[0], box[2])
+        val y0 = min(box[1], box[3]); val y1 = max(box[1], box[3])
+        if (x1 - x0 <= 0f || y1 - y0 <= 0f) return
+        val hits = strokes.filter { st ->
+            st.id.isNotEmpty() && st.page.toInt() == page &&
+                st.pts.any { it.x in x0..x1 && it.y in y0..y1 }
+        }
+        if (hits.isEmpty()) return
+        try {
+            // 整批一个事务：半途崩掉会留下「一半笔迹移了、一半没移」的画面（同擦除的理由，§9.3）
+            s.transaction {
+                for (h in hits) s.updateStrokePoints(h.id, InkEdit.translated(h.pts, dx, dy))
+            }
+            Log.i(TAG, "框选移动落库：${hits.size} 条 dx=${"%.4f".format(dx)} dy=${"%.4f".format(dy)}")
+        } catch (e: Exception) {
+            Log.e(TAG, "框选移动写库失败，回退到库里的状态", e)
+        }
+        // 回推后基类会自己清掉预览偏移（setStrokes 里 lassoCommitted → clearLasso），
+        // 与模式2 「等 Mac 广播回来才归位」同构；必须 post——此刻还在 finishLasso 里。
+        post { reloadStrokes() }
+    }
+
+    // 擦除的 move 帧不落库（一笔擦完再算差异）；probe/hover 留给 M6
     override fun onErase(page: Int, pts: List<Pt2>) = Unit
 }

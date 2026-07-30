@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.AttributeSet
+import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import java.util.UUID
@@ -92,6 +93,9 @@ open class PageCanvasView @JvmOverloads constructor(
     var imageSource: PageImageSource? = null
 
     companion object {
+        /** 两模式共用这一个 tag：几何/手势/命中都在基类，出问题时要能一把捞出来 */
+        const val TAG = "UniReader/Canvas"
+
         const val ERASE_R_FALLBACK = 0.02f   // 橡皮归一化半径默认值（Mac eraser 消息到达前）
 
         /** 内置兜底笔（Mac PenPresets.defaults；首连前用，pens 消息到达后整体替换） */
@@ -836,6 +840,15 @@ open class PageCanvasView @JvmOverloads constructor(
             if (lassoSelection != null) { lassoSelection = null; invalidate() }
         } else if (lassoDragMode == 1 && page >= 0 && lassoHasCur) {
             lassoSelection = lassoHitTest(page, lassoAnchorNx, lassoAnchorNy, lassoCurNx, lassoCurNy)
+            // 「框了但没选中」与「框错页了」长得一模一样，不打点只能靠猜
+            Log.i(
+                TAG,
+                "框选 page=$page 框=(${"%.3f".format(min(lassoAnchorNx, lassoCurNx))}," +
+                    "${"%.3f".format(min(lassoAnchorNy, lassoCurNy))})-" +
+                    "(${"%.3f".format(max(lassoAnchorNx, lassoCurNx))}," +
+                    "${"%.3f".format(max(lassoAnchorNy, lassoCurNy))}) 命中 笔迹=" +
+                    "${lassoSelection?.strokeIdx?.size ?: 0} 注解=${lassoSelection?.noteIdx?.size ?: 0}",
+            )
             invalidate()
         } else if (lassoDragMode == 2) {
             val sel = lassoSelection

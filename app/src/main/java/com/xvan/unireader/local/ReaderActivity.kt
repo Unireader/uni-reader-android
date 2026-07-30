@@ -13,8 +13,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.Space
 import android.widget.TextView
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibInkLayer
@@ -88,6 +88,7 @@ class ReaderActivity : Activity() {
     private lateinit var pageLabel: TextView
     private lateinit var modeBtn: Button
     private lateinit var penBtn: Button
+    private lateinit var rulerBtn: Button
     private lateinit var openingLabel: TextView
     private lateinit var penStat: TextView
     private lateinit var layerStat: TextView
@@ -139,25 +140,42 @@ class ReaderActivity : Activity() {
             setTextColor(Color.WHITE)
             setOnClickListener { showGotoPage() }
         }
-        modeBtn = barBtn("翻页") { cycleMode() }
+        // 轮换用基类的（笔记→擦除→翻页→框选，与模式2 的模式键/PageUp 同一份实现）：
+        // 早先这里自己写了一份三态轮换来绕开框选，那时它的落库钩子还没做，现在有了
+        modeBtn = barBtn("翻页") { canvas.cycleMode(); refreshHud() }
         penBtn = barBtn("笔") { canvas.cyclePen(); refreshHud() }
+        // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
+        rulerBtn = barBtn("尺子") { canvas.toggleRuler(); refreshHud() }
         // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）
         penStat = capsule(this).apply {
             setOnClickListener { PadPanels.showPenPanel(this@ReaderActivity, canvas) }
         }
         layerStat = capsule(this).apply { setOnClickListener { showLayers() } }
+        // 按钮组装在可横滑的容器里、页码固定在最右：竖屏 1080 宽下五个按钮就顶到边了，
+        // 按 wrap 排会把页码（也是跳页入口）直接挤出屏幕——按钮以后还会加。
+        val btns = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(barBtn("◀") { canvas.turn(prev = true) })
+            addView(barBtn("▶") { canvas.turn(prev = false) })
+            addView(modeBtn)
+            addView(penBtn)
+            addView(rulerBtn)
+        }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             isClickable = true   // 挡住触摸穿透到画布
             setBackgroundColor(0xE6161B22.toInt())
             setPadding(dp(10), 0, dp(10), 0)
-            addView(barBtn("◀") { canvas.turn(prev = true) })
-            addView(barBtn("▶") { canvas.turn(prev = false) })
-            addView(modeBtn)
-            addView(penBtn)
-            addView(Space(context), LinearLayout.LayoutParams(0, 1, 1f))
-            addView(pageLabel)
+            addView(
+                HorizontalScrollView(context).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(btns)
+                },
+                LinearLayout.LayoutParams(0, -1, 1f),
+            )
+            addView(pageLabel, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         }
         openingLabel = TextView(this).apply {
             text = "正在打开…"
@@ -310,25 +328,12 @@ class ReaderActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    /**
-     * 阅读默认 `MODE_PAGE`（笔也用来平移）——一打开就是写字模式的话，随手一碰就是一道墨。
-     * 只在 翻页/笔记/擦除 三态间轮换：框选移动是 M4 的事（它的提交钩子还没落库）。
-     */
-    private fun cycleMode() {
-        val next = when (canvas.mode) {
-            MODE_PAGE -> MODE_NOTE
-            MODE_NOTE -> MODE_ERASE
-            else -> MODE_PAGE
-        }
-        canvas.setMode(next)
-        refreshHud()
-    }
-
     /** 每帧都会调（滚动/缩放都触发），一律走 `setTextIfChanged`——见 shared/Widgets.kt */
     private fun refreshHud() {
         pageLabel.setTextIfChanged("${canvas.hudPage()}　${canvas.hudZoom()}")
         modeBtn.setTextIfChanged(canvas.modeLabel())
         penBtn.setTextIfChanged(if (canvas.mode == MODE_NOTE) canvas.penLabel() else "笔")
+        rulerBtn.setTextIfChanged(if (canvas.rulerOn) "尺子✓" else "尺子")
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
         val pen = canvas.curPenOrNull()
         penStat.setTextIfChanged(
