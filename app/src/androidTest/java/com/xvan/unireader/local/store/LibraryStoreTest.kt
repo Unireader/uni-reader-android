@@ -4,6 +4,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt3
+import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.brushName
 import java.io.File
 import org.json.JSONObject
@@ -193,6 +194,121 @@ class LibraryStoreTest {
             assertEquals(1, o.getJSONArray("points").length())
             assertEquals("anchor 要随新点集重算", 0.2, n.anchorX, 1e-6)
             assertEquals("created_at 不许被 upsert 改掉", created, n.createdAt)
+        }
+    }
+
+    // ---------- 擦除对齐（reconcileStrokes） ----------
+
+    /** 照画布的口径给 [LibraryStore.reconcileStrokes] 造入参：可见图层的笔迹按 id 分组 */
+    private fun visibleByeId(store: LibraryStore, docId: String): Map<String, List<Stroke>> {
+        val hidden = store.inkLayers(docId).filter { !it.visible }.map { it.id }.toSet()
+        return store.strokes(docId).filter { it.layerId !in hidden }.groupBy { it.id }
+    }
+
+    private fun seg(s: Stroke, from: Int, to: Int) = s.copy(pts = s.pts.subList(from, to))
+
+    @Test
+    fun 局部擦除切段后头一段沿用原id且createdAt不变() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        val docId: String
+        val id: String
+        val created: String
+        LibraryStore.open(dir).use { store ->
+            docId = store.allDocuments().first().id
+            store.ensureDefaultLayer(docId)
+            val pts = (0 until 6).map { Pt3(it / 10f, 0.5f, 0.5f) }
+            id = store.insertStroke(docId, 1, Pen(10, 20, 30, 1f, 8f, 0), pts)!!
+            created = store.notes(docId).first { it.id == id }.createdAt
+
+            // 中间被擦掉一段：0..1 和 4..5 存活（画布切段时两段都带着原 id）
+            val cur = store.strokes(docId).first { it.id == id }
+            val local = visibleByeId(store, docId).toMutableMap()
+            local[id] = listOf(seg(cur, 0, 2), seg(cur, 4, 6))
+            val d = store.reconcileStrokes(docId, local)
+            assertEquals("头一段改写原条，不删", 0, d.deleted)
+            assertEquals(1, d.updated)
+            assertEquals(1, d.inserted)
+        }
+        LibraryStore.open(dir, readOnly = true).use { store ->
+            val n = store.notes(docId).firstOrNull { it.id == id }
+            assertNotNull("原 id 必须还在（否则下一次擦除会对不上，见 reconcileStrokes 的说明）", n)
+            assertEquals("绘制顺序靠 created_at，不许被擦除刷新", created, n!!.createdAt)
+            val mine = store.strokes(docId).filter { it.pts.first().y == 0.5f && it.pen.r == 10 }
+            assertEquals("切成两段", 2, mine.size)
+            assertEquals(listOf(0f, 0.1f), mine.first { it.id == id }.pts.map { it.x })
+            assertEquals(listOf(0.4f, 0.5f), mine.first { it.id != id }.pts.map { it.x })
+        }
+    }
+
+    /**
+     * 写库改到后台队列之后（§9.5），「擦 → 落库 → 回推」这条链变长了：用户完全可能在回推到达
+     * 之前又擦一笔，第二次的期望状态是照着**旧 id** 算出来的。这条测试就是那个时序——
+     * 从头到尾不重读，连着对齐两次。曾经的「删原条 + 全部新插」在这里会把整页笔迹删光。
+     */
+    @Test
+    fun 回推没到就再擦一次不会把整页笔迹删光() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        LibraryStore.open(dir).use { store ->
+            val docId = store.allDocuments().first().id
+            store.ensureDefaultLayer(docId)
+            val pts = (0 until 6).map { Pt3(it / 10f, 0.5f, 0.5f) }
+            val id = store.insertStroke(docId, 1, Pen(11, 22, 33, 1f, 8f, 0), pts)!!
+            val before = store.strokes(docId).size
+
+            val s0 = store.strokes(docId).first { it.id == id }
+            val local1 = visibleByeId(store, docId).toMutableMap()
+            local1[id] = listOf(seg(s0, 0, 3), seg(s0, 3, 6))
+            store.reconcileStrokes(docId, local1)
+
+            // 回推没来：第二次擦除的入参仍然是 local1 那份（键还是旧 id），再切一刀
+            val local2 = local1.toMutableMap()
+            local2[id] = listOf(seg(s0, 0, 1), seg(s0, 2, 3), seg(s0, 3, 6))
+            store.reconcileStrokes(docId, local2)
+
+            val mine = store.strokes(docId).filter { it.pen.r == 11 }
+            assertEquals("三段都要在（一条都不许被删光）", 3, mine.size)
+            assertEquals(
+                listOf(listOf(0f), listOf(0.2f), listOf(0.3f, 0.4f, 0.5f)),
+                mine.map { s -> s.pts.map { it.x } }.sortedBy { it.first() },
+            )
+            assertEquals("别的笔迹一条都不许动", before + 2, store.strokes(docId).size)
+        }
+    }
+
+    /**
+     * 藏一个图层再随便擦一下，那一层的笔迹曾会被整层删掉——期望状态是「画布上看得见的」，
+     * 隐藏层的笔迹根本不在里面，于是被当成擦光了。这条守住 Mac `vis.contains(layerId)` 的口径。
+     */
+    @Test
+    fun 隐藏图层的笔迹不会被擦除对齐删掉() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        LibraryStore.open(dir).use { store ->
+            val docId = store.allDocuments().first().id
+            store.ensureDefaultLayer(docId)
+            val hiddenLayer = store.addInkLayer(docId)
+            val onHidden = store.insertStroke(
+                docId, 1, Pen(9, 9, 9, 1f, 8f, 0),
+                listOf(Pt3(0.7f, 0.7f, 0.5f), Pt3(0.8f, 0.8f, 0.5f)),
+                layerId = hiddenLayer.id,
+            )!!
+            val onVisible = store.insertStroke(
+                docId, 1, Pen(8, 8, 8, 1f, 8f, 0),
+                (0 until 4).map { Pt3(it / 10f, 0.6f, 0.5f) },
+            )!!
+            store.upsertInkLayer(hiddenLayer.copy(visible = false))
+
+            // 画布上看得见的只有 onVisible，把它擦成一段
+            val cur = store.strokes(docId).first { it.id == onVisible }
+            val local = visibleByeId(store, docId).toMutableMap()
+            assertTrue("入参本来就不该含隐藏层的笔迹", !local.containsKey(onHidden))
+            local[onVisible] = listOf(seg(cur, 0, 2))
+            store.reconcileStrokes(docId, local)
+
+            assertNotNull("隐藏图层的笔迹一条都不许动", store.notes(docId).firstOrNull { it.id == onHidden })
+            assertEquals(2, store.strokes(docId).first { it.id == onVisible }.pts.size)
         }
     }
 

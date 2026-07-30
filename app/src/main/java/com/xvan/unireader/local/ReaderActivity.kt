@@ -20,6 +20,7 @@ import android.widget.Toast
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.local.store.toUiLayers
 import com.xvan.unireader.shared.Bg
 import com.xvan.unireader.shared.MODE_ERASE
@@ -47,6 +48,9 @@ import java.io.File
  * 打开的那一串 I/O 全在后台（§9.5）：开库、找 PDF、Pdfium 读**全部**页尺寸（几百页的文档不便宜）、
  * 读笔迹与图层。后台备齐了才一次性装配到画布上——中途装一半的话，几何还没就绪就开始画页，
  * 会先闪一屏错位。
+ *
+ * 打开之后的读写同样不在主线程：库交给 [StoreQueue] 的独占线程，这个类里剩下的活儿只是
+ * **攒好参数丢进队列、拿回结果刷界面**。
  */
 class ReaderActivity : Activity() {
 
@@ -102,7 +106,9 @@ class ReaderActivity : Activity() {
     private lateinit var openingLabel: TextView
     private lateinit var penStat: TextView
     private lateinit var layerStat: TextView
-    private var store: LibraryStore? = null
+
+    /** 库的独占线程。`attach` 之后主线程只通过它碰库（§9.5） */
+    private var queue: StoreQueue? = null
 
     /** 当前文档的图层表（`ink_layer` 的内存镜像）。改完一律重读，不本地推算 */
     private var layers = listOf<LibInkLayer>()
@@ -303,14 +309,17 @@ class ReaderActivity : Activity() {
 
     /** 主线程：把后台备好的东西一次性装到画布上。这里一行 I/O 都不做。 */
     private fun attach(o: Opened) {
-        store = o.store
+        // 库在这里从 `unireader-io`（开它的那条线程）转交给 `unireader-store` 独占，
+        // 主线程只留住队列本身。两次交接都过 Handler/Executor，有 happens-before。
+        val q = StoreQueue(o.store)
+        queue = q
         pdf = o.pdf
         openingLabel.visibility = View.GONE
         title = o.doc.title
 
         // 这个卷建不起 WAL（FAT32/exFAT 的 U 盘，§9.3）：不是错误，但得说一声——退出时的
         // checkpoint 会变成空操作，「搬运前先把 -wal 合并回主库」那层保险在这里没有。
-        if (!o.store.walEnabled) {
+        if (!q.walEnabled) {
             Log.w(TAG, "这个卷不支持 WAL：笔迹照常落库，但 wal_checkpoint 是空操作")
             Toast.makeText(
                 this,
@@ -340,7 +349,7 @@ class ReaderActivity : Activity() {
             o.pdf.pageSizes.map { it[0] to it[1] },
             reset = true,
         )
-        canvas.store = o.store
+        canvas.store = q
         canvas.documentId = docId
         layers = o.layers
         canvas.activeLayerId = layers.firstOrNull()?.id ?: LibInkLayer.DEFAULT_ID
@@ -414,11 +423,13 @@ class ReaderActivity : Activity() {
     /**
      * 模式2 里这三件事只是「请求」，由 Mac 判定后广播权威状态回来；模式1 的真源就在进程内，
      * 所以**直接写 `ink_layer` 表再整表重读**——不本地推算列表，避免内存镜像与库里悄悄分叉。
+     * 写与重读在同一个队列作业里做完，回主线程时 `layers` 与笔迹一起换掉；写失败也照读，
+     * 界面于是退回库里的状态，不会显示一个没存进去的开关。
      *
      * 面板按**下标**回调（线格式就是按下标发的），这里用下标换 id。
      */
     private fun showLayers() {
-        val s = store ?: return
+        val q = queue ?: return
         PadPanels.showLayerPanel(
             this, layers.toUiLayers(), layers.indexOfFirst { it.id == canvas.activeLayerId },
             onSelect = { i ->
@@ -430,22 +441,40 @@ class ReaderActivity : Activity() {
             },
             onToggleVisible = { i, visible ->
                 layers.getOrNull(i)?.let { l ->
-                    runCatching { s.upsertInkLayer(l.copy(visible = visible)) }
-                        .onFailure { Log.e(TAG, "写图层可见性失败", it) }
-                    layers = s.inkLayers(docId)
-                    // 隐藏的图层数据一条不动，只是不画（同 Mac 的 broadcastStrokes 过滤口径）
-                    canvas.reloadStrokes()
-                    refreshHud()
+                    q.submit(
+                        "切图层可见性 ${l.name}",
+                        { s ->
+                            runCatching { s.upsertInkLayer(l.copy(visible = visible)) }
+                                .onFailure { Log.e(TAG, "写图层可见性失败", it) }
+                            s.inkLayers(docId) to s.strokes(docId)
+                        },
+                        { (ls, all) ->
+                            layers = ls
+                            // 隐藏的图层数据一条不动，只是不画（同 Mac 的 broadcastStrokes 过滤口径）
+                            canvas.applyStrokes(all, hiddenLayerIds())
+                            refreshHud()
+                        },
+                    )
                 }
             },
             onAdd = {
-                val l = runCatching { s.addInkLayer(docId) }
-                    .onFailure { Log.e(TAG, "新建图层失败", it) }
-                    .getOrNull() ?: return@showLayerPanel
-                layers = s.inkLayers(docId)
-                canvas.activeLayerId = l.id   // 新建即切过去（同 Mac 的 layerAdd）
-                Log.i(TAG, "新建图层 ${l.name}，已设为作画图层")
-                refreshHud()
+                q.submit(
+                    "新建图层",
+                    { s ->
+                        val l = runCatching { s.addInkLayer(docId) }
+                            .onFailure { Log.e(TAG, "新建图层失败", it) }
+                            .getOrNull()
+                        l to s.inkLayers(docId)
+                    },
+                    { (l, ls) ->
+                        layers = ls
+                        if (l != null) {
+                            canvas.activeLayerId = l.id   // 新建即切过去（同 Mac 的 layerAdd）
+                            Log.i(TAG, "新建图层 ${l.name}，已设为作画图层")
+                        }
+                        refreshHud()
+                    },
+                )
             },
         )
     }
@@ -483,18 +512,19 @@ class ReaderActivity : Activity() {
         }
     }
 
+    /**
+     * 四个数在主线程取好再丢进队列——`zoomLevel()`/`hFrac()` 是视图状态，队列线程不许读。
+     * 写失败只留日志：下一次滚动会再置脏、两秒后重来一遍。
+     */
     private fun saveProgress() {
         if (!dirty) return
-        val s = store ?: return
+        val q = queue ?: return
         dirty = false
-        try {
-            s.updateProgress(
-                docId, curPage, curFrac.toDouble(),
-                canvas.zoomLevel().toDouble(), canvas.hFrac().toDouble(),
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "写进度失败", e)
-        }
+        val page = curPage
+        val frac = curFrac.toDouble()
+        val zoom = canvas.zoomLevel().toDouble()
+        val hfrac = canvas.hFrac().toDouble()
+        q.submit("写进度 第${page + 1}页") { it.updateProgress(docId, page, frac, zoom, hfrac) }
     }
 
     override fun onPause() {
@@ -506,20 +536,16 @@ class ReaderActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        saveProgress()
+        saveProgress()   // 排进队列，一定落在下面那句关库之前（FIFO）
         // 收尾也别在主线程：`store.close()` 内含 wal_checkpoint(TRUNCATE)，慢卷上退出会卡住整个
-        // 返回动画（§9.5）。此后主线程不再碰这两个对象，所以字段先摘干净再交给后台。
-        val s = store
+        // 返回动画（§9.5）。关库排在队尾由队列自己做，Pdfium 那半边照旧甩给 Bg。
+        val q = queue
         val p = pdf
-        store = null
+        queue = null
         pdf = null
         canvas.store = null
-        if (s != null || p != null) {
-            Bg.submit("关闭文档 ${docId.take(8)}") {
-                p?.close()
-                s?.close()
-            }
-        }
+        q?.close()
+        if (p != null) Bg.submit("关闭 PDF ${docId.take(8)}") { p.close() }
         super.onDestroy()
     }
 }

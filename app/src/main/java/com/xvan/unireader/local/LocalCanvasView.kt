@@ -6,6 +6,7 @@ import android.util.Log
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteAnchor
+import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
@@ -25,14 +26,18 @@ import kotlin.math.min
  *
  * **「乐观预览 + 真源回推」在这里天然退化成「真源就在进程内」**（`ANDROID-STANDALONE-PLAN.md §5.1`）：
  * 基类照旧本地画半笔、照旧等 `setStrokes` 回推后清掉它，只不过回推方从 Mac 变成了「落库后自己读回来」。
+ *
+ * **落库全在 [StoreQueue] 的独占线程上**（§9.5）：这个类里一行同步 I/O 都没有，写完接着排一次重读，
+ * 结果回到主线程再 `apply*`。因此回推**必然晚于本次手势**——与模式2 等 Mac 广播回来是同一种时序，
+ * 中间那段时间画面靠基类的乐观预览撑着。
  */
 class LocalCanvasView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : PageCanvasView(context, attrs) {
 
-    /** 落库目标。未设置（还没打开文档）时所有提交都丢弃，不崩 */
-    var store: LibraryStore? = null
+    /** 落库目标（独占库的那条队列）。未设置（还没打开文档）时所有提交都丢弃，不崩 */
+    var store: StoreQueue? = null
     var documentId = ""
 
     /** 当前作画图层（新笔迹的 layerId）。默认层由 `LibraryStore.ensureDefaultLayer` 保证存在 */
@@ -110,76 +115,89 @@ class LocalCanvasView @JvmOverloads constructor(
             pendingPen = null
             return
         }
-        val s = store
+        val q = store
         val pen = pendingPen
-        if (s == null || pen == null || pending.isEmpty()) {
+        if (q == null || pen == null || pending.isEmpty()) {
             pending.clear(); pendingPen = null
             return
         }
         val pts = ArrayList(pending)
+        val page = pendingPage
+        val layer = activeLayerId
         pending.clear()
         pendingPen = null
-        val id = try {
-            s.insertStroke(documentId, pendingPage, pen, pts, activeLayerId)
-        } catch (e: Exception) {
-            Log.e(TAG, "落笔写库失败（这一笔会丢）", e)
-            null
-        }
-        Log.i(TAG, "落笔 page=$pendingPage 点数=${pts.size} layer=$activeLayerId id=${id?.take(8)}")
-        // **必须 post**：此刻还在基类的 endPen 里，activePen 仍为 true，同步回推的话
-        // setStrokes 不会清掉本地那半笔（它有意不清正在写的笔），于是和落库那条重影。
-        post { reloadStrokes() }
+        // 写完顺手把真源读齐，同一个作业里做完——**写失败也照读**：那一笔于是自己从屏幕上消失，
+        // 比留着一条只存在于内存里的笔迹假装存住了强。
+        // 回推天然晚一拍（走队列 → 回主线程），此刻基类还在 endPen 里、activePen 仍为 true，
+        // 那半笔照旧由活体层画着；等回推到达时 activePen 已经落下，setStrokes 会清掉它，不重影。
+        q.submit(
+            "落笔 page=$page 点数=${pts.size}",
+            { s ->
+                runCatching { s.insertStroke(documentId, page, pen, pts, layer) }
+                    .onSuccess { Log.i(TAG, "落笔 page=$page 点数=${pts.size} layer=$layer id=${it?.take(8)}") }
+                    .onFailure { Log.e(TAG, "落笔写库失败（这一笔会丢）", it) }
+                inkSnapshot(s)
+            },
+            { applyStrokes(it.all, it.hidden) },
+        )
     }
 
     // ---------- 擦除 ----------
 
     /**
      * 基类已经在本地把命中的笔迹删掉/切段了（乐观预览，与 Mac `eraseNear` 两模式一一对应）。
-     * 这里做**权威落库**：按 `note.id` 比对差异，一段不剩的删掉，段数/点数变了的「删原条 + 插新段」。
-     * 整批放一个事务——半途崩掉会留下切了一半的笔迹（§9.3）。
+     * 这里把**擦完的期望状态**整份交给队列去对齐库（差异算法与「为什么头一段要沿用原 id」
+     * 见 [LibraryStore.reconcileStrokes]）。
+     *
+     * `Stroke` 是不可变的、切段也是新建对象，所以这份快照可以安全地跨线程递给队列；
+     * 但**必须在这里就 `groupBy` 定格**——基类的 `strokes` 数组随后还会被回推整体换掉。
+     *
+     * 写失败（事务回滚）也照样重读：本地已经擦掉了、库里没删成，以库为准把笔迹恢复出来，
+     * 总比两边不一致强。
      */
     override fun onEraseEnd() {
-        val s = store ?: return
+        val q = store ?: return
         val local = strokes.filter { it.id.isNotEmpty() }.groupBy { it.id }
-        try {
-            val before = s.strokes(documentId)
-            var deleted = 0
-            var inserted = 0
-            s.transaction {
-                for (old in before) {
-                    val segs = local[old.id]
-                    if (segs == null) {
-                        s.deleteNote(old.id)
-                        deleted++
-                        continue
+        q.submit(
+            "擦除落库",
+            { s ->
+                val d = runCatching { s.reconcileStrokes(documentId, local) }
+                    .onSuccess {
+                        if (it.changed) {
+                            Log.i(TAG, "擦除落库：删 ${it.deleted} 条，改 ${it.updated} 条，插 ${it.inserted} 段")
+                        }
                     }
-                    // 点数没变 = 这条没被擦到（擦除只会减少点，不会持平）
-                    if (segs.size == 1 && segs[0].pts.size == old.pts.size) continue
-                    s.deleteNote(old.id)
-                    deleted++
-                    for (seg in segs) {
-                        s.insertStroke(documentId, seg.page.toInt(), seg.pen, seg.pts, seg.layerId)
-                        inserted++
-                    }
-                }
-            }
-            if (deleted > 0 || inserted > 0) {
-                Log.i(TAG, "擦除落库：删 $deleted 条，插 $inserted 段")
-                post { reloadStrokes() }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "擦除写库失败，回退到库里的状态", e)
-            post { reloadStrokes() }   // 本地已经擦掉了，库里没删成 → 以库为准重读，别让两边不一致
-        }
+                    .onFailure { Log.e(TAG, "擦除写库失败，回退到库里的状态", it) }
+                    .getOrNull()
+                // 改了要回推真源；写失败也要（本地已经擦掉了，得从库里把它恢复出来）。
+                // 只有「一条都没动」才跳过——擦到空处是常事，不值得为它整篇重读一遍笔迹。
+                if (d != null && !d.changed) null else inkSnapshot(s)
+            },
+            { snap -> snap?.let { applyStrokes(it.all, it.hidden) } },
+        )
     }
 
     // ---------- 真源回推 ----------
 
+    /**
+     * 队列线程一趟读齐的回推快照。**主线程只 apply，不碰库**——所以这两个类里放的是读好的结果，
+     * 而不是 `LibraryStore` 的句柄（把句柄漏回主线程就等于把独占权还回去了，见 [StoreQueue]）。
+     */
+    private class InkSnapshot(val all: List<Stroke>, val hidden: Set<String>)
+    private class NoteSnapshot(val notes: List<TextNote>, val fills: List<TextFill>)
+
+    private fun inkSnapshot(s: LibraryStore) = InkSnapshot(
+        s.strokes(documentId),
+        s.inkLayers(documentId).filter { !it.visible }.map { it.id }.toSet(),
+    )
+
+    private fun noteSnapshot(s: LibraryStore) =
+        NoteSnapshot(s.textNotes(documentId), s.textFills(documentId))
+
     /** 从库里重读笔迹并回推（隐藏图层的不画，但数据一条不动） */
     fun reloadStrokes() {
-        val s = store ?: return
-        val hidden = s.inkLayers(documentId).filter { !it.visible }.map { it.id }.toSet()
-        applyStrokes(s.strokes(documentId), hidden)
+        val q = store ?: return
+        q.submit("重读笔迹", { inkSnapshot(it) }, { applyStrokes(it.all, it.hidden) })
     }
 
     /**
@@ -211,44 +229,49 @@ class LocalCanvasView @JvmOverloads constructor(
      * 中心点那一支，正好等于基类本地预览用的「锚点落框」；选区注解才走相交。
      */
     override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float) {
-        val s = store ?: return
+        val q = store ?: return
         if (dx == 0f && dy == 0f) return
         val x0 = min(box[0], box[2]); val x1 = max(box[0], box[2])
         val y0 = min(box[1], box[3]); val y1 = max(box[1], box[3])
         if (x1 - x0 <= 0f || y1 - y0 <= 0f) return
+        // 笔迹这半边在主线程按内存里的 `strokes` 定格（`Stroke` 不可变，可以安全递给队列线程）；
+        // 注解那半边的权威命中要用**库里的 anchor**（含宽高），所以放进作业里读——内存中的 `notes`
+        // 只有落点一个坐标，拿它判的话选区注解永远只在左上角那一个点上才算命中。
         val hits = strokes.filter { st ->
             st.id.isNotEmpty() && st.page.toInt() == page &&
                 st.pts.any { it.x in x0..x1 && it.y in y0..y1 }
         }
-        // 注解的权威命中要用**库里的 anchor**（含宽高），内存里的 `notes` 只有落点一个坐标——
-        // 拿它判的话选区注解永远只在左上角那一个点上才算命中。
-        val noteHits = try {
-            s.noteAnchors(documentId).filter { it.page == page && anchorHit(it, x0, y0, x1, y1) }
-        } catch (e: Exception) {
-            Log.e(TAG, "读注解 anchor 失败，本次只移笔迹", e)
-            emptyList()
-        }
-        if (hits.isEmpty() && noteHits.isEmpty()) return
-        try {
-            // 整批一个事务：半途崩掉会留下「一半笔迹移了、一半没移」的画面（同擦除的理由，§9.3）
-            s.transaction {
-                for (h in hits) s.updateStrokePoints(h.id, InkEdit.translated(h.pts, dx, dy))
-                for (n in noteHits) s.translateTextNote(n.id, dx, dy)
-            }
-            Log.i(
-                TAG,
-                "框选移动落库：笔迹 ${hits.size} 条，注解 ${noteHits.size} 条 " +
-                    "dx=${"%.4f".format(dx)} dy=${"%.4f".format(dy)}",
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "框选移动写库失败，回退到库里的状态", e)
-        }
-        // 回推后基类会自己清掉预览偏移（setStrokes 里 lassoCommitted → clearLasso），
-        // 与模式2 「等 Mac 广播回来才归位」同构；必须 post——此刻还在 finishLasso 里。
-        post {
-            reloadStrokes()
-            if (noteHits.isNotEmpty()) reloadNotes()
-        }
+        q.submit(
+            "框选移动落库",
+            { s ->
+                val noteHits = runCatching {
+                    s.noteAnchors(documentId).filter { it.page == page && anchorHit(it, x0, y0, x1, y1) }
+                }.onFailure { Log.e(TAG, "读注解 anchor 失败，本次只移笔迹", it) }
+                    .getOrDefault(emptyList())
+                if (hits.isNotEmpty() || noteHits.isNotEmpty()) {
+                    runCatching {
+                        // 整批一个事务：半途崩掉会留下「一半笔迹移了、一半没移」的画面（同擦除的理由，§9.3）
+                        s.transaction {
+                            for (h in hits) s.updateStrokePoints(h.id, InkEdit.translated(h.pts, dx, dy))
+                            for (n in noteHits) s.translateTextNote(n.id, dx, dy)
+                        }
+                        Log.i(
+                            TAG,
+                            "框选移动落库：笔迹 ${hits.size} 条，注解 ${noteHits.size} 条 " +
+                                "dx=${"%.4f".format(dx)} dy=${"%.4f".format(dy)}",
+                        )
+                    }.onFailure { Log.e(TAG, "框选移动写库失败，回退到库里的状态", it) }
+                }
+                // 一条都没命中也要回推：预览偏移得靠回推才归位（见下），写失败同理
+                inkSnapshot(s) to if (noteHits.isEmpty()) null else noteSnapshot(s)
+            },
+            { (ink, notes) ->
+                // 回推后基类会自己清掉预览偏移（setStrokes 里 lassoCommitted → clearLasso），
+                // 与模式2 「等 Mac 广播回来才归位」同构。
+                applyStrokes(ink.all, ink.hidden)
+                notes?.let { applyNotes(it.notes, it.fills) }
+            },
+        )
     }
 
     /** 框 ∩ anchor ≠ ∅，或框含住 anchor 中心（Mac `rect.intersects(n.anchor) || rect.contains(mid)`） */
@@ -287,31 +310,37 @@ class LocalCanvasView @JvmOverloads constructor(
      * 内存镜像与库分叉的话，「编辑完看着变了、重开又变回去」这种问题最难查。
      */
     override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String) {
-        val s = store ?: return
-        try {
-            s.upsertTextNote(documentId, id, page, nx, ny, text)
-            Log.i(TAG, "文字注解落库 page=$page id=${id.take(8)} 字数=${text.length}")
-        } catch (e: Exception) {
-            Log.e(TAG, "文字注解写库失败", e)
-        }
-        post { reloadNotes() }
+        val q = store ?: return
+        q.submit(
+            "文字注解落库 page=$page",
+            { s ->
+                runCatching { s.upsertTextNote(documentId, id, page, nx, ny, text) }
+                    .onSuccess { Log.i(TAG, "文字注解落库 page=$page id=${id.take(8)} 字数=${text.length}") }
+                    .onFailure { Log.e(TAG, "文字注解写库失败", it) }
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
     }
 
     override fun onNoteDelete(id: String, page: Int, nx: Float, ny: Float) {
-        val s = store ?: return
-        try {
-            s.deleteNote(id)
-            Log.i(TAG, "文字注解删除 page=$page id=${id.take(8)}")
-        } catch (e: Exception) {
-            Log.e(TAG, "文字注解删除失败", e)
-        }
-        post { reloadNotes() }
+        val q = store ?: return
+        q.submit(
+            "文字注解删除 page=$page",
+            { s ->
+                runCatching { s.deleteNote(id) }
+                    .onSuccess { Log.i(TAG, "文字注解删除 page=$page id=${id.take(8)}") }
+                    .onFailure { Log.e(TAG, "文字注解删除失败", it) }
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
     }
 
     /** 从库里重读文字注解与铺色并回推（同 [reloadStrokes]，只是换一张表的两种 kind） */
     fun reloadNotes() {
-        val s = store ?: return
-        applyNotes(s.textNotes(documentId), s.textFills(documentId))
+        val q = store ?: return
+        q.submit("重读文字注解", { noteSnapshot(it) }, { applyNotes(it.notes, it.fills) })
     }
 
     /**

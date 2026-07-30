@@ -20,11 +20,14 @@ import java.util.UUID
  * 与 Mac 端的**唯一区别**：这里不建表、不迁移（见 [Db.open] 的说明）。SQL 语句逐条照抄 Mac，
  * 包括 `ORDER BY`——列表顺序不一致会让「Mac 上第 3 个文档」和平板上的第 3 个不是同一本。
  *
- * **非线程安全，同一时刻只能有一个线程用它**。实际的交接是：在后台线程 [open]（开库 +
- * `wal_checkpoint` 在慢卷上是秒级，不能放主线程——§9.5），交给主线程独占使用（读写笔迹、写进度），
- * 界面销毁时再由后台线程 [close]（同样含 checkpoint）。每次交接都经过 `Handler`/`Executor`，
- * 有 happens-before，不需要额外加锁；但**别在主线程还用着的时候另起线程读它**。
+ * **非线程安全，同一时刻只能有一个线程用它**。所有权的交接是：在后台线程 [open]（开库 +
+ * `wal_checkpoint` 在慢卷上是秒级，不能放主线程——§9.5），交给 [StoreQueue] 的独占线程读写，
+ * 界面销毁时由同一条队列 [close]（同样含 checkpoint）。每次交接都经过 `Handler`/`Executor`，
+ * 有 happens-before，不需要额外加锁；但**主线程一次都不该直接碰它**——读也一样，读同样走磁盘。
  * 后台渲染线程只碰 [com.xvan.unireader.local.PdfSource]，不碰这里。
+ *
+ * 例外只有一处：[com.xvan.unireader.local.LibraryActivity] 列书单时自己开一个**只读**连接，
+ * 在后台线程上用完即关，不外泄——那是另一个连接，不是这一个。
  */
 class LibraryStore(private val db: Db) : Closeable {
 
@@ -336,6 +339,53 @@ class LibraryStore(private val db: Db) : Closeable {
             ),
         )
         return id
+    }
+
+    /**
+     * 把库里的笔迹对齐到 [local]——擦除后**期望**的状态，按 `note.id` 分组（一条原笔迹被切成
+     * 几段就有几个元素，段的先后即点集顺序）。差异按 id 比对：
+     * - 库里有、[local] 里没有 → 整条被擦掉了，删。
+     * - 只剩一段且点数没变 → 没被擦到，不动（擦除只会减少点，不会持平）。
+     * - 其余 → **头一段改写原来那条**（[updateStrokePoints]，走 upsert 所以 `created_at` 不动、
+     *   绘制顺序不变），多出来的段各插一条新的。
+     *
+     * **头一段必须沿用原 id，不能「删原条 + 全部新插」**：写库改到后台队列之后（§9.5），
+     * 「擦一笔 → 落库 → 重读回推」这条链变长了，用户完全可能在回推到达之前又擦一笔——那一次的
+     * 期望状态是照着**旧 id** 算出来的。只要原 id 还在库里，第二次比对就仍然对得上（多余的新段
+     * 会被删掉重插，内容照样收敛）；要是原 id 已经被删掉换成了随机新 id，第二次比对会发现
+     * 「库里这些 id 期望状态里一个都没有」，于是把整页笔迹删光——静默丢数据，最难查的那一类。
+     *
+     * **隐藏图层上的笔迹一条都不碰**：[local] 是画布上看得见的那些（`applyStrokes` 按可见性滤过），
+     * 隐藏层的笔迹根本不在里面，照上面的规则会被当成「被擦光了」全删掉——藏一个图层再随便擦一下，
+     * 那一层就没了，而界面上什么都看不出来。同 Mac `eraseNear` 的 `vis.contains(layerId)` 口径。
+     *
+     * 调用方在队列线程上跑（见 [StoreQueue]），整批一个事务：半途崩掉会留下切了一半的笔迹（§9.3）。
+     */
+    fun reconcileStrokes(documentId: String, local: Map<String, List<Stroke>>): InkDiff {
+        var deleted = 0
+        var updated = 0
+        var inserted = 0
+        val hidden = inkLayers(documentId).filter { !it.visible }.map { it.id }.toSet()
+        transaction {
+            for (old in strokes(documentId)) {
+                if (old.layerId in hidden) continue
+                val segs = local[old.id]
+                if (segs == null) {
+                    deleteNote(old.id)
+                    deleted++
+                    continue
+                }
+                if (segs.size == 1 && segs[0].pts.size == old.pts.size) continue
+                updateStrokePoints(old.id, segs[0].pts)
+                updated++
+                for (i in 1 until segs.size) {
+                    val seg = segs[i]
+                    insertStroke(documentId, seg.page.toInt(), seg.pen, seg.pts, seg.layerId)
+                    inserted++
+                }
+            }
+        }
+        return InkDiff(deleted, updated, inserted)
     }
 
     /**

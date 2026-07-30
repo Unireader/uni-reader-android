@@ -96,6 +96,11 @@ data class LibNote(
  */
 data class NoteAnchor(val id: String, val page: Int, val x: Float, val y: Float, val w: Float, val h: Float)
 
+/** 一次擦除对齐（[LibraryStore.reconcileStrokes]）改动了多少行，只用来打点/决定要不要回推 */
+data class InkDiff(val deleted: Int, val updated: Int, val inserted: Int) {
+    val changed: Boolean get() = deleted + updated + inserted > 0
+}
+
 /** `note.kind`（Mac 端 `LibNote.kind` 的取值） */
 object NoteKind {
     const val TEXT = 0
