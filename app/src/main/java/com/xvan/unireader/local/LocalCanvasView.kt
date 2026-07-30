@@ -5,12 +5,15 @@ import android.util.AttributeSet
 import android.util.Log
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.local.store.NoteAnchor
 import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextFill
+import com.xvan.unireader.shared.TextNote
 import kotlin.math.max
 import kotlin.math.min
 
@@ -41,8 +44,28 @@ class LocalCanvasView @JvmOverloads constructor(
     /** 笔迹增删后（已落库并回推）通知宿主刷新计数之类 */
     var onInkChanged: (() -> Unit)? = null
 
+    /** 文字笔记模式下点页面：宿主开编辑器（isNew=false 是点中了已有笔记，同模式2） */
+    var onNoteEditor: ((id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean) -> Unit)? = null
+
+    /**
+     * 长按呼盘的**本地判定**（M6）。模式2 里这段在 Mac 上跑，平板只画；模式1 自己判——
+     * 画盘的代码仍是基类那一份，两模式看到的是同一个盘（见 [RadialController]）。
+     */
+    private val radialCtl = RadialController(this)
+
     override fun onScrollReport(page: Int, frac: Float) {
         onProgress?.invoke(page, frac)
+    }
+
+    override fun onOpenNoteEditor(
+        id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean,
+    ) {
+        onNoteEditor?.invoke(id, page, nx, ny, text, isNew)
+    }
+
+    override fun onDetachedFromWindow() {
+        radialCtl.cancel()   // 定时器挂在 View 上，界面没了得收掉
+        super.onDetachedFromWindow()
     }
 
     // ---------- 落笔 ----------
@@ -59,9 +82,16 @@ class LocalCanvasView @JvmOverloads constructor(
         pendingPage = page
         pendingPen = pen
         pendingLine = line
+        radialCtl.begin(page, pt.x, pt.y)   // 笔记模式下 ink 流兼作长按探针（同 Mac 的 beginLongPressWatch）
     }
 
     override fun onInkMove(pts: List<Pt3>) {
+        val last = pts.lastOrNull()
+        if (radialCtl.active) {
+            // 盘开着：这些点是在选扇区、不是笔迹（基类此时也已停止本地作画）
+            last?.let { radialCtl.move(it.x, it.y) }
+            return
+        }
         if (pendingLine) {
             // 尺子笔：基类每帧只发**最新终点**（替换语义，见其 penMove 的 lineStroke 分支），
             // 这里跟着替换而不是追加，否则会攒成一串移动中的终点、连成一条歪笔迹。
@@ -70,9 +100,16 @@ class LocalCanvasView @JvmOverloads constructor(
         } else {
             pending.addAll(pts)
         }
+        last?.let { radialCtl.move(it.x, it.y) }   // 位移够大 = 用户在画，撤销长按候选
     }
 
     override fun onInkEnd() {
+        if (radialCtl.end()) {
+            // 这一笔被长按吃掉了（呼出了盘）：它是一次选择，不是笔迹，一个字都不落库
+            pending.clear()
+            pendingPen = null
+            return
+        }
         val s = store
         val pen = pendingPen
         if (s == null || pen == null || pending.isEmpty()) {
@@ -169,7 +206,9 @@ class LocalCanvasView @JvmOverloads constructor(
      * （见 `applyStrokes`），与 Mac 的 `vis.contains(layerId)` 同效：**隐藏图层的笔迹不会被移走**，
      * 否则用户会移动到自己看不见的东西。
      *
-     * 文字注解那一半留给 M5：模式1 还没把 `note`（kind=0）读进 `notes`，这里的 `notes` 恒为空。
+     * 文字注解那一半（M5 补齐）：命中口径同样照抄 Mac——**框与 anchor 相交**，或框**含住 anchor
+     * 中心点**。点注解的 anchor 是零尺寸，相交那一支恒假（空矩形不与任何矩形相交），实际生效的是
+     * 中心点那一支，正好等于基类本地预览用的「锚点落框」；选区注解才走相交。
      */
     override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float) {
         val s = store ?: return
@@ -181,21 +220,106 @@ class LocalCanvasView @JvmOverloads constructor(
             st.id.isNotEmpty() && st.page.toInt() == page &&
                 st.pts.any { it.x in x0..x1 && it.y in y0..y1 }
         }
-        if (hits.isEmpty()) return
+        // 注解的权威命中要用**库里的 anchor**（含宽高），内存里的 `notes` 只有落点一个坐标——
+        // 拿它判的话选区注解永远只在左上角那一个点上才算命中。
+        val noteHits = try {
+            s.noteAnchors(documentId).filter { it.page == page && anchorHit(it, x0, y0, x1, y1) }
+        } catch (e: Exception) {
+            Log.e(TAG, "读注解 anchor 失败，本次只移笔迹", e)
+            emptyList()
+        }
+        if (hits.isEmpty() && noteHits.isEmpty()) return
         try {
             // 整批一个事务：半途崩掉会留下「一半笔迹移了、一半没移」的画面（同擦除的理由，§9.3）
             s.transaction {
                 for (h in hits) s.updateStrokePoints(h.id, InkEdit.translated(h.pts, dx, dy))
+                for (n in noteHits) s.translateTextNote(n.id, dx, dy)
             }
-            Log.i(TAG, "框选移动落库：${hits.size} 条 dx=${"%.4f".format(dx)} dy=${"%.4f".format(dy)}")
+            Log.i(
+                TAG,
+                "框选移动落库：笔迹 ${hits.size} 条，注解 ${noteHits.size} 条 " +
+                    "dx=${"%.4f".format(dx)} dy=${"%.4f".format(dy)}",
+            )
         } catch (e: Exception) {
             Log.e(TAG, "框选移动写库失败，回退到库里的状态", e)
         }
         // 回推后基类会自己清掉预览偏移（setStrokes 里 lassoCommitted → clearLasso），
         // 与模式2 「等 Mac 广播回来才归位」同构；必须 post——此刻还在 finishLasso 里。
-        post { reloadStrokes() }
+        post {
+            reloadStrokes()
+            if (noteHits.isNotEmpty()) reloadNotes()
+        }
     }
 
-    // 擦除的 move 帧不落库（一笔擦完再算差异）；probe/hover 留给 M6
+    /** 框 ∩ anchor ≠ ∅，或框含住 anchor 中心（Mac `rect.intersects(n.anchor) || rect.contains(mid)`） */
+    private fun anchorHit(a: NoteAnchor, x0: Float, y0: Float, x1: Float, y1: Float): Boolean {
+        val intersects = a.w > 0f && a.h > 0f &&
+            a.x < x1 && a.x + a.w > x0 && a.y < y1 && a.y + a.h > y0
+        val midIn = (a.x + a.w / 2f) in x0..x1 && (a.y + a.h / 2f) in y0..y1
+        return intersects || midIn
+    }
+
+    // 擦除的 move 帧不落库（一笔擦完再算差异）
     override fun onErase(page: Int, pts: List<Pt2>) = Unit
+
+    // ---------- 长按探针（擦除/翻页模式；笔记模式走 ink 那条流） ----------
+    //
+    // 与模式2 上行给 Mac 的是同一批钩子、同一个时机，只是判定方从 Mac 换成了进程内的
+    // [RadialController]。擦除模式下呼盘前已经擦掉的那一段照旧落库（同 Mac：erase 消息先到先应用）。
+
+    override fun onProbeBegin(page: Int, nx: Float, ny: Float) = radialCtl.begin(page, nx, ny)
+
+    override fun onProbeMove(pts: List<Pt2>) {
+        pts.lastOrNull()?.let { radialCtl.move(it.x, it.y) }
+    }
+
+    override fun onProbeEnd() {
+        radialCtl.end()
+    }
+
+    // ---------- 文字注解（kind=0） ----------
+
+    /**
+     * 新建/编辑一条文字注解。语义在 [LibraryStore.upsertTextNote] 里与 Mac 逐条对齐：
+     * 已有的**只改正文**（Mac 建的选区注解不会被退化成点注解），空文本等价删除。
+     *
+     * 基类已经乐观更新了本地 `notes`，这里落库后照旧整表重读回推——真源在库里，
+     * 内存镜像与库分叉的话，「编辑完看着变了、重开又变回去」这种问题最难查。
+     */
+    override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String) {
+        val s = store ?: return
+        try {
+            s.upsertTextNote(documentId, id, page, nx, ny, text)
+            Log.i(TAG, "文字注解落库 page=$page id=${id.take(8)} 字数=${text.length}")
+        } catch (e: Exception) {
+            Log.e(TAG, "文字注解写库失败", e)
+        }
+        post { reloadNotes() }
+    }
+
+    override fun onNoteDelete(id: String, page: Int, nx: Float, ny: Float) {
+        val s = store ?: return
+        try {
+            s.deleteNote(id)
+            Log.i(TAG, "文字注解删除 page=$page id=${id.take(8)}")
+        } catch (e: Exception) {
+            Log.e(TAG, "文字注解删除失败", e)
+        }
+        post { reloadNotes() }
+    }
+
+    /** 从库里重读文字注解与铺色并回推（同 [reloadStrokes]，只是换一张表的两种 kind） */
+    fun reloadNotes() {
+        val s = store ?: return
+        applyNotes(s.textNotes(documentId), s.textFills(documentId))
+    }
+
+    /**
+     * 回推一批**已经读好**的注解与铺色。打开文档时走这条：那时 `store` 还在后台线程手里（§9.5）。
+     */
+    fun applyNotes(list: List<TextNote>, fills: List<TextFill>) {
+        Log.i(TAG, "回推文字注解 ${list.size} 条，铺色 ${fills.size} 片")
+        setNotes(list)
+        setTextFills(fills)
+    }
 }

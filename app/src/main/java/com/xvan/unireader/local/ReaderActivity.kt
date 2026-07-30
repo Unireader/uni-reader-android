@@ -28,6 +28,8 @@ import com.xvan.unireader.shared.MODE_PAGE
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextFill
+import com.xvan.unireader.shared.TextNote
 import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
 import com.xvan.unireader.shared.onSystemBarInsets
@@ -72,6 +74,9 @@ class ReaderActivity : Activity() {
         /** 整张图层表：画布要它的可见性过滤，图层面板要它的 id（面板本身按下标交互） */
         val layers: List<LibInkLayer>,
         val strokes: List<Stroke>,
+        /** 文字注解（kind=0）与它们/高亮（kind=3）的铺色，同样在后台一趟读齐 */
+        val notes: List<TextNote>,
+        val fills: List<TextFill>,
     ) {
         /**
          * 界面已关时的收尾：句柄不收，WAL 就一直挂着，下次打开这个工作区会读到半新半旧的状态。
@@ -89,6 +94,7 @@ class ReaderActivity : Activity() {
     private lateinit var modeBtn: Button
     private lateinit var penBtn: Button
     private lateinit var rulerBtn: Button
+    private lateinit var noteBtn: Button
     private lateinit var openingLabel: TextView
     private lateinit var penStat: TextView
     private lateinit var layerStat: TextView
@@ -133,6 +139,9 @@ class ReaderActivity : Activity() {
                 dirty = true
             }
             onHud = { refreshHud() }
+            // 文字笔记：编辑器面板与模式2 是同一份（shared/PadPanels），只是保存去处不同——
+            // 那边编帧发给 Mac，这边直接落 note 表（kind=0）
+            onNoteEditor = { id, page, nx, ny, text, isNew -> editNote(id, page, nx, ny, text, isNew) }
         }
         pageLabel = TextView(this).apply {
             text = "— / —"
@@ -146,6 +155,8 @@ class ReaderActivity : Activity() {
         penBtn = barBtn("笔") { canvas.cyclePen(); refreshHud() }
         // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
         rulerBtn = barBtn("尺子") { canvas.toggleRuler(); refreshHud() }
+        // 文字笔记模式（M5）：开着时笔点页面 = 开编辑器而不是写字，与模式2 的「文字」键同一开关
+        noteBtn = barBtn("文字") { canvas.toggleNoteMode(); refreshHud() }
         // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）
         penStat = capsule(this).apply {
             setOnClickListener { PadPanels.showPenPanel(this@ReaderActivity, canvas) }
@@ -161,6 +172,7 @@ class ReaderActivity : Activity() {
             addView(modeBtn)
             addView(penBtn)
             addView(rulerBtn)
+            addView(noteBtn)
         }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -257,6 +269,8 @@ class ReaderActivity : Activity() {
                 pdf = src,
                 layers = s.inkLayers(docId),
                 strokes = s.strokes(docId),
+                notes = s.textNotes(docId),
+                fills = s.textFills(docId),
             )
         } catch (e: Throwable) {
             runCatching { pdfSrc?.close() }
@@ -298,9 +312,11 @@ class ReaderActivity : Activity() {
         canvas.activeLayerId = layers.firstOrNull()?.id ?: LibInkLayer.DEFAULT_ID
         canvas.setMode(MODE_PAGE)
         canvas.applyStrokes(o.strokes, hiddenLayerIds())
+        canvas.applyNotes(o.notes, o.fills)
         Log.i(
             TAG,
-            "打开《${doc.title}》${o.pdf.pageCount} 页 笔迹 ${o.strokes.size} 条，" +
+            "打开《${doc.title}》${o.pdf.pageCount} 页 笔迹 ${o.strokes.size} 条 " +
+                "注解 ${o.notes.size} 条 铺色 ${o.fills.size} 片，" +
                 "复原到 第 ${doc.readPage + 1} 页 ${"%.3f".format(doc.readFrac)} " +
                 "zoom=${doc.readZoom} hfrac=${doc.readHFrac}",
         )
@@ -334,6 +350,7 @@ class ReaderActivity : Activity() {
         modeBtn.setTextIfChanged(canvas.modeLabel())
         penBtn.setTextIfChanged(if (canvas.mode == MODE_NOTE) canvas.penLabel() else "笔")
         rulerBtn.setTextIfChanged(if (canvas.rulerOn) "尺子✓" else "尺子")
+        noteBtn.setTextIfChanged(if (canvas.noteMode) "文字✓" else "文字")
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
         val pen = canvas.curPenOrNull()
         penStat.setTextIfChanged(
@@ -392,6 +409,24 @@ class ReaderActivity : Activity() {
                 Log.i(TAG, "新建图层 ${l.name}，已设为作画图层")
                 refreshHud()
             },
+        )
+    }
+
+    // ---------- 文字注解（编辑器面板与模式2 共用，见 shared/PadPanels.kt） ----------
+
+    /**
+     * 打开笔记编辑器。**空文本的处理与 Mac 一致**：新建时空文本 = 什么都不发生（不建空注解），
+     * 已有的改成空 = 删除（Mac `applyTextNote` 里空 upsert 就是删）。落库走画布的钩子，
+     * 由它落完再整表回推——这里不直接碰 store，免得内存与库分叉。
+     */
+    private fun editNote(id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean) {
+        PadPanels.showNoteEditor(
+            this, text, isNew,
+            onSave = { t ->
+                if (t.isEmpty()) { if (!isNew) canvas.deleteNote(id, page, nx, ny) }
+                else canvas.upsertNote(id, page, nx, ny, t)
+            },
+            onDelete = { canvas.deleteNote(id, page, nx, ny) },
         )
     }
 

@@ -235,6 +235,222 @@ class LibraryStoreTest {
         }
     }
 
+    // ---------- 文字注解 / 高亮（M5） ----------
+
+    /**
+     * 造一条 **Mac 形状的选区注解**（kind=0，有 quote/rects/color/type_id、anchor 带宽高）。
+     * fixture 里只有笔迹，而这一版最要紧的就是「Mac 建的注解在平板上编辑后不丢字段」——
+     * 所以按 `Sources/App/TextNoteModel.swift` 的编码形态手工造一条来当被测对象。
+     */
+    private fun seedSelectionNote(store: LibraryStore, docId: String, id: String, typeId: String? = null) {
+        val o = JSONObject()
+            .put("quote", "被选中的原文")
+            .put("text", "Mac 上写的批注")
+            .put(
+                "rects",
+                org.json.JSONArray()
+                    .put(org.json.JSONArray().put(0.2).put(0.30).put(0.5).put(0.02))
+                    .put(org.json.JSONArray().put(0.2).put(0.33).put(0.3).put(0.02)),
+            )
+            .put("color", JSONObject().put("r", 255.0).put("g", 214.0).put("b", 40.0).put("a", 1.0))
+        if (typeId != null) o.put("type_id", typeId)
+        val now = Iso.now()
+        store.upsertNote(
+            LibNote(
+                id = id, documentId = docId, kind = NoteKind.TEXT, page = 2,
+                anchorX = 0.2, anchorY = 0.30, anchorW = 0.5, anchorH = 0.05,
+                payload = o.toString().toByteArray(), createdAt = now, updatedAt = now,
+            ),
+        )
+    }
+
+    @Test
+    fun 新建点注解的落库形状与Mac一致() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        val docId: String
+        val id = java.util.UUID.randomUUID().toString()
+        LibraryStore.open(dir).use { store ->
+            docId = store.allDocuments().first().id
+            store.upsertTextNote(docId, id, page = 5, nx = 0.4f, ny = 0.6f, text = "平板上记的")
+        }
+        LibraryStore.open(dir, readOnly = true).use { store ->
+            val n = store.notes(docId).first { it.id == id }
+            assertEquals("kind 必须是 0", NoteKind.TEXT, n.kind)
+            assertEquals(5, n.page)
+            // 点注解 = 零尺寸 anchor，anchor 就是落点（同 Mac applyTextNote）
+            assertEquals(0.4, n.anchorX, 1e-6)
+            assertEquals(0.6, n.anchorY, 1e-6)
+            assertEquals(0.0, n.anchorW, 0.0)
+            assertEquals(0.0, n.anchorH, 0.0)
+            val o = JSONObject(String(n.payload))
+            assertEquals(setOf("quote", "text", "rects"), o.keys().asSequence().toSet())
+            assertEquals("平板上记的", o.getString("text"))
+            assertEquals("", o.getString("quote"))
+            assertEquals(0, o.getJSONArray("rects").length())
+            // 中立模型：nx/ny 取 anchor 左上角，与 Mac broadcastNotes 发给平板的两列相同
+            val t = store.textNotes(docId).first { it.id == id }
+            assertEquals(5L, t.page)
+            assertEquals(0.4f, t.nx, 1e-6f)
+            assertEquals(0.6f, t.ny, 1e-6f)
+            assertEquals("平板上记的", t.text)
+        }
+    }
+
+    @Test
+    fun 编辑Mac建的选区注解只改正文其余字段一个不丢() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        val docId: String
+        val id = java.util.UUID.randomUUID().toString()
+        LibraryStore.open(dir).use { store ->
+            docId = store.allDocuments().first().id
+            seedSelectionNote(store, docId, id, typeId = "11111111-2222-3333-4444-555555555555")
+            // 平板上点开它改一句话——nx/ny 来自画布（= anchor 左上角），text 是新的
+            store.upsertTextNote(docId, id, page = 2, nx = 0.2f, ny = 0.30f, text = "平板改过的")
+        }
+        LibraryStore.open(dir, readOnly = true).use { store ->
+            val n = store.notes(docId).first { it.id == id }
+            val o = JSONObject(String(n.payload))
+            assertEquals("平板改过的", o.getString("text"))
+            assertEquals("引文不许丢", "被选中的原文", o.getString("quote"))
+            assertEquals("逐行框不许丢", 2, o.getJSONArray("rects").length())
+            assertEquals("类型不许丢", "11111111-2222-3333-4444-555555555555", o.getString("type_id"))
+            assertEquals("高亮色不许丢", 214.0, o.getJSONObject("color").getDouble("g"), 0.0)
+            // 关键：选区注解不能被退化成点注解
+            assertEquals("anchor 宽度不许被抹平", 0.5, n.anchorW, 1e-6)
+            assertEquals("anchor 高度不许被抹平", 0.05, n.anchorH, 1e-6)
+        }
+    }
+
+    @Test
+    fun 空文本等于删除() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        val docId: String
+        val id = java.util.UUID.randomUUID().toString()
+        LibraryStore.open(dir).use { store ->
+            docId = store.allDocuments().first().id
+            store.upsertTextNote(docId, id, 0, 0.1f, 0.1f, "先写点东西")
+            assertEquals(1, store.textNotes(docId).count { it.id == id })
+            store.upsertTextNote(docId, id, 0, 0.1f, 0.1f, "   ")   // 全空白 = 空
+        }
+        LibraryStore.open(dir, readOnly = true).use { store ->
+            assertEquals("空文本 upsert 等价删除（同 Mac）", 0, store.textNotes(docId).count { it.id == id })
+        }
+    }
+
+    @Test
+    fun 框选平移注解时anchor与逐行框一起动并逐角clamp() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        val docId: String
+        val id = java.util.UUID.randomUUID().toString()
+        LibraryStore.open(dir).use { store ->
+            docId = store.allDocuments().first().id
+            seedSelectionNote(store, docId, id)
+            store.translateTextNote(id, dx = 0.1f, dy = -0.5f)   // 向上推出页顶
+        }
+        LibraryStore.open(dir, readOnly = true).use { store ->
+            val n = store.notes(docId).first { it.id == id }
+            assertEquals("x 正常平移", 0.3, n.anchorX, 1e-6)
+            assertEquals("顶边 clamp 到 0", 0.0, n.anchorY, 1e-6)
+            assertEquals("高度收缩 0.05 → 0（0.30-0.5 全在页外）", 0.0, n.anchorH, 1e-6)
+            val rects = JSONObject(String(n.payload)).getJSONArray("rects")
+            assertEquals(2, rects.length())
+            assertEquals("逐行框也要跟着平移", 0.3, rects.getJSONArray(0).getDouble(0), 1e-6)
+            assertEquals("逐行框同样逐角 clamp", 0.0, rects.getJSONArray(0).getDouble(1), 1e-6)
+            assertEquals("引文不许在平移里丢", "被选中的原文", JSONObject(String(n.payload)).getString("quote"))
+        }
+    }
+
+    @Test
+    fun 铺色按Mac的透明度口径分层() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        val docId: String
+        val noteId = java.util.UUID.randomUUID().toString()
+        val hlId = java.util.UUID.randomUUID().toString()
+        val pointId = java.util.UUID.randomUUID().toString()
+        LibraryStore.open(dir).use { store ->
+            docId = store.allDocuments().first().id
+            seedSelectionNote(store, docId, noteId)
+            store.upsertTextNote(docId, pointId, 2, 0.5f, 0.5f, "点注解")
+            // 一条高亮（kind=3）：payload 键与 Mac HighlightPayload 一致（quote/rects/color）
+            val now = Iso.now()
+            store.upsertNote(
+                LibNote(
+                    id = hlId, documentId = docId, kind = NoteKind.HIGHLIGHT, page = 2,
+                    anchorX = 0.1, anchorY = 0.1, anchorW = 0.4, anchorH = 0.02,
+                    payload = JSONObject()
+                        .put("quote", "高亮的原文")
+                        .put(
+                            "rects",
+                            org.json.JSONArray()
+                                .put(org.json.JSONArray().put(0.1).put(0.1).put(0.4).put(0.02)),
+                        )
+                        .put("color", JSONObject().put("r", 150.0).put("g", 220.0).put("b", 120.0).put("a", 1.0))
+                        .toString().toByteArray(),
+                    createdAt = now, updatedAt = now,
+                ),
+            )
+        }
+        LibraryStore.open(dir, readOnly = true).use { store ->
+            // 只看本用例造的那一页：fixture 里可能本来就有注解/高亮（工作区是活的，别假设它是空的）
+            val fills = store.textFills(docId).filter { it.page == 2L }
+            assertEquals("点注解不产生铺色，只有高亮 + 选区注解两片", 2, fills.size)
+            // 顺序 = 绘制顺序：高亮在下、注解底色在上（同 Mac PageCellView 的层序）
+            val hi = fills[0]
+            assertEquals(0.38f, hi.a, 1e-6f)
+            assertEquals("高亮用 payload 里的自身颜色", listOf(150, 220, 120), listOf(hi.r, hi.g, hi.b))
+            val nt = fills[1]
+            assertEquals(0.32f, nt.a, 1e-6f)
+            assertEquals("无类型的注解铺通用暖黄", listOf(255, 209, 38), listOf(nt.r, nt.g, nt.b))
+            assertEquals("两行选区 = 两个框", 2, nt.rects.size)
+            assertEquals(0.2f, nt.rects[0][0], 1e-6f)
+        }
+    }
+
+    /**
+     * 笔记类型是**一条 meta**（`note_types` 的 JSON 数组），不是表。有类型的注解按类型色铺，
+     * 查不到的 `type_id`（Mac 上刚建的类型还没同步过来、或 meta 坏了）回落通用暖黄——
+     * 而不是整篇不铺色/崩掉。
+     *
+     * meta 行直接用框架 API 塞进副本：`LibraryStore` 只读 meta 不写（模式1 没有类型管理界面），
+     * **不为了测试往生产代码里加一个没人调的写口**。
+     */
+    @Test
+    fun 注解按工作区笔记类型的色板铺色查不到则回落通用色() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        val typed = java.util.UUID.randomUUID().toString()
+        val orphan = java.util.UUID.randomUUID().toString()
+        val typeId = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        val docId: String
+        LibraryStore.open(dir).use { store ->
+            docId = store.allDocuments().first().id
+            seedSelectionNote(store, docId, typed, typeId = typeId)
+            seedSelectionNote(store, docId, orphan, typeId = "11111111-0000-0000-0000-000000000000")
+        }
+        // 键名同 Mac `NoteType` 的 CodingKeys（id / name / color_key / icon_name）
+        val types = org.json.JSONArray().put(
+            JSONObject().put("id", typeId).put("name", "重点")
+                .put("color_key", "red").put("icon_name", "flag"),
+        )
+        android.database.sqlite.SQLiteDatabase.openDatabase(
+            File(dir, Workspace.DB_REL).absolutePath, null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READWRITE,
+        ).use { it.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES('note_types',?)", arrayOf(types.toString())) }
+
+        LibraryStore.open(dir, readOnly = true).use { store ->
+            assertEquals("meta 里就一个类型", 1, store.noteTypeColors().size)
+            // 两条注解同页同秒落库，先后不定 → 按颜色认，不按下标认（下标断言会随机挂）
+            val colors = store.textFills(docId).map { listOf(it.r, it.g, it.b) }.toSet()
+            assertTrue("有类型的要按色板铺色，实际 $colors", colors.contains(Palette.rgb("red").toList()))
+            assertTrue("查不到的类型要回落通用暖黄，实际 $colors", colors.contains(listOf(255, 209, 38)))
+        }
+    }
+
     @Test
     fun checkpoint之后wal被截断() {
         assumeTrue("没有 fixture，跳过", fixtureDir() != null)

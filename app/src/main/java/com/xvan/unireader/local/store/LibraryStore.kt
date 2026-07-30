@@ -2,10 +2,14 @@ package com.xvan.unireader.local.store
 
 import android.util.Log
 import com.xvan.unireader.local.Workspace
+import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextFill
+import com.xvan.unireader.shared.TextNote
 import java.io.Closeable
 import java.io.File
 import java.util.UUID
@@ -135,6 +139,159 @@ class LibraryStore(private val db: Db) : Closeable {
 
     /** 擦除是「删若干 + 插若干」，必须一个事务——半途崩掉会留下切了一半的笔迹（§9.3） */
     fun <T> transaction(body: () -> T): T = db.transaction(body)
+
+    // ---------- 文字注解（note kind=0）与高亮（kind=3） ----------
+
+    /**
+     * 读出一篇文档的全部文字注解。
+     *
+     * `nx`/`ny` 取 `anchor_x`/`anchor_y`——**与 Mac `broadcastNotes` 发给平板的两列完全相同**，
+     * 所以同一条注解的标记在模式1 与模式2 落在同一处；Mac 自己阅读区把选区注解的图钉挪到行末
+     * 那是它的显示偏好，不是数据。坏 payload 单条跳过（同 [strokes] 的口径）。
+     */
+    fun textNotes(documentId: String): List<TextNote> {
+        val out = ArrayList<TextNote>()
+        var bad = 0
+        for (n in notes(documentId)) {
+            if (n.kind != NoteKind.TEXT) continue
+            val p = TextNotePayload.parse(n.payload)
+            if (p == null) { bad++; continue }
+            out.add(TextNote(n.id, n.page.toLong(), n.anchorX.toFloat(), n.anchorY.toFloat(), p.text))
+        }
+        if (bad > 0) Log.w(TAG, "$documentId：$bad 条文字注解 payload 坏掉已跳过")
+        return out
+    }
+
+    /**
+     * 新建或改写一条文字注解，语义逐条对齐 Mac `AppModel.applyTextNote`：
+     * - 已存在（含 Mac 建的**选区注解**）：**只改正文**，anchor/quote/rects/color/type_id 一律不动。
+     *   ——平板上编辑一条选区注解不该把它退化成点注解，那是不可逆的丢数据。
+     * - 不存在：建一条零尺寸 anchor 的点注解（anchor=落点，quote/rects 空）。
+     * - 空文本等价删除（同 Mac 丢弃空点注解的语义），调用方也可直接调 [deleteNote]。
+     */
+    fun upsertTextNote(documentId: String, id: String, page: Int, nx: Float, ny: Float, text: String) {
+        if (text.isBlank()) { deleteNote(id); return }
+        val old = db.query("SELECT * FROM note WHERE id=?", arrayOf(id)) { note(it) }.firstOrNull()
+        val now = nowIso()
+        if (old != null && old.kind == NoteKind.TEXT) {
+            val p = TextNotePayload.parse(old.payload) ?: TextNotePayload.ofPointNote(text)
+            upsertNote(old.copy(payload = p.withText(text).bytes(), updatedAt = now))
+            return
+        }
+        upsertNote(
+            LibNote(
+                id = id, documentId = documentId, kind = NoteKind.TEXT, page = page,
+                anchorX = nx.toDouble(), anchorY = ny.toDouble(), anchorW = 0.0, anchorH = 0.0,
+                payload = TextNotePayload.ofPointNote(text).bytes(),
+                createdAt = now, updatedAt = now,
+            ),
+        )
+    }
+
+    /** 全部文字注解的锚定框（框选移动的命中判定用，见 [NoteAnchor]） */
+    fun noteAnchors(documentId: String): List<NoteAnchor> = db.query(
+        "SELECT id,page,anchor_x,anchor_y,anchor_w,anchor_h FROM note WHERE document_id=? AND kind=?",
+        arrayOf(documentId, NoteKind.TEXT),
+    ) {
+        NoteAnchor(
+            it.str("id"), it.int("page"),
+            it.dbl("anchor_x").toFloat(), it.dbl("anchor_y").toFloat(),
+            it.dbl("anchor_w").toFloat(), it.dbl("anchor_h").toFloat(),
+        )
+    }
+
+    /**
+     * 平移一条文字注解（框选移动）：anchor 与 payload 里的每个 rect 一起 +(dx, dy)，
+     * 各角 clamp 到 0~1——与 Mac `InkEdit.translated(TextNote)` 同一实现（[InkEdit.translatedRect]）。
+     * 点注解的零尺寸 anchor 照样平移，rects 为空则只动 anchor。
+     */
+    fun translateTextNote(noteId: String, dx: Float, dy: Float) {
+        val n = db.query("SELECT * FROM note WHERE id=?", arrayOf(noteId)) { note(it) }.firstOrNull()
+            ?: return
+        val p = TextNotePayload.parse(n.payload) ?: return
+        val a = InkEdit.translatedRect(
+            doubleArrayOf(n.anchorX, n.anchorY, n.anchorW, n.anchorH), dx.toDouble(), dy.toDouble(),
+        )
+        val rs = p.rects().map { InkEdit.translatedRect(it, dx.toDouble(), dy.toDouble()) }
+        upsertNote(
+            n.copy(
+                anchorX = a[0], anchorY = a[1], anchorW = a[2], anchorH = a[3],
+                payload = if (rs.isEmpty()) p.bytes() else p.withRects(rs).bytes(),
+                updatedAt = nowIso(),
+            ),
+        )
+    }
+
+    /**
+     * 页面上要铺的所有色块：高亮（kind=3）按自身颜色 0.38，选区注解（kind=0 且有 rects）按
+     * 类型色/通用暖黄 0.32——透明度口径见 [PadConst.FILL]，与 Mac `PageCellView` 一致。
+     *
+     * 返回顺序 = 绘制顺序：高亮在下、注解底色在上（同 Mac 的层序）。
+     * 首版**只渲染不新建**（新建高亮要先有文字选择，属下一版），所以这里没有写入口。
+     */
+    fun textFills(documentId: String): List<TextFill> {
+        val types = noteTypeColors()
+        val hi = ArrayList<TextFill>()
+        val nt = ArrayList<TextFill>()
+        for (n in notes(documentId)) {
+            when (n.kind) {
+                NoteKind.HIGHLIGHT -> {
+                    val p = TextNotePayload.parse(n.payload) ?: continue
+                    val rs = p.rects()
+                    if (rs.isEmpty()) continue
+                    val c = p.color() ?: doubleArrayOf(255.0, 214.0, 40.0, 1.0)   // 同 Mac 默认荧光黄
+                    hi.add(fillOf(n.page, rs, c[0].toInt(), c[1].toInt(), c[2].toInt(), PadConst.FILL.HIGHLIGHT_A))
+                }
+                NoteKind.TEXT -> {
+                    val p = TextNotePayload.parse(n.payload) ?: continue
+                    val rs = p.rects()
+                    if (rs.isEmpty()) continue   // 点注解只有图钉，没有底色
+                    val rgb = types[p.typeId?.uppercase()] ?: PadConst.FILL.NOTE_RGB
+                    // 带上 note.id：框选拖动时底色要跟着图钉走（高亮不参与移动，故不填）
+                    nt.add(fillOf(n.page, rs, rgb[0], rgb[1], rgb[2], PadConst.FILL.NOTE_A, n.id))
+                }
+            }
+        }
+        return hi + nt
+    }
+
+    private fun fillOf(
+        page: Int,
+        rs: List<DoubleArray>,
+        r: Int,
+        g: Int,
+        b: Int,
+        a: Float,
+        noteId: String = "",
+    ) = TextFill(
+        page = page.toLong(),
+        rects = rs.map { floatArrayOf(it[0].toFloat(), it[1].toFloat(), it[2].toFloat(), it[3].toFloat()) },
+        r = r.coerceIn(0, 255), g = g.coerceIn(0, 255), b = b.coerceIn(0, 255), a = a,
+        noteId = noteId,
+    )
+
+    /**
+     * 工作区自定义笔记类型的色板（Mac `NoteType`：落 `meta(key='note_types')` 的 JSON 数组，
+     * 键 `id`/`color_key`）。**没有这张表**——它就是一条 meta，坏掉/缺失按空处理，
+     * 那样所有注解按通用暖黄铺色，而不是整篇不画。
+     * 键统一大写：Swift 的 `UUID.uuidString` 是大写，手写进库的可能不是。
+     */
+    fun noteTypeColors(): Map<String, IntArray> {
+        val raw = meta("note_types") ?: return emptyMap()
+        return try {
+            val arr = org.json.JSONArray(raw)
+            val out = HashMap<String, IntArray>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").ifEmpty { continue }
+                out[id.uppercase()] = Palette.rgb(o.optString("color_key"))
+            }
+            out
+        } catch (e: Exception) {
+            Log.w(TAG, "meta.note_types 解析失败，注解一律按通用色渲染", e)
+            emptyMap()
+        }
+    }
 
     // ---------- 笔迹（note kind=2 的读写门面） ----------
 

@@ -25,4 +25,18 @@ object InkEdit {
     fun translated(pts: List<Pt3>, dx: Float, dy: Float): List<Pt3> = pts.map {
         Pt3((it.x + dx).coerceIn(0f, 1f), (it.y + dy).coerceIn(0f, 1f), it.p)
     }
+
+    /**
+     * 平移一个归一化矩形 `[x, y, w, h]`（文字注解的 anchor 与逐行 rects，框选移动用）：
+     * **两个角各自 clamp**，贴页边时宽/高跟着收缩——同 Mac `InkEdit.translatedRect`。
+     * 整块推回来的话贴边后尺寸不变，两端就会长得不一样（与点集逐点 clamp 是同一条道理）。
+     */
+    fun translatedRect(r: DoubleArray, dx: Double, dy: Double): DoubleArray {
+        fun cl(v: Double) = v.coerceIn(0.0, 1.0)
+        val x1 = cl(r[0] + dx)
+        val x2 = cl(r[0] + r[2] + dx)
+        val y1 = cl(r[1] + dy)
+        val y2 = cl(r[1] + r[3] + dy)
+        return doubleArrayOf(minOf(x1, x2), minOf(y1, y2), kotlin.math.abs(x2 - x1), kotlin.math.abs(y2 - y1))
+    }
 }

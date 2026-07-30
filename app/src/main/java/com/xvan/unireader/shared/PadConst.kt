@@ -57,6 +57,32 @@ object PadConst {
         const val FILL_MS = 700f
     }
 
+    /**
+     * 长按呼盘的**判定**阈值，逐个对齐 Mac 端 `AppModel`（`longPressSeconds`/`moveCancelPx`/
+     * `moveCancelNorm`/`radialDeadzoneNorm`）。
+     *
+     * 模式2 里这些数在 Mac 上用平板上报的 `padGeom.pageW`（dp）换算成平板屏幕尺度；模式1 自己
+     * 就知道页宽，直接用同一组 dp 值算——**手感因此天然一致**（`ANDROID-STANDALONE-PLAN.md §8`）。
+     * `*_NORM` 是页宽未知时的归一化回退（模式1 几乎用不到，留着是为了口径完整）。
+     */
+    object LP {
+        const val HOLD_MS = 1000L        // 落笔停住多久呼出盘
+        const val MOVE_CANCEL = 14f      // 位移超此 dp → 判为在画，不呼出
+        const val MOVE_CANCEL_NORM = 0.02f
+        const val DEADZONE_NORM = 0.045f // 中心取消区（页宽未知时）；已知页宽时用 RD.HUB
+    }
+
+    /**
+     * 文字铺色的透明度口径（Mac `Highlight.fillOpacity` 与 `PageCellView.noteHighlight`）：
+     * 高亮按自身颜色 0.38，文字注解的选区底按类型色/通用暖黄 0.32。
+     * 通用暖黄 = Mac 的 `Color(red: 1, green: 0.82, blue: 0.15)` 换算成 0~255。
+     */
+    object FILL {
+        const val HIGHLIGHT_A = 0.38f
+        const val NOTE_A = 0.32f
+        val NOTE_RGB = intArrayOf(255, 209, 38)
+    }
+
     /** 文字笔记标记的命中半径（页内归一化，同 capture 的 0.03） */
     const val NOTE_HIT = 0.03f
 

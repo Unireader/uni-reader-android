@@ -466,6 +466,17 @@ open class PageCanvasView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 该页的显示纵横比（高/宽）。页内归一化空间里 x/y 尺度不同，凡是**量角度或量距离**的地方
+     * 都得先用它把 y 折算成与 x 同尺度：尺子吸附（`PadConst.rulerSnap`）、长按位移判定、
+     * 环形盘的扇区角度都靠这一个口径。同 Mac 的 `AppModel.currentPageAspect`。
+     */
+    fun pageAspect(page: Int): Float =
+        if (page in 0 until pageCount) dispH[page] / max(1f, pw()) else 1f
+
+    /** 当前内容页宽（dp）：环形盘的取消区半径/长按位移阈值都按平板屏幕尺度判，见 `PadConst.LP` */
+    fun contentWidthDp(): Float = pw() / density
+
     override fun viewX(page: Int, nx: Float): Float = contentLeft() + nx * pw()
 
     override fun viewY(page: Int, ny: Float): Float =
@@ -506,6 +517,18 @@ open class PageCanvasView @JvmOverloads constructor(
         notes.clear()
         notes.addAll(list)
         if (lassoCommitted) clearLasso()
+        invalidate()
+    }
+
+    /**
+     * 文字铺色（高亮 kind=3 与选区注解 kind=0 的底色，M5）。模式1 从库里读；模式2 恒空
+     * ——那边页图由 Mac 渲染，高亮画在 Mac 那一侧，线格式里根本没有这个消息。
+     */
+    protected val fills = ArrayList<TextFill>()
+
+    fun setTextFills(list: List<TextFill>) {
+        fills.clear()
+        fills.addAll(list)
         invalidate()
     }
 
@@ -611,6 +634,8 @@ open class PageCanvasView @JvmOverloads constructor(
             else canvas.drawRect(tmpRect, placeholderPaint)
         }
 
+        drawTextFills(canvas)
+
         // 静态笔迹层（框选提交待回传期间：命中项按位移量乐观渲染）
         val sel = if (lassoCommitted) lassoSelection else null
         for (i in strokes.indices) {
@@ -646,6 +671,35 @@ open class PageCanvasView @JvmOverloads constructor(
                     (SystemClock.uptimeMillis() - pressT0).toFloat(),
                 )
                 postInvalidateOnAnimation()
+            }
+        }
+    }
+
+    /**
+     * 文字铺色层：页图之上、墨迹之下（同 Mac `PageCellView` 的层序）。
+     * 不做可见性裁剪之外的任何判定——颜色与透明度在读库时就按 Mac 口径算好了（见 `PadConst.FILL`）。
+     */
+    protected fun drawTextFills(canvas: Canvas) {
+        if (fills.isEmpty()) return
+        // 正在拖/已提交待回推的选中注解：底色要跟着图钉一起走（图钉的偏移见 drawNoteMarkers）
+        val sel = lassoSelection?.takeIf { lassoDragMode == 2 || lassoCommitted }
+        val moving = sel?.noteIdx?.mapNotNull { notes.getOrNull(it)?.id }?.toSet() ?: emptySet()
+        for (f in fills) {
+            val page = f.page.toInt()
+            if (page !in 0 until pageCount) continue
+            val top = viewY(page, 0f)
+            if (top + dispH[page] < barH || top > height) continue   // 整页在视口外：跳过这条的全部行框
+            val color = Color.argb((f.a * 255f).roundToInt().coerceIn(0, 255), f.r, f.g, f.b)
+            val on = f.noteId.isNotEmpty() && sel != null && sel.page == page && f.noteId in moving
+            val ox = if (on) lassoDx else 0f
+            val oy = if (on) lassoDy else 0f
+            for (r in f.rects) {
+                overlays.drawTextFill(
+                    canvas,
+                    viewX(page, r[0] + ox), viewY(page, r[1] + oy),
+                    viewX(page, r[0] + r[2] + ox), viewY(page, r[1] + r[3] + oy),
+                    color,
+                )
             }
         }
     }
@@ -1359,8 +1413,7 @@ open class PageCanvasView @JvmOverloads constructor(
                 // [首点, 吸附终点]。上行也只发这个终点——批里**只留最新一个**，否则 Mac 收到的是
                 // 一串移动中的终点、追加成一条歪笔迹（begin 的 line 标记让 Mac 改为替换终点）。
                 val a = curPts[0]
-                val asp = if (drawPage in 0 until pageCount) dispH[drawPage] / max(1f, pw()) else 1f
-                PadConst.rulerSnap(a.x, a.y, nx, ny, asp, snapOut)
+                PadConst.rulerSnap(a.x, a.y, nx, ny, pageAspect(drawPage), snapOut)
                 nx = snapOut[0]; ny = snapOut[1]
                 curPts.clear()
                 curPts.add(a)

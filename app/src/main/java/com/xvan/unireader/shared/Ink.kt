@@ -67,8 +67,39 @@ data class Stroke(
     val layerId: String = "",
 )
 
-/** 一条自由文字笔记（坐标与笔迹同系＝页内归一化） */
+/**
+ * 一条文字笔记（坐标与笔迹同系＝页内归一化）。
+ *
+ * `nx`/`ny` 是 **anchor 的左上角**，不是「图钉画在哪」——Mac 的 `broadcastNotes` 就是这么发的
+ * （`anchor.minX/minY`），模式1 从库里读也取同两列，两模式的标记因此落在同一处。
+ * Mac 自己的阅读区会把选区注解的图钉挪到行末右侧，那是 Mac 的显示偏好，不进这个模型。
+ */
 data class TextNote(val id: String, val page: Long, val nx: Float, val ny: Float, val text: String)
+
+/**
+ * 一片**文字铺色**：kind=3 高亮的荧光底，或 kind=0 选区注解的类型色底（`PageCellView` 的最底两层）。
+ *
+ * `rects` 是页内归一化的逐行框 `[x, y, w, h]`（与 payload 里的存法一致，不转对角点——转来转去
+ * 迟早有一处漏乘）；`a` 是**最终绘制透明度**，已经含了 Mac 的 `Highlight.fillOpacity`/注解 0.32
+ * 那层口径（见 `PadConst.FILL`），绘制方直接用即可。
+ *
+ * 模式2 目前不用它（Mac 的页图是另一条管线，高亮画在 Mac 那边），列表恒空；放在这里是因为
+ * 「页面上铺一层色」属于渲染层能力，不属于某一种模式。
+ */
+data class TextFill(
+    val page: Long,
+    val rects: List<FloatArray>,
+    val r: Int,
+    val g: Int,
+    val b: Int,
+    val a: Float,
+    /**
+     * 这片色属于哪条 `note`。**只有 kind=0 的选区注解填**（高亮不参与框选移动，同 Mac
+     * `applyLassoMove` 只动 strokes 与 textNotes）——框选拖动时靠它把底色和图钉一起挪，
+     * 否则拖走的是图钉、底色留在原地。
+     */
+    val noteId: String = "",
+)
 
 /** 一个笔迹图层（r/g/b 只是列表里的色点标识，与笔画墨色无关） */
 data class Layer(val r: Int, val g: Int, val b: Int, val visible: Boolean, val name: String)

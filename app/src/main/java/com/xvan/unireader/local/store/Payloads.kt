@@ -176,6 +176,14 @@ class TextNotePayload(val raw: JSONObject) {
         return this
     }
 
+    /** 只替换逐行框（框选移动时随 anchor 一起平移），其余键原样保留 */
+    fun withRects(rs: List<DoubleArray>): TextNotePayload {
+        val arr = JSONArray()
+        for (r in rs) arr.put(JSONArray().put(r[0]).put(r[1]).put(r[2]).put(r[3]))
+        raw.put("rects", arr)
+        return this
+    }
+
     fun bytes(): ByteArray = raw.toString().toByteArray(StandardCharsets.UTF_8)
 
     companion object {

@@ -59,6 +59,20 @@ class PadOverlays(private val density: Float) {
         textPaint.isFakeBoldText = false
     }
 
+    // ---------- 文字铺色（高亮 kind=3 / 选区注解 kind=0 的底色） ----------
+
+    /**
+     * 铺一行选区色。**画在页图之上、墨迹之下**，与 Mac `PageCellView` 的层序一致——
+     * 反过来的话荧光色会盖住自己写的笔记。圆角 2dp 同 Mac 的 `fillNorm`。
+     */
+    fun drawTextFill(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float, color: Int) {
+        rect.set(min(x0, x1), min(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
+        p.style = Paint.Style.FILL
+        p.color = color
+        val r = dp(2f)
+        c.drawRoundRect(rect, r, r, p)
+    }
+
     // ---------- 橡皮尺寸圆环 ----------
 
     /** 双描边（外暗内亮）保证在白页/夜间反转页上都可读；半径 = eraserSize × 当前页显示宽 */

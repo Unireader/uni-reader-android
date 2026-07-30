@@ -88,6 +88,14 @@ data class LibNote(
     override fun hashCode(): Int = id.hashCode() * 31 + payload.contentHashCode()
 }
 
+/**
+ * 一条文字注解的**锚定框**（`note` 的四个 anchor 列），框选移动的权威命中判定用。
+ *
+ * 渲染用的 `shared.TextNote` 只带落点一个坐标（线格式就只有 nx/ny），拿它判命中的话，
+ * Mac 建的选区注解只有左上角那一个点落框才算中——所以判定这一步必须回库里取带宽高的 anchor。
+ */
+data class NoteAnchor(val id: String, val page: Int, val x: Float, val y: Float, val w: Float, val h: Float)
+
 /** `note.kind`（Mac 端 `LibNote.kind` 的取值） */
 object NoteKind {
     const val TEXT = 0
