@@ -27,6 +27,7 @@ import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.MODE_PAGE
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
+import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
@@ -332,13 +333,13 @@ class ReaderActivity : Activity() {
      */
     private fun failToOpen(reason: String) {
         openingLabel.text = "打不开这个文档"
-        android.app.AlertDialog.Builder(this)
-            .setTitle("打不开这个文档")
-            .setMessage(reason)
-            .setCancelable(false)
-            .setPositiveButton("返回", null)
-            .setOnDismissListener { finish() }
+        Sheet(this)
+            .title("打不开这个文档")
+            .subtitle(reason)
+            .cancelable(false)
+            .action("返回", primary = true)
             .show()
+            .setOnDismissListener { finish() }
     }
 
     /**

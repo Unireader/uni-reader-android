@@ -22,8 +22,11 @@ import android.widget.TextView
 import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.pad.PadActivity
+import com.xvan.unireader.shared.PadPanels
+import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.onSystemBarInsets
+import com.xvan.unireader.shared.showAlert
 import com.xvan.unireader.shared.runInBackground
 import java.io.File
 
@@ -302,22 +305,26 @@ class Launcher : Activity() {
      */
     private fun browse(start: File) {
         var cur = start
-        val list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(8))
+        // 路径显示在标题下面那行小字里（原先是 setTitle(绝对路径)——长路径把标题挤成两三行）
+        val pathText = Ui.body(this, cur.absolutePath).apply { textSize = 12f }
+        val sheet = Sheet(this).title("选择工作区文件夹")
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        sheet.content(pathText)
+        sheet.content(list)
+        sheet.action("取消")
+        // 「选当前目录」不自动关窗：校验不通过要留在原地继续翻
+        sheet.action("选当前目录", primary = true, dismiss = false) { d ->
+            d.dismiss()
+            openWorkspace(cur)
         }
-        val dlg = AlertDialog.Builder(this)
-            .setView(ScrollView(this).apply { addView(list) })
-            .setNegativeButton("取消", null)
-            .setPositiveButton("选当前目录", null)   // 拦截：不关窗，交给 openWorkspace 判
-            .create()
+        val dlg = sheet.show()
 
         fun render() {
-            dlg.setTitle(cur.absolutePath)
+            pathText.text = cur.absolutePath
             list.removeAllViews()
             cur.parentFile?.let { parent ->
                 list.addView(
-                    row("⬆  上一级") {
+                    PadPanels.iconRow(this, R.drawable.ic_chevron_up, "上一级", Ui.onVariant(this)) {
                         cur = parent
                         render()
                     },
@@ -348,15 +355,8 @@ class Launcher : Activity() {
             )
         }
 
-        dlg.setOnShowListener {
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                dlg.dismiss()
-                openWorkspace(cur)
-            }
-        }
         dlg.setOnDismissListener { browseToken = null }
         render()
-        dlg.show()
     }
 
     /** 把后台列出的子目录填进浏览器（`.unrd` 用书本图标，点它等于选中） */
@@ -375,8 +375,14 @@ class Launcher : Activity() {
         if (dirs.isEmpty()) list.addView(hint("（没有子文件夹）"))
         for (d in dirs) {
             val isWs = Workspace.looksLikeWorkspace(d)
+            // 工作区用 accent 色的书本图标挑出来：一屏几十个文件夹，靠 emoji 分辨太费眼
             list.addView(
-                row(if (isWs) "📘  ${d.name}" else "📁  ${d.name}") {
+                PadPanels.iconRow(
+                    this,
+                    if (isWs) R.drawable.ic_doc else R.drawable.ic_folder,
+                    d.name,
+                    if (isWs) Ui.accent(this) else Ui.onVariant(this),
+                ) {
                     // .unrd 点进去没意义（里面只有 UniReader/ 和 PDFs/），直接当选中处理
                     if (isWs) {
                         dlg.dismiss()
@@ -387,14 +393,6 @@ class Launcher : Activity() {
                 },
             )
         }
-    }
-
-    private fun row(text: String, onClick: () -> Unit) = TextView(this).apply {
-        this.text = text
-        textSize = 16f
-        setTextColor(0xFF1A1A1A.toInt())
-        setPadding(0, dp(12), 0, dp(12))
-        setOnClickListener { onClick() }
     }
 
     /**
@@ -434,16 +432,7 @@ class Launcher : Activity() {
         )
     }
 
-    private fun busy(msg: String): AlertDialog {
-        val tv = TextView(this).apply {
-            text = msg
-            textSize = 15f
-            setTextColor(0xFF1A1A1A.toInt())
-            setPadding(dp(24), dp(24), dp(24), dp(24))
-        }
-        return AlertDialog.Builder(this).setView(tv).setCancelable(false).create()
-            .also { it.show() }
-    }
+    private fun busy(msg: String): AlertDialog = Sheet(this).busy(msg)
 
     private fun dismissBusy() {
         busyDlg?.dismiss()
@@ -457,11 +446,5 @@ class Launcher : Activity() {
         super.onDestroy()
     }
 
-    private fun alert(title: String, msg: String) {
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setMessage(msg)
-            .setPositiveButton("好", null)
-            .show()
-    }
+    private fun alert(title: String, msg: String) = showAlert(title, msg)
 }

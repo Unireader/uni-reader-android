@@ -34,6 +34,7 @@ import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.TextNote
 import com.xvan.unireader.shared.TopBar
 import com.xvan.unireader.shared.Ui
@@ -337,58 +338,67 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     // ---------- 连接设置弹窗 + 扫码 ----------
 
+    /**
+     * 连接设置。外观走 [Sheet]（§9.6）；**「连接」不自动关窗**——host/token 填错时关掉就得重填，
+     * 所以 `dismiss = false`，校验通过了才由这里自己 `dismiss()`。
+     *
+     * 错误提示改成弹层内的一行红字（原先是写进顶栏的 `statusMsg`——弹窗盖着顶栏，用户根本看不见）。
+     */
     private fun showConnDialog() {
         val prefs = getSharedPreferences("conn", MODE_PRIVATE)
-        val hostEdit = EditText(this).apply {
-            hint = "Mac IP（如 192.168.1.5）"; setSingleLine()
+        val hostEdit = PadPanels.inputBox(this, "Mac IP（如 192.168.1.5）").apply {
             setText(prefs.getString("host", ""))
         }
-        val tokenEdit = EditText(this).apply {
-            hint = "token（面板 URL 里的）"; setSingleLine()
+        val tokenEdit = PadPanels.inputBox(this, "token（面板 URL 里的）").apply {
             setText(prefs.getString("token", ""))
         }
-        val scanBtn = Button(this).apply { text = "扫码连接" }
-        val graphCheck = CheckBox(this).apply {
-            text = "显示延迟曲线"
-            isChecked = prefs.getBoolean("showGraph", true)
+        val err = Ui.body(this, "").apply {
+            setTextColor(Ui.col(this@PadActivity, R.color.danger))
+            visibility = View.GONE
+            setPadding(0, dp(8), 0, 0)
         }
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(8), dp(24), 0)
             addView(hostEdit)
-            addView(tokenEdit)
-            addView(scanBtn)
-            addView(graphCheck)
+            addView(tokenEdit, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+            addView(err)
+            addView(
+                Ui.button(this@PadActivity, "扫码连接") { startScan() },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) },
+            )
+            addView(
+                CheckBox(this@PadActivity).apply {
+                    text = "显示延迟曲线"
+                    setTextColor(Ui.onSurface(this@PadActivity))
+                    isChecked = prefs.getBoolean("showGraph", true)
+                    setOnCheckedChangeListener { _, checked ->
+                        prefs.edit().putBoolean("showGraph", checked).apply()
+                        applyGraphVisibility()
+                    }
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
+            )
         }
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("连接 Mac")
-            .setView(form)
-            .setPositiveButton("连接", null)   // 拦截：失败不关窗
-            .setNegativeButton("取消", null)
-            .create()
-        dlg.setOnShowListener {
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        val dlg = Sheet(this)
+            .title("连接 Mac")
+            .content(form)
+            .action("取消")
+            .action("连接", primary = true, dismiss = false) { d ->
                 val host = hostEdit.text.toString().trim()
                 val token = tokenEdit.text.toString().trim()
                 if (host.isEmpty() || token.isEmpty()) {
-                    statusMsg = "host/token 不能为空"
-                    refresh()
-                    return@setOnClickListener
+                    err.text = "host 和 token 都要填"
+                    err.visibility = View.VISIBLE
+                    return@action
                 }
                 connect(host, token)
-                dlg.dismiss()
+                d.dismiss()
             }
-        }
-        scanBtn.setOnClickListener { startScan() }
-        graphCheck.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean("showGraph", checked).apply()
-            applyGraphVisibility()
-        }
+            .show()
         dialogHost = hostEdit
         dialogToken = tokenEdit
         connDialog = dlg
         dlg.setOnDismissListener { connDialog = null }
-        dlg.show()
     }
 
     private fun applyGraphVisibility() {

@@ -129,6 +129,32 @@ object Ui {
             setOnClickListener { onClick() }
         }
 
+    /**
+     * 弹层右下角那种**无边框**文字按钮。系统 `AlertDialog` 的按钮是全大写 + 主题色，
+     * 这里统一成：主操作 accent、次操作次要色，都带涟漪，触摸高度仍够 48dp。
+     */
+    fun textButton(c: Context, label: String, primary: Boolean = false, onClick: () -> Unit): TextView =
+        TextView(c).apply {
+            text = label
+            textSize = 15f
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            minHeight = dp(c, TOUCH)
+            setTextColor(if (primary) accent(c) else onVariant(c))
+            setPadding(dp(c, 16), dp(c, 12), dp(c, 16), dp(c, 12))
+            background = rippleOver(c, null, RADIUS, if (primary) accent(c) else onSurface(c))
+            setOnClickListener { onClick() }
+        }
+
+    /** 弹层里的分组小标题（「笔宽」「橡皮」这种） */
+    fun groupTitle(c: Context, s: String, top: Int = 16): TextView = TextView(c).apply {
+        text = s
+        textSize = 12f
+        setTextColor(onVariant(c))
+        setPadding(0, dp(c, top), 0, dp(c, 6))
+    }
+
     /** 分组小标题：全大写太洋气，这里就是普通次要色小字 + 上方留白 */
     fun sectionTitle(c: Context, s: String): TextView = TextView(c).apply {
         text = s
