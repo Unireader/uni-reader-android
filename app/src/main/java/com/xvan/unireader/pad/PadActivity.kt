@@ -21,7 +21,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.Space
 import android.widget.TextView
 import com.google.zxing.integration.android.IntentIntegrator
 import com.xvan.unireader.shared.Layer
@@ -175,6 +174,16 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         dot = View(this)   // 连接状态点（绿=已认证）
         latText = TextView(this).apply {
             text = "— ms"; textSize = 12f; setTextColor(0xFF8B949E.toInt())
+            // 被挤窄时省略而不是换行（换行会把顶栏顶高、按钮跟着变形）
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            // 整行指标（rtt/e2e/nackRTT/mv-s/nack/resend）要 650px，竖屏 1080 下比按钮组还宽。
+            // 谁都不肯让 = 按钮被挤没（§9.3 那个 BUG 的真正原因）。**按钮优先**：窄屏把这行压到
+            // 120dp 省略显示，宽屏（模式2 的正常场景＝横屏平板）保持整行不变。
+            // 旋转会重建 Activity（manifest 没声明 configChanges），所以这里判一次就够。
+            if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT) {
+                maxWidth = dp(120)
+            }
         }
         pageLabel = TextView(this).apply {
             text = "— / —"; textSize = 13f; setTextColor(Color.WHITE)
@@ -230,9 +239,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             addView(dot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(10) })
             addView(latText)
             addView(docsBtn, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
-            addView(Space(this@PadActivity), LinearLayout.LayoutParams(0, 1, 1f))
-            addView(pageLabel, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
-            addView(btnScroll, LinearLayout.LayoutParams(-2, -1))
+            // 按钮组吃掉剩余宽度、内部可横滑，页码 wrap 钉在最右（照模式1 的做法，§9.3）。
+            // 原先是「Space(weight=1) + 按钮组 wrap」：宽屏上把按钮推到右边好看，但竖屏 1080 下
+            // Space 先把剩余空间吃光，按钮组被压成 0 宽——◀▶/模式/笔/夜间…**一个都点不到**。
+            // 加权的必须是按钮组：LinearLayout 先按顺序量非加权的孩子，排在后面的只能捡剩下的。
+            addView(btnScroll, LinearLayout.LayoutParams(0, -1, 1f))
+            addView(pageLabel, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         }
 
         // 左下状态胶囊：笔/橡皮 与 图层（对应网页 PenStat / LayerStat）

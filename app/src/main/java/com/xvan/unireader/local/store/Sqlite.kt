@@ -2,6 +2,7 @@ package com.xvan.unireader.local.store
 
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteException
 import android.util.Log
 import java.io.Closeable
 import java.io.File
@@ -32,7 +33,20 @@ class Db private constructor(
             val flags =
                 if (readOnly) SQLiteDatabase.OPEN_READONLY
                 else SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING
-            val raw = SQLiteDatabase.openDatabase(file.absolutePath, null, flags)
+            val raw = try {
+                SQLiteDatabase.openDatabase(file.absolutePath, null, flags)
+            } catch (e: SQLiteException) {
+                // WAL 要在库文件旁边建 `-shm` 共享内存段，FAT32/exFAT 的 U 盘上建不起来（§9.3）。
+                // 退一步不用 WAL 再试一次——**能打开总比打不开好**，只是写入不再先落 -wal
+                // （对搬运反而更省事：没有 -wal 可丢）。仍失败才抛，且要说清可能的原因。
+                if (readOnly) throw explain(file, e)
+                Log.w(TAG, "带 WAL 标志打不开，退一步不用 WAL 再试（FAT32/exFAT 卷常见）", e)
+                try {
+                    SQLiteDatabase.openDatabase(file.absolutePath, null, SQLiteDatabase.OPEN_READWRITE)
+                } catch (e2: SQLiteException) {
+                    throw explain(file, e2)
+                }
+            }
             val d = Db(raw, file.absolutePath, readOnly)
             // busy_timeout 对齐 Mac 侧的 3000ms（`Sources/Store/SQLite.swift`）：工作区是单写者模型，
             // 但同一进程里后台渲染线程与主线程都可能读，锁等待给足时间比直接 SQLITE_BUSY 好。
@@ -42,16 +56,38 @@ class Db private constructor(
             if (!readOnly) {
                 // Mac 侧每次打开都会 `PRAGMA journal_mode=WAL`，所以这里即使没设成 WAL 也不会
                 // 破坏契约；但设成了能少一次模式切换。FAT32/exFAT 的 U 盘上 WAL 建不起来
-                // （缺共享内存），此时保持原模式继续跑，只记一行日志。
+                // （缺共享内存），此时保持原模式继续跑——但要让界面说得出这件事，别只留一行日志。
                 val mode = d.pragma("journal_mode=WAL")
-                if (!"wal".equals(mode, ignoreCase = true)) {
+                d.walEnabled = "wal".equals(mode, ignoreCase = true)
+                if (!d.walEnabled) {
                     Log.w(TAG, "WAL 没能启用（journal_mode=$mode）：可能在 FAT32/exFAT 卷上")
                 }
             }
-            Log.i(TAG, "打开库 ${file.name} readOnly=$readOnly")
+            Log.i(TAG, "打开库 ${file.name} readOnly=$readOnly wal=${d.walEnabled}")
             return d
         }
+
+        /**
+         * 把 `SQLiteException` 那句「unable to open database file」翻成人能处理的话。
+         * 这几种失败（U 盘拔了 / 卷是 FAT32 / 文件损坏）在界面上长得一模一样，
+         * 不把可能的原因摆出来，用户只知道「点了没用」（同 §9.3 对文案的要求）。
+         */
+        private fun explain(file: File, e: SQLiteException): Exception = java.io.IOException(
+            "打不开库文件：${file.absolutePath}\n" +
+                "可能原因：① U 盘/同步盘被拔出或没挂载；② 卷是 FAT32/exFAT，SQLite 的 WAL 在这类卷上" +
+                "建不起来（缺共享内存）；③ 卷只读；④ 库文件损坏或被别的程序占着。\n原始错误：${e.message}",
+            e,
+        )
     }
+
+    /**
+     * WAL 是否真的启用。false = 这个卷不支持（FAT32/exFAT 缺共享内存），写入改走回滚日志：
+     * **功能正常**，但退出时的 `wal_checkpoint` 变成空操作，「搬运前先把 -wal 合并回主库」这层
+     * 保险就没有了。界面据此提示一句（`LibraryActivity` 表头），让用户知道这个卷跟别处不一样。
+     * 只读连接恒为 false（压根没设过，别当成「不支持」）。
+     */
+    var walEnabled = false
+        private set
 
     /** 执行返回单值的 PRAGMA（`journal_mode=WAL` 这类要读回结果才真正生效） */
     fun pragma(expr: String): String? = db.rawQuery("PRAGMA $expr", null).use { c ->

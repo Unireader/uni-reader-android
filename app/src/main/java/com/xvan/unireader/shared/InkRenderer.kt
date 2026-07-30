@@ -1,11 +1,13 @@
 package com.xvan.unireader.shared
 
+import android.graphics.BlendMode
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.os.Build
 import kotlin.math.roundToInt
 
 /**
@@ -26,7 +28,30 @@ class InkRenderer(private val density: Float) {
         strokeJoin = Paint.Join.ROUND
     }
     private val path = Path()
-    private val multiply = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
+
+    /**
+     * API 26~28 的兜底。**它与 `BlendMode.MULTIPLY` 不是一回事**——`PorterDuff.Mode.MULTIPLY` 是在
+     * **预乘 alpha** 上做 `Sc×Dc` 的老式合成，而网页 Canvas 的 `globalCompositeOperation='multiply'`
+     * 与 Mac 的 `.multiply` 是 W3C 规定的**混合模式**（先按 blend 公式混色，再按 alpha 走 source-over）。
+     *
+     * 差别在半透明笔上肉眼可见（`ANDROID-STANDALONE-PLAN.md §9.4`）：黄 40% 压白底，
+     * 期望 `0.4×黄 + 0.6×白 = (255,239,169)` 的浅黄，PorterDuff 给的是 `0.4×黄 × 白 ≈ (102,86,16)`
+     * 的深橄榄——荧光笔因此偏暗发浊。所以 29+ 一律走 [BlendMode.MULTIPLY]，
+     * 这里只是老设备上「有总比没有好」的近似。
+     */
+    private val multiplyLegacy = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
+
+    /**
+     * 开/关 multiply 叠加。**两条路必须由同一个函数管**：`xfermode` 与 `blendMode` 写的是 Paint 里
+     * 同一处状态，一处设、另一处忘了清，下一条笔画就会继承上一条的混合模式（表现为「画着画着颜色变了」）。
+     */
+    private fun multiply(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            paint.blendMode = if (on) BlendMode.MULTIPLY else null   // null = 恢复 SRC_OVER
+        } else {
+            paint.xfermode = if (on) multiplyLegacy else null
+        }
+    }
 
     /**
      * 画一整条笔迹。`ox`/`oy` 是框选移动的乐观位移（页内归一化，默认 0）——数据本身不动，
@@ -55,7 +80,7 @@ class InkRenderer(private val density: Float) {
 
         // 单点 = 一个圆点（同 Mac 端单点分支）
         if (pts.size == 1) {
-            paint.xfermode = null
+            multiply(false)
             paint.style = Paint.Style.FILL
             paint.color = color
             c.drawCircle(lpx, lpy, width(pts[0].p) / 2f, paint)
@@ -71,18 +96,18 @@ class InkRenderer(private val density: Float) {
                 lpx = px; lpy = py
             }
             path.lineTo(lpx, lpy)   // 补末段（同下方分支：中点平滑链止于倒数两点的中点）
-            paint.xfermode = multiply
+            multiply(true)
             paint.style = Paint.Style.STROKE
             paint.strokeCap = Paint.Cap.SQUARE   // 平头：圆头会在起收笔处鼓出来
             paint.strokeWidth = pen.w * density
             paint.color = color
             c.drawPath(path, paint)
-            paint.xfermode = null
+            multiply(false)
             paint.strokeCap = Paint.Cap.ROUND
             return
         }
 
-        paint.xfermode = null
+        multiply(false)
         paint.color = color
         paint.style = Paint.Style.FILL
         c.drawCircle(lpx, lpy, width(pts[0].p) / 2f, paint)   // 起笔圆点

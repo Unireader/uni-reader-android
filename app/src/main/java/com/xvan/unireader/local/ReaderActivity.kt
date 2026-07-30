@@ -16,6 +16,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
@@ -95,6 +96,9 @@ class ReaderActivity : Activity() {
     private lateinit var penBtn: Button
     private lateinit var rulerBtn: Button
     private lateinit var noteBtn: Button
+    private lateinit var nightBtn: Button
+    private lateinit var eyeBtn: Button
+    private lateinit var lockBtn: Button
     private lateinit var openingLabel: TextView
     private lateinit var penStat: TextView
     private lateinit var layerStat: TextView
@@ -157,9 +161,21 @@ class ReaderActivity : Activity() {
         rulerBtn = barBtn("尺子") { canvas.toggleRuler(); refreshHud() }
         // 文字笔记模式（M5）：开着时笔点页面 = 开编辑器而不是写字，与模式2 的「文字」键同一开关
         noteBtn = barBtn("文字") { canvas.toggleNoteMode(); refreshHud() }
-        // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）
+        // 夜间 / 页图显隐 / 锁缩放：能力本来就在基类（模式2 早有这三个键），模式1 之前只是没接按钮
+        nightBtn = barBtn("夜间") { canvas.toggleNight(); refreshHud() }
+        eyeBtn = barBtn("页图") { canvas.toggleShowPage(); refreshHud() }
+        lockBtn = barBtn("🔓") { canvas.toggleZoomLock(); refreshHud() }
+        // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）。
+        // 面板改完即时生效（基类自己管），这里只负责把结果存下来——模式2 那两个回调是上行给 Mac 的，
+        // 模式1 没有 Mac，改完不存的话退出即丢（见 ToolPrefs）。
         penStat = capsule(this).apply {
-            setOnClickListener { PadPanels.showPenPanel(this@ReaderActivity, canvas) }
+            setOnClickListener {
+                PadPanels.showPenPanel(
+                    this@ReaderActivity, canvas,
+                    onPenset = { ToolPrefs.save(this@ReaderActivity, canvas) },
+                    onEraser = { ToolPrefs.save(this@ReaderActivity, canvas) },
+                )
+            }
         }
         layerStat = capsule(this).apply { setOnClickListener { showLayers() } }
         // 按钮组装在可横滑的容器里、页码固定在最右：竖屏 1080 宽下五个按钮就顶到边了，
@@ -173,6 +189,9 @@ class ReaderActivity : Activity() {
             addView(penBtn)
             addView(rulerBtn)
             addView(noteBtn)
+            addView(nightBtn)
+            addView(eyeBtn)
+            addView(lockBtn)
         }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -215,6 +234,9 @@ class ReaderActivity : Activity() {
         }
         setContentView(root)
         canvas.setBarHeight(barH.toFloat())
+        // 笔/橡皮/夜间是设备级偏好，与文档无关，所以在这里（打开文档之前）就复原
+        ToolPrefs.load(this, canvas)
+        refreshHud()
         // 顶栏避开状态栏：不处理的话按钮压在时钟上，点击会被系统栏吃掉（见 shared/Insets.kt）。
         // 胶囊同理要避开底部导航栏——模式2 不用管这个（它整屏沉浸），模式1 有系统栏。
         root.onSystemBarInsets { top, bottom ->
@@ -286,6 +308,18 @@ class ReaderActivity : Activity() {
         openingLabel.visibility = View.GONE
         title = o.doc.title
 
+        // 这个卷建不起 WAL（FAT32/exFAT 的 U 盘，§9.3）：不是错误，但得说一声——退出时的
+        // checkpoint 会变成空操作，「搬运前先把 -wal 合并回主库」那层保险在这里没有。
+        if (!o.store.walEnabled) {
+            Log.w(TAG, "这个卷不支持 WAL：笔迹照常落库，但 wal_checkpoint 是空操作")
+            Toast.makeText(
+                this,
+                "这个卷不支持 WAL（多半是 FAT32/exFAT 的 U 盘）：笔迹照常保存，" +
+                    "搬回 Mac 前请把整个 .unrd 文件夹一起拷",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+
         // 进度复原：等**几何首次就绪**之后再做（否则 offY 还是 width=0 时算的，滚过去等于滚到页顶），
         // 且顺序必须是先缩放再滚——反了 offY 是旧内容宽下的值，落点会偏。
         // **这个钩子必须挂在 setPages 之前**：此刻视口早就布局好了（打开是异步的），页表一到
@@ -351,6 +385,10 @@ class ReaderActivity : Activity() {
         penBtn.setTextIfChanged(if (canvas.mode == MODE_NOTE) canvas.penLabel() else "笔")
         rulerBtn.setTextIfChanged(if (canvas.rulerOn) "尺子✓" else "尺子")
         noteBtn.setTextIfChanged(if (canvas.noteMode) "文字✓" else "文字")
+        // 文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
+        nightBtn.setTextIfChanged(if (canvas.night) "日间" else "夜间")
+        eyeBtn.setTextIfChanged(if (canvas.showPage) "页图" else "页图✕")
+        lockBtn.setTextIfChanged(if (canvas.zoomLocked) "🔒" else "🔓")
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
         val pen = canvas.curPenOrNull()
         penStat.setTextIfChanged(
@@ -462,6 +500,8 @@ class ReaderActivity : Activity() {
     override fun onPause() {
         super.onPause()
         saveProgress()   // 切后台立刻落盘：进程随时可能被杀
+        // 顶栏切的夜间、环形盘/切笔键换的笔——都在这一刻存下来（面板改的已经即时存过了）
+        ToolPrefs.save(this, canvas)
     }
 
     override fun onDestroy() {

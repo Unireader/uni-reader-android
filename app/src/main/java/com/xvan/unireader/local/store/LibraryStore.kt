@@ -49,6 +49,9 @@ class LibraryStore(private val db: Db) : Closeable {
     /** 打开/关闭各做一次；搬运工作区时只拷 .sqlite 也不会丢最近的写入 */
     fun checkpoint() = db.walCheckpointTruncate()
 
+    /** 这个卷上 WAL 是否真的启用（false = FAT32/exFAT 之类，界面要提示，见 [Db.walEnabled]） */
+    val walEnabled: Boolean get() = db.walEnabled
+
     override fun close() = db.close()
 
     // ---------- meta ----------
