@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **用框架主题而不是 AppCompat/Material Components**：四个 Activity 都继承
+  `android.app.Activity`（不是 AppCompatActivity），`Theme.AppCompat.*` 在它上面会直接崩；
+  而 Material 3 组件库（com.google.android.material）是一条新依赖、且本机 gradle 缓存里没有，
+  离线构建会断——UI 现代化不值得拿构建可用性去换（依赖要装也得用户自己来）。
+
+  所以：框架 `Theme.Material` 打底 + `values-night` 换色板 + 代码里自绘控件（见 shared/Ui.kt）。
+-->
+<resources>
+    <style name="Theme.UniReader" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorBackground">@color/surface</item>
+        <item name="android:windowBackground">@color/surface</item>
+        <item name="android:textColorPrimary">@color/on_surface</item>
+        <item name="android:textColorSecondary">@color/on_surface_variant</item>
+        <item name="android:colorAccent">@color/accent</item>
+
+        <!--
+          全面屏：内容自己铺到系统栏底下，各界面用 shared/Insets.kt 让出安全区。
+          状态栏/导航栏透明 + 图标反色由 `Ui.applySystemBarIcons` 按当前深浅色设置——
+          浅色背景配浅色图标就是一排白斑，这一步不能忘。
+        -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

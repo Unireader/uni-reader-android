@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  浅色色板（深色见 values-night/colors.xml，同名覆盖）。
+
+  **代码里一律按语义名取色，别写 0xFF… 字面量**：`res.color(R.color.surface)` 会自动按
+  系统深浅色拿到对应那套；写死字面量的地方在深色模式下就成了一块亮斑。
+
+  取值口径：与阅读区原有的顶栏底色 #161B22 同源（GitHub 暗色系），浅色一侧按同样的
+  层级关系（底 → 容器 → 描边）压出来。**不许出现渐变/高光/投影**——扁平是硬要求。
+-->
+<resources>
+    <!-- 页面最底层（书库/启动页的背景） -->
+    <color name="surface">#FFFFFFFF</color>
+    <!-- 比 surface 略暗一档：画布外的留白、分组之间的沟 -->
+    <color name="surface_dim">#FFF2F4F7</color>
+    <!-- 容器：卡片、按钮底、输入框 -->
+    <color name="surface_container">#FFEDF0F4</color>
+    <!-- 容器被按下/选中时 -->
+    <color name="surface_active">#FFDDE3EA</color>
+
+    <color name="on_surface">#FF14181D</color>
+    <color name="on_surface_variant">#FF5B6472</color>
+    <color name="outline">#FFDCE1E8</color>
+
+    <color name="accent">#FF0B69C7</color>
+    <color name="on_accent">#FFFFFFFF</color>
+    <!-- 选中态的淡底（分段控件当前格、当前作画图层） -->
+    <color name="accent_container">#FFDDEBFB</color>
+
+    <color name="danger">#FFB3261E</color>
+
+    <!-- 阅读区/输入板浮在页面之上的条与面板：半透明，页面从底下透出来 -->
+    <color name="bar_scrim">#F2FFFFFF</color>
+    <color name="bar_on">#FF14181D</color>
+    <color name="bar_on_variant">#FF5B6472</color>
+    <color name="bar_outline">#22000000</color>
+</resources>

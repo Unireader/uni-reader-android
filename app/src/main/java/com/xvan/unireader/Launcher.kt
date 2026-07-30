@@ -22,6 +22,7 @@ import android.widget.TextView
 import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.pad.PadActivity
+import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.onSystemBarInsets
 import com.xvan.unireader.shared.runInBackground
 import java.io.File
@@ -43,7 +44,8 @@ class Launcher : Activity() {
     }
 
     private lateinit var permText: TextView
-    private lateinit var permBtn: Button
+    private lateinit var permBtn: TextView
+    private lateinit var permCard: LinearLayout
     private lateinit var recentBox: LinearLayout
 
     /** 「正在打开…」。持有它是为了在 [onDestroy] 里收掉，否则校验没回来就退出会 leak window */
@@ -67,84 +69,111 @@ class Launcher : Activity() {
 
     // ---------- UI ----------
 
+    /**
+     * 两种模式各是一张卡片：图标 + 标题 + 一句解释 + 主操作，而不是一串"小标题 + 灰字 + 灰按钮"。
+     * 两张卡等重——它们是并列的两条路，不该有一条看起来像附属功能。
+     */
     private fun buildUi() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(28), dp(24), dp(28))
+            setPadding(dp(20), dp(24), dp(20), dp(28))
         }
 
-        col.addView(title("UniReader"))
-        col.addView(hint("版本 ${versionName()}"))
+        col.addView(Ui.title(this, "UniReader", 30f))
+        col.addView(Ui.body(this, "版本 ${versionName()}").apply { setPadding(0, dp(4), 0, 0) })
 
-        // —— 权限 ——
-        permText = hint("")
-        permBtn = btn("去授权") { requestAllFiles() }
-        col.addView(gap(dp(20)))
-        col.addView(permText)
-        col.addView(permBtn)
+        // —— 权限：没授权时才是一张显眼的卡，授权了就缩成一行小字 ——
+        permText = Ui.body(this, "")
+        permBtn = Ui.button(this, "去授权", filled = true) { requestAllFiles() }
+        permCard = Ui.card(this).apply {
+            addView(permText)
+            addView(Ui.spacer(this@Launcher, 12))
+            addView(permBtn)
+        }
+        col.addView(Ui.spacer(this, 20))
+        col.addView(permCard)
 
         // —— 模式1 ——
-        col.addView(gap(dp(24)))
-        col.addView(section("打开工作区（本机独立）"))
-        col.addView(hint("直接读 .unrd 工作区里的 library.sqlite 与 PDFs/，不需要开着 Mac。"))
-        col.addView(btn("选择 .unrd 文件夹…") { onPickWorkspace() })
         recentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(recentBox)
+        col.addView(Ui.spacer(this, 16))
+        col.addView(
+            modeCard(
+                R.drawable.ic_folder,
+                "打开工作区",
+                "本机独立：直接读 .unrd 里的 library.sqlite 与 PDFs/，不需要开着 Mac。",
+                "选择 .unrd 文件夹…",
+            ) { onPickWorkspace() }.apply { addView(recentBox) },
+        )
 
         // —— 模式2 ——
-        col.addView(gap(dp(24)))
-        col.addView(section("连 Mac 当输入板"))
-        col.addView(hint("平板只管采集笔迹，页面与笔迹的真源在 Mac 上。"))
+        col.addView(Ui.spacer(this, 12))
         col.addView(
-            btn("进入输入板") {
+            modeCard(
+                R.drawable.ic_tablet,
+                "连 Mac 当输入板",
+                "平板只管采集笔迹，页面与笔迹的真源在 Mac 上。",
+                "进入输入板",
+            ) {
                 Log.i(TAG, "进入模式2 输入板")
                 startActivity(Intent(this, PadActivity::class.java))
             },
         )
 
         // —— 单写者提醒（§9.2：工作区没有任何加锁/同步机制） ——
-        col.addView(gap(dp(28)))
+        col.addView(Ui.spacer(this, 24))
         col.addView(
-            hint(
+            Ui.body(
+                this,
                 "同一个工作区同一时间只能一端打开：平板在用时别在 Mac 上开同一个工作区，" +
                     "否则两边的写入会互相覆盖。搬运时把整个 .unrd 文件夹一起拷（含 -wal/-shm），" +
                     "放在云盘同步目录上尤其危险。",
-            ),
+            ).apply { textSize = 12f },
         )
 
-        val scroll = ScrollView(this).apply { addView(col) }
+        val scroll = ScrollView(this).apply {
+            addView(col)
+            setBackgroundColor(Ui.surface(this@Launcher))
+        }
         setContentView(scroll)
         scroll.onSystemBarInsets { top, bottom -> scroll.setPadding(0, top, 0, bottom) }
         refresh()
     }
 
+    /** 一张模式卡：顶上一行「图标 + 标题」，一句解释，一个主操作按钮 */
+    private fun modeCard(
+        icon: Int,
+        heading: String,
+        desc: String,
+        action: String,
+        onAction: () -> Unit,
+    ): LinearLayout = Ui.card(this, 18).apply {
+        addView(
+            LinearLayout(this@Launcher).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    android.widget.ImageView(this@Launcher).apply {
+                        setImageResource(icon)
+                        imageTintList =
+                            android.content.res.ColorStateList.valueOf(Ui.accent(this@Launcher))
+                    },
+                    LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(10) },
+                )
+                addView(Ui.title(this@Launcher, heading, 18f))
+            },
+        )
+        addView(Ui.body(this@Launcher, desc).apply { setPadding(0, dp(8), 0, dp(14)) })
+        addView(Ui.button(this@Launcher, action, filled = true, onClick = onAction))
+    }
+
     /**
-     * 按钮一律走这里：Material 主题默认 `textAllCaps=true`，会把「选择 .unrd 文件夹…」显示成
-     * 「选择 .UNRD 文件夹…」——而 `.unrd` 是要用户在文件夹名里认的后缀，大写就对不上了。
+     * 按钮一律走 [Ui.button]：Material 主题默认 `textAllCaps=true`，会把「选择 .unrd 文件夹…」
+     * 显示成「选择 .UNRD 文件夹…」——而 `.unrd` 是要用户在文件夹名里认的后缀，大写就对不上了。
+     * （自绘的 TextView 按钮不受那条影响，这里留个说明免得有人改回 `Button`。）
      */
-    private fun btn(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        setOnClickListener { onClick() }
-    }
+    private fun btn(label: String, onClick: () -> Unit) = Ui.button(this, label, onClick = onClick)
 
-    private fun title(s: String) = TextView(this).apply {
-        text = s; textSize = 28f; setTextColor(0xFF1A1A1A.toInt())
-    }
-
-    private fun section(s: String) = TextView(this).apply {
-        text = s; textSize = 17f; setTextColor(0xFF1A1A1A.toInt())
-        setPadding(0, 0, 0, dp(4))
-    }
-
-    private fun hint(s: String) = TextView(this).apply {
-        text = s; textSize = 13f; setTextColor(0xFF6B6B6B.toInt())
-        setPadding(0, 0, 0, dp(8))
-    }
-
-    private fun gap(h: Int) = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(1, h)
-    }
+    private fun hint(s: String) = Ui.body(this, s).apply { setPadding(0, 0, 0, dp(8)) }
 
     private fun versionName(): String = try {
         packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
@@ -156,33 +185,39 @@ class Launcher : Activity() {
         val ok = hasAllFiles()
         Log.i(TAG, "刷新：全盘文件权限=$ok sdk=${Build.VERSION.SDK_INT}")
         permText.text =
-            if (ok) "已获得所有文件访问权限。"
+            if (ok) "已获得所有文件访问权限"
             else "尚未获得「所有文件访问权限」——打开工作区需要它（模式2 输入板不需要）。" +
                 "小米/HyperOS 等国产 ROM 需要在系统设置里单独允许。"
+        // 授权后这张卡就不该再占一整块：缩成一行小字，别一直提醒一件已经办完的事
         permBtn.visibility = if (ok) View.GONE else View.VISIBLE
+        permCard.background = if (ok) null else Ui.round(Ui.container(this), 16, this)
+        val p = if (ok) 0 else dp(16)
+        permCard.setPadding(p, p, p, p)
+        permText.setTextColor(if (ok) Ui.onVariant(this) else Ui.onSurface(this))
         refreshRecents()
     }
 
+    /** 最近打开：整行可点进书库，右侧一个删除图标（原先是个跟主操作一样重的「移除」按钮） */
     private fun refreshRecents() {
         recentBox.removeAllViews()
         val list = Workspace.recents(this)
         if (list.isEmpty()) return
-        recentBox.addView(hint("最近打开："))
+        recentBox.addView(Ui.sectionTitle(this, "最近打开"))
         for (path in list) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            val label = TextView(this).apply {
-                text = File(path).name.ifEmpty { path }
-                textSize = 15f
-                setTextColor(0xFF0A5AC2.toInt())
-                setPadding(0, dp(8), 0, dp(8))
-                setOnClickListener { openWorkspace(File(path)) }
+            val label = Ui.row(this) { openWorkspace(File(path)) }.apply {
+                addView(Ui.title(this@Launcher, File(path).name.ifEmpty { path }, 15f))
+                addView(
+                    Ui.body(this@Launcher, File(path).parent ?: path).apply { textSize = 12f },
+                )
+                setPadding(dp(10), dp(10), dp(10), dp(10))
             }
             row.addView(label, LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(
-                btn("移除") {
+                Ui.iconButton(this, R.drawable.ic_delete, "从最近打开中移除", Ui.onVariant(this)) {
                     Workspace.forget(this, path)
                     refreshRecents()
                 },

@@ -15,6 +15,7 @@ import android.util.AttributeSet
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import com.xvan.unireader.R
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -401,7 +402,7 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     fun pageCountOrZero(): Int = pageCount
-    fun hudPage(): String = if (pageCount > 0) "${topVisiblePage() + 1} / $pageCount" else "— / —"
+    fun hudPage(): String = if (pageCount > 0) "${topVisiblePage() + 1}/$pageCount" else "—/—"
     fun hudZoom(): String = "${(zoom * 100).roundToInt()}%"
 
     // —— 页图（可见 + 上下各一屏预取；PadActivity 经 PageFetcher 取回 setPageImage） ——
@@ -613,8 +614,18 @@ open class PageCanvasView @JvmOverloads constructor(
         ColorMatrixColorFilter(invert)
     }
 
+    /**
+     * 页与页之间的底：跟随系统深浅色（`res/values{,-night}/colors.xml` 的 surface_dim）。
+     * 从前写死深色，浅色主题下就成了「白顶栏 + 黑画布」两个 App 拼在一起。
+     * **夜间模式是另一件事**：那个只反转页面那一层（见 onDraw），与这里的底色互不干涉。
+     *
+     * **取一次存下来**：`onDraw` 每帧都跑，在里面查资源等于每帧做一次主题解析。
+     * 系统深浅色一变 Activity 会重建、这个 View 跟着重建，所以缓存不会过期。
+     */
+    private val gutterColor = Ui.col(context, R.color.surface_dim)
+
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(0xFF0D1117.toInt())   // 深色底
+        canvas.drawColor(gutterColor)
         val cl = contentLeft()
         val p = pw()
         // 夜间模式只反转「页面」这一层：页图、白底、以及未取到图时的占位色都要一起反

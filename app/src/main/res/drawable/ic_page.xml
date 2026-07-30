@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 24dp 描边图标；颜色由代码 setTint（bar_on / on_surface / accent），别在这里写死语义色 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M4,5 L20,5 a1,1 0 0,1 1,1 L21,18 a1,1 0 0,1 -1,1 L4,19 a1,1 0 0,1 -1,-1 L3,6 a1,1 0 0,1 1,-1 Z M3.5,16.5 L8.5,11.5 L12.5,15.5 M14.5,13.5 L17,11 L20.5,14.5 M15.8,8.6 a1.2,1.2 0 1,0 0.01,0 Z"
+        android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+</vector>

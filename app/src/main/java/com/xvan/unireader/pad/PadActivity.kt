@@ -19,20 +19,24 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.zxing.integration.android.IntentIntegrator
+import com.xvan.unireader.R
 import com.xvan.unireader.shared.Layer
 import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
+import com.xvan.unireader.shared.MODE_PAGE
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextNote
+import com.xvan.unireader.shared.TopBar
+import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
 import com.xvan.unireader.shared.setTextIfChanged
@@ -54,20 +58,15 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     private lateinit var dot: View
     private lateinit var latText: TextView
-    private lateinit var pageLabel: TextView
-    private lateinit var modeBtn: Button
-    private lateinit var penBtn: Button
-    private lateinit var nightBtn: Button
-    private lateinit var noteBtn: Button
-    private lateinit var rulerBtn: Button
-    private lateinit var eyeBtn: Button
-    private lateinit var lockBtn: Button
     private lateinit var penStat: TextView
     private lateinit var layerStat: TextView
     private lateinit var padView: PadView
     private lateinit var graphView: LatencyGraphView
+
+    /** 顶栏与模式1 共用（shared/TopBar）；`topbar` 是它的根 View，收起/展开要用 */
+    private lateinit var bar: TopBar
     private lateinit var topbar: LinearLayout
-    private lateinit var showBarBtn: Button
+    private lateinit var showBarBtn: ImageButton
     private var barHeightPx = 0
 
     private var client: MacClient? = null
@@ -149,9 +148,18 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         padView.setBarHeight(if (hidden) 0f else barHeightPx.toFloat())
     }
 
+    /** 图层面板（真源在 Mac：这里发的都是「请求」，权威状态等 Mac 广播回来） */
+    private fun showLayerPanel() {
+        PadPanels.showLayerPanel(
+            this, layers, layerIdx,
+            onSelect = { client?.send(WireCodec.encodeLayerSelect(it)) },
+            onToggleVisible = { i, v -> client?.send(WireCodec.encodeLayerVisible(i, v)) },
+            onAdd = { client?.send(WireCodec.encodeLayerAdd()) },
+            emptyHint = "（还没收到 Mac 的图层表）",
+        )
+    }
+
     private fun buildUi() {
-        val barH = dp(48)
-        barHeightPx = barH
         enterImmersive()
 
         padView = PadView(this).apply {
@@ -173,7 +181,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         dot = View(this)   // 连接状态点（绿=已认证）
         latText = TextView(this).apply {
-            text = "— ms"; textSize = 12f; setTextColor(0xFF8B949E.toInt())
+            text = "— ms"; textSize = 12f
+            setTextColor(Ui.col(this@PadActivity, R.color.bar_on_variant))
             // 被挤窄时省略而不是换行（换行会把顶栏顶高、按钮跟着变形）
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -185,66 +194,55 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 maxWidth = dp(120)
             }
         }
-        pageLabel = TextView(this).apply {
-            text = "— / —"; textSize = 13f; setTextColor(Color.WHITE)
-            setOnClickListener {
-                PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
-            }
-        }
-        val docsBtn = Button(this).apply {
-            text = "文档"
-            setOnClickListener {
+        // 顶栏与模式1 是同一份（shared/TopBar）：键的顺序刻意也一样，只多「文档 / 连接设置 /
+        // 收起顶栏」这三件模式2 独有的事（真源在 Mac，所以还有个连接态小圆点）。
+        bar = TopBar(this).apply {
+            icon("docs", R.drawable.ic_doc, "选择文档") {
                 PadDocsPicker.show(this@PadActivity, docs, docSelected, docFollowing) {
                     client?.send(WireCodec.encodeSelectDoc(it))
                 }
             }
+            gap()
+            icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { padView.turn(prev = true) }
+            icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { padView.turn(prev = false) }
+            gap()
+            icon("mode", TopBar.modeIcon(MODE_NOTE), "切换模式") { padView.cycleMode() }
+            icon("pen", R.drawable.ic_nib, "切换笔") { padView.cyclePen() }
+            icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
+            icon("text", R.drawable.ic_text, "文字笔记") { padView.toggleNoteMode() }
+            addTail(dot, 0)
+            addTail(latText, 1)
+            pageLabel.setOnClickListener {
+                PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
+            }
+            overflowItems = {
+                listOf(
+                    TopBar.MenuItem("夜间模式", padView.night) { padView.toggleNight() },
+                    TopBar.MenuItem("显示页面图", padView.showPage) { padView.toggleShowPage() },
+                    TopBar.MenuItem("锁定缩放", padView.zoomLocked) { padView.toggleZoomLock() },
+                    TopBar.MenuItem("图层…") { showLayerPanel() },
+                    TopBar.MenuItem("跳到第…页") {
+                        PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
+                    },
+                    TopBar.MenuItem("收起顶栏") { setBarHidden(true) },
+                    TopBar.MenuItem("连接设置…") { showConnDialog() },
+                )
+            }
         }
-        val prevBtn = Button(this).apply { text = "◀"; setOnClickListener { padView.turn(prev = true) } }
-        val nextBtn = Button(this).apply { text = "▶"; setOnClickListener { padView.turn(prev = false) } }
-        modeBtn = Button(this).apply { setOnClickListener { padView.cycleMode() } }
-        penBtn = Button(this).apply { setOnClickListener { padView.cyclePen() } }
-        nightBtn = Button(this).apply { setOnClickListener { padView.toggleNight() } }
-        noteBtn = Button(this).apply { setOnClickListener { padView.toggleNoteMode() } }
-        rulerBtn = Button(this).apply { setOnClickListener { padView.toggleRuler() } }
-        eyeBtn = Button(this).apply { setOnClickListener { padView.toggleShowPage() } }
-        lockBtn = Button(this).apply { setOnClickListener { padView.toggleZoomLock() } }
-        val settingsBtn = Button(this).apply { text = "⚙"; setOnClickListener { showConnDialog() } }
-        val hideBarBtn = Button(this).apply { text = "⌃"; setOnClickListener { setBarHidden(true) } }
-        showBarBtn = Button(this).apply {
-            text = "⌄"
+        (dot.layoutParams as LinearLayout.LayoutParams).apply {
+            width = dp(8); height = dp(8); marginEnd = dp(8)
+        }
+        topbar = bar.view
+        showBarBtn = Ui.iconButton(this, R.drawable.ic_chevron_down, "展开顶栏", Ui.barOn(this)) {
+            setBarHidden(false)
+        }.apply {
             visibility = View.GONE
-            setOnClickListener { setBarHidden(false) }
-        }
-
-        // 按钮多，横向可滚（同网页顶栏 overflow-x:auto）
-        val btnRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(prevBtn); addView(nextBtn)
-            addView(modeBtn); addView(penBtn)
-            addView(nightBtn); addView(noteBtn); addView(rulerBtn)
-            addView(eyeBtn); addView(lockBtn); addView(settingsBtn); addView(hideBarBtn)
-        }
-        val btnScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(btnRow)
-        }
-
-        topbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            isClickable = true   // 挡住触摸穿透到 PadView（顶栏区域不算画布）
-            setBackgroundColor(0xE6161B22.toInt())
-            setPadding(dp(10), 0, dp(10), 0)
-            addView(dot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(10) })
-            addView(latText)
-            addView(docsBtn, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
-            // 按钮组吃掉剩余宽度、内部可横滑，页码 wrap 钉在最右（照模式1 的做法，§9.3）。
-            // 原先是「Space(weight=1) + 按钮组 wrap」：宽屏上把按钮推到右边好看，但竖屏 1080 下
-            // Space 先把剩余空间吃光，按钮组被压成 0 宽——◀▶/模式/笔/夜间…**一个都点不到**。
-            // 加权的必须是按钮组：LinearLayout 先按顺序量非加权的孩子，排在后面的只能捡剩下的。
-            addView(btnScroll, LinearLayout.LayoutParams(0, -1, 1f))
-            addView(pageLabel, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+            background = Ui.rippleOver(
+                this@PadActivity,
+                Ui.round(Ui.col(this@PadActivity, R.color.bar_scrim), Ui.RADIUS, this@PadActivity),
+                Ui.RADIUS,
+                Ui.barOn(this@PadActivity),
+            )
         }
 
         // 左下状态胶囊：笔/橡皮 与 图层（对应网页 PenStat / LayerStat）
@@ -253,28 +251,20 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 PadPanels.showPenPanel(this@PadActivity, padView, ::schedulePenset, ::scheduleEraser)
             }
         }
-        layerStat = capsule(this).apply {
-            setOnClickListener {
-                PadPanels.showLayerPanel(
-                    this@PadActivity, layers, layerIdx,
-                    onSelect = { client?.send(WireCodec.encodeLayerSelect(it)) },
-                    onToggleVisible = { i, v -> client?.send(WireCodec.encodeLayerVisible(i, v)) },
-                    onAdd = { client?.send(WireCodec.encodeLayerAdd()) },
-                    emptyHint = "（还没收到 Mac 的图层表）",
-                )
-            }
-        }
+        layerStat = capsule(this).apply { setOnClickListener { showLayerPanel() } }
         val capsules = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(layerStat, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
-            addView(penStat)
+            // 显式 wrap：默认的 MATCH_PARENT 会被 wrap 的竖向容器夹成「最宽那颗」的宽度，
+            // 「翻页 · 拖动平移」会被截掉尾巴（模式1 同处一样）
+            addView(penStat, LinearLayout.LayoutParams(-2, -2))
         }
 
         graphView = LatencyGraphView(this)
 
         val root = FrameLayout(this).apply {
             addView(padView, FrameLayout.LayoutParams(-1, -1))
-            addView(topbar, FrameLayout.LayoutParams(-1, barH, Gravity.TOP))
+            addView(topbar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(
                 showBarBtn,
                 FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
@@ -290,12 +280,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             addView(
                 graphView,
                 FrameLayout.LayoutParams(dp(200), dp(90), Gravity.TOP or Gravity.END).apply {
-                    topMargin = barH + dp(8); marginEnd = dp(8)
+                    topMargin = bar.height() + dp(8); marginEnd = dp(8)
                 },
             )
         }
         setContentView(root)
-        padView.setBarHeight(barH.toFloat())
+        barHeightPx = bar.height()
+        padView.setBarHeight(barHeightPx.toFloat())
         setDot(false)
         applyGraphVisibility()
         refresh()
@@ -481,14 +472,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 rtt, e2e, u?.nackRttMs ?: -1.0, mvRate, u?.nacks ?: 0, u?.resends ?: 0,
             )
         )
-        pageLabel.setTextIfChanged("${padView.hudPage()}  ${padView.hudZoom()}")
-        modeBtn.setTextIfChanged(padView.modeLabel())
-        penBtn.setTextIfChanged("笔:${padView.penLabel()}")
-        nightBtn.setTextIfChanged(if (padView.night) "日间" else "夜间")
-        noteBtn.setTextIfChanged(if (padView.noteMode) "文字✓" else "文字")
-        rulerBtn.setTextIfChanged(if (padView.rulerOn) "尺子✓" else "尺子")
-        eyeBtn.setTextIfChanged(if (padView.showPage) "页图" else "页图✕")
-        lockBtn.setTextIfChanged(if (padView.zoomLocked) "🔒" else "🔓")
+        // 顶栏这几行与模式1 的 `refreshHud` 是同一套表达（shared/TopBar）：
+        // 模式键换图标、开关键上 accent 底色。两边各写一份文案的时代就此结束。
+        bar.setPageLabel(padView.hudPage(), padView.hudZoom())
+        bar.setIcon("mode", TopBar.modeIcon(padView.mode))
+        bar.setActive("mode", padView.mode != MODE_PAGE)
+        bar.setActive("ruler", padView.rulerOn)
+        bar.setActive("text", padView.noteMode)
+        bar.setEnabled("pen", padView.mode == MODE_NOTE)
 
         // 笔胶囊：笔记模式显示当前笔（类型 · 粗细），其余模式显示模式名（同网页 PenStat）
         val pen = padView.curPenOrNull()

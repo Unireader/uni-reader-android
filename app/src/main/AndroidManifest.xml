@@ -23,7 +23,7 @@
     <application
         android:label="UniReader"
         android:requestLegacyExternalStorage="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:theme="@style/Theme.UniReader"
         android:usesCleartextTraffic="true">
 
         <!-- 启动页：打开工作区（模式1）/ 连 Mac 当输入板（模式2） -->

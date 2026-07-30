@@ -3,6 +3,7 @@ package com.xvan.unireader.shared
 import android.app.Activity
 import android.graphics.drawable.GradientDrawable
 import android.widget.TextView
+import com.xvan.unireader.R
 import kotlin.math.roundToInt
 
 /**
@@ -16,13 +17,17 @@ fun capsule(a: Activity): TextView {
     fun dp(v: Int) = (v * a.resources.displayMetrics.density).roundToInt()
     return TextView(a).apply {
         textSize = 13f
-        setTextColor(0xFFE6EDF3.toInt())
-        setPadding(dp(12), dp(6), dp(12), dp(6))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(999).toFloat()
-            setColor(0xD9161B22.toInt())
-            setStroke(dp(1), 0xFF30363D.toInt())
+        // 颜色走语义名（跟随系统深浅色，见 shared/Ui.kt）：胶囊浮在页面上，与顶栏同一套底色，
+        // 写死深色的话浅色模式下就是页面上贴了两块黑斑
+        setTextColor(Ui.col(a, R.color.bar_on))
+        setPadding(dp(14), dp(7), dp(14), dp(7))
+        val face = GradientDrawable().apply {
+            cornerRadius = dp(Ui.PILL).toFloat()
+            setColor(Ui.col(a, R.color.bar_scrim))
+            setStroke(dp(1), Ui.col(a, R.color.bar_outline))
         }
+        background = Ui.rippleOver(a, face, Ui.PILL, Ui.col(a, R.color.bar_on))
+        isClickable = true
     }
 }
 

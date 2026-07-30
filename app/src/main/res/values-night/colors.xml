@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  深色色板：与 values/colors.xml **一一同名**，系统切深色时资源系统自动换这一套。
+  代码不需要判断当前是深是浅（判断了就一定会漏掉某处）。
+
+  注意：`-night` 限定符要系统真有深色模式才会触发（Android 10+ 的全局开关）。
+  minSdk 26 的老设备上会一直用浅色那套——不是 BUG，是那些系统没有这个概念。
+
+  底色 #0D1117 / 容器 #161B22 与阅读顶栏原本的 0xE6161B22 同源，换主题前后阅读区观感不跳。
+-->
+<resources>
+    <color name="surface">#FF0D1117</color>
+    <color name="surface_dim">#FF010409</color>
+    <color name="surface_container">#FF161B22</color>
+    <color name="surface_active">#FF21262D</color>
+
+    <color name="on_surface">#FFE6EDF3</color>
+    <color name="on_surface_variant">#FF8B949E</color>
+    <color name="outline">#FF30363D</color>
+
+    <color name="accent">#FF4493F8</color>
+    <color name="on_accent">#FF0D1117</color>
+    <color name="accent_container">#FF16324D</color>
+
+    <color name="danger">#FFF85149</color>
+
+    <color name="bar_scrim">#E6161B22</color>
+    <color name="bar_on">#FFE6EDF3</color>
+    <color name="bar_on_variant">#FF8B949E</color>
+    <color name="bar_outline">#33FFFFFF</color>
+</resources>

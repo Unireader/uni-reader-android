@@ -3,7 +3,6 @@ package com.xvan.unireader.local
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -11,12 +10,11 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import com.xvan.unireader.R
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
@@ -32,6 +30,8 @@ import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
+import com.xvan.unireader.shared.TopBar
+import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
 import com.xvan.unireader.shared.onSystemBarInsets
@@ -95,14 +95,7 @@ class ReaderActivity : Activity() {
     }
 
     private lateinit var canvas: LocalCanvasView
-    private lateinit var pageLabel: TextView
-    private lateinit var modeBtn: Button
-    private lateinit var penBtn: Button
-    private lateinit var rulerBtn: Button
-    private lateinit var noteBtn: Button
-    private lateinit var nightBtn: Button
-    private lateinit var eyeBtn: Button
-    private lateinit var lockBtn: Button
+    private lateinit var bar: TopBar
     private lateinit var openingLabel: TextView
     private lateinit var penStat: TextView
     private lateinit var layerStat: TextView
@@ -141,7 +134,6 @@ class ReaderActivity : Activity() {
     }
 
     private fun buildUi() {
-        val barH = dp(44)
         canvas = LocalCanvasView(this).apply {
             onProgress = { page, frac ->
                 curPage = page
@@ -153,24 +145,32 @@ class ReaderActivity : Activity() {
             // 那边编帧发给 Mac，这边直接落 note 表（kind=0）
             onNoteEditor = { id, page, nx, ny, text, isNew -> editNote(id, page, nx, ny, text, isNew) }
         }
-        pageLabel = TextView(this).apply {
-            text = "— / —"
-            textSize = 13f
-            setTextColor(Color.WHITE)
-            setOnClickListener { showGotoPage() }
+        // 顶栏与模式2 是同一份（shared/TopBar）：这里只声明有哪几个键、按下去干什么，
+        // 形状/间距/开关态的表达/溢出菜单的行为都由它统一。
+        bar = TopBar(this).apply {
+            icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { canvas.turn(prev = true) }
+            icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { canvas.turn(prev = false) }
+            gap()
+            // 轮换用基类的（笔记→擦除→翻页→框选，与模式2 的模式键/PageUp 同一份实现）：
+            // 早先这里自己写了一份三态轮换来绕开框选，那时它的落库钩子还没做，现在有了
+            icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") { canvas.cycleMode(); refreshHud() }
+            icon("pen", R.drawable.ic_nib, "切换笔") { canvas.cyclePen(); refreshHud() }
+            // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
+            icon("ruler", R.drawable.ic_ruler, "尺子") { canvas.toggleRuler(); refreshHud() }
+            // 文字笔记模式（M5）：开着时笔点页面 = 开编辑器而不是写字，与模式2 的「文字」键同一开关
+            icon("text", R.drawable.ic_text, "文字笔记") { canvas.toggleNoteMode(); refreshHud() }
+            pageLabel.setOnClickListener { showGotoPage() }
+            // 低频项进 ⋯：夜间/页图/锁缩放的能力本来就在基类（模式2 早有），模式1 之前没接入口
+            overflowItems = {
+                listOf(
+                    TopBar.MenuItem("夜间模式", canvas.night) { canvas.toggleNight(); refreshHud() },
+                    TopBar.MenuItem("显示页面图", canvas.showPage) { canvas.toggleShowPage(); refreshHud() },
+                    TopBar.MenuItem("锁定缩放", canvas.zoomLocked) { canvas.toggleZoomLock(); refreshHud() },
+                    TopBar.MenuItem("图层…") { showLayers() },
+                    TopBar.MenuItem("跳到第…页") { showGotoPage() },
+                )
+            }
         }
-        // 轮换用基类的（笔记→擦除→翻页→框选，与模式2 的模式键/PageUp 同一份实现）：
-        // 早先这里自己写了一份三态轮换来绕开框选，那时它的落库钩子还没做，现在有了
-        modeBtn = barBtn("翻页") { canvas.cycleMode(); refreshHud() }
-        penBtn = barBtn("笔") { canvas.cyclePen(); refreshHud() }
-        // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
-        rulerBtn = barBtn("尺子") { canvas.toggleRuler(); refreshHud() }
-        // 文字笔记模式（M5）：开着时笔点页面 = 开编辑器而不是写字，与模式2 的「文字」键同一开关
-        noteBtn = barBtn("文字") { canvas.toggleNoteMode(); refreshHud() }
-        // 夜间 / 页图显隐 / 锁缩放：能力本来就在基类（模式2 早有这三个键），模式1 之前只是没接按钮
-        nightBtn = barBtn("夜间") { canvas.toggleNight(); refreshHud() }
-        eyeBtn = barBtn("页图") { canvas.toggleShowPage(); refreshHud() }
-        lockBtn = barBtn("🔓") { canvas.toggleZoomLock(); refreshHud() }
         // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）。
         // 面板改完即时生效（基类自己管），这里只负责把结果存下来——模式2 那两个回调是上行给 Mac 的，
         // 模式1 没有 Mac，改完不存的话退出即丢（见 ToolPrefs）。
@@ -184,53 +184,19 @@ class ReaderActivity : Activity() {
             }
         }
         layerStat = capsule(this).apply { setOnClickListener { showLayers() } }
-        // 按钮组装在可横滑的容器里、页码固定在最右：竖屏 1080 宽下五个按钮就顶到边了，
-        // 按 wrap 排会把页码（也是跳页入口）直接挤出屏幕——按钮以后还会加。
-        val btns = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(barBtn("◀") { canvas.turn(prev = true) })
-            addView(barBtn("▶") { canvas.turn(prev = false) })
-            addView(modeBtn)
-            addView(penBtn)
-            addView(rulerBtn)
-            addView(noteBtn)
-            addView(nightBtn)
-            addView(eyeBtn)
-            addView(lockBtn)
-        }
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            isClickable = true   // 挡住触摸穿透到画布
-            setBackgroundColor(0xE6161B22.toInt())
-            setPadding(dp(10), 0, dp(10), 0)
-            addView(
-                HorizontalScrollView(context).apply {
-                    isHorizontalScrollBarEnabled = false
-                    addView(btns)
-                },
-                LinearLayout.LayoutParams(0, -1, 1f),
-            )
-            addView(pageLabel, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
-        }
-        openingLabel = TextView(this).apply {
-            text = "正在打开…"
-            textSize = 15f
-            setTextColor(0xFF6B6B6B.toInt())
-        }
+        openingLabel = Ui.body(this, "正在打开…").apply { textSize = 15f }
+        // 两颗胶囊各自 wrap：不给 penStat 显式 LayoutParams 的话它默认 MATCH_PARENT，
+        // 在 wrap 的竖向容器里就被夹成「最宽那颗」的宽度——「翻页 · 拖动平移」会被截成「拖动平」。
         val capsules = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(layerStat, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
-            addView(penStat)
+            addView(penStat, LinearLayout.LayoutParams(-2, -2))
         }
         val root = FrameLayout(this).apply {
+            setBackgroundColor(Ui.col(this@ReaderActivity, R.color.surface_dim))
             addView(canvas, FrameLayout.LayoutParams(-1, -1))
-            addView(bar, FrameLayout.LayoutParams(-1, barH, Gravity.TOP))
-            addView(
-                openingLabel,
-                FrameLayout.LayoutParams(-2, -2, Gravity.CENTER),
-            )
+            addView(bar.view, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+            addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             addView(
                 capsules,
                 FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply {
@@ -239,20 +205,14 @@ class ReaderActivity : Activity() {
             )
         }
         setContentView(root)
-        canvas.setBarHeight(barH.toFloat())
+        canvas.setBarHeight(bar.height().toFloat())
         // 笔/橡皮/夜间是设备级偏好，与文档无关，所以在这里（打开文档之前）就复原
         ToolPrefs.load(this, canvas)
         refreshHud()
         // 顶栏避开状态栏：不处理的话按钮压在时钟上，点击会被系统栏吃掉（见 shared/Insets.kt）。
         // 胶囊同理要避开底部导航栏——模式2 不用管这个（它整屏沉浸），模式1 有系统栏。
         root.onSystemBarInsets { top, bottom ->
-            val lp = bar.layoutParams as FrameLayout.LayoutParams
-            if (lp.height != barH + top) {
-                lp.height = barH + top
-                bar.layoutParams = lp
-                bar.setPadding(dp(10), top, dp(10), 0)
-                canvas.setBarHeight((barH + top).toFloat())
-            }
+            canvas.setBarHeight(bar.applyTopInset(top).toFloat())
             val clp = capsules.layoutParams as FrameLayout.LayoutParams
             if (clp.bottomMargin != dp(10) + bottom) {
                 clp.bottomMargin = dp(10) + bottom
@@ -381,23 +341,18 @@ class ReaderActivity : Activity() {
             .show()
     }
 
-    private fun barBtn(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        setOnClickListener { onClick() }
-    }
-
-    /** 每帧都会调（滚动/缩放都触发），一律走 `setTextIfChanged`——见 shared/Widgets.kt */
+    /**
+     * 每帧都会调（滚动/缩放都触发），文本一律走 `setTextIfChanged`——见 shared/Widgets.kt。
+     * 图标那几个是幂等的 setter，同值重设不触发 layout，不必额外挡。
+     */
     private fun refreshHud() {
-        pageLabel.setTextIfChanged("${canvas.hudPage()}　${canvas.hudZoom()}")
-        modeBtn.setTextIfChanged(canvas.modeLabel())
-        penBtn.setTextIfChanged(if (canvas.mode == MODE_NOTE) canvas.penLabel() else "笔")
-        rulerBtn.setTextIfChanged(if (canvas.rulerOn) "尺子✓" else "尺子")
-        noteBtn.setTextIfChanged(if (canvas.noteMode) "文字✓" else "文字")
-        // 文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
-        nightBtn.setTextIfChanged(if (canvas.night) "日间" else "夜间")
-        eyeBtn.setTextIfChanged(if (canvas.showPage) "页图" else "页图✕")
-        lockBtn.setTextIfChanged(if (canvas.zoomLocked) "🔒" else "🔓")
+        bar.setPageLabel(canvas.hudPage(), canvas.hudZoom())
+        // 模式键的图标随当前模式变，开关键按下去是 accent 底色——两模式同一套表达（shared/TopBar）
+        bar.setIcon("mode", TopBar.modeIcon(canvas.mode))
+        bar.setActive("mode", canvas.mode != MODE_PAGE)
+        bar.setActive("ruler", canvas.rulerOn)
+        bar.setActive("text", canvas.noteMode)
+        bar.setEnabled("pen", canvas.mode == MODE_NOTE)
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
         val pen = canvas.curPenOrNull()
         penStat.setTextIfChanged(
