@@ -33,6 +33,8 @@ object Workspace {
 
     private const val PREFS = "workspace"
     private const val KEY_RECENTS = "recents"
+    private const val KEY_SCANNED = "scanned"
+    private const val KEY_SCAN_DONE = "scan_done"
     private const val MAX_RECENTS = 6
 
     sealed class Check {
@@ -115,17 +117,7 @@ object Workspace {
 
     // ---------- 最近工作区（只存路径；能不能开每次现场校验） ----------
 
-    fun recents(ctx: Context): List<String> {
-        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RECENTS, null)
-            ?: return emptyList()
-        return try {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { arr.getString(it) }
-        } catch (e: Exception) {
-            Log.w(TAG, "最近列表解析失败，按空处理", e)
-            emptyList()
-        }
-    }
+    fun recents(ctx: Context): List<String> = readList(ctx, KEY_RECENTS)
 
     fun remember(ctx: Context, path: String) {
         val list = ArrayList(recents(ctx))
@@ -145,5 +137,40 @@ object Workspace {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString(KEY_RECENTS, JSONArray(list).toString())
             .apply()
+    }
+
+    // ---------- 扫描结果（同样只存路径；能不能开每次现场校验） ----------
+
+    /**
+     * 上一次全盘扫描找到的 `.unrd`。存起来是因为扫一次在慢卷上要几十秒——每次回启动页都重扫
+     * 既慢又吵，[scanDone] 为真就只用缓存，要刷新由用户按「重新扫描」。
+     */
+    fun scanned(ctx: Context): List<String> = readList(ctx, KEY_SCANNED)
+
+    fun scanDone(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_SCAN_DONE, false)
+
+    /**
+     * @param markDone 只有**全盘**扫过才置位——它同时是「不必再自动扫一次」的凭据，
+     *   若让「只扫某个文件夹」那种局部扫描也置位，用户就再也等不到那次全盘自动扫描了。
+     */
+    fun saveScanned(ctx: Context, paths: List<String>, markDone: Boolean = true) {
+        val e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_SCANNED, JSONArray(paths).toString())
+        if (markDone) e.putBoolean(KEY_SCAN_DONE, true)
+        e.apply()
+        Log.i(TAG, "扫描结果已存：${paths.size} 个（全盘=$markDone）")
+    }
+
+    private fun readList(ctx: Context, key: String): List<String> {
+        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(key, null)
+            ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { arr.getString(it) }
+        } catch (e: Exception) {
+            Log.w(TAG, "$key 解析失败，按空处理", e)
+            emptyList()
+        }
     }
 }
