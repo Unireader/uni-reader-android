@@ -144,6 +144,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        // 诊断（第四轮）：内核层证明写字时侧键的 KEY_PAGEUP 一个不少，网页也收得到，唯独本应用收不到，
+        // 而 dispatchKeyEvent（按键进 Activity 的第一站）连日志都没打——事件根本没发到**我们的窗口**。
+        // 按键发给「焦点窗口」、触摸发给「触摸窗口」，两者可以不是同一个：只要书写期间窗口焦点被别人
+        // （最可能是沉浸式全屏下被临时唤出的系统栏）拿走，按键就会跟着走掉，而下面这行 enterImmersive
+        // 又会把它收回来，于是焦点来回切——「多按几次偶尔能中」正是这个形状。这行日志就是判据。
+        Log.i(PageCanvasView.TAG, "窗口焦点=$hasFocus 书写中=${padView.isPenDown()}")
         if (hasFocus) enterImmersive()   // 弹窗/切回前台后系统栏会回来，重新收掉
     }
 
@@ -305,30 +311,43 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
     }
 
-    /** 侧键：PageUp 切模式 / PageDown 切笔 / Esc 清框选（同网页 keydown） */
+    /**
+     * 上一次已经处理掉的按键序列。`KeyEvent.getDownTime()` 对一次按下的 DOWN 与它配对的 UP 是**同一个值**，
+     * 拿它去重比时间窗精确：既不会把同一次按键触发两遍，也不会误吞快速连按的第二下。
+     */
+    private var lastHandledKeyDown = 0L
+
+    /**
+     * 侧键：PageUp 切模式 / PageDown 切笔 / Esc 清框选（同网页 keydown）。
+     *
+     * **DOWN 与 UP 谁先到就认谁**，而不是只认 ACTION_DOWN——小米智能触控笔实测（真机日志）：
+     * 书写期间按侧键，有些次数只有 `action=1(UP)` 到达应用，`DOWN` 被上游整个吞掉了
+     * （典型的系统全局快捷键行为：系统在 DOWN 上先判要不要自己吃掉）。只认 DOWN 的话那一次就
+     * 静默失效，表现正是用户报的「按了没反应，要多按好几次」。`getevent` 证明内核层 DOWN/UP 一直是
+     * 齐的，所以丢在系统那一层，应用侧只能两边都认。
+     */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // 诊断：用户报「按笔杆侧键切橡皮擦很不灵敏，要按好几次，网页那边就很跟手」。
-        // 上一轮只打了 MotionEvent，证明侧键**不走**触摸/悬停（`toolType`/`buttonState` 一动不动），
-        // 那它就该走这条按键路——但这里此前一行日志都没有，等于整条路是黑的。
-        // 先看清楚：按一下到底来不来事件、来的是哪个 keyCode、是不是被判成了 repeat。
-        // 两端的 cycleMode 逻辑逐行比过是一样的（都 4 模式循环、都判 repeat），所以差异只可能在
-        // 「事件有没有到」这一层。**别再猜**（这一处已经为靠猜付过两次学费，见 §9.9）。
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            Log.i(
-                PageCanvasView.TAG,
-                "按键 keyCode=${event.keyCode}(${KeyEvent.keyCodeToString(event.keyCode)}) " +
-                    "repeat=${event.repeatCount} source=0x${Integer.toHexString(event.source)} " +
-                    "device=${event.device?.name ?: "?"} 当前模式=${padView.modeLabel()}",
-            )
+        val ours = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
+            event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN ||
+            event.keyCode == KeyEvent.KEYCODE_ESCAPE
+        if (!ours) return super.dispatchKeyEvent(event)
+
+        // 长按重复不算新的一次按键；同一次按键的另一半（DOWN 已处理过就轮到 UP）直接吃掉
+        val fresh = event.repeatCount == 0 && event.downTime != lastHandledKeyDown
+        Log.i(
+            PageCanvasView.TAG,
+            "侧键 keyCode=${event.keyCode}(${KeyEvent.keyCodeToString(event.keyCode)}) " +
+                "action=${event.action}(0=DOWN 1=UP) repeat=${event.repeatCount} " +
+                "书写中=${padView.isPenDown()} 生效=$fresh",
+        )
+        if (!fresh) return true
+        lastHandledKeyDown = event.downTime
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_PAGE_UP -> padView.cycleMode()
+            KeyEvent.KEYCODE_PAGE_DOWN -> padView.cyclePen()
+            KeyEvent.KEYCODE_ESCAPE -> padView.clearLasso()
         }
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_PAGE_UP -> { padView.cycleMode(); return true }
-                KeyEvent.KEYCODE_PAGE_DOWN -> { padView.cyclePen(); return true }
-                KeyEvent.KEYCODE_ESCAPE -> { padView.clearLasso(); return true }
-            }
-        }
-        return super.dispatchKeyEvent(event)
+        return true
     }
 
     // ---------- 防抖上行（笔宽 / 橡皮设置，同网页 300ms） ----------

@@ -179,6 +179,10 @@ open class PageCanvasView @JvmOverloads constructor(
 
     /** 非笔模式按切笔键 = 恢复之前那支笔，不轮替下一支；笔模式下才轮替（同 capture.ts cyclePen） */
     fun cyclePen() {
+        // 切换前正常收笔（与 cycleMode 一致）。**不收笔就等于没反应**：`curStrokePen` 是落笔那一刻
+        // 锁进这一笔的，中途换笔不会改写已经在画的这条，于是用户「一直写字不断笔、按一下切笔」时
+        // penIndex 明明变了、画面却一点变化都没有（用户实测报的就是这个）。收掉这一笔，下一笔立刻是新笔。
+        if (activePen) endPen()
         if (mode == MODE_NOTE) penIndex = (penIndex + 1) % pens.size
         if (mode == MODE_LASSO) clearLasso()
         mode = MODE_NOTE
@@ -1225,6 +1229,9 @@ open class PageCanvasView @JvmOverloads constructor(
 
     // —— 指针：笔=画/擦/平移/框选，手指=平移/双指缩放 ——
     protected var activePen = false
+
+    /** 笔尖此刻是否压在屏幕上。诊断用：书写期间侧键收不到事件，日志里要能对上时刻 */
+    fun isPenDown(): Boolean = activePen
     protected var penId = -1
     protected var penMode = MODE_NOTE
     protected var penX = 0f
