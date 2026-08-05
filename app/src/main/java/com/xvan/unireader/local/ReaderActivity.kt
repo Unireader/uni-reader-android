@@ -3,6 +3,7 @@ package com.xvan.unireader.local
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -37,8 +38,10 @@ import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
 import com.xvan.unireader.shared.onSystemBarInsets
 import com.xvan.unireader.shared.runInBackground
+import com.xvan.unireader.shared.setPenSwatch
 import com.xvan.unireader.shared.setTextIfChanged
 import java.io.File
+import kotlin.math.roundToInt
 
 /**
  * 模式1 的阅读界面：本机 Pdfium 出图 + `LocalCanvasView`（与模式2 同一套几何/手势）。
@@ -356,6 +359,7 @@ class ReaderActivity : Activity() {
         bar.setEnabled("pen", canvas.mode == MODE_NOTE)
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
         val pen = canvas.curPenOrNull()
+        val notePen = pen.takeIf { canvas.mode == MODE_NOTE }
         penStat.setTextIfChanged(
             when (canvas.mode) {
                 MODE_NOTE ->
@@ -366,6 +370,7 @@ class ReaderActivity : Activity() {
                 else -> "翻页 · 拖动平移"
             },
         )
+        penStat.setPenSwatch(notePen?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) })
         layerStat.setTextIfChanged(activeLayer()?.let { "图层：${it.name}" } ?: "图层")
     }
 

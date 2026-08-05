@@ -6,6 +6,7 @@ import android.widget.TextView
 import com.xvan.unireader.R
 import kotlin.math.roundToInt
 
+
 /**
  * 两模式共用的小控件。
  *
@@ -37,4 +38,29 @@ fun capsule(a: Activity): TextView {
  */
 fun TextView.setTextIfChanged(s: String) {
     if (text?.toString() != s) text = s
+}
+
+/**
+ * 笔胶囊前的色块，对应网页 PenStat 的 `<span class="sw">`。传 `null` 清空（非笔记模式/无当前笔）。
+ * 复用同一个 GradientDrawable 换色而非重建，理由同 setTextIfChanged——HUD 每帧都会被刷一次。
+ */
+fun TextView.setPenSwatch(color: Int?) {
+    if (color == null) {
+        if (compoundDrawablesRelative[0] != null) setCompoundDrawablesRelative(null, null, null, null)
+        return
+    }
+    val size = (10 * resources.displayMetrics.density).roundToInt()
+    val existing = compoundDrawablesRelative[0] as? GradientDrawable
+    if (existing != null) {
+        existing.setColor(color)
+    } else {
+        val dot = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setSize(size, size)
+            setColor(color)
+            setBounds(0, 0, size, size)
+        }
+        setCompoundDrawablesRelative(dot, null, null, null)
+        compoundDrawablePadding = (6 * resources.displayMetrics.density).roundToInt()
+    }
 }

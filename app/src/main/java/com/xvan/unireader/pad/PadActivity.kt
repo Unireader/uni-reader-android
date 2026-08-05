@@ -40,7 +40,9 @@ import com.xvan.unireader.shared.TopBar
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
+import com.xvan.unireader.shared.setPenSwatch
 import com.xvan.unireader.shared.setTextIfChanged
+import kotlin.math.roundToInt
 
 /**
  * 主界面：全屏 PadView + 顶栏（连接点、延迟、文档、页码/缩放、◀▶、模式、笔、夜间、文字、尺子、
@@ -491,8 +493,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("text", padView.noteMode)
         bar.setEnabled("pen", padView.mode == MODE_NOTE)
 
-        // 笔胶囊：笔记模式显示当前笔（类型 · 粗细），其余模式显示模式名（同网页 PenStat）
+        // 笔胶囊：笔记模式显示当前笔（色块 · 类型 · 粗细），其余模式显示模式名（同网页 PenStat）
         val pen = padView.curPenOrNull()
+        val notePen = pen.takeIf { padView.mode == MODE_NOTE }
         penStat.setTextIfChanged(
             when (padView.mode) {
                 MODE_NOTE ->
@@ -503,6 +506,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 else -> "翻页 · 拖动平移"
             }
         )
+        penStat.setPenSwatch(notePen?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) })
         layerStat.setTextIfChanged(layers.getOrNull(layerIdx)?.let { "图层：${it.name}" } ?: "图层")
     }
 
