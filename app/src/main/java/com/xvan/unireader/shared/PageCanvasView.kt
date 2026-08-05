@@ -1248,7 +1248,48 @@ open class PageCanvasView @JvmOverloads constructor(
     protected data class Pinch(val d0: Float, val z0: Float, val fx: Float, val fy: Float)
     protected var pinch: Pinch? = null
 
+    // —— 手写笔侧键诊断 ——
+    //
+    // 用户报「按笔杆侧键切橡皮擦很不灵敏，要按好几次，网页那边就很跟手」。但**两端代码里都没有
+    // 一行侧键处理**——所以那是系统层面把侧键映射成了别的东西（各家 ROM 做法不一：有的改
+    // `toolType` 为 ERASER，有的置 `buttonState` 的 STYLUS_PRIMARY/SECONDARY 位，有的干脆发
+    // `ACTION_BUTTON_PRESS`），而这个 View 恰好一个都没接住。
+    //
+    // 先打点把系统**实际**报上来的东西记下来，再决定接哪个信号：猜错一轮就是一次真机往返
+    // （这一处已经为「靠猜」付过两次学费，见 ANDROID-STANDALONE-PLAN.md §9.9）。
+    // 只在组合变化时记一条，正常书写不会刷屏。
+    private var lastStylusSig = Int.MIN_VALUE
+
+    private fun logStylus(e: MotionEvent, where: String) {
+        val tt = if (e.pointerCount > 0) e.getToolType(0) else -1
+        if (tt == MotionEvent.TOOL_TYPE_FINGER) return
+        val sig = e.buttonState * 31 + tt
+        if (sig == lastStylusSig) return
+        lastStylusSig = sig
+        Log.i(
+            TAG,
+            "笔信号 $where toolType=$tt(2=STYLUS 4=ERASER) " +
+                "buttonState=0x${Integer.toHexString(e.buttonState)}" +
+                "(0x20=STYLUS_PRIMARY 0x40=STYLUS_SECONDARY 0x02=SECONDARY) " +
+                "action=${e.actionMasked}",
+        )
+    }
+
+    /**
+     * 这个事件是不是「笔在当橡皮用」——笔尾橡皮头倒过来擦，或按住侧键擦。
+     * 两条都是各家 ROM 常见的映射；哪条在这台设备上真的会来，看 [logStylus] 打出来的日志。
+     */
+    private fun isEraserSignal(e: MotionEvent): Boolean {
+        val tt = if (e.pointerCount > 0) e.getToolType(0) else -1
+        if (tt == MotionEvent.TOOL_TYPE_ERASER) return true
+        val b = e.buttonState
+        return b and MotionEvent.BUTTON_STYLUS_PRIMARY != 0 ||
+            b and MotionEvent.BUTTON_STYLUS_SECONDARY != 0 ||
+            b and MotionEvent.BUTTON_SECONDARY != 0
+    }
+
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        logStylus(e, "touch")
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 cancelMomentum()
@@ -1429,6 +1470,22 @@ open class PageCanvasView @JvmOverloads constructor(
         radialActive = false
         endHover()
 
+        // 笔当橡皮用（笔尾橡皮头 / 按住侧键）：**只让这一笔走擦除**，不动全局 mode——松开笔就回到
+        // 原来的工具，同 Windows Ink / Apple Pencil 的惯例。这是对用户报的「侧键切橡皮擦不灵敏」
+        // 的一个推测实现：系统到底报不报这些信号，看 logStylus 的日志才能定（见那里的注释）。
+        if (mode != MODE_PAGE && isEraserSignal(e)) {
+            val eloc = locate(x, y)
+            if (eloc != null) {
+                penMode = MODE_ERASE
+                eraseHit(x, y)
+                eraseBatch.add(ErasePt(eloc.nx, eloc.ny, eloc.page))
+                if (eraserRing) { eraserRingAt = floatArrayOf(x, y); invalidate() }
+                beginProbe(eloc.page, eloc.nx, eloc.ny)
+                Log.i(TAG, "笔当橡皮用（侧键/橡皮头）→ 这一笔走擦除")
+                return
+            }
+        }
+
         if (mode == MODE_PAGE) {
             // 翻页模式：笔拖动平移画面（同时起探针流，供 Mac 检测长按呼出选笔盘）
             penMode = MODE_PAGE
@@ -1599,6 +1656,8 @@ open class PageCanvasView @JvmOverloads constructor(
     protected var hoverOn = false
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        // 侧键在**悬停**时按下走的是这条路（ACTION_BUTTON_PRESS / HOVER_MOVE），不是 onTouchEvent
+        logStylus(e, "generic")
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE -> {
                 if (!activePen && mode != MODE_PAGE) {
