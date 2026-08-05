@@ -178,7 +178,7 @@ class LibraryActivity : Activity() {
         if (started) col.addView(progressBar(ratio))
         if (!pdfOk) {
             col.addView(
-                Ui.body(this, "PDF 路径失效——需要在 Mac 上把文件拷进工作区（首版不解析外置卷相对路径）")
+                Ui.body(this, "PDF 路径失效——文件不在了，或存的是 Mac 本机绝对路径，需要在 Mac 上重新关联")
                     .apply { setTextColor(Ui.col(this@LibraryActivity, R.color.danger)); textSize = 12f },
             )
         }

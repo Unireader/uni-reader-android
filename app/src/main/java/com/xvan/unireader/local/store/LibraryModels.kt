@@ -44,8 +44,8 @@ data class LibVariant(
  * 一个物理路径。
  * - `inWorkspace=true` → `path` 是**工作区相对路径**（如 `PDFs/xxx.pdf`），随文件夹搬动仍有效。
  * - `isRelative=true` → `path` 也相对工作区文件夹（可含 `..`），用于「外部文件但与工作区同在一块
- *   移动卷上」。**首版按路径失效处理**（见 [Workspace.resolvePdf]）。
- * - 都为 false → 绝对路径（Mac 上的绝对路径搬到安卓必然打不开，同样按失效处理）。
+ *   移动卷上」——与 `inWorkspace` 同一套拼接方式（见 [Workspace.resolvePdf]）。
+ * - 都为 false → 绝对路径（Mac 上的绝对路径搬到安卓必然打不开，按失效处理）。
  */
 data class LibLocation(
     val id: String,

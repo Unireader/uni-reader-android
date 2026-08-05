@@ -83,25 +83,20 @@ object Workspace {
     /**
      * 把一条 `location` 解析成本机文件。
      *
-     * 首版只认两种（`ANDROID-STANDALONE-PLAN.md §6`）：
      * - `in_workspace=1` → 工作区内相对路径（`PDFs/xxx.pdf`），随文件夹搬动仍有效，这是主路径；
-     * - 其余 → Mac 上的绝对路径，在安卓上必然不存在，**按路径失效处理**。
-     *
-     * `is_relative=1`（外置卷相对路径）同样按失效处理：那是「外部文件与工作区同在一块移动卷上」
-     * 的场景，安卓端的挂载点与 Mac 完全不同（`/storage/XXXX-XXXX` vs `/Volumes/…`），
-     * 靠猜挂载点去拼路径只会拼出一个「看着像对、其实指向别处」的文件。返回 null 让上层
-     * 提示用户「在 Mac 上把文件拷进工作区」，比默默打开错的文件好。
+     * - `is_relative=1` → 外部文件但与工作区文件夹同在一块移动卷上，`path` 同样存的是**相对工作区
+     *   文件夹的路径**（可含 `..`，见 `REQUIREMENTS.md` schema 说明）——不是「挂载点+绝对路径」，
+     *   不存在「安卓/Mac 挂载点对不上」的问题：拼接基准都是当前设备上已经打开的这个工作区目录，
+     *   与 `in_workspace` 走同一套 `File(workspaceDir, path)`，`..` 交给文件系统本身解析即可正确
+     *   穿到同卷的兄弟目录（Mac 端见 `WorkspaceManager.resolvedPath`，两端拼接方式一致）；
+     * - 其余 → Mac 上的绝对路径，在安卓上必然不存在，按路径失效处理。
      */
     fun resolvePdf(workspaceDir: File, loc: LibLocation): File? {
-        if (loc.inWorkspace) {
+        if (loc.inWorkspace || loc.isRelative) {
             val f = File(workspaceDir, loc.path)
             return if (f.isFile) f else null.also {
-                Log.w(TAG, "工作区内文件缺失：${loc.path}")
+                Log.w(TAG, "相对路径文件缺失：${loc.path}")
             }
-        }
-        if (loc.isRelative) {
-            Log.w(TAG, "location 是外置卷相对路径，首版不解析：${loc.path}")
-            return null
         }
         val abs = File(loc.path)
         if (abs.isFile) return abs   // 极少数情况：路径恰好在安卓上也成立
