@@ -45,7 +45,8 @@ class MacClient(
         fun onPenSel(index: Int)
         fun onModeSel(mode: Int)
         fun onInkCancel()
-        fun onStrokes(list: List<Stroke>)
+        /** @param ackRel Mac 已连续处理到的本端 REL seq（PROTOCOL.md §4.2），0 = 没建 UDP 会话 */
+        fun onStrokes(ackRel: Long, list: List<Stroke>)
         fun onNack(seqs: List<Long>)
         fun onDocs(following: Boolean, selected: String, list: List<WireCodec.DocEntry>)
         fun onNotes(list: List<TextNote>)
@@ -126,7 +127,7 @@ class MacClient(
             is WireCodec.Msg.PenSel -> cb.onPenSel(m.index)
             is WireCodec.Msg.ModeSel -> cb.onModeSel(m.mode)
             WireCodec.Msg.InkCancel -> cb.onInkCancel()
-            is WireCodec.Msg.Strokes -> cb.onStrokes(m.list)
+            is WireCodec.Msg.Strokes -> cb.onStrokes(m.ackRel, m.list)
             is WireCodec.Msg.Nack -> cb.onNack(m.seqs)
             is WireCodec.Msg.Docs -> cb.onDocs(m.following, m.selected, m.list)
             is WireCodec.Msg.Notes -> cb.onNotes(m.list)

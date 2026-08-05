@@ -83,7 +83,8 @@ object WireCodec {
         data class Layout(val docId: String, val v: String, val count: Long, val pages: List<Pair<Float, Float>>) : Msg()
         data object InkCancel : Msg()
         /** Mac 回传的全部成形笔迹（唯一真源） */
-        data class Strokes(val list: List<Stroke>) : Msg()
+        /** @param ackRel Mac 已连续处理到的本端 REL seq（PROTOCOL.md §4.2）；0 = 没建 UDP 会话 */
+        data class Strokes(val ackRel: Long, val list: List<Stroke>) : Msg()
         data class Nack(val seqs: List<Long>) : Msg()
         /** Mac 视口下发（force 绕过 seq 去重） */
         data class Viewport(val page: Long, val frac: Float, val seq: Long, val force: Boolean) : Msg()
@@ -335,11 +336,12 @@ object WireCodec {
                 }
                 OP_INK_CANCEL -> Msg.InkCancel
                 OP_STROKES -> {
+                    val ackRel = r.u32()
                     val n = r.u32()
                     val list = ArrayList<Stroke>()
                     var i = 0L
                     while (i < n && r.remaining > 0) { list.add(Stroke(r.u32(), r.pen(), r.pts3())); i++ }
-                    Msg.Strokes(list)
+                    Msg.Strokes(ackRel, list)
                 }
                 OP_VIEWPORT -> Msg.Viewport(r.u32(), r.f32(), r.u32(), r.u8() == 1)
                 OP_PENS -> {

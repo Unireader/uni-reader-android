@@ -591,13 +591,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         padView.onInkCancel()
     }
 
-    override fun onStrokes(list: List<Stroke>) = runOnUiThread {
+    override fun onStrokes(ackRel: Long, list: List<Stroke>) = runOnUiThread {
         // ink end 发出 → 收到 strokes 广播 = e2e
         if (tEnd > 0) {
             e2e = (System.currentTimeMillis() - tEnd).toDouble()
             graphView.addE2e(e2e.toFloat())
         }
-        padView.setStrokes(list)
+        // ackRel 要配上「本端已发出到哪」才有意义：两者一比就知道这份全量快照含不含我刚发的输入
+        padView.setStrokes(list, ackRel, udp?.sentRel ?: 0L)
         refresh()
     }
 

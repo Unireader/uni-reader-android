@@ -57,9 +57,6 @@ class PadView @JvmOverloads constructor(
     }
 
     override fun onErase(page: Int, pts: List<Pt2>) {
-        // Mac 每收到一批擦除点就回一次 strokes 广播（`AppModel.inkErase`）。记账，好让基类分得清
-        // 哪些回推是「擦到一半的中途快照」（见 PageCanvasView.setStrokes）。
-        expectStrokesEcho()
         listener?.sendRel(WireCodec.encodeEraseMove(page.toLong(), pts))
     }
 

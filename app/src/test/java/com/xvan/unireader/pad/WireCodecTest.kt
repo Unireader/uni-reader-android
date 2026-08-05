@@ -16,7 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 51 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 52 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -170,13 +170,20 @@ class WireCodecTest {
         // #18 inkCancel
         assertTrue(WireCodec.decode(unhex(VECTORS[17])) is WireCodec.Msg.InkCancel)
 
-        // #19 strokes{1 条：page 1, rgba(20,20,20,1) w10 pencil, pts [[0.5,0.25,0.5],[0.75,0.125,1.0]]}
+        // #19 strokes{ackRel 缺省=0；1 条：page 1, rgba(20,20,20,1) w10 pencil, pts [[0.5,0.25,0.5],[0.75,0.125,1.0]]}
         val m19 = WireCodec.decode(unhex(VECTORS[18])) as WireCodec.Msg.Strokes
+        assertEquals("没建 UDP 会话时线上就是 0（浏览器恒如此）", 0L, m19.ackRel)
         assertEquals(1, m19.list.size)
         val s19 = m19.list[0]
         assertEquals(1L, s19.page)
         assertEquals(Pen(20, 20, 20, 1.0f, 10f, 3), s19.pen)
         assertEquals(listOf(Pt3(0.5f, 0.25f, 0.5f), Pt3(0.75f, 0.125f, 1.0f)), s19.pts)
+
+        // #52 strokes 带非零 ackRel（0x36 首字段）：擦除中途快照的判据全靠它，见 PROTOCOL.md §4.2
+        val m52 = WireCodec.decode(unhex(VECTORS[51])) as WireCodec.Msg.Strokes
+        assertEquals(305419896L, m52.ackRel)
+        assertEquals(1, m52.list.size)
+        assertEquals(listOf(Pt3(0.5f, 0.25f, 0.5f), Pt3(0.75f, 0.125f, 1.0f)), m52.list[0].pts)
 
         // #31 nack{seqs:[1, 2, 3000000000]}
         val m31 = WireCodec.decode(unhex(VECTORS[30])) as WireCodec.Msg.Nack
@@ -269,7 +276,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(51, VECTORS.size)
+        assertEquals(52, VECTORS.size)
     }
 
     @Test
@@ -282,7 +289,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 51 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 52 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -302,7 +309,7 @@ class WireCodecTest {
             "33000100610200010061020054310100620600e6a087e9a298",
             "3401000200185ad20000003f0000004100ffd6280000803e0000b04102",
             "35",
-            "3601000000010000001414140000803f000020410302000000003f0000803e0000003f0000403f0000003e0000803f",
+            "360000000001000000010000001414140000803f000020410302000000003f0000803e0000003f0000403f0000003e0000803f",
             "40020000000000003f000000000024fe40",
             "4101010000000000003f0000803e",
             "4102",
@@ -335,6 +342,7 @@ class WireCodecTest {
             "2203",
             "4702000000cdcc4c3e9a99993e9a99193f0000003fcdcccc3dcdcc4cbd",
             "292a000000",
+            "367856341201000000010000001414140000803f000020410302000000003f0000803e0000003f0000403f0000003e0000803f",
         )
     }
 }

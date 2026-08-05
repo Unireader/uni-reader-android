@@ -6,22 +6,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * `PageCanvasView.setStrokes` 的**回声记账**（模式2 擦除）。
+ * `PageCanvasView.setStrokes` 的 **ackRel 判据**（`PROTOCOL.md §4.2`）。
  *
  * 守的是用户报的这个 bug：擦除时「删掉了又出现，过一会才真的被删除」。
- * 根因在 Mac——`AppModel.inkErase` 每收到一批擦除点就 `broadcastStrokes()` 一次，每份都滞后一个 RTT，
- * 只有**最后一批**的那次回声才是擦完的最终状态。光挡「手势进行中」不够：抬笔时在途还有好几份
- * 中途快照，闸门一开它们挨个应用，笔迹就一份份地被恢复出来再擦掉。
+ * `strokes` 是全量镜像，而 Mac 每收到一批擦除点就广播一次（`AppModel.inkErase`），于是擦除途中会
+ * 连着回来一串**中途快照**，每份都比本地的乐观状态旧。客户端照单全收，已擦掉的笔迹就会被一份份
+ * 恢复出来再擦掉。
  *
- * 记账口径由 Mac 侧两条事实撑着（改 Mac 前先回来看这里）：
- * ① 每个 `erase phase=move` 消息恰好引来一次广播；② `erase phase=end` **不做任何事、不广播**
- * （`AppModel.swift` 的 `case "erase"` 只认 move）。所以「发了 N 批 → 收到第 N 次回声」= 最终状态。
+ * 判据只有一条：**`ackRel >= 本端已发出的最后一个 seqRel` → 含我全部输入，应用；否则丢弃。**
+ * 这条判据由真源侧给出，不是客户端猜的——此前试过「按发出批数记账」那种单边对账（靠猜「一批擦除
+ * 恰好回一次广播」的隐含契约、还得配超时兜底），翻车两次，补丁史见 `ANDROID-STANDALONE-PLAN.md §9.9`。
  */
 class StrokeEchoTest {
 
-    /** 只为把 protected 的记账口和 strokes 露出来（真子类是 PadView / LocalCanvasView） */
+    /** 只为把 protected 的 strokes 露出来（真子类是 PadView / LocalCanvasView） */
     private class Probe(ctx: Context) : PageCanvasView(ctx) {
-        fun echo() = expectStrokesEcho()
         fun count() = strokes.size
     }
 
@@ -32,54 +31,51 @@ class StrokeEchoTest {
     private fun ui(block: () -> Unit) =
         InstrumentationRegistry.getInstrumentation().runOnMainSync(block)
 
-    @Test
-    fun 擦除中途快照全丢弃只认最后一份() {
+    private fun probe(): Probe {
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         var v: Probe? = null
         ui { v = Probe(ctx) }
-        val p = v!!
-
-        ui { p.setStrokes(emptyList()) }
-        assertEquals("基线：没记账时回推该立刻生效", 0, p.count())
-
-        // 一次擦除手势发出去 3 批擦除帧 → Mac 会回 3 次广播，前两次都是擦到一半的中途快照
-        ui { p.echo(); p.echo(); p.echo() }
-
-        ui { p.setStrokes(listOf(stroke(1), stroke(2), stroke(3))) }
-        assertEquals("中途快照 1 被应用了（笔迹被恢复出来）", 0, p.count())
-
-        ui { p.setStrokes(listOf(stroke(1), stroke(2))) }
-        assertEquals("中途快照 2 被应用了", 0, p.count())
-
-        ui { p.setStrokes(listOf(stroke(1))) }
-        assertEquals("最后一份（擦完的最终状态）反而没被应用", 1, p.count())
+        return v!!
     }
 
     @Test
-    fun 没记账的回推立刻生效() {
-        // 模式1 的 onErase 是空实现（真源就在进程内，没有回声这回事），所以一次账都不该记——
-        // 记了就永远等不到人来销，之后所有回推都会被当成中途快照丢掉，笔迹从此不更新。
-        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-        var v: Probe? = null
-        ui { v = Probe(ctx) }
-        val p = v!!
+    fun 落后于本端输入的快照一律丢弃() {
+        val p = probe()
+        ui { p.setStrokes(emptyList(), ackRel = 20L, sentRel = 20L) }
+        assertEquals("基线：追平了就该应用", 0, p.count())
 
+        // 本端已发到 seq 25（擦除帧一批批出去），Mac 才处理到 22/23/24 —— 三份都是中途快照
+        ui { p.setStrokes(listOf(stroke(1), stroke(2), stroke(3)), ackRel = 22L, sentRel = 25L) }
+        assertEquals("中途快照被应用了（笔迹被恢复出来）", 0, p.count())
+        ui { p.setStrokes(listOf(stroke(1), stroke(2)), ackRel = 23L, sentRel = 25L) }
+        assertEquals(0, p.count())
+        ui { p.setStrokes(listOf(stroke(1)), ackRel = 24L, sentRel = 25L) }
+        assertEquals(0, p.count())
+
+        // 追平：这份含本端全部输入，是擦完的最终状态
+        ui { p.setStrokes(listOf(stroke(1)), ackRel = 25L, sentRel = 25L) }
+        assertEquals("追平了反而没被应用", 1, p.count())
+    }
+
+    @Test
+    fun ackRel超过本端输入也照应用() {
+        // Mac 处理得比本端发得还多（别的客户端也在写、或本端刚重连）——不该卡住
+        val p = probe()
+        ui { p.setStrokes(listOf(stroke(1), stroke(2)), ackRel = 99L, sentRel = 3L) }
+        assertEquals(2, p.count())
+    }
+
+    @Test
+    fun 没有ackRel时照单全收() {
+        // ackRel=0 = 不适用：模式1（真源就在进程内），或模式2 还没建起 UDP 会话。
+        // 这条同时是模式1 的回归——它调的是单参数的 setStrokes，判据必须完全不生效。
+        val p = probe()
         ui { p.setStrokes(listOf(stroke(1), stroke(2), stroke(3))) }
         assertEquals(3, p.count())
         ui { p.setStrokes(listOf(stroke(1))) }
         assertEquals(1, p.count())
-    }
-
-    @Test
-    fun 换文档把没销的账一起作废() {
-        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-        var v: Probe? = null
-        ui { v = Probe(ctx) }
-        val p = v!!
-
-        ui { p.echo(); p.echo() }                                   // 两笔账悬着
-        ui { p.setPages(2, listOf(1f to 1.4f, 1f to 1.4f), true) }   // 换文档
-        ui { p.setStrokes(listOf(stroke(1), stroke(2))) }
-        assertEquals("换了文档旧账还在挡新文档的回推", 2, p.count())
+        // 本端 seq 已经很靠前，但对端没会话（ackRel=0）仍不该丢
+        ui { p.setStrokes(listOf(stroke(1), stroke(2)), ackRel = 0L, sentRel = 500L) }
+        assertEquals(2, p.count())
     }
 }

@@ -82,11 +82,24 @@ class UdpSender(private val host: String) {
         }
     }
 
+    /**
+     * 已发出的最后一个 REL 序号。拿去与 `strokes` 广播回来的 `ackRel` 比，就知道那份全量快照
+     * 含不含本端刚发出去的输入（`PROTOCOL.md §4.2`）。
+     *
+     * `@Volatile` + 独立字段：`seqRel` 只在 io 线程上加，这里要在主线程读。多读到一个旧值也无害
+     * ——旧值偏小只会让判据更宽松（把一份其实是中途的快照当成最终态），而下一份快照立刻纠正；
+     * 反过来偏大才会永久丢弃，不会发生。
+     */
+    @Volatile
+    var sentRel = 0L
+        private set
+
     /** REL：存 ring（含 sendTime）→ 发 */
     fun sendRel(body: ByteArray) {
         io.post {
             if (!ready) return@post
             seqRel++
+            sentRel = seqRel
             val dg = header(2, seqRel) + body
             ring[seqRel] = dg
             sendTime[seqRel] = System.currentTimeMillis()

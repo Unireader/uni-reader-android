@@ -324,7 +324,6 @@ open class PageCanvasView @JvmOverloads constructor(
         if (reset) {
             strokes.clear()
             pendingInk.clear()   // 上一篇文档没等到真源的乐观笔，跟着笔迹一起作废
-            pendingErase = 0     // 同理：上一篇的擦除回声就算还在路上，也已经与新文档无关
             ink.clearCache()
             clearCur()
             clearLasso()
@@ -528,25 +527,6 @@ open class PageCanvasView @JvmOverloads constructor(
     private var pendingInkSeq = 0L
 
     /**
-     * 已发出、但**回声还没回来**的擦除帧批数（模式2）。用法见 [setStrokes] 里的丢弃规则。
-     *
-     * 由子类在真正发出擦除帧时调 [expectStrokesEcho] 记账——**不能由基类在 `flushBatch` 里自己加**：
-     * 模式1 的 `onErase` 是空实现（真源就在进程内，没有回声这回事），基类记了账就永远等不到人来销，
-     * 之后所有回推都会被当成「中途快照」丢掉。
-     */
-    private var pendingErase = 0
-
-    /**
-     * 「我刚发出去一条会引来一次 `strokes` 广播的消息」。目前只有擦除帧用它（`AppModel.inkErase`
-     * 每收一批就广播一次）；ink 那条路走的是 [pendingInk] 的按笔认领，不走这里。
-     */
-    protected fun expectStrokesEcho() {
-        pendingErase++
-        // 兜底：Mac 掉线/丢帧时这次回声永远不会来，不销账的话之后的回推会被一路丢弃（笔迹从此不更新）
-        handler.postDelayed({ if (pendingErase > 0) pendingErase-- }, OPT_INK_TIMEOUT_MS)
-    }
-
-    /**
      * 收笔后把活体层那半笔转成乐观笔迹（见 [pendingInk]）。放在 `onInkEnd()` **之后**调用：
      * 模式1 已经在钩子里自己落地并清了活体层，这里 `curActive` 为 false，天然跳过。
      */
@@ -566,30 +546,31 @@ open class PageCanvasView @JvmOverloads constructor(
         clearCur()
     }
 
-    fun setStrokes(list: List<Stroke>) {
-        // 认领一条乐观笔迹（FIFO，见 pendingInk）。**放在所有丢弃分支之前**：Mac 每往前推进一步就
-        // 广播一次，收到即代表它又处理完一条——这次内容用不用是另一回事，认领要照走。停在原地的话，
-        // 被丢弃的那几次广播里其实已经含着那一笔，乐观笔却一路挂到超时被撤掉，那一笔于是凭空消失。
-        if (pendingInk.isNotEmpty()) {
-            pendingInk.iterator().let { if (it.hasNext()) { it.next(); it.remove() } }
-        }
-        // 自己的擦除引发的回声：Mac 是**每收到一批擦除点就广播一次**全量笔迹（`AppModel.inkErase`），
-        // 每一份都滞后一个 RTT。只有**最后一批**擦除点的那次回声才是擦完的最终状态，前面每一份都是
-        // 中途快照——应用它就是把刚擦掉的笔迹恢复出来、下一份再擦掉。
+    /**
+     * 回推一份**全量**笔迹真源。
+     *
+     * @param ackRel 生成这份快照时 Mac 已连续处理到的本端 REL 序号（`PROTOCOL.md §4.2`）。
+     *   0 = 不适用：模式1（真源就在进程内）、或模式2 还没建起 UDP 会话——那就照单全收，退回旧行为。
+     * @param sentRel 本端已发出的最后一个 REL 序号（`UdpSender.sentRel`）。
+     */
+    fun setStrokes(list: List<Stroke>, ackRel: Long = 0L, sentRel: Long = 0L) {
+        // 判据只有这一条：这份快照生成时，我发出去的输入 Mac 还没处理完 → 它比本地的乐观状态**旧**，
+        // 应用它就是把刚擦掉的笔迹恢复出来、下一份再擦掉（用户实测「删掉了又出现，过一会才真的删掉」）。
         //
-        // ⚠️ 光挡「手势进行中」不够（上一版就栽在这）：抬笔时在途还有好几份中途快照，闸门一开它们
-        // 挨个应用，用户看到的就是「删掉了又出现，过一会才真的被删除」。所以按**发出批数**记账，
-        // 计数没归零就说明后面还有更新的回声在路上，这一份必是中途快照。
-        if (pendingErase > 0) {
-            pendingErase--
-            if (pendingErase > 0) return
-        }
-        // 手势还没结束：本地一定擦得比任何回声都远（还有没 flush 出去的擦除帧），一律信本地
+        // 之所以非要真源侧给个序号不可：`strokes` 是全量镜像，而 Mac 每收一批擦除点就广播一次
+        // （`AppModel.inkErase`），擦除途中会连着回来一串中途快照。客户端**单边**分辨不了它们——
+        // 此前试过「按发出批数记账」，靠猜「一批恰好回一次广播」的隐含契约、还得配超时兜底，翻车两次
+        // （补丁史见 `ANDROID-STANDALONE-PLAN.md §9.9`）。ackRel 单调递增且由真源给出，不需要兜底：
+        // 它最终必然追上 sentRel。
+        if (ackRel > 0L && sentRel > ackRel) return
+        // 手势还没结束：本地已经擦到笔尖当前位置，而这一批擦除帧可能还没 flush 出去（8ms 一批），
+        // 那时 sentRel 还没涨、判据会误判成「含我全部输入」。手势期间一律信本地。
         if (activePen && penMode == MODE_ERASE) return
-        val keep = if (pendingInk.isEmpty()) emptyList() else strokes.filter { it.id in pendingInk }
+        // 走到这里说明这份快照含本端已发出的**全部**输入 → 所有乐观笔迹都已进真源，整批撤掉。
+        // （不必逐条配对：ackRel >= sentRel 已经蕴含「每一条 ink end 都被处理过了」。）
+        pendingInk.clear()
         strokes.clear()
         strokes.addAll(list)
-        strokes.addAll(keep)
         if (!activePen) clearCur()   // 正在写的这笔不清，避免闪断
         // 框选移动已提交、正等这条回来：新数据本身就是移动后的真源，乐观预览到此为止
         if (lassoCommitted) clearLasso()
