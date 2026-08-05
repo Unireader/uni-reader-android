@@ -99,6 +99,15 @@ open class PageCanvasView @JvmOverloads constructor(
 
         const val ERASE_R_FALLBACK = 0.02f   // 橡皮归一化半径默认值（Mac eraser 消息到达前）
 
+        /** 乐观笔迹的本地 id 前缀（见 `pendingInk`）：日志里一眼认出「这条还没被真源确认」 */
+        const val OPT_INK_PREFIX = "opt:"
+
+        /** 乐观笔迹等真源的兜底时限：超了就撤，别把真源里根本没有的笔迹永远挂在屏幕上 */
+        const val OPT_INK_TIMEOUT_MS = 3000L
+
+        /** 绘制耗时打点的窗口（帧）：够算出稳定均值，又不至于把日志刷满 */
+        const val DRAW_STAT_FRAMES = 120
+
         /** 内置兜底笔（Mac PenPresets.defaults；首连前用，pens 消息到达后整体替换） */
         val FALLBACK_PENS = listOf(
             Pen(24, 90, 210, 0.95f, 8f, 0),     // 蓝 ballpoint
@@ -314,6 +323,8 @@ open class PageCanvasView @JvmOverloads constructor(
         pagesWH = pages
         if (reset) {
             strokes.clear()
+            pendingInk.clear()   // 上一篇文档没等到真源的乐观笔，跟着笔迹一起作废
+            ink.clearCache()
             clearCur()
             clearLasso()
             images.clear()
@@ -496,9 +507,61 @@ open class PageCanvasView @JvmOverloads constructor(
         curPts.clear()
     }
 
+    /**
+     * **已收笔、已上行、但真源还没回推回来**的那几笔（模式2）。
+     *
+     * 模式2 的真源在 Mac：抬笔后本地只能先留着活体层那半笔顶着，等 `strokes` 广播回来再清。
+     * 但活体层只有一个槽——连续快写时下一笔的 [penDown] 会无条件清空它，上一笔于是在
+     * 「活体层已清、真源还没到」之间出现一段两头都没有的空窗，肉眼就是「上一笔闪一下」
+     * （用户报的 bug）。改成收笔即把这一笔乐观并入 [strokes] 并记下 id：擦除、框选、命中判定
+     * 因此全都自动覆盖到它，与模式1 `LocalCanvasView.onInkEnd` 的乐观落地是同一套路。
+     *
+     * 认领规则是 **FIFO 一条换一条**：Mac 每处理完一条 ink end 就 `broadcastStrokes()` 一次
+     * （`AppModel.inkEnd`，平板的 e2e 计时正基于这个一一对应），而 ink 走的是 UDP **可靠有序**流，
+     * 所以「收到一次广播」就意味着最早那条乐观笔必然已在真源里，弹掉它即可。
+     *
+     * 模式1 的这份表恒空——它在 `onInkEnd` 里就自己落地并 `clearCur` 了，走到 [commitCurOptimistically]
+     * 时已无半笔可转。
+     */
+    private val pendingInk = LinkedHashSet<String>()
+    private var pendingInkSeq = 0L
+
+    /**
+     * 收笔后把活体层那半笔转成乐观笔迹（见 [pendingInk]）。放在 `onInkEnd()` **之后**调用：
+     * 模式1 已经在钩子里自己落地并清了活体层，这里 `curActive` 为 false，天然跳过。
+     */
+    private fun commitCurOptimistically() {
+        if (!curActive || curPts.isEmpty()) return
+        val id = "$OPT_INK_PREFIX${pendingInkSeq++}"
+        strokes.add(Stroke(curPage.toLong(), curStrokePen, ArrayList(curPts), id, ""))
+        pendingInk.add(id)
+        // 兜底：Mac 掉线/丢帧时这一笔真源里根本不会有，别让它永远挂着（同 lasso 预览的超时清）
+        handler.postDelayed({
+            if (pendingInk.remove(id)) {
+                Log.w(TAG, "乐观笔迹 $id 等真源超时，撤掉")
+                strokes.removeAll { it.id == id }
+                invalidate()
+            }
+        }, OPT_INK_TIMEOUT_MS)
+        clearCur()
+    }
+
     fun setStrokes(list: List<Stroke>) {
+        // 擦除手势进行中：本地已经乐观擦到了笔尖当前位置，而 Mac 是**每收到一帧擦除点就广播一次**
+        // 全量笔迹（`AppModel.inkErase`），回来的必然是滞后一个 RTT 的旧快照——应用它等于把刚擦掉的
+        // 笔迹恢复出来、下一帧再擦掉，肉眼就是擦除时笔迹整片闪（用户报的 bug）。手势期间信本地：
+        // 抬笔时最后一批擦除点才发出，它引发的那次广播必然在抬笔之后到达，那份才是最终真源。
+        if (activePen && penMode == MODE_ERASE) return
+        // 认领一条乐观笔迹（FIFO，见 pendingInk）；还没轮到的继续顶着，等自己的那次广播
+        val keep = if (pendingInk.isEmpty()) {
+            emptyList()
+        } else {
+            pendingInk.iterator().let { if (it.hasNext()) { it.next(); it.remove() } }
+            if (pendingInk.isEmpty()) emptyList() else strokes.filter { it.id in pendingInk }
+        }
         strokes.clear()
         strokes.addAll(list)
+        strokes.addAll(keep)
         if (!activePen) clearCur()   // 正在写的这笔不清，避免闪断
         // 框选移动已提交、正等这条回来：新数据本身就是移动后的真源，乐观预览到此为止
         if (lassoCommitted) clearLasso()
@@ -624,7 +687,15 @@ open class PageCanvasView @JvmOverloads constructor(
      */
     private val gutterColor = Ui.col(context, R.color.surface_dim)
 
+    // —— 绘制耗时打点：「卡不卡」不能靠感觉，要有帧耗时才知道改动打没打中（每 120 帧一条） ——
+    private var statFrames = 0
+    private var statNanos = 0L
+    private var statWorst = 0L
+
     override fun onDraw(canvas: Canvas) {
+        val t0 = System.nanoTime()
+        // 捏合中别重建笔迹几何：轮廓依赖页宽，每帧重算整页笔迹比不缓存还慢（见 InkRenderer 类注释）
+        ink.deferRebuild = pinch != null
         canvas.drawColor(gutterColor)
         val cl = contentLeft()
         val p = pw()
@@ -654,22 +725,22 @@ open class PageCanvasView @JvmOverloads constructor(
         drawTextFills(canvas)
 
         // 静态笔迹层（框选提交待回传期间：命中项按位移量乐观渲染）。
-        // ⚠️ 性能红线：`strokes` 是**全文档**笔迹（不是当前页），此前这里没有可见页裁剪——
-        // 页图/文字铺色/图钉都按可见范围跳过了，唯独笔迹每帧把全书笔迹逐点重建 Path 再画一遍，
-        // 笔迹越多（不管在不在当前视口）滚动/缩放/书写就越卡（用户报的卡顿 bug）。裁到可见页区间。
+        // ⚠️ 性能红线：`strokes` 是**全文档**笔迹（模式2 的 `broadcastStrokes` 就是整篇发过来的），
+        // 页图/文字铺色/图钉都按可见范围跳过了，笔迹也得裁——但**光裁页救不了正在写字的那一页**
+        // （它恰恰就是可见页，一条都裁不掉），每条笔迹的几何缓存才是滚动流畅的关键，见 [InkRenderer]。
         val sel = if (lassoCommitted) lassoSelection else null
         for (i in strokes.indices) {
             val s = strokes[i]
             val sp = s.page.toInt()
             if (sp < firstVis || sp > lastVis) continue
             if (sel != null && sel.page == sp && sel.strokeIdx.contains(i)) {
-                ink.drawStroke(canvas, sp, s.pen, s.pts, this, lassoDx, lassoDy)
+                ink.drawStroke(canvas, s, this, lassoDx, lassoDy)
             } else {
-                ink.drawStroke(canvas, sp, s.pen, s.pts, this)
+                ink.drawStroke(canvas, s, this)
             }
         }
         // 活体层：正在写的这一笔
-        if (curActive) ink.drawStroke(canvas, curPage, curStrokePen, curPts, this)
+        if (curActive) ink.drawLive(canvas, curPage, curStrokePen, curPts, this)
 
         drawNoteMarkers(canvas, sel)
 
@@ -694,6 +765,19 @@ open class PageCanvasView @JvmOverloads constructor(
                 )
                 postInvalidateOnAnimation()
             }
+        }
+
+        val el = System.nanoTime() - t0
+        statNanos += el
+        if (el > statWorst) statWorst = el
+        if (++statFrames >= DRAW_STAT_FRAMES) {
+            Log.i(
+                TAG,
+                "绘制 ${statFrames}帧 均${"%.1f".format(statNanos / statFrames / 1e6)}ms " +
+                    "最差${"%.1f".format(statWorst / 1e6)}ms 笔迹=${strokes.size}条" +
+                    "(可见页 ${firstVis + 1}~${lastVis + 1}) 几何重建=${ink.rebuilt}条",
+            )
+            statFrames = 0; statNanos = 0L; statWorst = 0L; ink.rebuilt = 0
         }
     }
 
@@ -1472,7 +1556,9 @@ open class PageCanvasView @JvmOverloads constructor(
                 if (radialActive) clearCur()
                 flushBatch()
                 onInkEnd()
-                // 不本地落 strokes（Mac 才是真源，稍后回传）；cur 先留着，等 strokes 再清
+                // 真源（模式2=Mac，模式1=本机库）回推之前，这一笔先以乐观笔迹的身份留在 strokes 里，
+                // 别指望活体层那一个槽撑到回推——下一笔落笔就把它清了（见 pendingInk）
+                commitCurOptimistically()
             }
             MODE_ERASE -> {
                 if (radialActive) { inkBatch.clear(); eraseBatch.clear() } else flushBatch()

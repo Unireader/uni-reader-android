@@ -58,6 +58,10 @@ data class Pt2(val x: Float, val y: Float)
  * `id`/`layerId` 只有模式1（本地开工作区）会填：擦除要靠 `note.id` 一一映射删除、图层显隐要靠
  * `layerId` 过滤。模式2 里笔迹的真源在 Mac、删除也由 Mac 执行，线格式不传这两个字段，
  * 因此保持默认空串——**判空即「本端不掌握这条笔迹的身份」**，别拿空串当有效 id 用。
+ *
+ * 一个例外：模式2 里**刚收笔、还没等到 Mac 回推**的乐观笔迹带一个 `opt:` 开头的本地 id
+ * （见 `PageCanvasView.pendingInk`）。它只用来在下一次全量回推时认领自己，不是真源身份——
+ * 凡是要拿 id 去对库/对 Mac 的地方（如 `LocalCanvasView.onEraseEnd`）都只跑在模式1，见不到它。
  */
 data class Stroke(
     val page: Long,
