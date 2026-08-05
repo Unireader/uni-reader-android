@@ -15,6 +15,7 @@ import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
 
@@ -124,21 +125,32 @@ class LocalCanvasView @JvmOverloads constructor(
         val pts = ArrayList(pending)
         val page = pendingPage
         val layer = activeLayerId
+        val id = UUID.randomUUID().toString()
         pending.clear()
         pendingPen = null
-        // 写完顺手把真源读齐，同一个作业里做完——**写失败也照读**：那一笔于是自己从屏幕上消失，
-        // 比留着一条只存在于内存里的笔迹假装存住了强。
-        // 回推天然晚一拍（走队列 → 回主线程），此刻基类还在 endPen 里、activePen 仍为 true，
-        // 那半笔照旧由活体层画着；等回推到达时 activePen 已经落下，setStrokes 会清掉它，不重影。
+        // 乐观落地：这一笔立刻并入 strokes（同擦除/框选移动既有的乐观预览套路），不等落库回读。
+        // 此前指望「cur 先留着，等 setStrokes 回推再清」撑住这半笔——但连续快速落笔时，下一笔
+        // penDown() 会无条件清空活体层，若那时这一笔的回读还没跑完，它就会在活体层与 strokes
+        // 之间出现一段两头都没有的空窗，肉眼看到「上一笔闪一下」（用户报的 bug）。
+        strokes.add(Stroke(page.toLong(), pen, pts, id, layer))
+        clearCur()
+        invalidate()
+        // 写成功就不再整篇重读——乐观状态已经等于真源，重读只会带回一份**写这一笔那一刻**的
+        // 快照：如果下一笔已经在乐观加入 strokes、但它自己的落库作业还没轮到（StoreQueue 单线程
+        // FIFO），这份旧快照整表替换 strokes 时会把那笔尚未落库的乐观笔迹一起冲掉——反而重新
+        // 造出同一种「刚写完的笔迹闪一下」。只在**写失败**时才读真源纠偏（同 onEraseEnd 的
+        // 「没变化就不重读」套路，这里是「没出错就不重读」）：那一笔于是自己从屏幕上消失，
+        // 比留着一条只存在于内存里、库里其实没有的笔迹假装存住了强。
         q.submit(
             "落笔 page=$page 点数=${pts.size}",
             { s ->
-                runCatching { s.insertStroke(documentId, page, pen, pts, layer) }
+                val ok = runCatching { s.insertStroke(documentId, page, pen, pts, layer, id) }
                     .onSuccess { Log.i(TAG, "落笔 page=$page 点数=${pts.size} layer=$layer id=${it?.take(8)}") }
                     .onFailure { Log.e(TAG, "落笔写库失败（这一笔会丢）", it) }
-                inkSnapshot(s)
+                    .isSuccess
+                if (ok) null else inkSnapshot(s)
             },
-            { applyStrokes(it.all, it.hidden) },
+            { snap -> snap?.let { applyStrokes(it.all, it.hidden) } },
         )
     }
 
