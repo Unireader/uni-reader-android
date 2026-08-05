@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -32,6 +33,7 @@ import com.xvan.unireader.shared.MODE_PAGE
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageImageSource
+import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.Sheet
@@ -116,6 +118,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         super.onResume()
         client?.connectNow()   // 回前台：断了立刻重连，不等退避计时器
     }
+
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
@@ -304,6 +307,20 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     /** 侧键：PageUp 切模式 / PageDown 切笔 / Esc 清框选（同网页 keydown） */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // 诊断：用户报「按笔杆侧键切橡皮擦很不灵敏，要按好几次，网页那边就很跟手」。
+        // 上一轮只打了 MotionEvent，证明侧键**不走**触摸/悬停（`toolType`/`buttonState` 一动不动），
+        // 那它就该走这条按键路——但这里此前一行日志都没有，等于整条路是黑的。
+        // 先看清楚：按一下到底来不来事件、来的是哪个 keyCode、是不是被判成了 repeat。
+        // 两端的 cycleMode 逻辑逐行比过是一样的（都 4 模式循环、都判 repeat），所以差异只可能在
+        // 「事件有没有到」这一层。**别再猜**（这一处已经为靠猜付过两次学费，见 §9.9）。
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            Log.i(
+                PageCanvasView.TAG,
+                "按键 keyCode=${event.keyCode}(${KeyEvent.keyCodeToString(event.keyCode)}) " +
+                    "repeat=${event.repeatCount} source=0x${Integer.toHexString(event.source)} " +
+                    "device=${event.device?.name ?: "?"} 当前模式=${padView.modeLabel()}",
+            )
+        }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_PAGE_UP -> { padView.cycleMode(); return true }
