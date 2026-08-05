@@ -634,9 +634,15 @@ open class PageCanvasView @JvmOverloads constructor(
         bitmapPaint.colorFilter = f
         pagePaint.colorFilter = f
         placeholderPaint.colorFilter = f
+        // 顺带记下可见页范围（连续竖排布局，页序即 offY 单调递增，可见页必是一段连续区间）：
+        // 笔迹层按页裁剪要用，别为它再扫一遍 pageCount（下面笔迹循环最多的是全文档笔迹）。
+        var firstVis = -1
+        var lastVis = -1
         for (i in 0 until pageCount) {
             val vy = barH + offY[i] - scrollY
             if (vy + dispH[i] < barH || vy > height) continue
+            if (firstVis < 0) firstVis = i
+            lastVis = i
             tmpRect.set(cl, vy, cl + p, vy + dispH[i])
             canvas.drawRect(tmpRect, pagePaint)
             if (!showPage) continue   // 手写板模式：仅白底，不取图
@@ -647,14 +653,19 @@ open class PageCanvasView @JvmOverloads constructor(
 
         drawTextFills(canvas)
 
-        // 静态笔迹层（框选提交待回传期间：命中项按位移量乐观渲染）
+        // 静态笔迹层（框选提交待回传期间：命中项按位移量乐观渲染）。
+        // ⚠️ 性能红线：`strokes` 是**全文档**笔迹（不是当前页），此前这里没有可见页裁剪——
+        // 页图/文字铺色/图钉都按可见范围跳过了，唯独笔迹每帧把全书笔迹逐点重建 Path 再画一遍，
+        // 笔迹越多（不管在不在当前视口）滚动/缩放/书写就越卡（用户报的卡顿 bug）。裁到可见页区间。
         val sel = if (lassoCommitted) lassoSelection else null
         for (i in strokes.indices) {
             val s = strokes[i]
-            if (sel != null && sel.page == s.page.toInt() && sel.strokeIdx.contains(i)) {
-                ink.drawStroke(canvas, s.page.toInt(), s.pen, s.pts, this, lassoDx, lassoDy)
+            val sp = s.page.toInt()
+            if (sp < firstVis || sp > lastVis) continue
+            if (sel != null && sel.page == sp && sel.strokeIdx.contains(i)) {
+                ink.drawStroke(canvas, sp, s.pen, s.pts, this, lassoDx, lassoDy)
             } else {
-                ink.drawStroke(canvas, s.page.toInt(), s.pen, s.pts, this)
+                ink.drawStroke(canvas, sp, s.pen, s.pts, this)
             }
         }
         // 活体层：正在写的这一笔
