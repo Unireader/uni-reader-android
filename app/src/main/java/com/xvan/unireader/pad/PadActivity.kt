@@ -91,6 +91,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private var layers = listOf<Layer>()
     private var layerIdx = 0
 
+    /** 左侧拉抽屉（目录 / 书库）。数据由 Mac 的 `toc`/`library` 广播喂 */
+    private lateinit var drawer: PadDrawer
+
     // —— 量化指标（rtt/e2e/nackRTT/mv-s，照 udp-pad-sim.py refresh）——
     private var rtt = -1.0
     private var e2e = -1.0
@@ -214,6 +217,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     client?.send(WireCodec.encodeSelectDoc(it))
                 }
             }
+            icon("toc", R.drawable.ic_list, "目录 / 书库") { drawer.toggle() }
             gap()
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { padView.turn(prev = true) }
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { padView.turn(prev = false) }
@@ -274,6 +278,17 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         graphView = LatencyGraphView(this)
 
+        drawer = PadDrawer(this).apply {
+            onJump = { page, frac ->
+                // 本地立刻滚过去 + 上行让 Mac 跟到同一处（Mac 走它自己那条 origin="toc" 锚点路径，
+                // 跳完再 viewport 回推——本地已在位，回推是同一处，不会打架）
+                padView.scrollToPageFrac(page, frac)
+                client?.send(WireCodec.encodeGotoDest(page.toLong(), frac))
+                refresh()
+            }
+            onOpenDoc = { id -> client?.send(WireCodec.encodeOpenDoc(id)) }
+        }
+
         val root = FrameLayout(this).apply {
             addView(padView, FrameLayout.LayoutParams(-1, -1))
             addView(topbar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
@@ -295,6 +310,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     topMargin = bar.height() + dp(8); marginEnd = dp(8)
                 },
             )
+            // 抽屉加在最后 = 盖在最上层（含顶栏）：开着时下面的画布不该还能写字
+            addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
         setContentView(root)
         barHeightPx = bar.height()
@@ -309,6 +326,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             shape = GradientDrawable.OVAL
             setColor(if (on) 0xFF3FB950.toInt() else 0xFFF85149.toInt())
         }
+    }
+
+    /** 返回键：抽屉开着先关抽屉（同系统抽屉惯例），不然一按就退出整个连接界面 */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (drawer.isOpen) { drawer.close(); return }
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
     }
 
     /**
@@ -523,6 +548,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         // 顶栏这几行与模式1 的 `refreshHud` 是同一套表达（shared/TopBar）：
         // 模式键换图标、开关键上 accent 底色。两边各写一份文案的时代就此结束。
         bar.setPageLabel(padView.hudPage(), padView.hudZoom())
+        drawer.setCurrentPage(padView.topVisiblePage())   // 目录的「当前章节」追踪
         bar.setIcon("mode", TopBar.modeIcon(padView.mode))
         bar.setActive("mode", padView.mode != MODE_PAGE)
         bar.setActive("ruler", padView.rulerOn)
@@ -600,6 +626,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             fetcher?.clear()   // 换文档：旧 v 页图全部作废
         }
         padView.setLayout(docId, v, count.toInt(), pages)
+        drawer.setDocV(newV)
         refresh()
     }
 
@@ -647,6 +674,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         docFollowing = following
         docSelected = selected
         docs = list
+    }
+
+    override fun onLibrary(ws: String, list: List<WireCodec.LibEntry>) = runOnUiThread {
+        drawer.setLibrary(ws, list)
+    }
+
+    override fun onToc(docId: String, list: List<WireCodec.TocEntry>) = runOnUiThread {
+        drawer.setToc(docId, list)
     }
 
     override fun onNotes(list: List<TextNote>) = runOnUiThread {

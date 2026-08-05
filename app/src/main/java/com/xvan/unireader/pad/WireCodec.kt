@@ -33,6 +33,7 @@ object WireCodec {
     const val OP_LAYER_VISIBLE = 0x27
     const val OP_LAYER_ADD = 0x28
     const val OP_GOTO_PAGE = 0x29
+    const val OP_OPEN_DOC = 0x2A
     const val OP_PAGE = 0x30
     const val OP_LAYOUT = 0x31
     const val OP_VIEWPORT = 0x32
@@ -44,6 +45,8 @@ object WireCodec {
     const val OP_PRESS_RING = 0x38
     const val OP_NOTES = 0x39
     const val OP_LAYERS = 0x3A
+    const val OP_LIBRARY = 0x3B
+    const val OP_TOC = 0x3C
     const val OP_SCROLL = 0x40
     const val OP_HOVER = 0x41
     const val OP_INK = 0x42
@@ -72,6 +75,15 @@ object WireCodec {
 
     /** 文档列表项（docs 消息元素；纯线格式概念——模式1 的文档列表来自 SQLite，不走这里） */
     data class DocEntry(val id: String, val title: String)
+
+    /**
+     * 工作区书库一项（library 消息元素）。[id] 是**库文档 id**，与 [DocEntry] 的窗口会话 id
+     * 不是一个空间（PROTOCOL.md §4.1 的三个 id 空间）；[open] = 该文档已在 Mac 某个窗口里开着。
+     */
+    data class LibEntry(val id: String, val title: String, val open: Boolean)
+
+    /** PDF 目录一项（toc 消息元素，先序拍平）。[page] = -1 是坏书签：跳不过去，渲染成灰行。 */
+    data class TocEntry(val depth: Int, val page: Int, val frac: Float, val label: String)
 
     // ---------- 解码结果（u32 用 Long 承载无符号值） ----------
     sealed class Msg {
@@ -112,6 +124,10 @@ object WireCodec {
         data class PressRing(val on: Boolean, val page: Long, val nx: Float, val ny: Float) : Msg()
         /** 橡皮设置（双向；size = 归一化半径＝页宽比，mode 0=整笔 1=局部） */
         data class Eraser(val size: Float, val mode: Int, val ring: Boolean) : Msg()
+        /** 工作区书库全量镜像（含 Mac 尚未打开的文档） */
+        data class Library(val ws: String, val list: List<LibEntry>) : Msg()
+        /** 当前文档的 PDF 目录。[docId] = 内容哈希，与 [Layout] 的 docId/v 同口径，渲染前必须核对 */
+        data class Toc(val docId: String, val list: List<TocEntry>) : Msg()
     }
 
     // ---------- Writer ----------
@@ -279,6 +295,17 @@ object WireCodec {
     fun encodeGotoPage(page: Long): ByteArray =
         Writer().apply { u8(OP_GOTO_PAGE); u32(page) }.bytes()
 
+    /**
+     * 目录跳转：页 + 页内纵向比例。[frac] 是**尾部可选 f32**（PROTOCOL.md §4.1），
+     * 为 0 时一律省略那 4 字节——「只跳页」的老形态字节保持不变。
+     */
+    fun encodeGotoDest(page: Long, frac: Float): ByteArray =
+        Writer().apply { u8(OP_GOTO_PAGE); u32(page); if (frac != 0f) f32(frac) }.bytes()
+
+    /** 打开工作区里的某个文档（**库**文档 id）。已打开的 Mac 会切过去，未打开的新开一个 Mac 窗口 */
+    fun encodeOpenDoc(id: String): ByteArray =
+        Writer().apply { u8(OP_OPEN_DOC); str(id) }.bytes()
+
     /** 平板上报自己的内容页宽（px），Mac 环形盘的像素判定基准；值变才发 */
     fun encodePadGeom(pageW: Float): ByteArray =
         Writer().apply { u8(OP_PAD_GEOM); f32(pageW) }.bytes()
@@ -362,6 +389,30 @@ object WireCodec {
                     var i = 0
                     while (i < n && r.remaining >= 4) { list.add(DocEntry(r.str(), r.str())); i++ }
                     Msg.Docs(following, selected, list)
+                }
+                OP_LIBRARY -> {
+                    val ws = r.str()
+                    val n = r.u16()
+                    val list = ArrayList<LibEntry>(n)
+                    var i = 0
+                    while (i < n && r.remaining >= 5) { list.add(LibEntry(r.str(), r.str(), r.u8() == 1)); i++ }
+                    Msg.Library(ws, list)
+                }
+                OP_TOC -> {
+                    val docId = r.str()
+                    val n = r.u16()
+                    val list = ArrayList<TocEntry>(n)
+                    var i = 0
+                    while (i < n && r.remaining >= 12) {
+                        val depth = r.u8()
+                        val hasPage = r.u8() == 1
+                        val page = r.u32().toInt()
+                        val frac = r.f32()
+                        // 坏书签（hasPage=0）→ page = -1：据此渲染成不可点的灰行
+                        list.add(TocEntry(depth, if (hasPage) page else -1, frac, r.str()))
+                        i++
+                    }
+                    Msg.Toc(docId, list)
                 }
                 OP_NOTES -> {
                     val n = r.u16()

@@ -16,7 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 52 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 56 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -88,6 +88,10 @@ class WireCodecTest {
             44 to WireCodec.encodeInkBegin(0, pen, listOf(Pt3(0.5f, 0.5f, 0.5f)), line = true),
             // #46 layerSelect{index:1}
             46 to WireCodec.encodeLayerSelect(1),
+            // #53 openDoc{id:"D1E2F3"}（库文档 id，不是 docs 的窗口会话 id）
+            53 to WireCodec.encodeOpenDoc("D1E2F3"),
+            // #56 gotoPage 带尾部可选 frac：{page:7, frac:0.5}
+            56 to WireCodec.encodeGotoDest(7, 0.5f),
             // #47 layerVisible{index:0, visible:false}
             47 to WireCodec.encodeLayerVisible(0, false),
             // #48 layerAdd
@@ -185,6 +189,29 @@ class WireCodecTest {
         assertEquals(1, m52.list.size)
         assertEquals(listOf(Pt3(0.5f, 0.25f, 0.5f), Pt3(0.75f, 0.125f, 1.0f)), m52.list[0].pts)
 
+        // #54 library{ws:"阅读", list:[{A1,…,open}, {B2,SICP,未开}]}
+        val m54 = WireCodec.decode(unhex(VECTORS[53])) as WireCodec.Msg.Library
+        assertEquals("阅读", m54.ws)
+        assertEquals(
+            listOf(
+                WireCodec.LibEntry("A1", "深入理解计算机系统", true),
+                WireCodec.LibEntry("B2", "SICP", false),
+            ),
+            m54.list,
+        )
+
+        // #55 toc：先序拍平 + depth；第三条是坏书签（线上 hasPage=0 → 解出来 page = -1）
+        val m55 = WireCodec.decode(unhex(VECTORS[54])) as WireCodec.Msg.Toc
+        assertEquals("abc123", m55.docId)
+        assertEquals(
+            listOf(
+                WireCodec.TocEntry(0, 0, 0f, "第一章"),
+                WireCodec.TocEntry(1, 4, 0.25f, "1.1 引言"),
+                WireCodec.TocEntry(0, -1, 0f, "坏书签"),
+            ),
+            m55.list,
+        )
+
         // #31 nack{seqs:[1, 2, 3000000000]}
         val m31 = WireCodec.decode(unhex(VECTORS[30])) as WireCodec.Msg.Nack
         assertEquals(listOf(1L, 2L, 3000000000L), m31.seqs)
@@ -276,7 +303,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(52, VECTORS.size)
+        assertEquals(56, VECTORS.size)
     }
 
     @Test
@@ -289,7 +316,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 52 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 56 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -343,6 +370,10 @@ class WireCodecTest {
             "4702000000cdcc4c3e9a99993e9a99193f0000003fcdcccc3dcdcc4cbd",
             "292a000000",
             "367856341201000000010000001414140000803f000020410302000000003f0000803e0000003f0000403f0000003e0000803f",
+            "2a0600443145324633",
+            "3b0600e99885e8afbb0200020041311b00e6b7b1e585a5e79086e8a7a3e8aea1e7ae97e69cbae7b3bbe7bb9f010200423204005349435000",
+            "3c06006162633132330300000100000000000000000900e7acace4b880e7aba00101040000000000803e0a00312e3120e5bc95e8a880000000000000000000000900e59d8fe4b9a6e7adbe",
+            "29070000000000003f",
         )
     }
 }
