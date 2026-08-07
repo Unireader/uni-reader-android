@@ -283,7 +283,7 @@ class PadOverlays(private val density: Float) {
             }
             item.kind == RK_ERASE -> {
                 c.rotate(-36f)
-                val k = r / dp(13f)
+                val k = r / 17f
                 rectIcon.set(-9f * k, -5.5f * k, 9f * k, 5.5f * k)
                 c.drawRoundRect(rectIcon, 2.5f * k, 2.5f * k, p)
                 p.style = Paint.Style.STROKE
@@ -295,7 +295,7 @@ class PadOverlays(private val density: Float) {
             item.kind == RK_SCRATCH || item.kind == RK_TEXT -> {
                 // 一页纸 + 右下角加号徽章，与 web `drawRadialIcon` 同一套几何
                 //（对应 Mac 的 doc.badge.plus / note.text.badge.plus；textNote 纸上多两行字）
-                val k = r / dp(13f)
+                val k = r / 17f
                 val tint = tintOf(item)
                 rectIcon.set(-8f * k, -8.5f * k, 4.5f * k, 7f * k)
                 c.drawRoundRect(rectIcon, 2f * k, 2f * k, p)          // 纸（白）
@@ -320,7 +320,7 @@ class PadOverlays(private val density: Float) {
                 p.style = Paint.Style.FILL
             }
             else -> {   // page：举起的手（掌 + 四指），对应 Mac 的 hand.raised.fill
-                val k = r / dp(13f)
+                val k = r / 17f
                 rectIcon.set(-6.5f * k, -1f * k, 6.5f * k, 8.5f * k)
                 c.drawRoundRect(rectIcon, 3f * k, 3f * k, p)
                 for (f in 0 until 4) {
