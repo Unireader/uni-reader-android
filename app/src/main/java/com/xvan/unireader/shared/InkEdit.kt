@@ -7,13 +7,52 @@ package com.xvan.unireader.shared
  * | Mac `InkEdit` | 安卓 |
  * | --- | --- |
  * | `rulerSnap` | [PadConst.rulerSnap]（几何常量与它同源，就近放） |
- * | `splitStroke` | 内联在 [PageCanvasView.eraseHit] 的局部擦除分支（它要就地改视图里的 `strokes`） |
+ * | `splitStroke` | 本文件（[PageCanvasView.eraseHit] 的局部擦除分支调它） |
  * | `translated`  | 本文件 |
  *
  * 这几个都是**同一算法多份实现**（Mac/网页/安卓各一份），改一处必须同步其余——
  * 对不上的表现是「同一个工作区在两端看到的笔迹位置不一样」。
  */
 object InkEdit {
+
+    /**
+     * 局部擦除切段：剔除距擦除点 (nx, ny) 不超过 r 的点（`r2` = r²，调用方算好），
+     * 连续未命中段各成一条新笔迹；全部命中返回空表。
+     *
+     * 与 Mac `InkEdit.splitStroke` 同一算法。两处有意的差异：
+     * - Mac 一次吃一批擦除点（z 槽位放页号），这里一次一个——安卓的调用处（`eraseHit`）
+     *   是每个 MotionEvent 调一次，批在调用方那里；
+     * - Mac 给每段发新 UUID，这里**沿用原 id**——模式1 的 [LibraryStore.reconcileStrokes]
+     *   靠「头一段沿用原 id」对齐库（原因见那里的长注释），新段 id 由落库时发。
+     *
+     * 页过滤在这里做（`s.page != page` 原样返回），于是**坐标系无关**：页内归一化与草稿纸
+     * 画布坐标都能用，调用方保证 r 与点同单位。草稿纸笔迹 `page` 恒为 0，调用方同样传 0。
+     *
+     * 一个点都没命中时原样返回 `listOf(s)`（**同一实例**，调用方可按 `===` 判零变化）。
+     *
+     * ⚠️ 切出来的段**必须带上原笔迹的 id/layerId/padId**：丢了 id 就只能整篇重写笔迹；
+     * 丢了 padId，草稿纸上被局部擦过的笔迹会变成 padId 为空的孤儿——界面上当场消失
+     * （按 padId 过滤取不到），却以 kind=2 的身份留在库里污染页内笔迹（handoff §2.5）。
+     */
+    fun splitStroke(s: Stroke, nx: Float, ny: Float, page: Int, r2: Float): List<Stroke> {
+        if (s.page.toInt() != page) return listOf(s)
+        val out = ArrayList<Stroke>()
+        var seg = ArrayList<Pt3>()
+        var anyHit = false
+        fun flush() {
+            if (seg.isNotEmpty()) {
+                out.add(Stroke(s.page, s.pen, seg, s.id, s.layerId, s.padId))
+                seg = ArrayList()
+            }
+        }
+        for (pt in s.pts) {
+            val dx = pt.x - nx
+            val dy = pt.y - ny
+            if (dx * dx + dy * dy <= r2) { anyHit = true; flush() } else seg.add(pt)
+        }
+        flush()
+        return if (anyHit) out else listOf(s)
+    }
 
     /**
      * 平移点集：各点 +(dx, dy) 后 clamp 回页内 [0,1]，压感不动。

@@ -86,6 +86,13 @@ open class PageCanvasView @JvmOverloads constructor(
         id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean,
     ) {}
 
+    /**
+     * 单指**轻点**（全程没越过平移死区、也没变过双指捏合）。模式1 用它点草稿纸图钉。
+     * 只认手指、不认笔——平板上笔是用来写字的，让笔点图钉必然会在图钉上落笔时误触发
+     * （web `input.ts endTouch` 的同款决策）。
+     */
+    protected open fun onFingerTap(x: Float, y: Float) {}
+
     /** 页码/缩放/工具状态变化 → 宿主刷新顶栏。两种模式的顶栏不同，故用回调 */
     var onHud: (() -> Unit)? = null
     protected open fun onHudChanged() { onHud?.invoke() }
@@ -444,6 +451,30 @@ open class PageCanvasView @JvmOverloads constructor(
             images[i] = bmp
             invalidate()
         }
+    }
+
+    /**
+     * 丢掉已经拿到的页图，**不动笔迹/滚动/缩放**（模式1 的标签页退到背景时用，见 §13）。
+     *
+     * 位图是这里唯一按屏幕尺寸吃内存的东西（一页 1080×1500 就是 6MB），三个标签页各留一屏
+     * 就是几十 MB 挂着不还。缓存在 `PdfSource` 那边还留着一份缩小额度的，切回来多半是命中，
+     * 所以这里清得起。在途请求不必管：结果回来照旧进 [setPageImage]，只是多渲了一页。
+     */
+    fun trimImages() {
+        images.clear()
+        requested.clear()
+    }
+
+    /**
+     * 按当前视口重新取页图（标签页切回前台时用）。
+     *
+     * **切回来必须显式调一次**：背景标签页的 View 是 `GONE`，重新 `VISIBLE` 时尺寸没变就不会走
+     * [onSizeChanged]，也就没人去调 `ensureImages`——[trimImages] 清掉的那一屏于是永远补不回来，
+     * 表现是"切回这个标签页只剩白底和笔迹"。
+     */
+    fun refreshImages() {
+        ensureImages()
+        invalidate()
     }
 
     // —— 坐标映射（跨页 + 缩放；视口坐标 ↔ 页内归一化） ——
@@ -847,7 +878,8 @@ open class PageCanvasView @JvmOverloads constructor(
     /**
      * 命中判定在页内归一化坐标做、同页过滤、loc 为空不擦——两端乐观/真源语义保持一致：
      * - 整笔（eraserMode==0）：任一点命中即删整条；
-     * - 局部（==1）：与 Mac `InkEdit.splitStroke` 是**同一算法两份实现**，改一边必须同步另一边。
+     * - 局部（==1）：走 [InkEdit.splitStroke]（与 Mac `InkEdit.splitStroke` 同一算法，
+     *   改一边必须同步另一边）。
      */
     protected fun eraseHit(x: Float, y: Float) {
         val loc = locate(x, y) ?: return
@@ -870,23 +902,8 @@ open class PageCanvasView @JvmOverloads constructor(
         var changed = false
         val out = ArrayList<Stroke>(strokes.size)
         for (s in strokes) {
-            if (s.page.toInt() != loc.page) { out.add(s); continue }
-            var anyHit = false
-            var seg = ArrayList<Pt3>()
-            // 切出来的段**必须带上原笔迹的 id/layerId**：模式1 要靠它把「删原条 + 插若干段」
-            // 映射回 note 表（模式2 用不到，真源在 Mac）。丢了 id 就只能整篇重写笔迹。
-            fun flush() {
-                if (seg.isNotEmpty()) {
-                    out.add(Stroke(s.page, s.pen, seg, s.id, s.layerId))
-                    seg = ArrayList()
-                }
-            }
-            for (pt in s.pts) {
-                val dx = pt.x - loc.nx
-                val dy = pt.y - loc.ny
-                if (dx * dx + dy * dy <= r2) { anyHit = true; flush() } else seg.add(pt)
-            }
-            if (anyHit) { flush(); changed = true } else out.add(s)
+            val segs = InkEdit.splitStroke(s, loc.nx, loc.ny, loc.page, r2)
+            if (segs.size == 1 && segs[0] === s) out.add(s) else { out.addAll(segs); changed = true }
         }
         if (changed) {
             strokes.clear()
@@ -1251,6 +1268,8 @@ open class PageCanvasView @JvmOverloads constructor(
     protected var panDownX = 0f
     protected var panDownY = 0f
     protected var panStarted = false
+    /** 本次手指手势变过双指捏合（双指轻点不触发 [onFingerTap]） */
+    protected var gesturePinched = false
 
     protected data class Pinch(val d0: Float, val z0: Float, val fx: Float, val fy: Float)
     protected var pinch: Pinch? = null
@@ -1349,8 +1368,13 @@ open class PageCanvasView @JvmOverloads constructor(
                     touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
                 } else {
                     val wasPanning = panStarted
+                    // 单指轻点（没越过死区、没捏合过、确实是这根手指落下的那次手势）
+                    val tap = !wasPanning && !gesturePinched && panId >= 0 &&
+                        e.actionMasked == MotionEvent.ACTION_UP
+                    val tx = panDownX; val ty = panDownY
                     touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
                     if (wasPanning) startMomentum()   // 松手甩动 → 惯性
+                    else if (tap) onFingerTap(tx, ty)
                 }
             }
         }
@@ -1360,6 +1384,7 @@ open class PageCanvasView @JvmOverloads constructor(
     protected fun fingerDown(id: Int, x: Float, y: Float, touchMajor: Float, eventTime: Long) {
         if (activePen) return            // 笔在写 → 忽略手掌/手指
         if (touchMajor > palmPx) return  // 大面积接触（手掌）忽略
+        if (touchOrder.isEmpty()) gesturePinched = false   // 一次新手势的第一根手指
         touches[id] = Finger(x, y)
         if (id !in touchOrder) touchOrder.add(id)
         if (touchOrder.size >= 2) {
@@ -1396,6 +1421,7 @@ open class PageCanvasView @JvmOverloads constructor(
     protected fun beginPinch() {
         val a = touches[touchOrder[0]] ?: return
         val b = touches[touchOrder[1]] ?: return
+        gesturePinched = true
         val mx = (a.x + b.x) / 2f
         val my = (a.y + b.y) / 2f
         val p = pw()

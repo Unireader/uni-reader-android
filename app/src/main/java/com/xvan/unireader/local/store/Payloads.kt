@@ -38,6 +38,13 @@ class InkPayload(val raw: JSONObject) {
     /** 所属图层；旧 payload 无此键 → [LibInkLayer.DEFAULT_ID]（同 Mac 兜底） */
     val layerId: String get() = raw.optString("layerId").ifEmpty { LibInkLayer.DEFAULT_ID }
 
+    /**
+     * 所属草稿纸（`scratch_pad.id`）；**无此键 = 页内笔迹**（kind=2），同 Mac 的
+     * `decodeIfPresent(padId)`。草稿纸笔迹（kind=4）缺这个键是坏数据（无处可归的孤儿），
+     * 由读取侧丢弃——见 [LibraryStore.scratchStrokes]。
+     */
+    val padId: String? get() = raw.optString("padId").ifEmpty { null }
+
     private fun color(): JSONObject = raw.optJSONObject("color") ?: JSONObject()
 
     fun points(): List<Pt3> {
@@ -60,6 +67,7 @@ class InkPayload(val raw: JSONObject) {
     /**
      * 转成渲染用的中立模型。`id`/`layerId` 挂在 [Stroke] 上：擦除时要靠 `note.id`
      * 一一映射删除（`ANDROID-STANDALONE-PLAN.md §6`），图层过滤要靠 layerId。
+     * `padId` 一并带上（空串 = 页内笔迹）：草稿纸笔迹被局部擦除切段时全靠它才不会丢归属。
      */
     fun toStroke(id: String, page: Int): Stroke = Stroke(
         page = page.toLong(),
@@ -74,6 +82,7 @@ class InkPayload(val raw: JSONObject) {
         pts = points(),
         id = id,
         layerId = layerId,
+        padId = padId ?: "",
     )
 
     /** 只替换点集（局部擦除切段 / 框选平移后回写），其余键原样保留 */
@@ -81,6 +90,15 @@ class InkPayload(val raw: JSONObject) {
         val arr = JSONArray()
         for (p in pts) arr.put(JSONArray().put(p.x.toDouble()).put(p.y.toDouble()).put(p.p.toDouble()))
         raw.put("points", arr)
+        return this
+    }
+
+    /**
+     * 只写/摘 `padId` 键（null = 摘掉），其余键原样保留——**原地改，不整体重建**
+     * （本端不认识的键一个都不许丢，见文件头纪律）。
+     */
+    fun withPadId(padId: String?): InkPayload {
+        if (padId == null) raw.remove("padId") else raw.put("padId", padId)
         return this
     }
 
@@ -97,7 +115,7 @@ class InkPayload(val raw: JSONObject) {
         }
 
         /** 新笔迹落库：键名与 Mac 端 `InkStrokePayload` 完全一致（color/width/type/points/layerId） */
-        fun of(pen: Pen, pts: List<Pt3>, layerId: String): InkPayload {
+        fun of(pen: Pen, pts: List<Pt3>, layerId: String, padId: String? = null): InkPayload {
             val o = JSONObject()
             o.put(
                 "color",
@@ -110,6 +128,8 @@ class InkPayload(val raw: JSONObject) {
             o.put("width", pen.w.toDouble())
             o.put("type", brushName(pen.brush))
             o.put("layerId", layerId)
+            // 页内笔迹不写 padId（键不存在 = 不是草稿纸笔迹），保持既有 payload 逐字节不变（同 Mac）。
+            if (padId != null) o.put("padId", padId)
             return InkPayload(o).withPoints(pts)
         }
     }

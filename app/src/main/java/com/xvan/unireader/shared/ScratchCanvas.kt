@@ -1,0 +1,770 @@
+package com.xvan.unireader.shared
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.util.AttributeSet
+import android.view.MotionEvent
+import android.view.View
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+
+/**
+ * 草稿纸的**无限画布**：纸色 + 底纹 + 原点十字 + 画布坐标笔迹 + 平移/双指捏合 +
+ * 软边界 + 回中/适应内容 + minimap + 笔落墨/橡皮。
+ * 对应 Mac `ScratchPadView`/`ScratchCanvasLayers` 与 web `scratch.ts`（同一设备形态的答案）。
+ *
+ * 坐标系契约（handoff §1，弄错全盘皆错）：画布坐标 = **dp**（逻辑点），原点 = 纸创建那一刻的
+ * 视口中心，x 右 y 下，**可负无界**。`MotionEvent.getX()` 是物理像素——触点进来先除 density，
+ * 渲染乘回去（`toCanvas`/`onDraw` 里各自只有一处换算）。换算只有两条：
+ * `screen = (canvas − origin) × zoom`、`canvas = origin + screen / zoom`。
+ *
+ * **只管几何/输入/渲染，不碰数据从哪来**（同 `PageCanvasView` 的分工）：数据进出全走回调——
+ * 模式1 由 `local/ScratchController` 接 `LibraryStore`（收笔一次 INSERT + 擦除收尾 reconcile）；
+ * 模式2 将来接线协议，流式钩子（[onStrokeBegin]/[onStrokeMove]/[onEraseAt]）已经留好。
+ *
+ * 视口（origin/zoom）是本端私有的：**不落库、不上线**（三端各自独立缩放滚动），打开一律回中。
+ * 夜间模式**不反色**：纸色是自己画的，夜间滤镜只在 `PageCanvasView` 的页图层上，天然排除。
+ */
+class ScratchCanvas @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+) : View(context, attrs) {
+
+    /**
+     * 当前工具快照（宿主从阅读画布现抄）。**每次落笔现取**——纸开着时改笔/改橡皮即时生效，
+     * 不需要额外的同步动作。
+     *
+     * @param inkTool 笔落下写字（笔记模式）；false = 平移（翻页/框选/文字笔记模式在纸上
+     *   都退化为平移——画布没有「页」也没有页内框选/文字注解，同 web 的退化分支）
+     * @param eraseTool 笔落下擦除
+     * @param eraserSize 页宽归一化的橡皮半径；画布半径 = eraserSize × [ScratchGeom.ERASER_REF_W]
+     */
+    class Tools(
+        val inkTool: Boolean,
+        val eraseTool: Boolean,
+        val pen: Pen,
+        val eraserSize: Float,
+        val eraserMode: Int,     // 0=整笔 1=局部
+        val eraserRing: Boolean,
+        val rulerOn: Boolean,
+    )
+
+    /** 宿主给：当前工具快照（返回 null = 还没接上，笔落下只平移不崩） */
+    var tools: (() -> Tools?)? = null
+
+    // ---- 提交口（回调 = 两模式的唯一差别；模式1 落库 / 模式2 上线） ----
+
+    /** 一笔写完（整笔，画布坐标 + 压感）。模式1 的一次 INSERT 用这条 */
+    var onStrokeEnd: ((pen: Pen, pts: List<Pt3>) -> Unit)? = null
+
+    /** 流式钩子（模式2 上线用）：begin/move 逐批给点；模式1 不用，留空即可 */
+    var onStrokeBegin: ((pen: Pen, pt: Pt3, line: Boolean) -> Unit)? = null
+    var onStrokeMove: ((pts: List<Pt3>) -> Unit)? = null
+
+    /** 擦除途经点（画布坐标）。本地乐观擦除画布自己做，这个钩子是给模式2 上线的 */
+    var onEraseAt: ((x: Float, y: Float) -> Unit)? = null
+
+    /** 一次擦除手势收尾：期望状态（带 id 的全量快照，切段沿用原 id）。模式1 据此 reconcile 落库 */
+    var onEraseFinish: ((strokes: List<Stroke>) -> Unit)? = null
+
+    /** 视口变了（平移/缩放/回中/适应/minimap 跳转）——宿主刷新缩放读数之类 */
+    var onViewportChanged: (() -> Unit)? = null
+
+    private val density = resources.displayMetrics.density
+    private fun dp(v: Float) = v * density
+    private val ink = InkRenderer(density)
+    private val overlays = PadOverlays(density)
+
+    // ---- 纸样与笔迹（宿主注入） ----
+    private var bgColor = Color.WHITE
+    private var inkColor = Color.BLACK   // 底纹/提示的墨色：由纸色明度推，不跟系统深浅外观走（§4.2 🔴）
+    private var pattern = "dots"
+    private val strokes = ArrayList<Stroke>()
+
+    // ---- 视口（origin = 视口左上角对应的画布坐标 dp） ----
+    private var ox = 0f
+    private var oy = 0f
+    private var zoom = 1f
+    private var placed = false   // 已按真实尺寸回过中（尺寸没到之前 recenter 无意义）
+
+    var minimapOn = true
+        set(v) {
+            field = v
+            invalidate()
+        }
+
+    /** 兜底工具（宿主还没接上时笔落下只平移，不崩也不乱画） */
+    private val fallbackTools = Tools(
+        inkTool = false, eraseTool = false, pen = PageCanvasView.FALLBACK_PENS[0],
+        eraserSize = PageCanvasView.ERASE_R_FALLBACK, eraserMode = 1, eraserRing = true, rulerOn = false,
+    )
+
+    private fun curTools() = tools?.invoke() ?: fallbackTools
+
+    // ---------- 宿主注入 ----------
+
+    /** 纸样：bg 是自由 CSS rgba 串（解析失败兜纯白），pattern 未知取值兜 dots（同 Mac） */
+    fun setPaper(bgCss: String, pattern: String) {
+        val c = ScratchGeom.parseCssRgba(bgCss)
+        bgColor = if (c != null) Color.argb(c[3], c[0], c[1], c[2]) else Color.WHITE
+        inkColor = if (c == null || ScratchGeom.inkIsDark(c[0], c[1], c[2])) Color.BLACK else Color.WHITE
+        this.pattern = if (pattern == "plain" || pattern == "grid") pattern else "dots"
+        invalidate()
+    }
+
+    /** 真源回推：整表替换（正在写的这一笔不受影响——它还没进 [strokes]） */
+    fun setStrokes(list: List<Stroke>) {
+        strokes.clear()
+        strokes.addAll(list)
+        clampViewport()
+        invalidate()
+    }
+
+    /** 收笔后宿主生成的带 id 笔迹并进画布（乐观落地，同 `LocalCanvasView.onInkEnd` 的套路） */
+    fun addCommitted(s: Stroke) {
+        strokes.add(s)
+        invalidate()
+    }
+
+    /** 落库失败撤销乐观落地（宁可这一笔消失，也不假装存住了） */
+    fun removeStroke(id: String) {
+        if (strokes.removeAll { it.id == id }) invalidate()
+    }
+
+    /** 打开一张纸：丢掉上一张的全部状态（含活体半笔与几何缓存）并回中 */
+    fun openSession() {
+        strokes.clear()
+        clearLive()
+        ink.clearCache()
+        placed = false
+        recenter()
+    }
+
+    /** 回中 = 画布原点回视口正中 + zoom 复位 1（「打开后从该处显示」的落点） */
+    fun recenter() {
+        if (width > 0 && height > 0) {
+            zoom = 1f
+            val c = ScratchGeom.centeredOrigin(viewWdp(), viewHdp())
+            ox = c[0]; oy = c[1]
+            placed = true
+            invalidate()
+        }
+        onViewportChanged?.invoke()
+    }
+
+    /** 适应内容 = 全部笔迹包围盒（留边距）装进视口；空纸退化为回中 */
+    fun fitContent() {
+        val f = ScratchGeom.fit(contentBounds(), viewWdp(), viewHdp())
+        if (f == null) {
+            recenter()
+            return
+        }
+        ox = f[0]; oy = f[1]; zoom = f[2]
+        placed = true
+        clampViewport()
+        invalidate()
+        onViewportChanged?.invoke()
+    }
+
+    fun zoomPct(): Int = (zoom * 100).roundToInt()
+
+    private fun viewWdp() = width / density
+    private fun viewHdp() = height / density
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (!placed) {
+            if (w > 0 && h > 0) recenter()   // 首次拿到真实尺寸才回中（之前算的都是假的）
+            return
+        }
+        // 尺寸变化（旋转/分屏）：保持视口中心对应的画布点不动（同 Mac 的 onChange(of: geo.size)）
+        if (oldw > 0 && oldh > 0) {
+            ox += (oldw - w) / density / (2 * zoom)
+            oy += (oldh - h) / density / (2 * zoom)
+            clampViewport()
+        }
+        invalidate()
+    }
+
+    // ---------- 视口维护 ----------
+
+    private fun contentBounds(): FloatArray? =
+        ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null })
+
+    private fun clampViewport() {
+        val c = ScratchGeom.clampOrigin(ox, oy, zoom, contentBounds(), viewWdp(), viewHdp())
+        ox = c[0]; oy = c[1]
+    }
+
+    /** 触点（物理 px）→ 画布坐标（dp）：先除 density 再除 zoom（handoff §1 的 dp 坑就在这一步） */
+    private val tmpC = FloatArray(2)
+    private fun toCanvas(x: Float, y: Float): FloatArray {
+        tmpC[0] = ox + x / density / zoom
+        tmpC[1] = oy + y / density / zoom
+        return tmpC
+    }
+
+    // ---------- 活体笔迹 ----------
+
+    private var livePen: Pen? = null
+    private val livePts = ArrayList<Pt3>()
+    private var liveLine = false   // 尺子：整笔替换为「首点 → 45° 吸附终点」（落笔时锁定）
+    private val snapOut = FloatArray(2)
+
+    private fun clearLive() {
+        livePen = null
+        livePts.clear()
+        liveLine = false
+    }
+
+    // ---------- 输入 ----------
+
+    private var penActive = false
+    private var penId = -1
+    private var penKind = 0        // 0=无 1=落墨 2=擦除 3=平移 4=minimap 拖动
+    private var penX = 0f
+    private var penY = 0f
+
+    private class Finger(var x: Float, var y: Float)
+    private val touches = HashMap<Int, Finger>()
+    private val touchOrder = ArrayList<Int>()
+    private var panId = -1
+    private var lastPanX = 0f
+    private var lastPanY = 0f
+    private var pinching = false
+    private var pinchD0 = 0f
+    private var pinchZ0 = 1f
+    private var miniDrag = false   // 手指正在 minimap 上点/拖（panId = 那根手指）
+
+    private val palmPx = dp(PadConst.PALM)
+    private val miniRect = RectF()
+
+    /** 橡皮圆环（视口 px 坐标；ringR 是 px 半径） */
+    private var ringOn = false
+    private var ringX = 0f
+    private var ringY = 0f
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) {
+                    fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0))
+                } else {
+                    stylusDown(e, 0)
+                }
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                val idx = e.actionIndex
+                if (e.getToolType(idx) == MotionEvent.TOOL_TYPE_FINGER) {
+                    fingerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx), e.getTouchMajor(idx))
+                } else if (!penActive) {
+                    stylusDown(e, idx)   // 笔优先（stylusDown 内清掉手指状态）
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (penActive) {
+                    val pi = e.findPointerIndex(penId)
+                    if (pi >= 0) {
+                        // 展开历史点（Android 按 batch 投递，不展开 = 采样率腰斩，同 PageCanvasView）
+                        for (h in 0 until e.historySize) stylusMove(e, pi, h)
+                        stylusMove(e, pi, -1)
+                    }
+                } else {
+                    for (i in 0 until e.pointerCount) {
+                        touches[e.getPointerId(i)]?.let { it.x = e.getX(i); it.y = e.getY(i) }
+                    }
+                    when {
+                        miniDrag -> {
+                            val pi = e.findPointerIndex(panId)
+                            if (pi >= 0) miniJump(e.getX(pi), e.getY(pi))
+                        }
+                        pinching && touchOrder.size >= 2 -> pinchMove()
+                        panId >= 0 -> {
+                            val pi = e.findPointerIndex(panId)
+                            if (pi >= 0) panTo(e.getX(pi), e.getY(pi))
+                        }
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val id = e.getPointerId(e.actionIndex)
+                if (penActive && id == penId) stylusUp()
+                else endTouch(id)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (penActive) {
+                    stylusUp()
+                }
+                touches.clear(); touchOrder.clear()
+                pinching = false; panId = -1; miniDrag = false
+            }
+        }
+        return true
+    }
+
+    // ---- 手指：单指平移、双指捏合（作用在草稿纸视口上，与页内同款只是目标不同） ----
+
+    private fun fingerDown(id: Int, x: Float, y: Float, touchMajor: Float) {
+        if (penActive) return            // 笔在写 → 忽略手掌/手指
+        if (touchMajor > palmPx) return  // 大面积接触（手掌）忽略
+        touches[id] = Finger(x, y)
+        if (id !in touchOrder) touchOrder.add(id)
+        if (touchOrder.size >= 2) {
+            val a = touches[touchOrder[0]] ?: return
+            val b = touches[touchOrder[1]] ?: return
+            pinching = true
+            miniDrag = false   // 第二指落下：minimap 拖动让给捏合
+            pinchD0 = max(dp(40f), hypot(a.x - b.x, a.y - b.y))   // 下限避免起手过近灵敏度爆炸
+            pinchZ0 = zoom
+            panId = -1
+        } else if (minimapOn && hasContent() && inMinimap(x, y)) {
+            miniDrag = true
+            panId = id
+            miniJump(x, y)
+        } else {
+            panId = id
+            lastPanX = x; lastPanY = y
+        }
+    }
+
+    private fun endTouch(id: Int) {
+        if (id !in touches) return
+        touches.remove(id)
+        touchOrder.remove(id)
+        if (miniDrag && id == panId) { miniDrag = false; panId = -1 }
+        pinching = false
+        when {
+            touchOrder.size == 1 -> {
+                panId = touchOrder[0]
+                val t = touches[panId]!!
+                lastPanX = t.x; lastPanY = t.y
+            }
+            touchOrder.isEmpty() -> panId = -1
+            else -> {
+                val a = touches[touchOrder[0]] ?: return
+                val b = touches[touchOrder[1]] ?: return
+                pinching = true
+                pinchD0 = max(dp(40f), hypot(a.x - b.x, a.y - b.y))
+                pinchZ0 = zoom
+                panId = -1
+            }
+        }
+    }
+
+    /** 单指平移：屏幕拖多少视口移多少（注意方向：手指右拖 = 看左边的内容，origin 减） */
+    private fun panTo(x: Float, y: Float) {
+        ox += (lastPanX - x) / density / zoom
+        oy += (lastPanY - y) / density / zoom
+        lastPanX = x; lastPanY = y
+        clampViewport()
+        invalidate()
+        onViewportChanged?.invoke()
+    }
+
+    /** 双指捏合：以两指中点为锚缩放，中点移动跟着平移（与页内 pinchMove 同款跟手） */
+    private fun pinchMove() {
+        val a = touches[touchOrder[0]] ?: return
+        val b = touches[touchOrder[1]] ?: return
+        val d = hypot(a.x - b.x, a.y - b.y)
+        val mx = (a.x + b.x) / 2f / density
+        val my = (a.y + b.y) / 2f / density
+        val v = ScratchGeom.zoomAt(ox, oy, zoom, (pinchZ0 * d / pinchD0) / zoom, mx, my)
+        ox = v[0]; oy = v[1]; zoom = v[2]
+        clampViewport()
+        invalidate()
+        onViewportChanged?.invoke()
+    }
+
+    // ---- 笔：落墨 / 擦除；翻页·框选·文字笔记模式退化为平移；minimap 可点可拖 ----
+
+    private fun stylusDown(e: MotionEvent, idx: Int) {
+        val x = e.getX(idx)
+        val y = e.getY(idx)
+        // 笔优先：清掉进行中的手指平移/捏合
+        touches.clear(); touchOrder.clear(); pinching = false; panId = -1; miniDrag = false
+        penActive = true
+        penId = e.getPointerId(idx)
+        penX = x; penY = y
+        if (minimapOn && hasContent() && inMinimap(x, y)) {
+            penKind = 4
+            miniJump(x, y)
+            return
+        }
+        val t = curTools()
+        val c = toCanvas(x, y)
+        when {
+            t.eraseTool -> {
+                penKind = 2
+                eraseAt(c[0], c[1])
+                onEraseAt?.invoke(c[0], c[1])
+                if (t.eraserRing) { ringX = x; ringY = y; ringOn = true }
+            }
+            t.inkTool -> {
+                penKind = 1
+                livePen = t.pen
+                liveLine = t.rulerOn   // 尺子按落笔那一刻锁进这一笔（同 PageCanvasView）
+                livePts.clear()
+                livePts.add(Pt3(c[0], c[1], e.getPressure(idx)))
+                onStrokeBegin?.invoke(t.pen, livePts[0], liveLine)
+            }
+            else -> penKind = 3   // 平移
+        }
+        invalidate()
+    }
+
+    private fun stylusMove(e: MotionEvent, pi: Int, h: Int) {
+        val historical = h >= 0
+        val x = if (historical) e.getHistoricalX(pi, h) else e.getX(pi)
+        val y = if (historical) e.getHistoricalY(pi, h) else e.getY(pi)
+        val p = if (historical) e.getHistoricalPressure(pi, h) else e.getPressure(pi)
+        when (penKind) {
+            4 -> miniJump(x, y)
+            3 -> {
+                ox += (penX - x) / density / zoom
+                oy += (penY - y) / density / zoom
+                penX = x; penY = y
+                clampViewport()
+                invalidate()
+                onViewportChanged?.invoke()
+            }
+            1 -> {
+                val c = toCanvas(x, y)
+                if (liveLine && livePts.isNotEmpty()) {
+                    // 尺子：画布是等比坐标系 → aspect=1（页内那套传页纵横比是两轴尺度不同）
+                    val a0 = livePts[0]
+                    PadConst.rulerSnap(a0.x, a0.y, c[0], c[1], 1f, snapOut)
+                    val pt = Pt3(snapOut[0], snapOut[1], p)
+                    livePts.clear()
+                    livePts.add(a0)
+                    livePts.add(pt)
+                    onStrokeMove?.invoke(listOf(pt))   // 替换语义：只给最新终点（同页内尺子分支）
+                } else {
+                    val pt = Pt3(c[0], c[1], p)
+                    livePts.add(pt)
+                    onStrokeMove?.invoke(listOf(pt))
+                }
+                invalidate()
+            }
+            2 -> {
+                val c = toCanvas(x, y)
+                eraseAt(c[0], c[1])
+                onEraseAt?.invoke(c[0], c[1])
+                if (ringOn) { ringX = x; ringY = y }
+                invalidate()
+            }
+        }
+    }
+
+    private fun stylusUp() {
+        when (penKind) {
+            1 -> {
+                val pen = livePen
+                if (pen != null && livePts.isNotEmpty()) {
+                    onStrokeEnd?.invoke(pen, ArrayList(livePts))
+                }
+                clearLive()
+            }
+            2 -> onEraseFinish?.invoke(ArrayList(strokes))
+        }
+        penActive = false
+        penId = -1
+        penKind = 0
+        ringOn = false
+        invalidate()
+    }
+
+    /**
+     * 本地乐观擦除（与 web `padEraseLocal` / 页内 `eraseHit` 同算法）：
+     * 整笔 = 任一点命中即删整条；局部 = [InkEdit.splitStroke] 切段（自动继承 id/padId）。
+     * 半径换算 = eraserSize × 800（三端同一个数，见 [ScratchGeom.ERASER_REF_W]）。
+     */
+    private fun eraseAt(cx: Float, cy: Float) {
+        val t = curTools()
+        val r = t.eraserSize * ScratchGeom.ERASER_REF_W
+        val r2 = r * r
+        var changed = false
+        if (t.eraserMode == 0) {
+            var i = strokes.size - 1
+            while (i >= 0) {
+                val s = strokes[i]
+                val hit = s.pts.any { val dx = it.x - cx; val dy = it.y - cy; dx * dx + dy * dy <= r2 }
+                if (hit) { strokes.removeAt(i); changed = true }
+                i--
+            }
+        } else {
+            val out = ArrayList<Stroke>(strokes.size)
+            for (s in strokes) {
+                // 草稿纸笔迹 page 恒 0（splitStroke 的页过滤因此恒过，坐标系无关）
+                val segs = InkEdit.splitStroke(s, cx, cy, 0, r2)
+                if (segs.size == 1 && segs[0] === s) out.add(s) else { out.addAll(segs); changed = true }
+            }
+            if (changed) {
+                strokes.clear()
+                strokes.addAll(out)
+            }
+        }
+        if (changed) invalidate()
+    }
+
+    // ---- 悬停：擦除模式下显示橡皮尺寸圆环（同页内 hover 的口径） ----
+
+    override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_HOVER_MOVE -> {
+                val t = curTools()
+                if (!penActive && t.eraseTool && t.eraserRing) {
+                    ringX = e.getX(0); ringY = e.getY(0); ringOn = true
+                    invalidate()
+                } else if (ringOn && !penActive) {
+                    ringOn = false
+                    invalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                if (ringOn && !penActive) { ringOn = false; invalidate() }
+                return true
+            }
+        }
+        return super.onGenericMotionEvent(e)
+    }
+
+    // ---------- 绘制 ----------
+
+    private val patternPaint = Paint()
+    private val miniPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val miniPath = Path()
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+
+    private fun hasContent() = strokes.isNotEmpty() || livePts.isNotEmpty()
+
+    override fun onDraw(canvas: Canvas) {
+        canvas.drawColor(bgColor)
+        drawPattern(canvas)
+        // 视口外的笔迹裁掉（画布是无界的一大坨，不裁就是每帧把整张纸重画一遍；同 web 的 boxHits）
+        val z = zoom
+        val x0 = ox
+        val y0 = oy
+        val x1 = ox + viewWdp() / z
+        val y1 = oy + viewHdp() / z
+        ink.deferRebuild = pinching   // 捏合中别重建几何，canvas 缩放顶一拍（同页内）
+        for (s in strokes) {
+            if (!boxHits(s, x0, y0, x1, y1)) continue
+            ink.drawScratchStroke(canvas, s, ox, oy, z)
+        }
+        livePen?.let { ink.drawScratchLive(canvas, it, livePts, ox, oy, z) }
+        // 空白纸的引导（有笔迹后自动消失；同 Mac 的 emptyHint）
+        if (!hasContent()) drawEmptyHint(canvas)
+        // 橡皮尺寸圆环：半径 = eraserSize × 800 × zoom（三端同一条换算）
+        if (ringOn) {
+            val t = curTools()
+            overlays.drawEraserRing(canvas, ringX, ringY, t.eraserSize * ScratchGeom.ERASER_REF_W * z * density)
+        }
+        if (minimapOn && hasContent()) drawMinimap(canvas)
+    }
+
+    /** 粗筛：这条笔迹的包围盒与可视画布矩形有没有交集（逐点算一遍比重画便宜得多，同 web boxHits） */
+    private fun boxHits(s: Stroke, x0: Float, y0: Float, x1: Float, y1: Float): Boolean {
+        var a0 = Float.MAX_VALUE; var b0 = Float.MAX_VALUE
+        var a1 = -Float.MAX_VALUE; var b1 = -Float.MAX_VALUE
+        for (p in s.pts) {
+            if (p.x < a0) a0 = p.x
+            if (p.x > a1) a1 = p.x
+            if (p.y < b0) b0 = p.y
+            if (p.y > b1) b1 = p.y
+        }
+        val m = s.pen.w + 4   // 线宽余量，免得贴边的粗笔被切掉（同 web）
+        return a1 + m >= x0 && a0 - m <= x1 && b1 + m >= y0 && b0 - m <= y1
+    }
+
+    /**
+     * 底纹（点阵 / 小格）+ 原点十字。无限画布的**定位参照**：纯白纸平移时看不出自己在动。
+     * 数值全部是三端契约（[ScratchGeom]，handoff §4.2 的表）；墨色由纸色明度推，不跟系统外观走。
+     */
+    private fun drawPattern(c: Canvas) {
+        if (pattern == "plain") return   // 纯色纸：连原点十字都不画
+        val z = zoom
+        val st = ScratchGeom.gridStep(z)
+        val stepPx = st * z * density
+        if (stepPx <= 0f) return
+        val W = width.toFloat()
+        val H = height.toFloat()
+        val x0 = floor(ox / st) * st
+        val y0 = floor(oy / st) * st
+        val cols = (W / stepPx).toInt() + 2
+        val rows = (H / stepPx).toInt() + 2
+        if (cols <= 0 || rows <= 0 || cols * rows > ScratchGeom.GRID_MAX_CELLS) return   // 安全阀（同 Mac/web）
+        if (pattern == "grid") {
+            // 小格：横竖各一组细线。线比点更「有格子感」但也更抢戏，故比点阵再淡一档（0.085）
+            patternPaint.style = Paint.Style.STROKE
+            patternPaint.strokeWidth = 1f
+            patternPaint.color = withAlpha(inkColor, ScratchGeom.GRID_ALPHA)
+            miniPath.reset()
+            for (i in 0..cols) {
+                val x = (x0 + i * st - ox) * z * density
+                miniPath.moveTo(x, 0f); miniPath.lineTo(x, H)
+            }
+            for (j in 0..rows) {
+                val y = (y0 + j * st - oy) * z * density
+                miniPath.moveTo(0f, y); miniPath.lineTo(W, y)
+            }
+            c.drawPath(miniPath, patternPaint)
+        } else {
+            // 方点不用圆点：1.5~3px 上两者肉眼无差，drawRect 比 drawCircle 便宜得多——
+            // 这层每帧平移都要重画，一屏上万个点，圆点的代价是白花的（同 Mac/web）
+            val d = ScratchGeom.dotSize(z) * density
+            val half = d / 2f
+            patternPaint.style = Paint.Style.FILL
+            patternPaint.color = withAlpha(inkColor, ScratchGeom.DOT_ALPHA)
+            for (i in 0..cols) {
+                val x = (x0 + i * st - ox) * z * density
+                for (j in 0..rows) {
+                    val y = (y0 + j * st - oy) * z * density
+                    c.drawRect(x - half, y - half, x + half, y + half, patternPaint)
+                }
+            }
+        }
+        // 原点十字（画布 0,0）＝ 这张纸创建的位置，也是「回中」的落点
+        val gx = -ox * z * density
+        val gy = -oy * z * density
+        val r = dp(ScratchGeom.CROSS_HALF)
+        if (gx > -40 && gx < W + 40 && gy > -40 && gy < H + 40) {
+            patternPaint.style = Paint.Style.STROKE
+            patternPaint.strokeWidth = 1f
+            patternPaint.color = withAlpha(inkColor, ScratchGeom.CROSS_ALPHA)
+            c.drawLine(gx - r, gy, gx + r, gy, patternPaint)
+            c.drawLine(gx, gy - r, gx, gy + r, patternPaint)
+        }
+    }
+
+    private fun withAlpha(color: Int, a: Float): Int =
+        Color.argb((a * 255f).roundToInt().coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
+
+    private fun drawEmptyHint(c: Canvas) {
+        hintPaint.color = withAlpha(inkColor, 0.28f)
+        hintPaint.isFakeBoldText = true
+        hintPaint.textSize = dp(17f)
+        val cx = width / 2f
+        val cy = height / 2f
+        c.drawText("空白草稿纸", cx, cy - dp(8f), hintPaint)
+        hintPaint.isFakeBoldText = false
+        hintPaint.textSize = dp(13f)
+        c.drawText("用笔书写 · 单指平移 · 双指捏合缩放", cx, cy + dp(16f), hintPaint)
+    }
+
+    // ---------- minimap（右下角小窗：笔迹骨架线 + 视口框，点/拖即跳） ----------
+
+    private fun layoutMinimap() {
+        val w = dp(MINI_W)
+        val h = dp(MINI_H)
+        val m = dp(MINI_PAD)
+        miniRect.set(width - m - w, height - m - h, width - m, height - m)
+    }
+
+    private fun inMinimap(x: Float, y: Float): Boolean {
+        layoutMinimap()
+        return miniRect.contains(x, y)
+    }
+
+    /** minimap 的等比映射：内容 ∪ 视口外扩 8%，面板内留 inset 内边距（内容与视口框都不许贴边） */
+    private class MiniFit(val wx: Float, val wy: Float, val s: Float, val ox: Float, val oy: Float)
+
+    private fun miniFit(): MiniFit {
+        val z = zoom
+        val visW = viewWdp() / z
+        val visH = viewHdp() / z
+        var x0 = ox
+        var y0 = oy
+        var x1 = ox + visW
+        var y1 = oy + visH
+        contentBounds()?.let { b ->
+            x0 = min(x0, b[0]); y0 = min(y0, b[1])
+            x1 = max(x1, b[0] + b[2]); y1 = max(y1, b[1] + b[3])
+        }
+        val padX = (x1 - x0) * 0.08f
+        val padY = (y1 - y0) * 0.08f
+        x0 -= padX; y0 -= padY; x1 += padX; y1 += padY
+        val ww = max(1f, x1 - x0)
+        val wh = max(1f, y1 - y0)
+        val inset = MINI_INSET
+        val iw = max(1f, MINI_W - inset * 2)
+        val ih = max(1f, MINI_H - inset * 2)
+        val s = min(iw / ww, ih / wh)
+        return MiniFit(x0, y0, s, inset + (iw - ww * s) / 2, inset + (ih - wh * s) / 2)
+    }
+
+    /** 点/拖 minimap → 视口中心跳到对应画布位置（同 web `padMiniJump` / Mac `onJump`） */
+    private fun miniJump(x: Float, y: Float) {
+        layoutMinimap()
+        val f = miniFit()
+        if (f.s <= 0f) return
+        val cx = f.wx + (x - miniRect.left - dp(f.ox)) / (f.s * density)
+        val cy = f.wy + (y - miniRect.top - dp(f.oy)) / (f.s * density)
+        ox = cx - viewWdp() / (2 * zoom)
+        oy = cy - viewHdp() / (2 * zoom)
+        clampViewport()
+        invalidate()
+        onViewportChanged?.invoke()
+    }
+
+    private fun drawMinimap(c: Canvas) {
+        layoutMinimap()
+        val f = miniFit()
+        val cr = dp(10f)
+        // 面板：深色圆角底（纸色是浅色系，深底上白骨架线任何纸色下都可读，同 web 的选择）
+        miniPaint.style = Paint.Style.FILL
+        miniPaint.color = Color.argb(184, 20, 23, 28)
+        c.drawRoundRect(miniRect, cr, cr, miniPaint)
+        c.save()
+        c.clipRect(miniRect)
+        fun mx(x: Float) = miniRect.left + dp(f.ox) + (x - f.wx) * f.s * density
+        fun my(y: Float) = miniRect.top + dp(f.oy) + (y - f.wy) * f.s * density
+        // 骨架线即可（minimap 不必还原笔型/压感，1px 折线最省也最清楚）
+        miniPaint.style = Paint.Style.STROKE
+        miniPaint.strokeWidth = 1f
+        miniPaint.color = Color.argb(179, 255, 255, 255)
+        for (s in strokes) {
+            if (s.pts.size < 2) continue
+            miniPath.reset()
+            miniPath.moveTo(mx(s.pts[0].x), my(s.pts[0].y))
+            for (i in 1 until s.pts.size) miniPath.lineTo(mx(s.pts[i].x), my(s.pts[i].y))
+            c.drawPath(miniPath, miniPaint)
+        }
+        // 当前视口框：淡填充 + 细描边——重实线会比笔迹还抢戏（Mac 样张踩过的坑）
+        val z = zoom
+        val vx = mx(ox)
+        val vy = my(oy)
+        val vw = max(dp(6f), viewWdp() / z * f.s * density)
+        val vh = max(dp(6f), viewHdp() / z * f.s * density)
+        val accent = Ui.accent(context)
+        miniPaint.style = Paint.Style.FILL
+        miniPaint.color = withAlpha(accent, 0.10f)
+        c.drawRect(vx, vy, vx + vw, vy + vh, miniPaint)
+        miniPaint.style = Paint.Style.STROKE
+        miniPaint.strokeWidth = 1f
+        miniPaint.color = withAlpha(accent, 0.85f)
+        c.drawRect(vx, vy, vx + vw, vy + vh, miniPaint)
+        c.restore()
+        miniPaint.style = Paint.Style.STROKE
+        miniPaint.strokeWidth = 1f
+        miniPaint.color = Color.argb(56, 255, 255, 255)
+        c.drawRoundRect(miniRect, cr, cr, miniPaint)
+    }
+
+    companion object {
+        // minimap 尺寸（dp；同 web 的 150×108 —— 同一个设备形态上已经做过的答案）
+        const val MINI_W = 150f
+        const val MINI_H = 108f
+        const val MINI_PAD = 12f
+        /** 面板内边距：缩略内容与视口框都不许贴到圆角边框上（同 Mac 的 inset=9） */
+        const val MINI_INSET = 9f
+    }
+}

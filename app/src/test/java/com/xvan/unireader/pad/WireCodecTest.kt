@@ -16,7 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 56 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 64 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -102,6 +102,16 @@ class WireCodecTest {
             50 to WireCodec.encodeLassoMove(2, 0.2f, 0.3f, 0.6f, 0.5f, 0.1f, -0.05f),
             // #51 gotoPage{page:42}
             51 to WireCodec.encodeGotoPage(42),
+            // #60 scratchOpen{index:2}
+            60 to WireCodec.encodeScratchOpen(2),
+            // #61 scratchOpen{index:-1}（关闭 → 线上 0xFFFF）
+            61 to WireCodec.encodeScratchOpen(-1),
+            // #62 scratchAdd{page:5, nx:0.75, ny:0.25}
+            62 to WireCodec.encodeScratchAdd(5, 0.75f, 0.25f),
+            // #63 scratchPaper{index:1, bg:rgba(246,236,214,1.0), pattern:grid}
+            63 to WireCodec.encodeScratchPaper(1, 246, 236, 214, 1.0f, WireCodec.PATTERN_GRID),
+            // #64 scratchPaper{index:0, pattern:plain}——plain=0，专防 `?: 1` 兜底把它吃成 dots
+            64 to WireCodec.encodeScratchPaper(0, 255, 255, 255, 1.0f, WireCodec.PATTERN_PLAIN),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -290,6 +300,31 @@ class WireCodecTest {
         // #49 mode{mode:"lasso"}（第 4 态）
         val m49 = WireCodec.decode(unhex(VECTORS[48])) as WireCodec.Msg.ModeSel
         assertEquals(MODE_LASSO, m49.mode)
+
+        // #57 scratchpads{open:1, list:[P1(推导,dots), P2(空标题,grid)]}；bg 线上拆 r/g/b/a
+        val m57 = WireCodec.decode(unhex(VECTORS[56])) as WireCodec.Msg.ScratchPads
+        assertEquals(1, m57.open)
+        assertEquals(
+            listOf(
+                WireCodec.ScratchPadEntry("P1", "推导", 3, 0.25f, 0.5f, 255, 255, 255, 1.0f, WireCodec.PATTERN_DOTS),
+                WireCodec.ScratchPadEntry("P2", "", 0, 0.5f, 0.125f, 250, 248, 240, 1.0f, WireCodec.PATTERN_GRID),
+            ),
+            m57.list,
+        )
+
+        // #58 scratchpads{open:-1(线上 0xFFFF), list:[]}
+        val m58 = WireCodec.decode(unhex(VECTORS[57])) as WireCodec.Msg.ScratchPads
+        assertEquals(-1, m58.open)
+        assertEquals(0, m58.list.size)
+
+        // #59 scratchStrokes{ackRel:7, 1 条无 page 的笔迹}；pts 是画布坐标（可负无界）
+        val m59 = WireCodec.decode(unhex(VECTORS[58])) as WireCodec.Msg.ScratchStrokes
+        assertEquals(7L, m59.ackRel)
+        assertEquals(1, m59.list.size)
+        val s59 = m59.list[0]
+        assertEquals(0L, s59.page)
+        assertEquals(Pen(20, 20, 20, 1.0f, 10f, 3), s59.pen)
+        assertEquals(listOf(Pt3(-120.5f, 64.25f, 0.5f), Pt3(512.0f, -8.125f, 1.0f)), s59.pts)
     }
 
     @Test
@@ -303,7 +338,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(56, VECTORS.size)
+        assertEquals(64, VECTORS.size)
     }
 
     @Test
@@ -316,7 +351,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 56 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 64 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -374,6 +409,14 @@ class WireCodecTest {
             "3b0600e99885e8afbb0200020041311b00e6b7b1e585a5e79086e8a7a3e8aea1e7ae97e69cbae7b3bbe7bb9f010200423204005349435000",
             "3c06006162633132330300000100000000000000000900e7acace4b880e7aba00101040000000000803e0a00312e3120e5bc95e8a880000000000000000000000900e59d8fe4b9a6e7adbe",
             "29070000000000003f",
+            "3d01000200020050310600e68ea8e5afbc030000000000803e0000003fffffff0000803f01020050320000000000000000003f0000003efaf8f00000803f02",
+            "3dffff0000",
+            "3e07000000010000001414140000803f000020410302000000f1c2008080420000003f00000044000002c10000803f",
+            "2b0200",
+            "2bffff",
+            "2c050000000000403f0000803e",
+            "2d0100f6ecd60000803f02",
+            "2d0000ffffff0000803f00",
         )
     }
 }

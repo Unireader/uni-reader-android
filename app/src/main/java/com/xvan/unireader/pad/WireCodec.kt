@@ -34,6 +34,9 @@ object WireCodec {
     const val OP_LAYER_ADD = 0x28
     const val OP_GOTO_PAGE = 0x29
     const val OP_OPEN_DOC = 0x2A
+    const val OP_SCRATCH_OPEN = 0x2B
+    const val OP_SCRATCH_ADD = 0x2C
+    const val OP_SCRATCH_PAPER = 0x2D
     const val OP_PAGE = 0x30
     const val OP_LAYOUT = 0x31
     const val OP_VIEWPORT = 0x32
@@ -47,6 +50,8 @@ object WireCodec {
     const val OP_LAYERS = 0x3A
     const val OP_LIBRARY = 0x3B
     const val OP_TOC = 0x3C
+    const val OP_SCRATCH_PADS = 0x3D
+    const val OP_SCRATCH_STROKES = 0x3E
     const val OP_SCROLL = 0x40
     const val OP_HOVER = 0x41
     const val OP_INK = 0x42
@@ -68,6 +73,18 @@ object WireCodec {
     const val NOTE_UPSERT = 0
     const val NOTE_DELETE = 1
 
+    // 草稿纸（§4.4）
+    /** 底纹编号（值 = 线格式 pattern u8）。🔴 plain = 0：编解码都要显式处理，别用 `?: 1` 这类兜底吃掉 */
+    const val PATTERN_PLAIN = 0
+    const val PATTERN_DOTS = 1
+    const val PATTERN_GRID = 2
+
+    /** 底纹 u8 → 编号，越界回退 dots（同 brush/mode 的解码惯例） */
+    fun patternOrDefault(c: Int): Int = if (c in PATTERN_PLAIN..PATTERN_GRID) c else PATTERN_DOTS
+
+    /** 「没打开任何一张纸」的线上哨兵（scratchpads.open / scratchOpen.index），对象里是 -1（同 radial.highlight 惯例） */
+    const val SCRATCH_NO_OPEN = 0xFFFF
+
     // 消息里出现的对象类型（Pen/Pt3/Pt2/Stroke/TextNote/Layer/RadialItem）与 mode/RK/brush 的
     // 编号↔名字映射都在 shared/Ink.kt——它们不只属于线格式，模式1（本地开工作区）同样要用。
     // 本文件只管**字节布局**（§2/§4）：pen = u8 r,g,b + f32 a + f32 w + u8 brush 共 12 字节，
@@ -84,6 +101,24 @@ object WireCodec {
 
     /** PDF 目录一项（toc 消息元素，先序拍平）。[page] = -1 是坏书签：跳不过去，渲染成灰行。 */
     data class TocEntry(val depth: Int, val page: Int, val frac: Float, val label: String)
+
+    /**
+     * 草稿纸一项（scratchpads 消息元素；纯线格式概念——模式1 的草稿纸来自 SQLite，不走这里）。
+     * [page]/[nx]/[ny] 是创建处的图钉锚点（页内归一化）；底色拆 r/g/b(u8)+a(f32)，与 [Pen] 同惯例
+     * （线上不传 CSS 串）；[pattern] 见 PATTERN_*。
+     */
+    data class ScratchPadEntry(
+        val id: String,
+        val title: String,
+        val page: Long,
+        val nx: Float,
+        val ny: Float,
+        val r: Int,
+        val g: Int,
+        val b: Int,
+        val a: Float,
+        val pattern: Int,
+    )
 
     // ---------- 解码结果（u32 用 Long 承载无符号值） ----------
     sealed class Msg {
@@ -128,6 +163,14 @@ object WireCodec {
         data class Library(val ws: String, val list: List<LibEntry>) : Msg()
         /** 当前文档的 PDF 目录。[docId] = 内容哈希，与 [Layout] 的 docId/v 同口径，渲染前必须核对 */
         data class Toc(val docId: String, val list: List<TocEntry>) : Msg()
+        /** 草稿纸列表全量镜像（Mac 唯一真源）。[open] = 当前打开 list 里第几张，-1 = 没开（线上 0xFFFF） */
+        data class ScratchPads(val open: Int, val list: List<ScratchPadEntry>) : Msg()
+        /**
+         * 当前打开那张纸上的全量笔迹镜像（Mac 唯一真源）。**无 page 字段**——画布不属于任何一页，
+         * 这里复用 [Stroke] 时 page 恒为 0、pts 是画布坐标（逻辑点，可负无界，PROTOCOL.md §4.4）。
+         * 没开纸时 Mac 发 n=0，据此清掉本地残留。[ackRel] 语义与 [Strokes] 完全一致（§4.2）。
+         */
+        data class ScratchStrokes(val ackRel: Long, val list: List<Stroke>) : Msg()
     }
 
     // ---------- Writer ----------
@@ -341,6 +384,20 @@ object WireCodec {
         u8(OP_LASSO_MOVE); u32(page); f32(x0); f32(y0); f32(x1); f32(y1); f32(dx); f32(dy)
     }.bytes()
 
+    /** 打开/关闭草稿纸（index = scratchpads 列表下标；-1 = 关闭，线上 0xFFFF） */
+    fun encodeScratchOpen(index: Int): ByteArray =
+        Writer().apply { u8(OP_SCRATCH_OPEN); u16(if (index < 0) SCRATCH_NO_OPEN else index) }.bytes()
+
+    /** 请求在指定页的页内归一化位置新建一张草稿纸（Mac 判定后回推 scratchpads） */
+    fun encodeScratchAdd(page: Long, nx: Float, ny: Float): ByteArray =
+        Writer().apply { u8(OP_SCRATCH_ADD); u32(page); f32(nx); f32(ny) }.bytes()
+
+    /** 改第 index 张纸的纸样：底色 r/g/b(u8)+a(f32) + 底纹（PATTERN_*，plain=0 照常上线） */
+    fun encodeScratchPaper(index: Int, r: Int, g: Int, b: Int, a: Float, pattern: Int): ByteArray =
+        Writer().apply {
+            u8(OP_SCRATCH_PAPER); u16(index); u8(r); u8(g); u8(b); f32(a); u8(pattern)
+        }.bytes()
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -413,6 +470,31 @@ object WireCodec {
                         i++
                     }
                     Msg.Toc(docId, list)
+                }
+                OP_SCRATCH_PADS -> {
+                    val openRaw = r.u16()
+                    val n = r.u16()
+                    val list = ArrayList<ScratchPadEntry>(n)
+                    var i = 0
+                    // 单条最短 20 字节（两条空 str + u32 + 2×f32 + 3×u8 + f32 + u8）
+                    while (i < n && r.remaining >= 20) {
+                        list.add(
+                            ScratchPadEntry(
+                                r.str(), r.str(), r.u32(), r.f32(), r.f32(),
+                                r.u8(), r.u8(), r.u8(), r.f32(), patternOrDefault(r.u8()),
+                            ),
+                        ); i++
+                    }
+                    Msg.ScratchPads(if (openRaw == SCRATCH_NO_OPEN) -1 else openRaw, list)
+                }
+                OP_SCRATCH_STROKES -> {
+                    val ackRel = r.u32()
+                    val n = r.u32()
+                    val list = ArrayList<Stroke>()
+                    var i = 0L
+                    // 无 page 字段（区别于 strokes）：page 恒 0，pts 是画布坐标
+                    while (i < n && r.remaining > 0) { list.add(Stroke(0, r.pen(), r.pts3())); i++ }
+                    Msg.ScratchStrokes(ackRel, list)
                 }
                 OP_NOTES -> {
                     val n = r.u16()

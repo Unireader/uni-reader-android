@@ -62,6 +62,12 @@ data class Pt2(val x: Float, val y: Float)
  * 一个例外：模式2 里**刚收笔、还没等到 Mac 回推**的乐观笔迹带一个 `opt:` 开头的本地 id
  * （见 `PageCanvasView.pendingInk`）。它只用来在下一次全量回推时认领自己，不是真源身份——
  * 凡是要拿 id 去对库/对 Mac 的地方（如 `LocalCanvasView.onEraseEnd`）都只跑在模式1，见不到它。
+ *
+ * `padId` 非空时这一笔**画在草稿纸上**（`scratch_pad.id`，落库为 `note` kind=4 而非 kind=2），此时：
+ *  · `pts` 是**画布坐标**（逻辑点/dp，可负无界），不是页内 0~1 归一化；
+ *  · `page` 无意义（落库固定 0），`layerId` 也不参与（草稿纸不分图层）。
+ * 坐标系契约见 Mac 端 `ScratchPadModel.swift` 文件头（三端一致，别改）。除此之外与页内笔迹
+ * 完全同构——擦除（[InkEdit.splitStroke]）、四种笔型渲染原样复用。
  */
 data class Stroke(
     val page: Long,
@@ -69,6 +75,8 @@ data class Stroke(
     val pts: List<Pt3>,
     val id: String = "",
     val layerId: String = "",
+    /** 所属草稿纸 id；空串 = 画在 PDF 页面上（同 Mac `padId: UUID?` 的 nil） */
+    val padId: String = "",
 )
 
 /**

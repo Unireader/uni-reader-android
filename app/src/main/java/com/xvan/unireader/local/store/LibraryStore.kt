@@ -406,6 +406,171 @@ class LibraryStore(private val db: Db) : Closeable {
         )
     }
 
+    // ---------- 草稿纸（scratch_pad 表：v8 建表 / v9 加 pattern 列；笔迹在 note kind=4） ----------
+
+    /**
+     * `scratch_pad` 的列名集；**表不存在**（v7 老库，还没被 v8+ 的 Mac 打开过）→ null。
+     * 安卓不建表不迁移，于是每个入口都先探一次再决定怎么办（结果缓存：schema 不会在本端手里变）。
+     * `PRAGMA table_info` 对不存在的表返回零行而不是抛错，正好拿来做这件事。
+     */
+    private val scratchPadCols: Set<String>? by lazy {
+        db.query("PRAGMA table_info(scratch_pad)") { it.str("name") }
+            .toSet().ifEmpty { null }
+    }
+
+    /**
+     * 一篇文档的全部草稿纸，**`ORDER BY created_at ASC` 照抄 Mac**——顺序不一致会让
+     * 「第 2 张纸」在两端不是同一张。v7 老库没有这张表 → 当「没有草稿纸」返回空，
+     * 绝不能让它把开文档流程炸掉（handoff §2.3①）。
+     */
+    fun scratchPads(documentId: String): List<ScratchPad> {
+        if (scratchPadCols == null) return emptyList()
+        return db.query(
+            "SELECT * FROM scratch_pad WHERE document_id=? ORDER BY created_at ASC",
+            arrayOf(documentId),
+        ) { scratchPad(it) }
+    }
+
+    /**
+     * 新建/改名/改纸样都走这一个 upsert（SQL 照抄 Mac）。两个老库边界：
+     * - 表不存在（v7）：写不进去，记日志后**跳过**——不建表是红线，调用方按「建不了纸」处理；
+     * - `pattern` 列不存在（v8）：底纹写不进去，其余字段照写，读回来兜底 dots（§2.3②）。
+     */
+    fun upsertScratchPad(p: ScratchPad) {
+        val cols = scratchPadCols
+        if (cols == null) {
+            Log.w(TAG, "scratch_pad 表不存在（v7 老库），草稿纸 id=${p.id.take(8)} 未落库——用 v8+ 的 Mac 打开一次此工作区即可补上")
+            return
+        }
+        if ("pattern" in cols) {
+            db.exec(
+                """
+                INSERT INTO scratch_pad(id,document_id,title,anchor_page,anchor_x,anchor_y,bg,pattern,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET title=excluded.title, anchor_page=excluded.anchor_page,
+                  anchor_x=excluded.anchor_x, anchor_y=excluded.anchor_y, bg=excluded.bg,
+                  pattern=excluded.pattern, updated_at=excluded.updated_at
+                """.trimIndent(),
+                arrayOf(
+                    p.id, p.documentId, p.title, p.anchorPage, p.anchorX, p.anchorY,
+                    p.bg, p.pattern, p.createdAt, p.updatedAt,
+                ),
+            )
+        } else {
+            db.exec(
+                """
+                INSERT INTO scratch_pad(id,document_id,title,anchor_page,anchor_x,anchor_y,bg,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET title=excluded.title, anchor_page=excluded.anchor_page,
+                  anchor_x=excluded.anchor_x, anchor_y=excluded.anchor_y, bg=excluded.bg,
+                  updated_at=excluded.updated_at
+                """.trimIndent(),
+                arrayOf(
+                    p.id, p.documentId, p.title, p.anchorPage, p.anchorX, p.anchorY,
+                    p.bg, p.createdAt, p.updatedAt,
+                ),
+            )
+        }
+    }
+
+    /**
+     * 删除一张草稿纸，**连带删掉纸上全部笔迹**（`note` 里 kind=4 且 payload.padId 指向它的行）。
+     * Mac 端靠内存对账删笔迹，安卓这边得显式删（handoff §2.4）——漏了第二步就是一堆无处可归的
+     * 孤儿笔迹留在库里。两步一个事务（同擦除的理由，§9.3）。表不存在时纸行没得删，
+     * 孤儿笔迹照清（防的就是「纸没了、笔迹还在」这一种状态）。
+     */
+    fun deleteScratchPad(id: String) {
+        transaction {
+            if (scratchPadCols != null) {
+                db.exec("DELETE FROM scratch_pad WHERE id=?", arrayOf(id))
+            }
+            val orphans = db.query(
+                "SELECT id,payload FROM note WHERE kind=?",
+                arrayOf(NoteKind.SCRATCH_INK),
+            ) { c -> c.str("id") to c.blob("payload") }
+                .filter { (_, payload) -> InkPayload.parse(payload)?.padId == id }
+            for ((noteId, _) in orphans) deleteNote(noteId)
+        }
+    }
+
+    /**
+     * 读出一篇文档的全部草稿纸笔迹（note kind=4），**按 payload.padId 分到各张纸**。
+     * 与 [strokes]（kind=2 页内）互不串台——两条读取路径各按 kind 一刀切干净。
+     * kind=4 但 payload 缺 padId 的是坏数据（无处可归的孤儿），跳过并记日志
+     * （同 Mac `InkStroke(note:)` 的丢弃口径），绝不混进页内笔迹。
+     */
+    fun scratchStrokes(documentId: String): Map<String, List<Stroke>> {
+        val out = LinkedHashMap<String, MutableList<Stroke>>()
+        var bad = 0
+        for (n in notes(documentId)) {
+            if (n.kind != NoteKind.SCRATCH_INK) continue
+            val p = InkPayload.parse(n.payload)
+            val padId = p?.padId
+            if (p == null || padId == null) { bad++; continue }
+            out.getOrPut(padId) { ArrayList() }.add(p.toStroke(n.id, 0))
+        }
+        if (bad > 0) Log.w(TAG, "$documentId：$bad 条草稿纸笔迹坏掉/缺 padId 已跳过")
+        return out
+    }
+
+    /**
+     * 落一笔草稿纸笔迹（kind=4，page 固定 0——画布不属于任何一页，payload 带 padId）。
+     * anchor 是**画布坐标**包围盒（可负，只作检索/调试用，没有页内语义），同 Mac `InkStroke.toNote`。
+     * 草稿纸不分图层，`layerId` 照 Mac 落库时仍写默认层。
+     */
+    fun insertScratchStroke(
+        documentId: String,
+        padId: String,
+        pen: Pen,
+        pts: List<Pt3>,
+        id: String = UUID.randomUUID().toString(),
+    ): String? {
+        if (pts.isEmpty()) return null   // 空笔画不落库（同 insertStroke 的 guard）
+        val b = boundsOf(pts)
+        val now = nowIso()
+        upsertNote(
+            LibNote(
+                id = id, documentId = documentId, kind = NoteKind.SCRATCH_INK, page = 0,
+                anchorX = b[0], anchorY = b[1], anchorW = b[2], anchorH = b[3],
+                payload = InkPayload.of(pen, pts, LibInkLayer.DEFAULT_ID, padId).bytes(),
+                createdAt = now, updatedAt = now,
+            ),
+        )
+        return id
+    }
+
+    /**
+     * 草稿纸擦除的对账落库：[reconcileStrokes] 的 kind=4 变体，只比对 [padId] 这张纸上的笔迹。
+     * 两处有意的不同：
+     * - **没有隐藏图层过滤**——草稿纸不分图层（handoff §2.3 顺带提醒），那套过滤在这里无对象；
+     * - 多出来的段走 [insertScratchStroke]（kind=4 + 带 padId），不是页内的 insertStroke。
+     * 「头一段沿用原 id」的理由与 [reconcileStrokes] 完全相同（回推在途时的二次擦除要对得上），
+     * 整批一个事务（§9.3）。调用方在队列线程上跑。
+     */
+    fun reconcileScratchStrokes(documentId: String, padId: String, local: Map<String, List<Stroke>>): InkDiff {
+        var deleted = 0
+        var updated = 0
+        var inserted = 0
+        transaction {
+            for (old in scratchStrokes(documentId)[padId].orEmpty()) {
+                val segs = local[old.id]
+                if (segs == null) {
+                    deleteNote(old.id)
+                    deleted++
+                    continue
+                }
+                if (segs.size == 1 && segs[0].pts.size == old.pts.size) continue
+                updateStrokePoints(old.id, segs[0].pts)
+                updated++
+                for (i in 1 until segs.size) {
+                    insertScratchStroke(documentId, padId, segs[i].pen, segs[i].pts)
+                    inserted++
+                }
+            }
+        }
+        return InkDiff(deleted, updated, inserted)
+    }
+
     // ---------- ink_layer ----------
 
     fun inkLayers(documentId: String): List<LibInkLayer> = db.query(
@@ -501,5 +666,15 @@ class LibraryStore(private val db: Db) : Closeable {
         id = c.str("id"), documentId = c.str("document_id"), name = c.str("name"),
         colorKey = c.str("color_key"), sortOrder = c.int("sort_order"),
         visible = c.bool("visible", true), createdAt = c.str("created_at"),
+    )
+
+    private fun scratchPad(c: android.database.Cursor) = ScratchPad(
+        id = c.str("id"), documentId = c.str("document_id"), title = c.str("title"),
+        anchorPage = c.int("anchor_page"), anchorX = c.dbl("anchor_x"), anchorY = c.dbl("anchor_y"),
+        bg = c.str("bg").ifEmpty { ScratchPad.DEFAULT_BG },
+        // v8 的库没有 pattern 列：cursor 按名取列取不到 → 空串 → 兜底 dots（同 Mac `?? "dots"`）；
+        // 未知取值（未来的 Mac 加了新底纹）同样回落 dots，同 Mac `?? .dots`。
+        pattern = ScratchPad.patternOrDefault(c.str("pattern")),
+        createdAt = c.str("created_at"), updatedAt = c.str("updated_at"),
     )
 }

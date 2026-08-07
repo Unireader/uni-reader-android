@@ -38,7 +38,16 @@
 
         <!-- 模式1 独立版：书库列表 → 阅读 -->
         <activity android:name=".local.LibraryActivity" android:exported="false" />
-        <activity android:name=".local.ReaderActivity" android:exported="false" />
+        <!--
+          阅读界面是**多标签页**的（ANDROID-STANDALONE-PLAN §13）：一个实例带着一个工作区的
+          库连接、若干张画布和 Pdfium 句柄。再从书库点一篇时必须回到**同一个实例**走 onNewIntent
+          加标签页，叠第二个实例等于同一个库开两份（§9.2 单写者）。singleTop + 启动时的
+          REORDER_TO_FRONT（见 ReaderActivity.start）合起来保证这一点。
+        -->
+        <activity
+            android:name=".local.ReaderActivity"
+            android:launchMode="singleTop"
+            android:exported="false" />
 
         <!-- 模式2 输入板（原 MainActivity，现由 Launcher 启动） -->
         <activity

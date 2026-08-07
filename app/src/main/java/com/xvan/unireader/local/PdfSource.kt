@@ -43,6 +43,15 @@ class PdfSource(
         }
 
         /**
+         * 背景标签页的缓存上限（`ANDROID-STANDALONE-PLAN.md §13`）。
+         *
+         * 多标签页之后同时活着的 `PdfSource` 最多 3 个，各按 [defaultCacheBytes]（堆的 1/3）
+         * 分配就是 100% 的堆——必然 OOM。所以只有**当前标签页**拿全额，退到背景就缩到这个数：
+         * 够留住刚才那一屏的几页（切回来是缓存命中，不闪白），又不至于三份加起来撑爆。
+         */
+        const val BACKGROUND_CACHE_BYTES = 32 * 1024 * 1024
+
+        /**
          * 页的显示尺寸（pt，已含旋转换边），**逐字对齐 Mac 端 `PageBitmap.displaySize`**：
          * CropBox 宽高都 >0 就用 CropBox，否则用 MediaBox；再按页旋转换边。
          *
@@ -78,8 +87,25 @@ class PdfSource(
 
     // ---------- 缓存与工作线程 ----------
 
+    /** 前台时的缓存上限（[setForeground] 切回来时用它复原） */
+    private val fullCacheBytes = cacheBytes
+
     private val cache = object : LruCache<String, Bitmap>(cacheBytes) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+
+    /**
+     * 切前台/背景（多标签页，§13）。背景时把缓存缩到 [BACKGROUND_CACHE_BYTES]——`resize` 会顺手
+     * 按 LRU 淘汰超出的部分，留下的正是最近看过的那几页，切回来时 [request] 直接命中、不重渲。
+     *
+     * **只动缓存不动句柄**：Pdfium 的文档句柄与页尺寸表要留着，关掉再开等于重读一遍全部页尺寸
+     * （几百页的文档是秒级，§9.5）。真正要收句柄是标签页被卸载时的 [close]。
+     */
+    fun setForeground(fg: Boolean) {
+        val want = if (fg) fullCacheBytes else min(BACKGROUND_CACHE_BYTES, fullCacheBytes)
+        if (cache.maxSize() == want) return
+        cache.resize(want)
+        Log.i(TAG, "${file.name} 缓存上限 → ${want / 1024 / 1024}MB（前台=$fg）")
     }
 
     private class Req(val page: Int, val widthPx: Int, val gen: Int, val cb: (Bitmap?) -> Unit)

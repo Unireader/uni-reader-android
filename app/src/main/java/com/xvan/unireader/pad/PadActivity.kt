@@ -35,6 +35,7 @@ import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
+import com.xvan.unireader.shared.ScratchCanvas
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.TextNote
@@ -94,6 +95,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 左侧拉抽屉（目录 / 书库）。数据由 Mac 的 `toc`/`library` 广播喂 */
     private lateinit var drawer: PadDrawer
 
+    /** 草稿纸（模式2 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板；真源在 Mac，这里只发请求 */
+    private lateinit var scratch: PadScratch
+
     // —— 量化指标（rtt/e2e/nackRTT/mv-s，照 udp-pad-sim.py refresh）——
     private var rtt = -1.0
     private var e2e = -1.0
@@ -125,6 +129,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        scratch.release()  // 停掉草稿纸的 8ms 批缓冲定时器
         udp?.close()       // 内含 BYE
         client?.close()
         super.onDestroy()
@@ -161,6 +166,20 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         topbar.visibility = if (hidden) View.GONE else View.VISIBLE
         showBarBtn.visibility = if (hidden) View.VISIBLE else View.GONE
         padView.setBarHeight(if (hidden) 0f else barHeightPx.toFloat())
+        applyScratchMargin()
+    }
+
+    /** 覆盖层与浮条让开顶栏（纸不铺进顶栏那条带子，§7.1）；顶栏收起时让到 0 */
+    private fun applyScratchMargin() {
+        val top = if (topbar.visibility == View.VISIBLE) barHeightPx else 0
+        (scratch.canvas.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = top
+            scratch.canvas.layoutParams = it
+        }
+        (scratch.barView.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = top + dp(10)
+            scratch.barView.layoutParams = it
+        }
     }
 
     /** 图层面板（真源在 Mac：这里发的都是「请求」，权威状态等 Mac 广播回来） */
@@ -191,6 +210,29 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 override fun clear() {
                     fetcher?.clear()
                 }
+            }
+        }
+
+        // 草稿纸：覆盖层画布 + 浮条 + 回调（出口全是发给 Mac 的请求/RT 帧，权威状态等回推）
+        scratch = PadScratch(this).apply {
+            sendRel = { udp?.sendRel(it) }
+            sendCtl = { client?.send(it) }
+            onMoveFrame = { mvCount++ }
+            onInkEndSent = { tEnd = System.currentTimeMillis() }
+            onPinsChanged = { pins -> padView.setScratchPins(pins) }
+            onOpenChanged = { refresh() }
+            anchorProvider = { padView.viewportCenterAnchor() }
+            // 工具快照现取阅读画布：纸开着时改笔/改橡皮/切尺子即时生效（尺子走 45° 吸附，同页内）
+            toolsProvider = {
+                ScratchCanvas.Tools(
+                    inkTool = padView.mode == MODE_NOTE && !padView.noteMode,
+                    eraseTool = padView.mode == MODE_ERASE,
+                    pen = padView.curPenOrNull() ?: PageCanvasView.FALLBACK_PENS[0],
+                    eraserSize = padView.eraserSize,
+                    eraserMode = padView.eraserMode,
+                    eraserRing = padView.eraserRing,
+                    rulerOn = padView.rulerOn,
+                )
             }
         }
 
@@ -226,6 +268,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("pen", R.drawable.ic_nib, "切换笔") { padView.cyclePen() }
             icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
             icon("text", R.drawable.ic_text, "文字笔记") { padView.toggleNoteMode() }
+            // 草稿纸：盖在 PDF 之上的无限白板（列表 + 「在当前位置新建」，见 PadScratch）
+            icon("scratch", R.drawable.ic_scratch, "草稿纸") { scratch.showList() }
             addTail(dot, 0)
             addTail(latText, 1)
             pageLabel.setOnClickListener {
@@ -291,6 +335,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         val root = FrameLayout(this).apply {
             addView(padView, FrameLayout.LayoutParams(-1, -1))
+            // 草稿纸覆盖层：在顶栏**之下**（topMargin 让开顶栏那条带子——handoff §7.1 的白压白坑，
+            // applyScratchMargin 负责），在页面画布之上（纸开着时吃掉全部指针事件，PDF 上一笔都
+            // 落不下——这是这个功能的定义；probe/环形盘也因此天然不会在纸上触发）
+            addView(scratch.canvas, FrameLayout.LayoutParams(-1, -1))
             addView(topbar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(
                 showBarBtn,
@@ -310,12 +358,18 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     topMargin = bar.height() + dp(8); marginEnd = dp(8)
                 },
             )
+            // 纸上的悬浮工具条：贴顶栏下方居中（topMargin 同由 applyScratchMargin 给）
+            addView(
+                scratch.barView,
+                FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
+            )
             // 抽屉加在最后 = 盖在最上层（含顶栏）：开着时下面的画布不该还能写字
             addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
         setContentView(root)
         barHeightPx = bar.height()
         padView.setBarHeight(barHeightPx.toFloat())
+        applyScratchMargin()
         setDot(false)
         applyGraphVisibility()
         refresh()
@@ -328,10 +382,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
     }
 
-    /** 返回键：抽屉开着先关抽屉（同系统抽屉惯例），不然一按就退出整个连接界面 */
+    /** 返回键：抽屉开着先关抽屉（同系统抽屉惯例）；纸开着先关纸（发 scratchOpen(-1)，同模式1） */
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (drawer.isOpen) { drawer.close(); return }
+        if (scratch.isOpen) { scratch.requestClose(); return }
         @Suppress("DEPRECATION")
         super.onBackPressed()
     }
@@ -553,6 +608,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("mode", padView.mode != MODE_PAGE)
         bar.setActive("ruler", padView.rulerOn)
         bar.setActive("text", padView.noteMode)
+        bar.setActive("scratch", scratch.isOpen)
         bar.setEnabled("pen", padView.mode == MODE_NOTE)
 
         // 笔胶囊：笔记模式显示当前笔（色块 · 类型 · 粗细），其余模式显示模式名（同网页 PenStat）
@@ -706,6 +762,21 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         padView.setEraser(size, mode, ring)
     }
 
+    override fun onScratchPads(open: Int, list: List<WireCodec.ScratchPadEntry>) = runOnUiThread {
+        scratch.applyPads(open, list)   // Mac 是「开着哪张纸」的唯一真源：照做（开/关/换纸）
+        refresh()
+    }
+
+    override fun onScratchStrokes(ackRel: Long, list: List<Stroke>) = runOnUiThread {
+        // 纸上 ink end 发出 → 收到 scratchStrokes 广播 = e2e（与 onStrokes 同一条计时报表）
+        if (tEnd > 0) {
+            e2e = (System.currentTimeMillis() - tEnd).toDouble()
+            graphView.addE2e(e2e.toFloat())
+        }
+        // ackRel 判据与页内 strokes 完全同款（PadScratch.applyStrokes 里）
+        scratch.applyStrokes(ackRel, list, udp?.sentRel ?: 0L)
+    }
+
     // ---------- PadView.Listener（主线程） ----------
 
     override fun sendRel(body: ByteArray) {
@@ -744,5 +815,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             },
             onDelete = { padView.deleteNote(id, page, nx, ny) },
         )
+    }
+
+    /** 手指单击图钉 → 请求 Mac 打开那张纸（等 scratchpads 回推才真的开，本地不自作主张） */
+    override fun onScratchPinTap(index: Int) {
+        client?.send(WireCodec.encodeScratchOpen(index))
     }
 }

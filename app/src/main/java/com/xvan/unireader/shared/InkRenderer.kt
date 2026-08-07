@@ -89,9 +89,10 @@ class InkRenderer(private val density: Float) {
     }
 
     /**
-     * 一条笔迹已构建好的几何（页局部像素坐标）。
+     * 一条笔迹已构建好的几何（页局部像素坐标；草稿纸是「画布坐标 × zoom」的像素坐标）。
      *
-     * `pw`/`ph` 是构建时的页显示尺寸：画的时候不等就说明缩放变过，得重建（或按 [deferRebuild] 近似）。
+     * `pw`/`ph` 是构建时的重建判据：页内 = 页显示尺寸，草稿纸 = zoom。画的时候不等就说明缩放变过，
+     * 得重建（或按 [deferRebuild] 近似）。
      * `strokeW > 0` 表示这份几何是**描边中心线**（marker：恒宽，整条一次成 path 才不会在接缝出圆斑），
      * 否则是**填充轮廓**（压感变宽的三种笔）。
      */
@@ -132,7 +133,7 @@ class InkRenderer(private val density: Float) {
         var g = cache[s]
         // 0.5px 的容差：几何是像素级的，比这更小的页宽变化重建了也看不出来
         if (g == null || (!deferRebuild && (abs(g.pw - pw) > 0.5f || abs(g.ph - ph) > 0.5f))) {
-            g = build(s.pen, s.pts, pw, ph)
+            g = buildPage(s.pen, s.pts, pw, ph)
             cache[s] = g
             rebuilt++
         }
@@ -150,18 +151,76 @@ class InkRenderer(private val density: Float) {
         val top = m.viewY(page, 0f)
         val ph = m.viewY(page, 1f) - top
         if (pw <= 0f || ph <= 0f) return
-        render(c, build(pen, pts, pw, ph), pen, left, top, pw, ph)
+        render(c, buildPage(pen, pts, pw, ph), pen, left, top, pw, ph)
     }
 
-    // ---------- 几何构建（页局部像素坐标） ----------
+    // ---------- 草稿纸（画布坐标：dp 逻辑点、可负无界，契约见 SCRATCHPAD-ANDROID-HANDOFF §1） ----------
 
-    private fun build(pen: Pen, pts: List<Pt3>, pw: Float, ph: Float): Geom {
+    /**
+     * 画一条草稿纸上的**成形**笔迹（静态层，走几何缓存）。与页内 [drawStroke] 同一份几何构建/
+     * 上色代码——差别只在映射与缓存键（同 Mac `inkDrawStroke(map:)` / web `buildGeomWith` 的拆法）：
+     * - 页内：归一化点 × 页显示尺寸，键是页宽/页高；
+     * - 草稿纸：**画布坐标 × zoom**（`ox`/`oy` = 视口原点对应的画布坐标，画的时候 translate 过去），
+     *   键是 zoom——**平移只是 translate，缓存不失效**，只有缩放才重建。
+     * 线宽同样乘 zoom（`wScale` 里）：放大就连笔迹一起放大，与页内「缩放变页宽→重建」的语义一致。
+     */
+    fun drawScratchStroke(c: Canvas, s: Stroke, ox: Float, oy: Float, zoom: Float) {
+        if (s.pts.isEmpty() || zoom <= 0f) return
+        var g = cache[s]
+        // 容差按 zoom 的 0.1%：比这更小的缩放变化重建了也看不出来（类比页宽的 0.5px）
+        if (g == null || (!deferRebuild && abs(g.pw - zoom) > zoom * 0.001f)) {
+            g = buildScratch(s.pen, s.pts, zoom)
+            cache[s] = g
+            rebuilt++
+        }
+        render(c, g, s.pen, -ox * zoom * density, -oy * zoom * density, zoom, zoom)
+    }
+
+    /** 草稿纸上**正在写的这一笔**（活体层，每帧重建——同 [drawLive] 不进缓存的理由） */
+    fun drawScratchLive(c: Canvas, pen: Pen, pts: List<Pt3>, ox: Float, oy: Float, zoom: Float) {
+        if (pts.isEmpty() || zoom <= 0f) return
+        render(c, buildScratch(pen, pts, zoom), pen, -ox * zoom * density, -oy * zoom * density, zoom, zoom)
+    }
+
+    /** 画布坐标(dp) × zoom × density → 屏幕 px；线宽基准同步乘 zoom */
+    private fun buildScratch(pen: Pen, pts: List<Pt3>, zoom: Float): Geom {
+        val k = zoom * density
+        return build(pen, pts, zoom, zoom, { it.x * k }, { it.y * k }, k)
+    }
+
+    // ---------- 几何构建（页局部像素坐标 / 草稿纸的「画布坐标×zoom」像素坐标） ----------
+
+    /** 页内笔迹的映射：归一化点 × 页显示尺寸（clamp 回 [0,1]），线宽不随缩放变（屏幕 px） */
+    private fun buildPage(pen: Pen, pts: List<Pt3>, pw: Float, ph: Float): Geom =
+        build(
+            pen, pts, pw, ph,
+            { it.x.coerceIn(0f, 1f) * pw },
+            { it.y.coerceIn(0f, 1f) * ph },
+            density,
+        )
+
+    /**
+     * 内容 → 几何。**坐标映射与线宽倍率由调用方给**（页内传「× 页宽」、草稿纸传「× zoom」），
+     * 四种笔型的几何构建与上色因此只有一份实现——抄一份就会分叉（handoff §4.1）。
+     *
+     * @param keyW/keyH 这份几何的重建判据（页内 = 页宽/页高，草稿纸 = zoom）：[render] 画的时候
+     *   与当前值不等说明缩放变过，捏合中按 [deferRebuild] 用 canvas 缩放近似顶一拍。
+     * @param px/py 点 → 几何坐标的映射。
+     * @param wScale 线宽倍率（页内 = density；草稿纸 = zoom × density，放大即变粗）。
+     */
+    private fun build(
+        pen: Pen,
+        pts: List<Pt3>,
+        keyW: Float,
+        keyH: Float,
+        px: (Pt3) -> Float,
+        py: (Pt3) -> Float,
+        wScale: Float,
+    ): Geom {
         val t = brushName(pen.brush)
         val path = Path()
 
-        fun px(p: Pt3) = p.x.coerceIn(0f, 1f) * pw
-        fun py(p: Pt3) = p.y.coerceIn(0f, 1f) * ph
-        fun width(p: Float) = PadConst.strokeWidthFor(t, p, pen.w) * density
+        fun width(p: Float) = PadConst.strokeWidthFor(t, p, pen.w) * wScale
 
         var lpx = px(pts[0])
         var lpy = py(pts[0])
@@ -169,7 +228,7 @@ class InkRenderer(private val density: Float) {
         // 单点 = 一个圆点（同 Mac 单点分支）
         if (pts.size == 1) {
             path.addCircle(lpx, lpy, width(pts[0].p) / 2f, Path.Direction.CW)
-            return Geom(pw, ph, path, 0f)
+            return Geom(keyW, keyH, path, 0f)
         }
 
         if (t == "marker") {
@@ -181,7 +240,7 @@ class InkRenderer(private val density: Float) {
             }
             path.lineTo(lpx, lpy)   // 补末段（同下方分支：中点平滑链止于倒数两点的中点）
             // 下限护住「strokeW > 0 即描边中心线」这条判别式：w 万一是 0，几何会被当成填充轮廓画歪
-            return Geom(pw, ph, path, (pen.w * density).coerceAtLeast(0.1f))
+            return Geom(keyW, keyH, path, (pen.w * wScale).coerceAtLeast(0.1f))
         }
 
         // 压感变宽的三种笔：逐段描边转轮廓攒进同一条 path，收尾一次 FILL（见类注释）。
@@ -212,7 +271,7 @@ class InkRenderer(private val density: Float) {
         outliner.strokeWidth = width(pts.last().p)
         outliner.getFillPath(seg, segFill)
         path.addPath(segFill)
-        return Geom(pw, ph, path, 0f)
+        return Geom(keyW, keyH, path, 0f)
     }
 
     // ---------- 上色 ----------

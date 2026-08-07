@@ -1,11 +1,17 @@
 package com.xvan.unireader.pad
 
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.util.AttributeSet
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
+import kotlin.math.abs
+import kotlin.math.max
 
 /**
  * 模式2 输入板的画布：`PageCanvasView`（几何+输入+渲染）+ **把每个提交口翻译成线格式帧**。
@@ -31,6 +37,8 @@ class PadView @JvmOverloads constructor(
         fun onHudChanged()                // 页码/缩放/工具变化 → 顶栏刷新
         /** 文字笔记模式下点页面：打开编辑器（isNew=false 时是点中了已有笔记） */
         fun onOpenNoteEditor(id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean)
+        /** 手指单击草稿纸图钉（index = scratchpads 列表下标；宿主发 scratchOpen 请求） */
+        fun onScratchPinTap(index: Int)
     }
 
     var listener: Listener? = null
@@ -161,4 +169,70 @@ class PadView @JvmOverloads constructor(
     fun setPressRing(m: WireCodec.Msg.PressRing) {
         setPressRing(m.on, m.page.toInt(), m.nx, m.ny)
     }
+
+    // ---------- 草稿纸图钉（scratchpads 列表的 page/nx/ny；手指单击开纸，不认笔——同模式1/web） ----------
+
+    /** 一枚图钉：(scratchpads 列表下标, 页, 页内归一化锚点)。模式2 不开库，身份就是下标 */
+    class ScratchPin(val index: Int, val page: Int, val nx: Float, val ny: Float)
+
+    private var scratchPins = listOf<ScratchPin>()
+
+    fun setScratchPins(list: List<ScratchPin>) {
+        scratchPins = list
+        invalidate()
+    }
+
+    /** 视口中心落在哪页的哪个归一化点（「在当前位置新建草稿纸」的锚点）；落在页缝给该页中心 */
+    fun viewportCenterAnchor(): Triple<Int, Float, Float> {
+        val loc = locate(width / 2f, barH + availH / 2f)
+        return if (loc != null) Triple(loc.page, loc.nx, loc.ny)
+        else Triple(topVisiblePage(), 0.5f, 0.5f)
+    }
+
+    /** 图钉半径（dp）：随页宽走但夹取，缩得再小也点得着（同 LocalCanvasView/web 的 clamp(…,11,18)） */
+    private fun pinRadiusDp(): Float = (pw() / density * 0.016f).coerceIn(11f, 18f)
+
+    override fun onFingerTap(x: Float, y: Float) {
+        // 热区比画出来的略大（同 web padPinHit 的 max(r+6, 22)）；后建的压在上面，命中也先算它
+        val hot = dp(max(pinRadiusDp() + 6f, 22f))
+        for (i in scratchPins.indices.reversed()) {
+            val p = scratchPins[i]
+            if (p.page !in 0 until pageCount) continue
+            val vx = viewX(p.page, p.nx)
+            val vy = viewY(p.page, p.ny)
+            if (abs(x - vx) <= hot && abs(y - vy) <= hot) {
+                listener?.onScratchPinTap(p.index)
+                return
+            }
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        // 形制与 LocalCanvasView 的图钉一致（圆角方片 + 两道「字迹」，与文字笔记的圆形蓝底分得清）
+        if (scratchPins.isEmpty()) return
+        val r = dp(pinRadiusDp())
+        val corner = r * 0.34f
+        for (p in scratchPins) {
+            if (p.page !in 0 until pageCount) continue
+            val x = viewX(p.page, p.nx)
+            val y = viewY(p.page, p.ny)
+            if (y < barH - r || y > height + r || x < -r || x > width + r) continue
+            pinRect.set(x - r, y - r, x + r, y + r)
+            pinPaint.style = Paint.Style.FILL
+            pinPaint.color = Color.argb(245, 246, 248, 252)
+            canvas.drawRoundRect(pinRect, corner, corner, pinPaint)
+            pinPaint.style = Paint.Style.STROKE
+            pinPaint.strokeWidth = dp(1.5f)
+            pinPaint.color = Color.argb(217, 31, 111, 235)
+            canvas.drawRoundRect(pinRect, corner, corner, pinPaint)
+            pinPaint.strokeWidth = max(dp(1.2f), r * 0.14f)
+            pinPaint.color = Color.argb(230, 31, 111, 235)
+            canvas.drawLine(x - r * 0.45f, y - r * 0.18f, x + r * 0.45f, y - r * 0.18f, pinPaint)
+            canvas.drawLine(x - r * 0.45f, y + r * 0.28f, x + r * 0.1f, y + r * 0.28f, pinPaint)
+        }
+    }
+
+    private val pinPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pinRect = RectF()
 }

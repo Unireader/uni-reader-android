@@ -107,6 +107,43 @@ object NoteKind {
     const val CHAT = 1
     const val INK = 2
     const val HIGHLIGHT = 3
+    /** 草稿纸上的笔迹（v8）。与页内笔迹（kind=2）分开，读取时一个 `kind ==` 就筛干净 */
+    const val SCRATCH_INK = 4
+}
+
+/**
+ * 一张**草稿纸**（`scratch_pad` 表，v8 建表 / v9 加 `pattern` 列）：盖在 PDF 之上的无限白板，
+ * 不改 PDF 原文、也不属于任何一页。逐字对应 Mac 端 `LibScratchPad`（时间戳按本端惯例存 ISO 串）。
+ *
+ * - `anchorPage`/`anchorX`/`anchorY` = 创建时所在页 + 页内归一化点（0~1）——页面上那枚图钉的位置，
+ *   **不是**纸的内容位置（纸上的笔迹是画布坐标，见 `note.payload` 的 `padId` 键与 handoff §1）。
+ * - `bg` 是自由 CSS rgba 串（默认 `rgba(255,255,255,1.0)` 纯白），`pattern` 是
+ *   `plain`/`dots`/`grid`（老库/老行缺省 → 读取侧兜底 `dots`）。
+ * - 列表一律 `ORDER BY created_at ASC`（照抄 Mac，两端顺序不一致「第 2 张纸」就不是同一张）。
+ */
+data class ScratchPad(
+    val id: String,
+    val documentId: String,
+    /** 标题（空 = 界面按创建序显示「草稿纸 N」，由 UI 兜底） */
+    val title: String,
+    val anchorPage: Int,
+    val anchorX: Double,
+    val anchorY: Double,
+    val bg: String,
+    val pattern: String,
+    val createdAt: String,
+    val updatedAt: String,
+) {
+    companion object {
+        const val DEFAULT_BG = "rgba(255,255,255,1.0)"
+        const val DEFAULT_PATTERN = "dots"
+
+        /** 底纹取值（Mac `ScratchPattern.rawValue`）；线上是 u8 `0=plain 1=dots 2=grid` */
+        val PATTERNS = listOf("plain", "dots", "grid")
+
+        /** 未知/缺失的底纹串兜底 dots（同 Mac `ScratchPattern(rawValue:) ?? .dots`） */
+        fun patternOrDefault(s: String): String = if (s in PATTERNS) s else DEFAULT_PATTERN
+    }
 }
 
 /** 一个笔迹图层（`ink_layer` 表，v7）。`colorKey` 是色板 key，不是 RGB——见 [Palette]。 */

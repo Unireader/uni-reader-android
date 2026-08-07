@@ -56,6 +56,10 @@ class MacClient(
         fun onRadial(m: WireCodec.Msg.Radial)
         fun onPressRing(m: WireCodec.Msg.PressRing)
         fun onEraser(size: Float, mode: Int, ring: Boolean)
+        /** 草稿纸列表全量镜像（Mac 唯一真源）：open = 当前打开 list 里第几张，-1 = 没开 */
+        fun onScratchPads(open: Int, list: List<WireCodec.ScratchPadEntry>)
+        /** 当前打开那张纸的全量笔迹镜像（无 page 字段，pts 是画布坐标）；ackRel 语义同 onStrokes */
+        fun onScratchStrokes(ackRel: Long, list: List<Stroke>)
         /** 连接断开（含自动重连中的每一次失败）；msg 供顶栏显示 */
         fun onDisconnected(msg: String)
     }
@@ -139,6 +143,8 @@ class MacClient(
             is WireCodec.Msg.Radial -> cb.onRadial(m)
             is WireCodec.Msg.PressRing -> cb.onPressRing(m)
             is WireCodec.Msg.Eraser -> cb.onEraser(m.size, m.mode, m.ring)
+            is WireCodec.Msg.ScratchPads -> cb.onScratchPads(m.open, m.list)
+            is WireCodec.Msg.ScratchStrokes -> cb.onScratchStrokes(m.ackRel, m.list)
             else -> {}   // page 等不消费的消息忽略
         }
     }

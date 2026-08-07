@@ -1,6 +1,7 @@
 package com.xvan.unireader.shared
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -60,5 +61,52 @@ class InkEditTest {
             InkEdit.translatedRect(doubleArrayOf(0.5, 0.5, 0.0, 0.0), 0.1, 0.2),
             "零尺寸 anchor 平移后仍是零尺寸",
         )
+    }
+
+    // ---------- splitStroke（局部擦除切段） ----------
+
+    private val pen = Pen(20, 20, 20, 1f, 6f, 0)
+
+    @Test
+    fun 切段继承id与layerId与padId() {
+        // 草稿纸笔迹：page 恒 0，pts 是画布坐标（可负无界），padId 指回 scratch_pad.id。
+        // 漏带 padId 的话被擦过的笔迹会当场从界面消失、却以 kind=2 污染页内笔迹（handoff §2.5）。
+        val s = Stroke(
+            page = 0, pen = pen,
+            pts = (0 until 6).map { Pt3(it * 10f - 25f, 0f, 0.5f) },   // -25 .. 25，画布坐标
+            id = "note-id", layerId = "layer-id", padId = "pad-id",
+        )
+        val segs = InkEdit.splitStroke(s, nx = 5f, ny = 0f, page = 0, r2 = 100f)   // 擦掉 x=5 附近的点
+        assertEquals("x∈{-5,5,15} 被剔除，剩两段", 2, segs.size)
+        assertEquals(listOf(-25f, -15f), segs[0].pts.map { it.x })
+        assertEquals(listOf(25f), segs[1].pts.map { it.x })
+        for (seg in segs) {
+            assertEquals("note-id", seg.id)
+            assertEquals("layer-id", seg.layerId)
+            assertEquals("每一段都必须继承 padId", "pad-id", seg.padId)
+            assertEquals(pen, seg.pen)
+        }
+    }
+
+    @Test
+    fun 没擦到就原样返回同一实例() {
+        val s = Stroke(2, pen, listOf(Pt3(0.5f, 0.5f, 0.5f)), id = "a")
+        val out = InkEdit.splitStroke(s, nx = 0.9f, ny = 0.9f, page = 2, r2 = 0.01f)
+        assertEquals(1, out.size)
+        assertTrue("零变化必须返回原实例（调用方按 === 判零变化）", out[0] === s)
+    }
+
+    @Test
+    fun 全部命中返回空表即整笔消除() {
+        val s = Stroke(0, pen, listOf(Pt3(0f, 0f, 0.5f), Pt3(0.1f, 0f, 0.5f)), padId = "p")
+        assertTrue(InkEdit.splitStroke(s, 0f, 0f, 0, r2 = 1f).isEmpty())
+    }
+
+    @Test
+    fun 页过滤在函数内做别的页原样返回() {
+        val s = Stroke(3, pen, listOf(Pt3(0.5f, 0.5f, 0.5f)))
+        val out = InkEdit.splitStroke(s, nx = 0.5f, ny = 0.5f, page = 1, r2 = 1f)
+        assertEquals(1, out.size)
+        assertTrue(out[0] === s)
     }
 }

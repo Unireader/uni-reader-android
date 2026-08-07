@@ -1,6 +1,10 @@
 package com.xvan.unireader.local
 
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.util.Log
 import com.xvan.unireader.local.store.LibInkLayer
@@ -16,6 +20,7 @@ import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -363,4 +368,74 @@ class LocalCanvasView @JvmOverloads constructor(
         setNotes(list)
         setTextFills(fills)
     }
+
+    // ---------- 草稿纸图钉（「这张纸是在页面的哪儿建的」，手指单击打开，同 web drawPadPins/padPinHit） ----------
+
+    /** 一枚图钉：(padId, 页, 页内归一化锚点)。ReaderActivity 从 `scratch_pad` 表读后注入 */
+    class Pin(val padId: String, val page: Int, val nx: Float, val ny: Float)
+
+    private var pins = listOf<Pin>()
+
+    /** 图钉被手指单击（宿主据此打开对应的草稿纸） */
+    var onPinTap: ((padId: String) -> Unit)? = null
+
+    fun setScratchPins(list: List<Pin>) {
+        Log.i(TAG, "图钉注入 ${list.size} 枚：${list.joinToString { "p${it.page}(${"%.2f".format(it.nx)},${"%.2f".format(it.ny)})" }}")
+        pins = list
+        invalidate()
+    }
+
+    /** 视口中心落在哪页的哪个归一化点（「在当前位置新建草稿纸」的锚点）；落在页缝给该页中心 */
+    fun viewportCenterAnchor(): Triple<Int, Float, Float> {
+        val loc = locate(width / 2f, barH + availH / 2f)
+        return if (loc != null) Triple(loc.page, loc.nx, loc.ny)
+        else Triple(topVisiblePage(), 0.5f, 0.5f)
+    }
+
+    /** 图钉半径（dp）：随页宽走但夹取，缩得再小也点得着（同 web `padPinRadius` 的 clamp(…,11,18)） */
+    private fun pinRadiusDp(): Float = (pw() / density * 0.016f).coerceIn(11f, 18f)
+
+    override fun onFingerTap(x: Float, y: Float) {
+        // 热区比画出来的略大（同 web `padPinHit` 的 max(r+6, 22)）；后建的压在上面，命中也先算它
+        val hot = dp(max(pinRadiusDp() + 6f, 22f))
+        for (i in pins.indices.reversed()) {
+            val p = pins[i]
+            if (p.page !in 0 until pageCount) continue
+            val vx = viewX(p.page, p.nx)
+            val vy = viewY(p.page, p.ny)
+            if (abs(x - vx) <= hot && abs(y - vy) <= hot) {
+                onPinTap?.invoke(p.padId)
+                return
+            }
+        }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (pins.isEmpty()) return
+        val r = dp(pinRadiusDp())
+        val corner = r * 0.34f
+        for (p in pins) {
+            if (p.page !in 0 until pageCount) continue
+            val x = viewX(p.page, p.nx)
+            val y = viewY(p.page, p.ny)
+            if (y < barH - r || y > height + r || x < -r || x > width + r) continue
+            // 圆角方片 + 两道「字迹」（呼应「一张纸」，与文字笔记的圆形蓝底一眼分得清，同 web 的形制）
+            pinRect.set(x - r, y - r, x + r, y + r)
+            pinPaint.style = Paint.Style.FILL
+            pinPaint.color = Color.argb(245, 246, 248, 252)
+            canvas.drawRoundRect(pinRect, corner, corner, pinPaint)
+            pinPaint.style = Paint.Style.STROKE
+            pinPaint.strokeWidth = dp(1.5f)
+            pinPaint.color = Color.argb(217, 31, 111, 235)
+            canvas.drawRoundRect(pinRect, corner, corner, pinPaint)
+            pinPaint.strokeWidth = max(dp(1.2f), r * 0.14f)
+            pinPaint.color = Color.argb(230, 31, 111, 235)
+            canvas.drawLine(x - r * 0.45f, y - r * 0.18f, x + r * 0.45f, y - r * 0.18f, pinPaint)
+            canvas.drawLine(x - r * 0.45f, y + r * 0.28f, x + r * 0.1f, y + r * 0.28f, pinPaint)
+        }
+    }
+
+    private val pinPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pinRect = RectF()
 }

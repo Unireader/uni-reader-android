@@ -43,7 +43,7 @@ class LibraryActivity : Activity() {
     }
 
     /** 一行要显示的全部东西，全在后台备好（主线程不再碰库） */
-    private class Row(val doc: LibDocument, val ink: Int, val pdfOk: Boolean)
+    private class Row(val doc: LibDocument, val ink: Int, val pdfOk: Boolean, val opened: Boolean)
     private class Snapshot(val name: String, val info: String, val rows: List<Row>)
 
     private lateinit var list: LinearLayout
@@ -116,14 +116,18 @@ class LibraryActivity : Activity() {
     private fun read(ws: File): Snapshot =
         LibraryStore.open(ws, readOnly = true).use { store ->
             val docs = store.allDocuments()
+            // 这个工作区的标签页组（§13）：阅读界面开着哪几篇，列表上标出来——点已开着的那篇
+            // 是切过去而不是重新打开，先说清楚免得以为点错了
+            val opened = TabSet.openDocIds(this, ws.absolutePath)
             Snapshot(
                 name = store.workspaceName().ifEmpty { ws.name },
-                info = "${docs.size} 个文档",
+                info = "${docs.size} 个文档" + if (opened.isEmpty()) "" else "　${opened.size} 个在标签页里",
                 rows = docs.map { d ->
                     Row(
                         doc = d,
                         ink = store.noteCount(d.id, NoteKind.INK),
                         pdfOk = Workspace.firstOpenablePdf(ws, store, d.id) != null,
+                        opened = d.id in opened,
                     )
                 },
             )
@@ -136,7 +140,7 @@ class LibraryActivity : Activity() {
         header.text = snap.info
         for ((i, r) in snap.rows.withIndex()) {
             if (i > 0) list.addView(Ui.divider(this))
-            list.addView(row(r.doc, r.ink, r.pdfOk))
+            list.addView(row(r.doc, r.ink, r.pdfOk, r.opened))
         }
         if (snap.rows.isEmpty()) {
             list.addView(
@@ -156,11 +160,12 @@ class LibraryActivity : Activity() {
      * 一条书。整行可点（涟漪铺满行），不是行里塞个按钮——列表项的点按目标就该是整行。
      * 进度做成一条细进度条：数字要读，条一眼就看得到读到哪儿了。
      */
-    private fun row(d: LibDocument, inkCount: Int, pdfOk: Boolean): View {
+    private fun row(d: LibDocument, inkCount: Int, pdfOk: Boolean, opened: Boolean): View {
         val col = Ui.row(this, if (pdfOk) ({ workspace?.let { ReaderActivity.start(this, it, d.id) } }) else null)
         col.addView(
             Ui.title(this, d.title, 17f).apply {
                 if (!pdfOk) setTextColor(Ui.onVariant(this@LibraryActivity))
+                else if (opened) setTextColor(Ui.accent(this@LibraryActivity))
             },
         )
         val ratio = if (d.pageCount > 0) ((d.readPage + d.readFrac) / d.pageCount).toFloat() else 0f
@@ -172,6 +177,7 @@ class LibraryActivity : Activity() {
                     append("${d.pageCount} 页")
                     append(if (started) "　读到第 ${d.readPage + 1} 页（${(ratio * 100).toInt()}%）" else "　未开始")
                     if (inkCount > 0) append("　笔迹 $inkCount 条")
+                    if (opened) append("　已在标签页里")
                 },
             ).apply { setPadding(0, dp(4), 0, dp(8)) },
         )

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 24dp 描边图标；颜色由代码 setTint（bar_on / on_surface / accent），别在这里写死语义色 -->
+<!-- 纸样：调色盘（圆 + 三个色点） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M12,12 m-8.5,0 a8.5,8.5 0 1,0 17,0 a8.5,8.5 0 1,0 -17,0"
+        android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+    <path android:pathData="M9,9.5 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0"
+        android:fillColor="#FFFFFFFF"/>
+    <path android:pathData="M15,9.5 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0"
+        android:fillColor="#FFFFFFFF"/>
+    <path android:pathData="M12,15 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0"
+        android:fillColor="#FFFFFFFF"/>
+</vector>
