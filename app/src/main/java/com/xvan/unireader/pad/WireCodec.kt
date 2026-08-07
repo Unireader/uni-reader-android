@@ -50,8 +50,10 @@ object WireCodec {
     const val OP_LAYERS = 0x3A
     const val OP_LIBRARY = 0x3B
     const val OP_TOC = 0x3C
+    const val OP_SCRATCH_MOVE = 0x2E
     const val OP_SCRATCH_PADS = 0x3D
     const val OP_SCRATCH_STROKES = 0x3E
+    const val OP_NOTE_NEW = 0x3F
     const val OP_SCROLL = 0x40
     const val OP_HOVER = 0x41
     const val OP_INK = 0x42
@@ -165,6 +167,8 @@ object WireCodec {
         data class Toc(val docId: String, val list: List<TocEntry>) : Msg()
         /** 草稿纸列表全量镜像（Mac 唯一真源）。[open] = 当前打开 list 里第几张，-1 = 没开（线上 0xFFFF） */
         data class ScratchPads(val open: Int, val list: List<ScratchPadEntry>) : Msg()
+        /** Mac 通知「在该页的页内点开文字笔记编辑器（新建态）」（环形盘 textNote 扇区提交的结果） */
+        data class NoteNew(val page: Long, val nx: Float, val ny: Float) : Msg()
         /**
          * 当前打开那张纸上的全量笔迹镜像（Mac 唯一真源）。**无 page 字段**——画布不属于任何一页，
          * 这里复用 [Stroke] 时 page 恒为 0、pts 是画布坐标（逻辑点，可负无界，PROTOCOL.md §4.4）。
@@ -392,6 +396,10 @@ object WireCodec {
     fun encodeScratchAdd(page: Long, nx: Float, ny: Float): ByteArray =
         Writer().apply { u8(OP_SCRATCH_ADD); u32(page); f32(nx); f32(ny) }.bytes()
 
+    /** 图钉同页内挪锚点（页内归一化 0~1；本地乐观预览，scratchpads 回推为权威——同 scratchPaper 惯例） */
+    fun encodeScratchMove(index: Int, nx: Float, ny: Float): ByteArray =
+        Writer().apply { u8(OP_SCRATCH_MOVE); u16(index); f32(nx); f32(ny) }.bytes()
+
     /** 改第 index 张纸的纸样：底色 r/g/b(u8)+a(f32) + 底纹（PATTERN_*，plain=0 照常上线） */
     fun encodeScratchPaper(index: Int, r: Int, g: Int, b: Int, a: Float, pattern: Int): ByteArray =
         Writer().apply {
@@ -487,6 +495,7 @@ object WireCodec {
                     }
                     Msg.ScratchPads(if (openRaw == SCRATCH_NO_OPEN) -1 else openRaw, list)
                 }
+                OP_NOTE_NEW -> Msg.NoteNew(r.u32(), r.f32(), r.f32())
                 OP_SCRATCH_STROKES -> {
                     val ackRel = r.u32()
                     val n = r.u32()

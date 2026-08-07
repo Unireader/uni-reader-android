@@ -777,6 +777,18 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         scratch.applyStrokes(ackRel, list, udp?.sentRel ?: 0L)
     }
 
+    /**
+     * 收 noteNew（环形盘 textNote 扇区提交的结果）：在该页内点开文字笔记编辑器（新建态）。
+     * 目标页不在视口顶部时先本地滚到锚点处（scrollToPageFrac 是纯本地定位，不上行、书写中不滚），
+     * 免得编辑器开一个看不见的锚点；保存走现有 textNote 上行（onOpenNoteEditor 那条路）。
+     */
+    override fun onNoteNew(page: Long, nx: Float, ny: Float) = runOnUiThread {
+        val p = page.toInt()
+        if (p !in 0 until padView.pageCountOrZero()) return@runOnUiThread
+        if (p != padView.topVisiblePage()) padView.scrollToPageFrac(p, ny)
+        onOpenNoteEditor(java.util.UUID.randomUUID().toString(), p, nx, ny, "", true)
+    }
+
     // ---------- PadView.Listener（主线程） ----------
 
     override fun sendRel(body: ByteArray) {
@@ -820,5 +832,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 手指单击图钉 → 请求 Mac 打开那张纸（等 scratchpads 回推才真的开，本地不自作主张） */
     override fun onScratchPinTap(index: Int) {
         client?.send(WireCodec.encodeScratchOpen(index))
+    }
+
+    /** 图钉拖动松手 → 发 scratchMove（本地已乐观移动，scratchpads 回推为权威，同 scratchPaper 惯例） */
+    override fun onScratchPinMove(index: Int, nx: Float, ny: Float) {
+        client?.send(WireCodec.encodeScratchMove(index, nx, ny))
     }
 }

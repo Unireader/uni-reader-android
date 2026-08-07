@@ -241,17 +241,22 @@ class ScratchController(private val a: Activity) {
 
     /** 「在当前位置新建」：锚点 = 当前视口中心所在的页内归一化点（页面上留图钉的位置） */
     private fun createAtCurrentPosition() {
-        val q = queue ?: return
         val anchor = anchorProvider?.invoke() ?: return
+        createAt(anchor.first, anchor.second, anchor.third)
+    }
+
+    /** 在指定页的页内归一化位置新建并打开（环形盘「新建草稿纸」扇区也用这条，锚点 = 盘心） */
+    fun createAt(page: Int, nx: Float, ny: Float) {
+        val q = queue ?: return
         val did = docId
         val now = Iso.now()
         val pad = ScratchPad(
             id = UUID.randomUUID().toString(), documentId = did, title = "",
-            anchorPage = anchor.first, anchorX = anchor.second.toDouble(), anchorY = anchor.third.toDouble(),
+            anchorPage = page, anchorX = nx.toDouble(), anchorY = ny.toDouble(),
             bg = ScratchPad.DEFAULT_BG, pattern = ScratchPad.DEFAULT_PATTERN,
             createdAt = now, updatedAt = now,
         )
-        q.submit("新建草稿纸 第${anchor.first + 1}页", { s ->
+        q.submit("新建草稿纸 第${page + 1}页", { s ->
             runCatching { s.upsertScratchPad(pad) }
                 .onFailure { Log.e(TAG, "新建草稿纸写库失败", it) }
             s.scratchPads(did)
@@ -451,6 +456,25 @@ class ScratchController(private val a: Activity) {
         q.submit("改纸样 ${pad.id.take(8)}", { s ->
             runCatching { s.upsertScratchPad(updated) }
                 .onFailure { Log.e(TAG, "改纸样写库失败", it) }
+            s.scratchPads(did)
+        }, { list -> applyPads(list, did) })
+    }
+
+    /**
+     * 图钉页内拖动落库：只动锚点（anchor_x/anchor_y，页不变）。画布那边已经乐观移动过了，
+     * 写完照旧整表回推（applyPads → onPinsChanged），真源与乐观位不一致时以库为准——
+     * 与改名/改纸样同一条 upsertScratchPad 口子，不为它单开 UPDATE。
+     */
+    fun movePadAnchor(padId: String, nx: Float, ny: Float) {
+        val q = queue ?: return
+        val did = docId
+        val pad = pads.firstOrNull { it.id == padId } ?: return
+        if (pad.anchorX == nx.toDouble() && pad.anchorY == ny.toDouble()) return
+        val updated = pad.copy(anchorX = nx.toDouble(), anchorY = ny.toDouble(), updatedAt = Iso.now())
+        q.submit("移动图钉 ${padId.take(8)}", { s ->
+            runCatching { s.upsertScratchPad(updated) }
+                .onSuccess { Log.i(TAG, "图钉移动落库 ${padId.take(8)} → (%.3f,%.3f)".format(nx, ny)) }
+                .onFailure { Log.e(TAG, "图钉移动写库失败", it) }
             s.scratchPads(did)
         }, { list -> applyPads(list, did) })
     }

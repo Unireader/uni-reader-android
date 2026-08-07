@@ -10,6 +10,8 @@ import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.RK_ERASE
 import com.xvan.unireader.shared.RK_PAGE
 import com.xvan.unireader.shared.RK_PEN
+import com.xvan.unireader.shared.RK_SCRATCH
+import com.xvan.unireader.shared.RK_TEXT
 import com.xvan.unireader.shared.RadialItem
 import kotlin.math.atan2
 import kotlin.math.hypot
@@ -44,6 +46,15 @@ class RadialController(private val view: PageCanvasView) {
     /** 盘是否开着。开着时笔的移动是在选扇区，不该再入笔/擦除（基类的 `radialActive` 同义） */
     var active = false
         private set
+
+    /**
+     * 「新建草稿纸」扇区的出口（ReaderActivity 接到 `ScratchController.createAt`）。
+     * 参数 = 盘心（page, cx, cy），即长按那一处——等价顶栏「在当前位置新建」，只是锚点用盘心。
+     */
+    var onScratchAdd: ((page: Int, nx: Float, ny: Float) -> Unit)? = null
+
+    /** 「新建文字笔记」扇区的出口（ReaderActivity 接到现有文字注解新建路径）；参数同上是盘心 */
+    var onTextNoteAdd: ((page: Int, nx: Float, ny: Float) -> Unit)? = null
 
     private var page = 0
     private var cx = 0f
@@ -120,7 +131,8 @@ class RadialController(private val view: PageCanvasView) {
         val pens = view.penList()
         if (pens.isEmpty()) return
         items = pens.map { RadialItem(RK_PEN, it) } +
-            RadialItem(RK_ERASE, TOOL_PEN) + RadialItem(RK_PAGE, TOOL_PEN)
+            RadialItem(RK_ERASE, TOOL_PEN) + RadialItem(RK_PAGE, TOOL_PEN) +
+            RadialItem(RK_SCRATCH, TOOL_PEN) + RadialItem(RK_TEXT, TOOL_PEN)
         active = true
         highlight = -1
         view.setPressRing(false, page, cx, cy)
@@ -157,6 +169,9 @@ class RadialController(private val view: PageCanvasView) {
             }
             RK_ERASE -> view.setMode(MODE_ERASE)
             RK_PAGE -> view.setMode(MODE_PAGE)
+            // 盘心 (page, cx, cy) 就是锚点；纸开着时呼不出盘（覆盖层吃掉了指针事件），不用管纸上扇区
+            RK_SCRATCH -> onScratchAdd?.invoke(page, cx, cy)
+            RK_TEXT -> onTextNoteAdd?.invoke(page, cx, cy)
         }
     }
 
@@ -183,6 +198,8 @@ class RadialController(private val view: PageCanvasView) {
         item == null -> "取消区（不选）"
         item.kind == RK_ERASE -> "橡皮"
         item.kind == RK_PAGE -> "翻页"
+        item.kind == RK_SCRATCH -> "新建草稿纸"
+        item.kind == RK_TEXT -> "新建文字笔记"
         else -> "第 ${index + 1} 支笔"
     }
 }

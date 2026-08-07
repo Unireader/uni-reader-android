@@ -25,6 +25,8 @@ const val MODE_LASSO = 3
 const val RK_PEN = 0
 const val RK_ERASE = 1
 const val RK_PAGE = 2
+const val RK_SCRATCH = 3   // 新建草稿纸
+const val RK_TEXT = 4      // 新建文字笔记
 
 // ---------- 笔型编号 ↔ 名字：全 App 唯一转换点 ----------
 

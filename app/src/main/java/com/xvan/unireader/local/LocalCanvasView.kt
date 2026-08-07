@@ -64,6 +64,17 @@ class LocalCanvasView @JvmOverloads constructor(
      */
     private val radialCtl = RadialController(this)
 
+    /** 环形盘「新建草稿纸」扇区的出口（ReaderActivity 接到 ScratchController.createAt） */
+    var onRadialScratchAdd: ((page: Int, nx: Float, ny: Float) -> Unit)? = null
+
+    /** 环形盘「新建文字笔记」扇区的出口（ReaderActivity 接到文字注解新建路径） */
+    var onRadialTextNote: ((page: Int, nx: Float, ny: Float) -> Unit)? = null
+
+    init {
+        radialCtl.onScratchAdd = { p, x, y -> onRadialScratchAdd?.invoke(p, x, y) }
+        radialCtl.onTextNoteAdd = { p, x, y -> onRadialTextNote?.invoke(p, x, y) }
+    }
+
     override fun onScrollReport(page: Int, frac: Float) {
         onProgress?.invoke(page, frac)
     }
@@ -395,19 +406,63 @@ class LocalCanvasView @JvmOverloads constructor(
     /** 图钉半径（dp）：随页宽走但夹取，缩得再小也点得着（同 web `padPinRadius` 的 clamp(…,11,18)） */
     private fun pinRadiusDp(): Float = (pw() / density * 0.016f).coerceIn(11f, 18f)
 
-    override fun onFingerTap(x: Float, y: Float) {
-        // 热区比画出来的略大（同 web `padPinHit` 的 max(r+6, 22)）；后建的压在上面，命中也先算它
+    /** 图钉热区命中（热区比画出来的略大，同 web `padPinHit` 的 max(r+6, 22)；后建的压在上面，命中先算它） */
+    private fun pinAt(x: Float, y: Float): Pin? {
         val hot = dp(max(pinRadiusDp() + 6f, 22f))
         for (i in pins.indices.reversed()) {
             val p = pins[i]
             if (p.page !in 0 until pageCount) continue
             val vx = viewX(p.page, p.nx)
             val vy = viewY(p.page, p.ny)
-            if (abs(x - vx) <= hot && abs(y - vy) <= hot) {
-                onPinTap?.invoke(p.padId)
-                return
-            }
+            if (abs(x - vx) <= hot && abs(y - vy) <= hot) return p
         }
+        return null
+    }
+
+    override fun onFingerTap(x: Float, y: Float) {
+        pinAt(x, y)?.let { onPinTap?.invoke(it.padId) }
+    }
+
+    // ---------- 图钉拖动（同页内挪锚点：本地乐观移动，松手落库，重读回推为权威） ----------
+
+    /** 图钉拖动松手（padId + 页内归一化新锚点，已钳位 0~1）；宿主经 StoreQueue 更新 scratch_pad 锚点 */
+    var onPinMove: ((padId: String, nx: Float, ny: Float) -> Unit)? = null
+
+    private var dragPin: Pin? = null
+    private var pinsBackup: List<Pin>? = null
+    private val dragLoc = FloatArray(2)
+
+    override fun fingerPinHit(x: Float, y: Float): Boolean {
+        dragPin = pinAt(x, y)
+        pinsBackup = if (dragPin != null) pins else null
+        return dragPin != null
+    }
+
+    /** 乐观移动：只挪锚点那一枚（页不变，钳位 0~1 由 pageLocClamped 做） */
+    private fun movePinTo(x: Float, y: Float) {
+        val p = dragPin ?: return
+        pageLocClamped(x, y, p.page, dragLoc)
+        pins = pins.map {
+            if (it.padId == p.padId) Pin(it.padId, it.page, dragLoc[0], dragLoc[1]) else it
+        }
+        invalidate()
+    }
+
+    override fun onPinDragMove(x: Float, y: Float) = movePinTo(x, y)
+
+    override fun onPinDragEnd(x: Float, y: Float) {
+        movePinTo(x, y)
+        val p = dragPin ?: return
+        dragPin = null
+        pinsBackup = null
+        Log.i(TAG, "图钉移动 ${p.padId.take(8)} → (${"%.3f".format(dragLoc[0])},${"%.3f".format(dragLoc[1])})")
+        onPinMove?.invoke(p.padId, dragLoc[0], dragLoc[1])
+    }
+
+    override fun onPinDragCancel() {
+        pinsBackup?.let { pins = it; invalidate() }
+        dragPin = null
+        pinsBackup = null
     }
 
     override fun onDraw(canvas: Canvas) {

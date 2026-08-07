@@ -39,6 +39,8 @@ class PadView @JvmOverloads constructor(
         fun onOpenNoteEditor(id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean)
         /** 手指单击草稿纸图钉（index = scratchpads 列表下标；宿主发 scratchOpen 请求） */
         fun onScratchPinTap(index: Int)
+        /** 手指拖动图钉松手（页内归一化新锚点，已钳位 0~1；宿主发 scratchMove 请求） */
+        fun onScratchPinMove(index: Int, nx: Float, ny: Float)
     }
 
     var listener: Listener? = null
@@ -192,19 +194,59 @@ class PadView @JvmOverloads constructor(
     /** 图钉半径（dp）：随页宽走但夹取，缩得再小也点得着（同 LocalCanvasView/web 的 clamp(…,11,18)） */
     private fun pinRadiusDp(): Float = (pw() / density * 0.016f).coerceIn(11f, 18f)
 
-    override fun onFingerTap(x: Float, y: Float) {
-        // 热区比画出来的略大（同 web padPinHit 的 max(r+6, 22)）；后建的压在上面，命中也先算它
+    /** 图钉热区命中（热区比画出来的略大，同 web padPinHit 的 max(r+6, 22)；后建的压在上面，命中先算它） */
+    private fun pinAt(x: Float, y: Float): ScratchPin? {
         val hot = dp(max(pinRadiusDp() + 6f, 22f))
         for (i in scratchPins.indices.reversed()) {
             val p = scratchPins[i]
             if (p.page !in 0 until pageCount) continue
             val vx = viewX(p.page, p.nx)
             val vy = viewY(p.page, p.ny)
-            if (abs(x - vx) <= hot && abs(y - vy) <= hot) {
-                listener?.onScratchPinTap(p.index)
-                return
-            }
+            if (abs(x - vx) <= hot && abs(y - vy) <= hot) return p
         }
+        return null
+    }
+
+    override fun onFingerTap(x: Float, y: Float) {
+        pinAt(x, y)?.let { listener?.onScratchPinTap(it.index) }
+    }
+
+    // ---------- 图钉拖动（同页内挪锚点：本地乐观移动，松手发 scratchMove，scratchpads 回推为权威） ----------
+
+    private var dragPin: ScratchPin? = null
+    private var pinsBackup: List<ScratchPin>? = null
+    private val dragLoc = FloatArray(2)
+
+    override fun fingerPinHit(x: Float, y: Float): Boolean {
+        dragPin = pinAt(x, y)
+        pinsBackup = if (dragPin != null) scratchPins else null
+        return dragPin != null
+    }
+
+    /** 乐观移动：只挪锚点那一枚（页不变，钳位 0~1 由 pageLocClamped 做） */
+    private fun movePinTo(x: Float, y: Float) {
+        val p = dragPin ?: return
+        pageLocClamped(x, y, p.page, dragLoc)
+        scratchPins = scratchPins.map {
+            if (it.index == p.index) ScratchPin(it.index, it.page, dragLoc[0], dragLoc[1]) else it
+        }
+        invalidate()
+    }
+
+    override fun onPinDragMove(x: Float, y: Float) = movePinTo(x, y)
+
+    override fun onPinDragEnd(x: Float, y: Float) {
+        movePinTo(x, y)
+        val p = dragPin ?: return
+        dragPin = null
+        pinsBackup = null
+        listener?.onScratchPinMove(p.index, dragLoc[0], dragLoc[1])
+    }
+
+    override fun onPinDragCancel() {
+        pinsBackup?.let { scratchPins = it; invalidate() }
+        dragPin = null
+        pinsBackup = null
     }
 
     override fun onDraw(canvas: Canvas) {

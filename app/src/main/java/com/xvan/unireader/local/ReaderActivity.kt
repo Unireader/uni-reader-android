@@ -799,6 +799,13 @@ class ReaderActivity : Activity() {
         onNoteEditor = { id, page, nx, ny, text, isNew -> editNote(tab, id, page, nx, ny, text, isNew) }
         // 草稿纸图钉：手指单击打开对应那张纸（笔点不算——笔是用来写字的，见 PageCanvasView.onFingerTap）
         onPinTap = { padId -> scratch.openById(padId) }
+        // 图钉拖动松手：只挪锚点（页不变），落库由 ScratchController 走 StoreQueue
+        onPinMove = { padId, nx, ny -> scratch.movePadAnchor(padId, nx, ny) }
+        // 环形盘新扇区：盘心即锚点（等价「在当前位置新建」，只是位置用长按那一处）
+        onRadialScratchAdd = { page, nx, ny -> scratch.createAt(page, nx, ny) }
+        onRadialTextNote = { page, nx, ny ->
+            editNote(tab, java.util.UUID.randomUUID().toString(), page, nx, ny, "", true)
+        }
     }
 
     /**

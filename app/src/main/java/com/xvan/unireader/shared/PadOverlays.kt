@@ -145,12 +145,19 @@ class PadOverlays(private val density: Float) {
 
     // ---------- 环形选笔盘 ----------
 
-    private val toolLabel = mapOf(RK_ERASE to "橡皮", RK_PAGE to "翻页")
+    private val toolLabel = mapOf(
+        RK_ERASE to "橡皮",
+        RK_PAGE to "翻页",
+        RK_SCRATCH to "新建草稿纸",
+        RK_TEXT to "新建文字笔记",
+    )
 
     /** 选中扇区的填充色：笔用自身颜色但**丢掉透明度**（荧光笔 alpha 很低，照抄会看不见高亮） */
     private fun tintOf(item: RadialItem): Int = when (item.kind) {
         RK_ERASE -> Color.argb(235, 245, 140, 51)
         RK_PAGE -> Color.argb(235, 64, 184, 179)
+        RK_SCRATCH -> Color.argb(235, 153, 115, 230)   // 同 Mac tint(.scratchAdd) rgb(0.60,0.45,0.90)
+        RK_TEXT -> Color.argb(235, 77, 153, 242)       // 同 Mac tint(.textNote) rgb(0.30,0.60,0.95)
         else -> Color.argb(235, item.pen.r, item.pen.g, item.pen.b)
     }
 
@@ -284,6 +291,36 @@ class PadOverlays(private val density: Float) {
                 p.color = Color.argb(77, 0, 0, 0)
                 c.drawLine(-2f * k, -5.5f * k, -2f * k, 5.5f * k, p)
                 p.style = Paint.Style.FILL
+            }
+            item.kind == RK_SCRATCH -> {
+                // 新建草稿纸：一张纸 + 中央加号，对应 Mac 的 doc.badge.plus
+                val k = r / dp(17f)
+                rectIcon.set(-6.5f * k, -8f * k, 6.5f * k, 8f * k)
+                c.drawRoundRect(rectIcon, 2f * k, 2f * k, p)
+                p.color = tintOf(item)
+                val ps = 3.5f * k
+                val pw2 = 1.1f * k
+                rectIcon.set(-ps, -pw2, ps, pw2)
+                c.drawRect(rectIcon, p)
+                rectIcon.set(-pw2, -ps, pw2, ps)
+                c.drawRect(rectIcon, p)
+            }
+            item.kind == RK_TEXT -> {
+                // 新建文字笔记：一张纸 + 两道「字行」+ 右下角小加号，对应 Mac 的 note.text.badge.plus
+                val k = r / dp(17f)
+                rectIcon.set(-6.5f * k, -8f * k, 6.5f * k, 8f * k)
+                c.drawRoundRect(rectIcon, 2f * k, 2f * k, p)
+                p.color = tintOf(item)
+                rectIcon.set(-3.8f * k, -3.4f * k, 3.8f * k, -1.6f * k)
+                c.drawRect(rectIcon, p)
+                rectIcon.set(-3.8f * k, 0.2f * k, 1.2f * k, 2f * k)
+                c.drawRect(rectIcon, p)
+                val ps = 2.6f * k
+                val pw2 = 0.9f * k
+                rectIcon.set(2.2f * k - ps, 6.4f * k - pw2, 2.2f * k + ps, 6.4f * k + pw2)
+                c.drawRect(rectIcon, p)
+                rectIcon.set(2.2f * k - pw2, 6.4f * k - ps, 2.2f * k + pw2, 6.4f * k + ps)
+                c.drawRect(rectIcon, p)
             }
             else -> {   // page：举起的手（掌 + 四指），对应 Mac 的 hand.raised.fill
                 val k = r / dp(17f)

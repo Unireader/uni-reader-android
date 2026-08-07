@@ -93,6 +93,27 @@ open class PageCanvasView @JvmOverloads constructor(
      */
     protected open fun onFingerTap(x: Float, y: Float) {}
 
+    // —— 图钉拖动（草稿纸图钉页内挪锚点；手指专用，同 onFingerTap 的只认手指决策） ——
+    //
+    // 手势复用单指平移的死区：落点在图钉热区内（[fingerPinHit] 命中）且**拖过死区**才开始拖图钉，
+    // 没过死区松手照旧走 onFingerTap（单击开纸语义不变）；落在图钉外则与以前一模一样地平移。
+
+    /** 手指落点（视口坐标）是否命中图钉热区。命中时子类记下是哪枚，后续由 onPinDrag* 回报 */
+    protected open fun fingerPinHit(x: Float, y: Float): Boolean = false
+
+    /** 图钉拖动中（视口坐标）：子类做乐观移动（真源回推为权威，同乐观笔迹惯例） */
+    protected open fun onPinDragMove(x: Float, y: Float) {}
+
+    /** 松手提交（视口坐标）：子类换算成页内归一化锚点后上行/落库（钳位 0~1 用 pageLocClamped） */
+    protected open fun onPinDragEnd(x: Float, y: Float) {}
+
+    /** 拖动被打断（变双指/落笔/事件取消）：子类把乐观位移撤回到拖动前的位置 */
+    protected open fun onPinDragCancel() {}
+
+    /** 本次手指手势正在拖动图钉（已过死区） */
+    protected var pinDragActive = false
+    private var pinDragCandidate = false   // 落点命中图钉、还没过死区
+
     /** 页码/缩放/工具状态变化 → 宿主刷新顶栏。两种模式的顶栏不同，故用回调 */
     var onHud: (() -> Unit)? = null
     protected open fun onHudChanged() { onHud?.invoke() }
@@ -1368,13 +1389,24 @@ open class PageCanvasView @JvmOverloads constructor(
                     touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
                 } else {
                     val wasPanning = panStarted
-                    // 单指轻点（没越过死区、没捏合过、确实是这根手指落下的那次手势）
-                    val tap = !wasPanning && !gesturePinched && panId >= 0 &&
+                    val wasPinDrag = pinDragActive
+                    // 单指轻点（没越过死区、没捏合过、也没拖过图钉、确实是这根手指落下的那次手势）
+                    val tap = !wasPanning && !wasPinDrag && !gesturePinched && panId >= 0 &&
                         e.actionMasked == MotionEvent.ACTION_UP
                     val tx = panDownX; val ty = panDownY
+                    // 松手位置用于提交图钉拖动（比最后一帧 move 更准）
+                    val pi = e.findPointerIndex(panId)
+                    val ux = if (pi >= 0) e.getX(pi) else tx
+                    val uy = if (pi >= 0) e.getY(pi) else ty
                     touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
-                    if (wasPanning) startMomentum()   // 松手甩动 → 惯性
-                    else if (tap) onFingerTap(tx, ty)
+                    pinDragCandidate = false; pinDragActive = false
+                    when {
+                        wasPanning -> startMomentum()   // 松手甩动 → 惯性
+                        wasPinDrag ->
+                            if (e.actionMasked == MotionEvent.ACTION_UP) onPinDragEnd(ux, uy)
+                            else onPinDragCancel()
+                        tap -> onFingerTap(tx, ty)
+                    }
                 }
             }
         }
@@ -1393,6 +1425,7 @@ open class PageCanvasView @JvmOverloads constructor(
             panId = id
             lastPanX = x; lastPanY = y; panDownX = x; panDownY = y
             panStarted = false
+            pinDragCandidate = fingerPinHit(x, y)   // 落在图钉上：过死区前都还有可能是单击
             vx = 0f; vy = 0f; lastMoveT = eventTime
         }
     }
@@ -1404,15 +1437,18 @@ open class PageCanvasView @JvmOverloads constructor(
         pinch = null
         when {
             touchOrder.size == 1 -> {
-                // 回到单指平移（重新死区判定，避免松指跳动）
+                // 回到单指平移（重新死区判定，避免松指跳动）。图钉候选一并作废：
+                // 双指折腾过后剩下那根手指的落点早已不在当初的图钉上
                 panId = touchOrder[0]
                 val t = touches[panId]!!
                 lastPanX = t.x; lastPanY = t.y; panDownX = t.x; panDownY = t.y
                 panStarted = false
+                pinDragCandidate = false
             }
             touchOrder.isEmpty() -> {
                 if (panStarted) startMomentum()
                 panId = -1; panStarted = false
+                pinDragCandidate = false
             }
             else -> beginPinch()
         }
@@ -1422,6 +1458,8 @@ open class PageCanvasView @JvmOverloads constructor(
         val a = touches[touchOrder[0]] ?: return
         val b = touches[touchOrder[1]] ?: return
         gesturePinched = true
+        if (pinDragActive) { pinDragActive = false; onPinDragCancel() }   // 变双指：拖图钉作废
+        pinDragCandidate = false
         val mx = (a.x + b.x) / 2f
         val my = (a.y + b.y) / 2f
         val p = pw()
@@ -1455,10 +1493,20 @@ open class PageCanvasView @JvmOverloads constructor(
     protected fun panMove(e: MotionEvent, pi: Int) {
         val x = e.getX(pi)
         val y = e.getY(pi)
-        if (!panStarted) {
+        if (!panStarted && !pinDragActive) {
             if (hypot(x - panDownX, y - panDownY) < deadPx) return
-            panStarted = true
-            lastPanX = x; lastPanY = y; lastMoveT = e.eventTime
+            if (pinDragCandidate) {
+                // 按住图钉拖过死区 = 拖图钉（不进平移：不算速度、松手不甩惯性）
+                pinDragCandidate = false
+                pinDragActive = true
+            } else {
+                panStarted = true
+                lastPanX = x; lastPanY = y; lastMoveT = e.eventTime
+                return
+            }
+        }
+        if (pinDragActive) {
+            onPinDragMove(x, y)
             return
         }
         val dx = lastPanX - x
@@ -1474,8 +1522,10 @@ open class PageCanvasView @JvmOverloads constructor(
     // —— 笔 ——
 
     protected fun penDown(e: MotionEvent, idx: Int) {
-        // 笔优先：清掉进行中的手指平移/捏合
+        // 笔优先：清掉进行中的手指平移/捏合（拖图钉拖一半落笔 = 作废撤回）
         touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
+        if (pinDragActive) { pinDragActive = false; onPinDragCancel() }
+        pinDragCandidate = false
         val x = e.getX(idx)
         val y = e.getY(idx)
 

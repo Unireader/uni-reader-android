@@ -9,6 +9,8 @@ import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.RK_ERASE
 import com.xvan.unireader.shared.RK_PAGE
 import com.xvan.unireader.shared.RK_PEN
+import com.xvan.unireader.shared.RK_SCRATCH
+import com.xvan.unireader.shared.RK_TEXT
 import com.xvan.unireader.shared.TextNote
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -16,7 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 64 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 69 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -112,6 +114,10 @@ class WireCodecTest {
             63 to WireCodec.encodeScratchPaper(1, 246, 236, 214, 1.0f, WireCodec.PATTERN_GRID),
             // #64 scratchPaper{index:0, pattern:plain}——plain=0，专防 `?: 1` 兜底把它吃成 dots
             64 to WireCodec.encodeScratchPaper(0, 255, 255, 255, 1.0f, WireCodec.PATTERN_PLAIN),
+            // #66 scratchMove{index:0, nx:0, ny:1.0}
+            66 to WireCodec.encodeScratchMove(0, 0f, 1.0f),
+            // #67 scratchMove{index:65535, nx:1.0, ny:0}（u16 上界）
+            67 to WireCodec.encodeScratchMove(0xFFFF, 1.0f, 0f),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -325,6 +331,34 @@ class WireCodecTest {
         assertEquals(0L, s59.page)
         assertEquals(Pen(20, 20, 20, 1.0f, 10f, 3), s59.pen)
         assertEquals(listOf(Pt3(-120.5f, 64.25f, 0.5f), Pt3(512.0f, -8.125f, 1.0f)), s59.pts)
+
+        // #65 radial{open, page:2, cx:0.5, cy:0.5, highlight:3, items:[pen, scratchAdd, textNote]}——
+        // kind≠0 的项 pen 字段是 10 字节占位 0，照旧读掉
+        val m65 = WireCodec.decode(unhex(VECTORS[64])) as WireCodec.Msg.Radial
+        assertTrue(m65.open)
+        assertEquals(2L, m65.page)
+        assertEquals(0.5f, m65.cx, 0f)
+        assertEquals(0.5f, m65.cy, 0f)
+        assertEquals(3, m65.highlight)
+        assertEquals(3, m65.items.size)
+        assertEquals(RK_PEN, m65.items[0].kind)
+        assertEquals(pen, m65.items[0].pen)
+        assertEquals(RK_SCRATCH, m65.items[1].kind)
+        assertEquals(RK_TEXT, m65.items[2].kind)
+        assertEquals(Pen(0, 0, 0, 1.0f, 0f, 0), m65.items[1].pen)   // 占位 pen 原样读出
+        assertEquals(Pen(0, 0, 0, 1.0f, 0f, 0), m65.items[2].pen)
+
+        // #68 noteNew{page:0, nx:0, ny:1.0}
+        val m68 = WireCodec.decode(unhex(VECTORS[67])) as WireCodec.Msg.NoteNew
+        assertEquals(0L, m68.page)
+        assertEquals(0f, m68.nx, 0f)
+        assertEquals(1.0f, m68.ny, 0f)
+
+        // #69 noteNew{page:0x12345678, nx:1.0, ny:0}
+        val m69 = WireCodec.decode(unhex(VECTORS[68])) as WireCodec.Msg.NoteNew
+        assertEquals(0x12345678L, m69.page)
+        assertEquals(1.0f, m69.nx, 0f)
+        assertEquals(0f, m69.ny, 0f)
     }
 
     @Test
@@ -338,7 +372,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(64, VECTORS.size)
+        assertEquals(69, VECTORS.size)
     }
 
     @Test
@@ -351,7 +385,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 64 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 69 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -417,6 +451,11 @@ class WireCodecTest {
             "2c050000000000403f0000803e",
             "2d0100f6ecd60000803f02",
             "2d0000ffffff0000803f00",
+            "3701020000000000003f0000003f0300030000185ad20000003f0000004100030000000000803f0000000000040000000000803f0000000000",
+            "2e0000000000000000803f",
+            "2effff0000803f00000000",
+            "3f00000000000000000000803f",
+            "3f785634120000803f00000000",
         )
     }
 }
