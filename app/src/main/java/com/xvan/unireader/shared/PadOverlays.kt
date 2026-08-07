@@ -283,7 +283,7 @@ class PadOverlays(private val density: Float) {
             }
             item.kind == RK_ERASE -> {
                 c.rotate(-36f)
-                val k = r / dp(17f)
+                val k = r / dp(13f)
                 rectIcon.set(-9f * k, -5.5f * k, 9f * k, 5.5f * k)
                 c.drawRoundRect(rectIcon, 2.5f * k, 2.5f * k, p)
                 p.style = Paint.Style.STROKE
@@ -292,38 +292,35 @@ class PadOverlays(private val density: Float) {
                 c.drawLine(-2f * k, -5.5f * k, -2f * k, 5.5f * k, p)
                 p.style = Paint.Style.FILL
             }
-            item.kind == RK_SCRATCH -> {
-                // 新建草稿纸：一张纸 + 中央加号，对应 Mac 的 doc.badge.plus
-                val k = r / dp(17f)
-                rectIcon.set(-6.5f * k, -8f * k, 6.5f * k, 8f * k)
-                c.drawRoundRect(rectIcon, 2f * k, 2f * k, p)
-                p.color = tintOf(item)
-                val ps = 3.5f * k
-                val pw2 = 1.1f * k
-                rectIcon.set(-ps, -pw2, ps, pw2)
-                c.drawRect(rectIcon, p)
-                rectIcon.set(-pw2, -ps, pw2, ps)
-                c.drawRect(rectIcon, p)
-            }
-            item.kind == RK_TEXT -> {
-                // 新建文字笔记：一张纸 + 两道「字行」+ 右下角小加号，对应 Mac 的 note.text.badge.plus
-                val k = r / dp(17f)
-                rectIcon.set(-6.5f * k, -8f * k, 6.5f * k, 8f * k)
-                c.drawRoundRect(rectIcon, 2f * k, 2f * k, p)
-                p.color = tintOf(item)
-                rectIcon.set(-3.8f * k, -3.4f * k, 3.8f * k, -1.6f * k)
-                c.drawRect(rectIcon, p)
-                rectIcon.set(-3.8f * k, 0.2f * k, 1.2f * k, 2f * k)
-                c.drawRect(rectIcon, p)
-                val ps = 2.6f * k
-                val pw2 = 0.9f * k
-                rectIcon.set(2.2f * k - ps, 6.4f * k - pw2, 2.2f * k + ps, 6.4f * k + pw2)
-                c.drawRect(rectIcon, p)
-                rectIcon.set(2.2f * k - pw2, 6.4f * k - ps, 2.2f * k + pw2, 6.4f * k + ps)
-                c.drawRect(rectIcon, p)
+            item.kind == RK_SCRATCH || item.kind == RK_TEXT -> {
+                // 一页纸 + 右下角加号徽章，与 web `drawRadialIcon` 同一套几何
+                //（对应 Mac 的 doc.badge.plus / note.text.badge.plus；textNote 纸上多两行字）
+                val k = r / dp(13f)
+                val tint = tintOf(item)
+                rectIcon.set(-8f * k, -8.5f * k, 4.5f * k, 7f * k)
+                c.drawRoundRect(rectIcon, 2f * k, 2f * k, p)          // 纸（白）
+                if (item.kind == RK_TEXT) {                           // 纸上两行字
+                    p.style = Paint.Style.STROKE
+                    p.strokeWidth = 1.6f * k
+                    p.strokeCap = Paint.Cap.ROUND
+                    p.color = tint
+                    c.drawLine(-5.2f * k, -3.4f * k, 1.4f * k, -3.4f * k, p)
+                    c.drawLine(-5.2f * k, 0.6f * k, 1.4f * k, 0.6f * k, p)
+                }
+                // 加号徽章：扇区色圆片 + 白十字
+                p.style = Paint.Style.FILL
+                p.color = tint
+                c.drawCircle(4.4f * k, 5.4f * k, 4.6f * k, p)
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = 1.5f * k
+                p.strokeCap = Paint.Cap.ROUND
+                p.color = Color.WHITE
+                c.drawLine(2f * k, 5.4f * k, 6.8f * k, 5.4f * k, p)
+                c.drawLine(4.4f * k, 3f * k, 4.4f * k, 7.8f * k, p)
+                p.style = Paint.Style.FILL
             }
             else -> {   // page：举起的手（掌 + 四指），对应 Mac 的 hand.raised.fill
-                val k = r / dp(17f)
+                val k = r / dp(13f)
                 rectIcon.set(-6.5f * k, -1f * k, 6.5f * k, 8.5f * k)
                 c.drawRoundRect(rectIcon, 3f * k, 3f * k, p)
                 for (f in 0 until 4) {
