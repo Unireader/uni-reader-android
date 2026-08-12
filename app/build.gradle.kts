@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
 }
@@ -7,6 +9,12 @@ kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
     }
+}
+
+// 签名密码在 local.properties（本机文件，不入 git）：releaseStorePassword / releaseKeyPassword
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -27,6 +35,22 @@ android {
         // Pdfium 是 native 库，多 ABI 会把 APK 撑几十 MB。自用侧载只要 arm64（平板与
         // Apple Silicon 上的模拟器都是 arm64）；**x86_64 模拟器因此装不上**，是刻意取舍。
         ndk { abiFilters += listOf("arm64-v8a") }
+    }
+
+    signingConfigs {
+        // debug 与 release 共用同一个证书（用户自有，2026-08-12 定）：保证两个变体可互相覆盖安装。
+        // keystore 在仓库外（~/.keystores/），密码经 local.properties 注入，均不进 git。
+        create("xvan") {
+            storeFile = file("${System.getProperty("user.home")}/.keystores/xVanTuring.jks")
+            keyAlias = "key0"
+            storePassword = localProps.getProperty("releaseStorePassword")
+            keyPassword = localProps.getProperty("releaseKeyPassword")
+        }
+    }
+
+    buildTypes {
+        debug { signingConfig = signingConfigs.getByName("xvan") }
+        release { signingConfig = signingConfigs.getByName("xvan") }
     }
 
     compileOptions {

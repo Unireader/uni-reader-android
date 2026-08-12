@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -233,6 +234,46 @@ class ReaderActivity : Activity() {
     }
 
     // ---------- 界面骨架 ----------
+
+    /**
+     * 上一次已经处理掉的按键序列。`KeyEvent.getDownTime()` 对一次按下的 DOWN 与它配对的 UP 是**同一个值**，
+     * 拿它去重比时间窗精确：既不会把同一次按键触发两遍，也不会误吞快速连按的第二下。
+     */
+    private var lastHandledKeyDown = 0L
+
+    /**
+     * 笔身侧键：PageUp 切模式 / PageDown 切笔 / Esc 清框选——与模式2（`PadActivity.dispatchKeyEvent`）
+     * 同一套约定（`REQUIREMENTS.md §1.5`），判定逻辑也从那边照搬：
+     *
+     * **DOWN 与 UP 谁先到就认谁**，而不是只认 ACTION_DOWN——小米智能触控笔实测（真机日志，
+     * 见 `ANDROID-STANDALONE-PLAN.md §9.10`）：书写期间按侧键，有些次数只有 `action=1(UP)` 到达应用，
+     * `DOWN` 被上游整个吞掉。只认 DOWN 的话那一次就静默失效，表现正是「按了没反应，要多按好几次」。
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val ours = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
+            event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN ||
+            event.keyCode == KeyEvent.KEYCODE_ESCAPE
+        if (!ours) return super.dispatchKeyEvent(event)
+
+        // 长按重复不算新的一次按键；同一次按键的另一半（DOWN 已处理过就轮到 UP）直接吃掉
+        val fresh = event.repeatCount == 0 && event.downTime != lastHandledKeyDown
+        Log.i(
+            PageCanvasView.TAG,
+            "侧键 keyCode=${event.keyCode}(${KeyEvent.keyCodeToString(event.keyCode)}) " +
+                "action=${event.action}(0=DOWN 1=UP) repeat=${event.repeatCount} " +
+                "书写中=${cur()?.isPenDown() == true} 生效=$fresh",
+        )
+        if (!fresh) return true
+        lastHandledKeyDown = event.downTime
+        val canvas = cur() ?: return true
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_PAGE_UP -> canvas.cycleMode()
+            KeyEvent.KEYCODE_PAGE_DOWN -> canvas.cyclePen()
+            KeyEvent.KEYCODE_ESCAPE -> canvas.clearLasso()
+        }
+        refreshHud()
+        return true
+    }
 
     private fun buildUi() {
         canvasHost = FrameLayout(this)
