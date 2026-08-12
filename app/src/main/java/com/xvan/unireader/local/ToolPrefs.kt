@@ -8,7 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 模式1 的工具状态持久化：**笔（含笔宽与当前选中的那支）、橡皮设置、夜间模式**。
+ * 模式1 的工具状态持久化：**笔（含笔宽与当前选中的那支）、橡皮设置、夜间模式、锁缩放、双指滚动**。
  *
  * 模式2 不需要这个——它的笔架真源在 Mac，连上就整体推下来。模式1 没有 Mac，不存的话每次启动都
  * 回到基类那四支内置兜底笔，用户拖完笔宽一退出就白拖了。
@@ -58,7 +58,13 @@ object ToolPrefs {
             }
             // 基类只给了 toggle（两模式都是按键切的），所以按目标值补一次差
             if (o.optBoolean("night", false) != canvas.night) canvas.toggleNight()
-            Log.i(TAG, "工具状态已复原：笔 ${canvas.penList().size} 支 当前=${canvas.penIndex} 夜间=${canvas.night}")
+            if (o.optBoolean("zoomLocked", false) != canvas.zoomLocked) canvas.toggleZoomLock()
+            if (o.optBoolean("twoFingerScroll", false) != canvas.twoFingerScroll) canvas.toggleTwoFingerScroll()
+            Log.i(
+                TAG,
+                "工具状态已复原：笔 ${canvas.penList().size} 支 当前=${canvas.penIndex} " +
+                    "夜间=${canvas.night} 锁缩放=${canvas.zoomLocked} 双指滚动=${canvas.twoFingerScroll}",
+            )
         } catch (e: Exception) {
             Log.w(TAG, "工具状态解析失败，按默认走", e)
         }
@@ -85,6 +91,9 @@ object ToolPrefs {
                         .put("ring", canvas.eraserRing),
                 )
                 .put("night", canvas.night)
+                // 锁缩放 / 双指滚动：设一次用很久的**防误触偏好**，不存的话每次启动都要重新去点一遍
+                .put("zoomLocked", canvas.zoomLocked)
+                .put("twoFingerScroll", canvas.twoFingerScroll)
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(KEY, o.toString()).apply()
         } catch (e: Exception) {

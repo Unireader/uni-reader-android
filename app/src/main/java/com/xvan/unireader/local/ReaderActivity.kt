@@ -292,6 +292,9 @@ class ReaderActivity : Activity() {
             icon("text", R.drawable.ic_text, "文字笔记") { cur()?.toggleNoteMode(); refreshHud() }
             // 草稿纸：盖在 PDF 之上的无限白板（列表 + 「在当前位置新建」，见 ScratchController）
             icon("scratch", R.drawable.ic_scratch, "草稿纸") { scratch.showList() }
+            // 锁缩放：本来在 ⋯ 里，2026-08-12 用户要求提上来常驻——写字时误缩放是**当场**要止住的事，
+            // 翻两级菜单已经晚了。窄屏排不下时 TopBar 会自己把它收回 ⋯（desc 就是那一行的标题）。
+            icon("lock", R.drawable.ic_lock, "锁定缩放") { cur()?.toggleZoomLock(); saveTools() }
             pageLabel.setOnClickListener { showGotoPage() }
             // 低频项进 ⋯：勾选态每次弹出现算，所以这里存的是生成器（见 TopBar.overflowItems）
             overflowItems = {
@@ -300,9 +303,12 @@ class ReaderActivity : Activity() {
                     listOf(TopBar.MenuItem("切换工作区…") { showWorkspaceSwitcher() })
                 } else {
                     listOf(
-                        TopBar.MenuItem("夜间模式", c.night) { c.toggleNight(); refreshHud() },
+                        TopBar.MenuItem("夜间模式", c.night) { c.toggleNight(); saveTools() },
                         TopBar.MenuItem("显示页面图", c.showPage) { c.toggleShowPage(); refreshHud() },
-                        TopBar.MenuItem("锁定缩放", c.zoomLocked) { c.toggleZoomLock(); refreshHud() },
+                        // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
+                        TopBar.MenuItem("双指滚动（防误触）", c.twoFingerScroll) {
+                            c.toggleTwoFingerScroll(); saveTools()
+                        },
                         TopBar.MenuItem("图层…") { showLayers() },
                         TopBar.MenuItem("跳到第…页") { showGotoPage() },
                         TopBar.MenuItem("打开另一篇…") { showDocPicker() },
@@ -854,7 +860,7 @@ class ReaderActivity : Activity() {
      *
      * 基类的开关只给了 `toggleX()`（两模式都是按键切的），所以这里按目标值补差——同
      * [ToolPrefs.load] 里对 night 的做法。**不走"存一遍再读一遍"**：那要多一次 SharedPreferences
-     * 往返，而且 ToolPrefs 只管笔/橡皮/夜间，模式与尺子/文字/页图/锁缩放会丢。
+     * 往返，而且 ToolPrefs 只管笔/橡皮/夜间/锁缩放/双指滚动，模式与尺子/文字/页图会丢。
      */
     private fun copyTools(from: PageCanvasView, to: PageCanvasView) {
         to.setPens(from.penList(), from.penIndex)
@@ -862,6 +868,7 @@ class ReaderActivity : Activity() {
         if (to.night != from.night) to.toggleNight()
         if (to.showPage != from.showPage) to.toggleShowPage()
         if (to.zoomLocked != from.zoomLocked) to.toggleZoomLock()
+        if (to.twoFingerScroll != from.twoFingerScroll) to.toggleTwoFingerScroll()
         if (to.rulerOn != from.rulerOn) to.toggleRuler()
         if (to.noteMode != from.noteMode) to.toggleNoteMode()
         to.setMode(from.mode)
@@ -1032,7 +1039,10 @@ class ReaderActivity : Activity() {
         bar.setActive("mode", canvas.mode != MODE_PAGE)
         bar.setActive("ruler", canvas.rulerOn)
         bar.setActive("text", canvas.noteMode)
+        bar.setActive("lock", canvas.zoomLocked)
         bar.setEnabled("pen", canvas.mode == MODE_NOTE)
+        // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
+        scratch.canvas.twoFingerScroll = canvas.twoFingerScroll
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
         val pen = canvas.curPenOrNull()
         val notePen = pen.takeIf { canvas.mode == MODE_NOTE }
@@ -1181,6 +1191,16 @@ class ReaderActivity : Activity() {
     private fun dismissBusy() {
         busyDlg?.dismiss()
         busyDlg = null
+    }
+
+    /**
+     * 顶栏/菜单上那几个**开关**改完就存（不等 [onPause]）：锁缩放、双指滚动、夜间这类是「设一次
+     * 用很久」的偏好，被系统杀在后台就白设了。`apply()` 是异步落盘，点一下的开销可以忽略。
+     */
+    private fun saveTools() {
+        val c = cur() ?: return
+        ToolPrefs.save(this, c)
+        refreshHud()
     }
 
     override fun onPause() {

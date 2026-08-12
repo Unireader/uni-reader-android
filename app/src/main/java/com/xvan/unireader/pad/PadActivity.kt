@@ -270,6 +270,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("text", R.drawable.ic_text, "文字笔记") { padView.toggleNoteMode() }
             // 草稿纸：盖在 PDF 之上的无限白板（列表 + 「在当前位置新建」，见 PadScratch）
             icon("scratch", R.drawable.ic_scratch, "草稿纸") { scratch.showList() }
+            // 锁缩放常驻（与模式1 同一位置、同一图标——两边的顶栏必须还是同一条栏）
+            icon("lock", R.drawable.ic_lock, "锁定缩放") { padView.toggleZoomLock() }
             addTail(dot, 0)
             addTail(latText, 1)
             pageLabel.setOnClickListener {
@@ -279,7 +281,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 listOf(
                     TopBar.MenuItem("夜间模式", padView.night) { padView.toggleNight() },
                     TopBar.MenuItem("显示页面图", padView.showPage) { padView.toggleShowPage() },
-                    TopBar.MenuItem("锁定缩放", padView.zoomLocked) { padView.toggleZoomLock() },
+                    // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
+                    TopBar.MenuItem("双指滚动（防误触）", padView.twoFingerScroll) {
+                        padView.toggleTwoFingerScroll()
+                    },
                     TopBar.MenuItem("图层…") { showLayerPanel() },
                     TopBar.MenuItem("跳到第…页") {
                         PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
@@ -609,7 +614,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("ruler", padView.rulerOn)
         bar.setActive("text", padView.noteMode)
         bar.setActive("scratch", scratch.isOpen)
+        bar.setActive("lock", padView.zoomLocked)
         bar.setEnabled("pen", padView.mode == MODE_NOTE)
+        // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
+        scratch.canvas.twoFingerScroll = padView.twoFingerScroll
 
         // 笔胶囊：笔记模式显示当前笔（色块 · 类型 · 粗细），其余模式显示模式名（同网页 PenStat）
         val pen = padView.curPenOrNull()

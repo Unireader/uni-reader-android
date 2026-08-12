@@ -185,6 +185,18 @@ open class PageCanvasView @JvmOverloads constructor(
     var zoomLocked = false
         protected set
 
+    /**
+     * 双指滚动模式（防误触）：**单指划动不再平移页面**，滚动与缩放一律双指。
+     *
+     * 已有的两道防线（笔落下时忽略手指、接触面积大于 [PadConst.PALM] 的忽略）挡不住
+     * 「落笔之前虎口/小指先蹭到屏幕」——那一下面积不大、笔也还没 down，于是被当成正经的单指平移，
+     * 页面直接滑走。开了这个开关后那一下什么都不做。
+     *
+     * 单指仍然能做的两件事都是刻意动作、不会是误触：轻点图钉开草稿纸、按住图钉拖动。
+     */
+    var twoFingerScroll = false
+        protected set
+
     fun penList(): List<Pen> = pens
     fun curPenOrNull(): Pen? = pens.getOrNull(penIndex)
     fun modeLabel(): String = PadConst.MODE_LABELS.getOrElse(mode) { "笔记" }
@@ -245,6 +257,11 @@ open class PageCanvasView @JvmOverloads constructor(
 
     fun toggleZoomLock() {
         zoomLocked = !zoomLocked
+        onHudChanged()
+    }
+
+    fun toggleTwoFingerScroll() {
+        twoFingerScroll = !twoFingerScroll
         onHudChanged()
     }
 
@@ -1292,6 +1309,9 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 本次手指手势变过双指捏合（双指轻点不触发 [onFingerTap]） */
     protected var gesturePinched = false
 
+    /** 本次手指手势被 [twoFingerScroll] 挡下过（划了但没平移）——抬手时不能再当轻点去开图钉 */
+    protected var gestureBlocked = false
+
     protected data class Pinch(val d0: Float, val z0: Float, val fx: Float, val fy: Float)
     protected var pinch: Pinch? = null
 
@@ -1391,8 +1411,8 @@ open class PageCanvasView @JvmOverloads constructor(
                     val wasPanning = panStarted
                     val wasPinDrag = pinDragActive
                     // 单指轻点（没越过死区、没捏合过、也没拖过图钉、确实是这根手指落下的那次手势）
-                    val tap = !wasPanning && !wasPinDrag && !gesturePinched && panId >= 0 &&
-                        e.actionMasked == MotionEvent.ACTION_UP
+                    val tap = !wasPanning && !wasPinDrag && !gesturePinched && !gestureBlocked &&
+                        panId >= 0 && e.actionMasked == MotionEvent.ACTION_UP
                     val tx = panDownX; val ty = panDownY
                     // 松手位置用于提交图钉拖动（比最后一帧 move 更准）
                     val pi = e.findPointerIndex(panId)
@@ -1416,7 +1436,7 @@ open class PageCanvasView @JvmOverloads constructor(
     protected fun fingerDown(id: Int, x: Float, y: Float, touchMajor: Float, eventTime: Long) {
         if (activePen) return            // 笔在写 → 忽略手掌/手指
         if (touchMajor > palmPx) return  // 大面积接触（手掌）忽略
-        if (touchOrder.isEmpty()) gesturePinched = false   // 一次新手势的第一根手指
+        if (touchOrder.isEmpty()) { gesturePinched = false; gestureBlocked = false }   // 一次新手势的第一根手指
         touches[id] = Finger(x, y)
         if (id !in touchOrder) touchOrder.add(id)
         if (touchOrder.size >= 2) {
@@ -1500,6 +1520,8 @@ open class PageCanvasView @JvmOverloads constructor(
                 pinDragCandidate = false
                 pinDragActive = true
             } else {
+                // 双指滚动模式：单指划动到此为止——不平移、不记速度、松手也不甩惯性
+                if (twoFingerScroll) { gestureBlocked = true; return }
                 panStarted = true
                 lastPanX = x; lastPanY = y; lastMoveT = e.eventTime
                 return

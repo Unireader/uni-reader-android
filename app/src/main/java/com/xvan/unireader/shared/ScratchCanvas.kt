@@ -101,6 +101,13 @@ class ScratchCanvas @JvmOverloads constructor(
             invalidate()
         }
 
+    /**
+     * 双指滚动模式（防误触）：单指划动不平移这张纸，滚动与缩放一律双指。
+     * 宿主把页内那块画布的同名开关抄过来（两处必须一致：用户开的是一个模式，不是两个）。
+     * minimap 上的点/拖不受影响——那是明确指着一个小窗口按下去的。
+     */
+    var twoFingerScroll = false
+
     /** 兜底工具（宿主还没接上时笔落下只平移，不崩也不乱画） */
     private val fallbackTools = Tools(
         inkTool = false, eraseTool = false, pen = PageCanvasView.FALLBACK_PENS[0],
@@ -242,6 +249,8 @@ class ScratchCanvas @JvmOverloads constructor(
     private var pinching = false
     private var pinchD0 = 0f
     private var pinchZ0 = 1f
+    private var pinchMx = 0f   // 上一帧两指中点（dp）——双指整体挪动 = 平移，见 [pinchMove]
+    private var pinchMy = 0f
     private var miniDrag = false   // 手指正在 minimap 上点/拖（panId = 那根手指）
 
     private val palmPx = dp(PadConst.PALM)
@@ -287,7 +296,8 @@ class ScratchCanvas @JvmOverloads constructor(
                             if (pi >= 0) miniJump(e.getX(pi), e.getY(pi))
                         }
                         pinching && touchOrder.size >= 2 -> pinchMove()
-                        panId >= 0 -> {
+                        // 双指滚动模式：单指划动不平移（防误触，同页内 PageCanvasView.panMove）
+                        panId >= 0 && !twoFingerScroll -> {
                             val pi = e.findPointerIndex(panId)
                             if (pi >= 0) panTo(e.getX(pi), e.getY(pi))
                         }
@@ -324,6 +334,8 @@ class ScratchCanvas @JvmOverloads constructor(
             miniDrag = false   // 第二指落下：minimap 拖动让给捏合
             pinchD0 = max(dp(40f), hypot(a.x - b.x, a.y - b.y))   // 下限避免起手过近灵敏度爆炸
             pinchZ0 = zoom
+            pinchMx = (a.x + b.x) / 2f / density
+            pinchMy = (a.y + b.y) / 2f / density
             panId = -1
         } else if (minimapOn && hasContent() && inMinimap(x, y)) {
             miniDrag = true
@@ -354,6 +366,8 @@ class ScratchCanvas @JvmOverloads constructor(
                 pinching = true
                 pinchD0 = max(dp(40f), hypot(a.x - b.x, a.y - b.y))
                 pinchZ0 = zoom
+                pinchMx = (a.x + b.x) / 2f / density
+                pinchMy = (a.y + b.y) / 2f / density
                 panId = -1
             }
         }
@@ -378,6 +392,12 @@ class ScratchCanvas @JvmOverloads constructor(
         val my = (a.y + b.y) / 2f / density
         val v = ScratchGeom.zoomAt(ox, oy, zoom, (pinchZ0 * d / pinchD0) / zoom, mx, my)
         ox = v[0]; oy = v[1]; zoom = v[2]
+        // 中点整体挪动 = 平移。缩放锚点只保证「中点底下那一点不动」，两指齐挪时 factor≈1、
+        // zoomAt 原地返回，光靠它双指是拖不动纸的——双指滚动模式下就等于纸钉死了。
+        ox -= (mx - pinchMx) / zoom
+        oy -= (my - pinchMy) / zoom
+        pinchMx = mx
+        pinchMy = my
         clampViewport()
         invalidate()
         onViewportChanged?.invoke()
