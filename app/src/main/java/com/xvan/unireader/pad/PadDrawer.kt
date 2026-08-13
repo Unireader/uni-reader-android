@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.text.TextUtils
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
@@ -33,6 +34,7 @@ import kotlin.math.min
 class PadDrawer(private val a: Activity) {
 
     private companion object {
+        const val TAG = "UniReader/Drawer"
         const val TAB_TOC = 0
         const val TAB_LIB = 1
         const val MAX_W = 340        // 面板最宽（dp）：平板上不让它占掉半屏
@@ -83,7 +85,12 @@ class PadDrawer(private val a: Activity) {
             },
             LinearLayout.LayoutParams(-1, -2),
         )
-        addView(Ui.divider(a), LinearLayout.LayoutParams(-1, -2))
+        // ⚠️ 分隔线**不许再传一份 LayoutParams**：[Ui.divider] 自带 `(MATCH_PARENT, 1)`，
+        // 而这里从前传的是 `(-1, -2)`——裸 View 的 `onMeasure` 走 `getDefaultSize`，
+        // **wrap_content 会被当成「撑满 AT_MOST」**，于是这条 1px 的线在竖向 LinearLayout 里
+        // 长成 900+px，把 weight=1 的 [scroll] 挤成 0 高。表现就是「目录/书库两个页签都是空白」
+        // （数据全在、行也建好了，只是没地方画；那片"空白"其实是 outline 色的分隔线本身）。
+        addView(Ui.divider(a))
         addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
     }
 
@@ -127,12 +134,14 @@ class PadDrawer(private val a: Activity) {
         tocDocId = docId
         toc = list
         expanded.clear()
+        Log.i(TAG, "收到目录 ${list.size} 条 docId=$docId（当前显示 docV=$docV）")
         if (isOpen && tab == TAB_TOC) rebuild()
     }
 
     fun setLibrary(ws: String, list: List<WireCodec.LibEntry>) {
         wsName = ws
         lib = list
+        Log.i(TAG, "收到书库 ${list.size} 条，工作区「$ws」")
         if (isOpen && tab == TAB_LIB) rebuild()
     }
 
