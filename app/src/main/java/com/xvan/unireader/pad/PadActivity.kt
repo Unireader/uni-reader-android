@@ -466,22 +466,65 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
      * 所以 `dismiss = false`，校验通过了才由这里自己 `dismiss()`。
      *
      * 错误提示改成弹层内的一行红字（原先是写进顶栏的 `statusMsg`——弹窗盖着顶栏，用户根本看不见）。
+     *
+     * 顶上是「历史设备」（[KnownMacs]）：连过的 Mac 点一下就连，右侧垃圾桶移除。
+     * 输入框预填当前这次的 host/token（authFail 后弹窗会重开，那时填过的东西不能丢），
+     * 没有才回退到 prefs 里最后一次成功的那组。
      */
     private fun showConnDialog() {
         val prefs = getSharedPreferences("conn", MODE_PRIVATE)
         val hostEdit = PadPanels.inputBox(this, "Mac IP（如 192.168.1.5）").apply {
-            setText(prefs.getString("host", ""))
+            setText(connHost.ifEmpty { prefs.getString("host", "") ?: "" })
         }
         val tokenEdit = PadPanels.inputBox(this, "token（面板 URL 里的）").apply {
-            setText(prefs.getString("token", ""))
+            setText(connToken.ifEmpty { prefs.getString("token", "") ?: "" })
         }
         val err = Ui.body(this, "").apply {
             setTextColor(Ui.col(this@PadActivity, R.color.danger))
             visibility = View.GONE
             setPadding(0, dp(8), 0, 0)
         }
+        val history = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // 行里的「点了就连」要关掉这个弹窗，而弹窗此刻还没建出来 → 建好后回填
+        var dlgRef: AlertDialog? = null
+        fun renderHistory() {
+            history.removeAllViews()
+            val known = KnownMacs.list(this)
+            if (known.isEmpty()) return
+            history.addView(Ui.sectionTitle(this, "历史设备"))
+            for (e in known) {
+                history.addView(
+                    PadPanels.twoLineRow(
+                        this,
+                        R.drawable.ic_monitor,
+                        Ui.accent(this),
+                        e.label,
+                        e.host,
+                        trailing = Ui.iconButton(
+                            this,
+                            R.drawable.ic_delete,
+                            "移除这台 Mac",
+                            Ui.onVariant(this),
+                        ) {
+                            KnownMacs.forget(this, e.host)
+                            renderHistory()
+                        },
+                    ) {
+                        // 顺手回填输入框：Mac 重开过 App 的话 token 已失效（authFail），
+                        // 弹窗会带着这组值重开，改一下或扫个码就行，不用从头输 IP
+                        hostEdit.setText(e.host)
+                        tokenEdit.setText(e.token)
+                        connect(e.host, e.token)
+                        dlgRef?.dismiss()
+                    },
+                )
+            }
+            history.addView(Ui.spacer(this, 12))
+        }
+        renderHistory()
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            addView(history)
             addView(hostEdit)
             addView(tokenEdit, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
             addView(err)
@@ -518,6 +561,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 d.dismiss()
             }
             .show()
+        dlgRef = dlg
         dialogHost = hostEdit
         dialogToken = tokenEdit
         connDialog = dlg
@@ -656,6 +700,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             .putString("host", connHost)
             .putString("token", connToken)
             .apply()
+        // 同一次成功也记进「历史设备」；机器名另外问一句 `/info`（探不到就先按 IP 显示，
+        // 下次连上再补）。回调在 OkHttp 线程，写 prefs 前切回主线程——列表只在主线程上读写。
+        val host = connHost
+        KnownMacs.remember(this, host, connToken)
+        KnownMacs.probeName(host) { name ->
+            runOnUiThread { if (!isFinishing) KnownMacs.setName(this, host, name) }
+        }
         connDialog?.dismiss()
         setDot(true)
         statusMsg = ""

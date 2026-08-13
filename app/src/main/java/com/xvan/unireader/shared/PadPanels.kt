@@ -352,4 +352,48 @@ object PadPanels {
         )
         if (trailing != null) addView(trailing)
     }
+
+    /**
+     * 图标 + 主行 + 灰色次行的一行：主行是名字，次行是「它到底是哪一个」（路径 / IP）。
+     * 启动页的「最近打开 / 扫描结果 / 存储卷」和模式2 连接弹窗的「历史设备」共用这一份——
+     * 同一种东西在两处长得不一样，是这个项目已经修过一轮的老毛病。
+     */
+    internal fun twoLineRow(
+        a: Activity,
+        icon: Int,
+        tint: Int,
+        line1: String,
+        line2: String,
+        trailing: View? = null,
+        onClick: () -> Unit,
+    ): LinearLayout = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        isClickable = true
+        background = Ui.rippleOver(a, null, Ui.RADIUS, Ui.onSurface(a))
+        setPadding(a.dp(8), a.dp(10), a.dp(8), a.dp(10))
+        setOnClickListener { onClick() }
+        addView(
+            ImageView(a).apply {
+                setImageResource(icon)
+                imageTintList = android.content.res.ColorStateList.valueOf(tint)
+            },
+            LinearLayout.LayoutParams(a.dp(20), a.dp(20)).apply { marginEnd = a.dp(12) },
+        )
+        addView(
+            LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(Ui.title(a, line1, 15f))
+                addView(
+                    Ui.body(a, line2).apply {
+                        textSize = 12f
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                    },
+                )
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        if (trailing != null) addView(trailing)
+    }
 }

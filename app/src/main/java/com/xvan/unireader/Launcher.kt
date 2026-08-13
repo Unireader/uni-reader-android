@@ -289,7 +289,10 @@ class Launcher : Activity() {
         }
     }
 
-    /** 图标 + 主行 + 灰色次行的一行（最近打开 / 扫描结果 / 存储卷共用） */
+    /**
+     * 图标 + 主行 + 灰色次行的一行（最近打开 / 扫描结果 / 存储卷）。
+     * 实现在 [PadPanels.twoLineRow]——模式2 的「历史设备」列表用的是同一份。
+     */
     private fun twoLineRow(
         icon: Int,
         tint: Int,
@@ -297,36 +300,7 @@ class Launcher : Activity() {
         line2: String,
         trailing: View? = null,
         onClick: () -> Unit,
-    ): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        isClickable = true
-        background = Ui.rippleOver(this@Launcher, null, Ui.RADIUS, Ui.onSurface(this@Launcher))
-        setPadding(dp(8), dp(10), dp(8), dp(10))
-        setOnClickListener { onClick() }
-        addView(
-            ImageView(this@Launcher).apply {
-                setImageResource(icon)
-                imageTintList = ColorStateList.valueOf(tint)
-            },
-            LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(12) },
-        )
-        addView(
-            LinearLayout(this@Launcher).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(Ui.title(this@Launcher, line1, 15f))
-                addView(
-                    Ui.body(this@Launcher, line2).apply {
-                        textSize = 12f
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.MIDDLE
-                    },
-                )
-            },
-            LinearLayout.LayoutParams(0, -2, 1f),
-        )
-        if (trailing != null) addView(trailing)
-    }
+    ): LinearLayout = PadPanels.twoLineRow(this, icon, tint, line1, line2, trailing, onClick)
 
     // ---------- 权限 ----------
 
