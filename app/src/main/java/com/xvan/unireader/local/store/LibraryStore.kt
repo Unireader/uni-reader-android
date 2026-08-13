@@ -406,7 +406,7 @@ class LibraryStore(private val db: Db) : Closeable {
         )
     }
 
-    // ---------- 草稿纸（scratch_pad 表：v8 建表 / v9 加 pattern 列；笔迹在 note kind=4） ----------
+    // ---------- 草稿纸（scratch_pad 表：v8 建表 / v9 加 pattern 列 / v10 加 show_page 列；笔迹在 note kind=4） ----------
 
     /**
      * `scratch_pad` 的列名集；**表不存在**（v7 老库，还没被 v8+ 的 Mac 打开过）→ null。
@@ -442,7 +442,23 @@ class LibraryStore(private val db: Db) : Closeable {
             Log.w(TAG, "scratch_pad 表不存在（v7 老库），草稿纸 id=${p.id.take(8)} 未落库——用 v8+ 的 Mac 打开一次此工作区即可补上")
             return
         }
-        if ("pattern" in cols) {
+        if ("show_page" in cols) {
+            // v10+：整套列都在
+            db.exec(
+                """
+                INSERT INTO scratch_pad(id,document_id,title,anchor_page,anchor_x,anchor_y,bg,pattern,show_page,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET title=excluded.title, anchor_page=excluded.anchor_page,
+                  anchor_x=excluded.anchor_x, anchor_y=excluded.anchor_y, bg=excluded.bg,
+                  pattern=excluded.pattern, show_page=excluded.show_page, updated_at=excluded.updated_at
+                """.trimIndent(),
+                arrayOf(
+                    p.id, p.documentId, p.title, p.anchorPage, p.anchorX, p.anchorY,
+                    p.bg, p.pattern, if (p.showPage) 1 else 0, p.createdAt, p.updatedAt,
+                ),
+            )
+        } else if ("pattern" in cols) {
+            // v9 老库：没有 show_page 列，页面底图开关写不进去（读回来兜底 false，界面跟着退回去）
             db.exec(
                 """
                 INSERT INTO scratch_pad(id,document_id,title,anchor_page,anchor_x,anchor_y,bg,pattern,created_at,updated_at)
@@ -675,6 +691,8 @@ class LibraryStore(private val db: Db) : Closeable {
         // v8 的库没有 pattern 列：cursor 按名取列取不到 → 空串 → 兜底 dots（同 Mac `?? "dots"`）；
         // 未知取值（未来的 Mac 加了新底纹）同样回落 dots，同 Mac `?? .dots`。
         pattern = ScratchPad.patternOrDefault(c.str("pattern")),
+        // v9 的库没有 show_page 列：取不到 → false（与 Mac 的迁移口径一致：老纸一律不垫页）
+        showPage = c.bool("show_page", false),
         createdAt = c.str("created_at"), updatedAt = c.str("updated_at"),
     )
 }

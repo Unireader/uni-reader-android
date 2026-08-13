@@ -48,10 +48,12 @@ class ScratchPadStoreTest {
 
     /**
      * 按 Mac 端 DDL 原文补 scratch_pad 表（`Sources/Store/LibraryStore.swift` v8 建表 +
-     * v9 `pattern` 列）。`withPattern=false` 时造 **v8 形状**（没有 pattern 列）。
+     * v9 `pattern` 列 + v10 `show_page` 列）。`withPattern=false` 造 **v8 形状**、
+     * `withShowPage=false` 造 **v9 形状**——安卓不建表不迁移，两种老库都得受得住。
      */
-    private fun ensureScratchTable(dir: File, withPattern: Boolean = true) {
+    private fun ensureScratchTable(dir: File, withPattern: Boolean = true, withShowPage: Boolean = true) {
         val patternCol = if (withPattern) ", pattern TEXT NOT NULL DEFAULT 'dots'" else ""
+        val showPageCol = if (withShowPage) ", show_page INTEGER NOT NULL DEFAULT 0" else ""
         rawSql(
             dir,
             "DROP TABLE IF EXISTS scratch_pad",
@@ -63,7 +65,7 @@ class ScratchPadStoreTest {
               anchor_page INTEGER NOT NULL DEFAULT 0,
               anchor_x REAL NOT NULL DEFAULT 0, anchor_y REAL NOT NULL DEFAULT 0,
               bg TEXT NOT NULL DEFAULT 'rgba(255,255,255,1.0)'
-              $patternCol,
+              $patternCol$showPageCol,
               created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )
             """.trimIndent(),
@@ -78,10 +80,12 @@ class ScratchPadStoreTest {
         createdAt: String,
         bg: String = ScratchPad.DEFAULT_BG,
         pattern: String = ScratchPad.DEFAULT_PATTERN,
+        showPage: Boolean = true,   // 新建的纸默认垫着它锚定的那一页（同 Mac / ScratchController.createAt）
     ) = ScratchPad(
         id = id, documentId = docId, title = title,
         anchorPage = 3, anchorX = 0.25, anchorY = 0.5,
-        bg = bg, pattern = pattern, createdAt = createdAt, updatedAt = createdAt,
+        bg = bg, pattern = pattern, showPage = showPage,
+        createdAt = createdAt, updatedAt = createdAt,
     )
 
     private val pen = Pen(20, 20, 20, 1f, 10f, 3)   // pencil
@@ -314,6 +318,45 @@ class ScratchPadStoreTest {
             assertEquals("底纹写不进去，读回兜底 dots", "dots", back.pattern)
             assertEquals("纸色照写", "rgba(233,243,234,1.0)", back.bg)
             assertEquals("v8 的纸", back.title)
+        }
+    }
+
+    @Test
+    fun 页面底图开关round_trip() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        ensureScratchTable(dir)
+        LibraryStore.open(dir).use { store ->
+            val docId = store.allDocuments().first().id
+            store.upsertScratchPad(pad(docId, "pad-a", createdAt = "2026-08-01T00:00:00.000Z"))
+            assertTrue("新建的纸默认垫页", store.scratchPads(docId).single().showPage)
+            // 关掉：默认值是 true，最容易被兜底写回成「开」
+            store.upsertScratchPad(
+                pad(docId, "pad-a", createdAt = "2026-08-01T00:00:00.000Z", showPage = false),
+            )
+            assertFalse("关掉要真的存下来", store.scratchPads(docId).single().showPage)
+            store.upsertScratchPad(pad(docId, "pad-a", createdAt = "2026-08-01T00:00:00.000Z"))
+            assertTrue("再开回来", store.scratchPads(docId).single().showPage)
+        }
+    }
+
+    @Test
+    fun show_page列缺失时读兜底关且其余字段照写() {
+        assumeTrue("没有 fixture，跳过", fixtureDir() != null)
+        val dir = copyOfFixture()
+        ensureScratchTable(dir, withShowPage = false)   // v9 形状
+        LibraryStore.open(dir).use { store ->
+            val docId = store.allDocuments().first().id
+            store.upsertScratchPad(
+                pad(
+                    docId, "pad-a", title = "v9 的纸", createdAt = "2026-08-01T00:00:00.000Z",
+                    pattern = "grid", showPage = true,
+                ),
+            )
+            val back = store.scratchPads(docId).single()
+            assertFalse("页面底图写不进去，读回兜底关（同 Mac 的迁移口径）", back.showPage)
+            assertEquals("底纹照写", "grid", back.pattern)
+            assertEquals("v9 的纸", back.title)
         }
     }
 

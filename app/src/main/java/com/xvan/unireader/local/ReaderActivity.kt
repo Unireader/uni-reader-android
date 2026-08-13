@@ -665,6 +665,12 @@ class ReaderActivity : Activity() {
      * 激活第 [i] 个标签页。已装载的就是"换个 View 显示"（滚动/缩放/笔迹都还在它自己的画布上），
      * 没装载的走 [loadTab]。
      */
+    /** 这一篇的页纵横比（页高/页宽，Pdfium 报的显示尺寸）——草稿纸页面底图按它定页矩形的高 */
+    private fun pageAspectOf(t: Tab): (Int) -> Float = { i ->
+        val wh = t.pdf?.pageSizes?.getOrNull(i)
+        if (wh != null && wh[0] > 0f) wh[1] / wh[0] else 0f
+    }
+
     private fun activate(i: Int) {
         val t = tabs.getOrNull(i) ?: return
         val prev = curTab()
@@ -673,7 +679,7 @@ class ReaderActivity : Activity() {
         t.usedAt = SystemClock.uptimeMillis()
         // 草稿纸立刻绑到这一篇（哪怕还没装载完：装载中 docId 就该是它的，否则入口会列出别篇的纸；
         // 装载完 attachTab 会带着读好的纸列表再绑一次）
-        scratch.bind(queue, t.docId, t.pads)
+        scratch.bind(queue, t.docId, t.pads, t.pdf, pageAspectOf(t))
         refreshTabsBar()
         title = t.title
         saveTabSet()
@@ -819,7 +825,7 @@ class ReaderActivity : Activity() {
         c.activeLayerId = d.layers.firstOrNull()?.id ?: LibInkLayer.DEFAULT_ID
         c.applyStrokes(d.strokes, hiddenLayerIds(t))
         c.applyNotes(d.notes, d.fills)
-        scratch.bind(queue, t.docId, t.pads)   // 装载完成：纸列表到位，图钉上页
+        scratch.bind(queue, t.docId, t.pads, src, pageAspectOf(t))   // 装载完成：纸列表到位，图钉上页
         hideOpening()
         refreshHud()
         trimLive()

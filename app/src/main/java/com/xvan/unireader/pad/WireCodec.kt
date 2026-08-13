@@ -37,6 +37,9 @@ object WireCodec {
     const val OP_SCRATCH_OPEN = 0x2B
     const val OP_SCRATCH_ADD = 0x2C
     const val OP_SCRATCH_PAPER = 0x2D
+    const val OP_SCRATCH_PAGE_SHOW = 0x2F
+    const val OP_SCRATCH_DELETE = 0x48
+    const val OP_SCRATCH_RENAME = 0x49
     const val OP_PAGE = 0x30
     const val OP_LAYOUT = 0x31
     const val OP_VIEWPORT = 0x32
@@ -120,6 +123,8 @@ object WireCodec {
         val b: Int,
         val a: Float,
         val pattern: Int,
+        /** 页面底图（v10）：这张纸要不要把它锚定的那一页垫在纸下面（几何契约见 ../PROTOCOL.md §4.4） */
+        val showPage: Boolean,
     )
 
     // ---------- 解码结果（u32 用 Long 承载无符号值） ----------
@@ -406,6 +411,18 @@ object WireCodec {
             u8(OP_SCRATCH_PAPER); u16(index); u8(r); u8(g); u8(b); f32(a); u8(pattern)
         }.bytes()
 
+    /** 开/关第 index 张纸的页面底图（把它锚定的那一页垫在纸下面，几何契约见 ../PROTOCOL.md §4.4） */
+    fun encodeScratchPageShow(index: Int, show: Boolean): ByteArray =
+        Writer().apply { u8(OP_SCRATCH_PAGE_SHOW); u16(index); u8(if (show) 1 else 0) }.bytes()
+
+    /** 删第 index 张纸（连同纸上笔迹）。Mac 判定 + 落库后回推 scratchpads/scratchStrokes */
+    fun encodeScratchDelete(index: Int): ByteArray =
+        Writer().apply { u8(OP_SCRATCH_DELETE); u16(index) }.bytes()
+
+    /** 改第 index 张纸的名字（空串 = 回到「草稿纸 N」兜底名） */
+    fun encodeScratchRename(index: Int, title: String): ByteArray =
+        Writer().apply { u8(OP_SCRATCH_RENAME); u16(index); str(title) }.bytes()
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -484,12 +501,13 @@ object WireCodec {
                     val n = r.u16()
                     val list = ArrayList<ScratchPadEntry>(n)
                     var i = 0
-                    // 单条最短 20 字节（两条空 str + u32 + 2×f32 + 3×u8 + f32 + u8）
-                    while (i < n && r.remaining >= 20) {
+                    // 单条最短 21 字节（两条空 str + u32 + 2×f32 + 3×u8 + f32 + u8 + u8 showPage）
+                    while (i < n && r.remaining >= 21) {
                         list.add(
                             ScratchPadEntry(
                                 r.str(), r.str(), r.u32(), r.f32(), r.f32(),
                                 r.u8(), r.u8(), r.u8(), r.f32(), patternOrDefault(r.u8()),
+                                r.u8() != 0,
                             ),
                         ); i++
                     }

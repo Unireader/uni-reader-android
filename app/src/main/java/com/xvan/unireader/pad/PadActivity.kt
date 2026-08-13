@@ -224,6 +224,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             onPinsChanged = { pins -> padView.setScratchPins(pins) }
             onOpenChanged = { refresh() }
             anchorProvider = { padView.viewportCenterAnchor() }
+            // 页面底图（v10）：与阅读画布**共用同一个页图源**（同一份 PageFetcher 缓存，
+            // 纸上那页多半刚刚看过、直接命中），页纵横比取 layout 下发的页尺寸表
+            pageSource = padView.imageSource
+            pageAspect = { i -> padView.pageAspect(i) }
             // 工具快照现取阅读画布：纸开着时改笔/改橡皮/切尺子即时生效（尺子走 45° 吸附，同页内）
             toolsProvider = {
                 ScratchCanvas.Tools(
@@ -743,6 +747,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             fetcher?.clear()   // 换文档：旧 v 页图全部作废
         }
         padView.setLayout(docId, v, count.toInt(), pages)
+        // 页尺寸到位后重算草稿纸的页面底图矩形（两条广播先后无保证，见 PadScratch.refreshPageUnder）
+        scratch.refreshPageUnder()
         drawer.setDocV(newV)
         refresh()
     }

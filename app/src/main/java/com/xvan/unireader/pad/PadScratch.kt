@@ -15,6 +15,7 @@ import android.widget.TextView
 import com.xvan.unireader.R
 import com.xvan.unireader.local.ScratchController
 import com.xvan.unireader.shared.PadPanels
+import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.ScratchCanvas
@@ -76,6 +77,18 @@ class PadScratch(private val a: Activity) {
     /** 宿主给：阅读画布的工具状态 → 草稿纸工具快照（每次落笔现取，改笔/改橡皮即时生效） */
     var toolsProvider: (() -> ScratchCanvas.Tools?)? = null
 
+    // ---- 页面底图（v10）：图从哪来 + 那一页多高（几何契约见 ScratchGeom.pageRect） ----
+
+    /** 页图来源（模式2 = HTTP 找 Mac 要 `/page.png?i=N`，与阅读画布同一个 `PageFetcher`） */
+    var pageSource: PageImageSource? = null
+        set(v) {
+            field = v
+            canvas.pageSource = v
+        }
+
+    /** 第 i 页的显示纵横比（页高/页宽）——宿主从阅读画布的 `layout` 页尺寸表现取 */
+    var pageAspect: ((Int) -> Float)? = null
+
     var pads = listOf<WireCodec.ScratchPadEntry>()
         private set
 
@@ -99,12 +112,14 @@ class PadScratch(private val a: Activity) {
         val entry = pads.getOrNull(open)
         if (entry == null) {
             openPadId = null
+            canvas.setPageUnder(-1, null)
             canvas.visibility = View.GONE
             barView.visibility = View.GONE
         } else {
             if (entry.id != openPadId) canvas.openSession()   // 换纸/新开：丢上一张的本地状态并回中
             openPadId = entry.id
             canvas.setPaper(bgCss(entry), patternName(entry.pattern))
+            applyPageUnder(entry)
             canvas.visibility = View.VISIBLE
             barView.visibility = View.VISIBLE
         }
@@ -141,6 +156,7 @@ class PadScratch(private val a: Activity) {
     private val barName: TextView
     private val barZoom: TextView
     private val mapBtn: ImageButton
+    private val pageBtn: ImageButton
 
     private val flusher = object : Runnable {
         override fun run() {
@@ -218,6 +234,9 @@ class PadScratch(private val a: Activity) {
             updateBar()
         }
         row.addView(mapBtn)
+        // 页面底图（v10）：开/关都只发请求（scratchPageShow），Mac 判定后回推 scratchpads
+        pageBtn = Ui.iconButton(a, R.drawable.ic_doc, "显示所在页面", on) { requestToggleShowPage() }
+        row.addView(pageBtn)
         row.addView(Ui.iconButton(a, R.drawable.ic_palette, "纸样", on) { showPaperPanel() })
         barZoom = Ui.body(a, "", variant = false).apply {
             textSize = 12f
@@ -251,6 +270,48 @@ class PadScratch(private val a: Activity) {
         sendCtl?.invoke(
             WireCodec.encodeScratchAdd(anchor.first.toLong(), anchor.second, anchor.third),
         )
+    }
+
+    /**
+     * 页尺寸表（`layout`）来晚了/换文档了 → 重算页矩形。
+     * **必须有这条**：`scratchpads` 与 `layout` 两条广播的先后没有保证，只在 applyPads 里算的话，
+     * 先收到纸、后收到页尺寸的那一次会用 `pageAspect` 的兜底值把页画成方的，且再也不会自己纠正。
+     */
+    fun refreshPageUnder() {
+        val entry = pads.getOrNull(open) ?: return
+        applyPageUnder(entry)
+    }
+
+    /** 把「当前这张纸要不要垫页、垫哪一页、垫在哪」交给画布（关掉/没图源即撤掉） */
+    private fun applyPageUnder(entry: WireCodec.ScratchPadEntry) {
+        if (!entry.showPage || pageSource == null) {
+            canvas.setPageUnder(-1, null)
+            return
+        }
+        val page = entry.page.toInt()
+        val asp = pageAspect?.invoke(page) ?: 0f
+        canvas.setPageUnder(page, ScratchGeom.pageRect(entry.nx, entry.ny, asp))
+    }
+
+    /** 开/关页面底图：乐观生效 + 发请求，Mac 回推 scratchpads 为准（同 requestPaper 的口径） */
+    private fun requestToggleShowPage() {
+        val entry = pads.getOrNull(open) ?: return
+        val want = !entry.showPage
+        sendCtl?.invoke(WireCodec.encodeScratchPageShow(open, want))
+        val optimistic = entry.copy(showPage = want)
+        pads = pads.toMutableList().also { it[open] = optimistic }
+        applyPageUnder(optimistic)
+        updateBar()
+    }
+
+    /** 删这张纸（连同纸上笔迹）。Mac 判定 + 落库后回推 scratchpads/scratchStrokes */
+    private fun requestDelete(index: Int) {
+        sendCtl?.invoke(WireCodec.encodeScratchDelete(index))
+    }
+
+    /** 改名（空串 = 回到「草稿纸 N」兜底名）。同上，以回推为准，本地不改列表 */
+    private fun requestRename(index: Int, title: String) {
+        sendCtl?.invoke(WireCodec.encodeScratchRename(index, title))
     }
 
     // ---------- 列表（顶栏入口 / 工具条最左图标） ----------
@@ -308,7 +369,7 @@ class PadScratch(private val a: Activity) {
         dlg = sheet.show()
     }
 
-    // ---------- 纸样面板（底纹三选一 + 纸色六选一；改名/删除没有线协议，模式2 不做） ----------
+    // ---------- 纸样面板（底纹三选一 + 纸色六选一 + 改名 + 删除；与模式1 同一套） ----------
 
     fun showPaperPanel() {
         val entry = pads.getOrNull(open) ?: return
@@ -350,9 +411,45 @@ class PadScratch(private val a: Activity) {
         }
         root.addView(swatches)
 
+        // 管理（v10 起线上有 scratchRename/scratchDelete 了，与模式1 的面板一字排开）
+        root.addView(Ui.groupTitle(a, "管理"))
+        root.addView(
+            PadPanels.iconRow(a, R.drawable.ic_text, "改名…") {
+                dlg?.dismiss()
+                showRename(index, entry)
+            },
+        )
+        root.addView(
+            PadPanels.iconRow(a, R.drawable.ic_delete, "删除这张草稿纸", Ui.col(a, R.color.danger)) {
+                dlg?.dismiss()
+                confirmDelete(index, entry)
+            },
+        )
+
         sheet.content(root)
         sheet.action("完成", primary = true)
         dlg = sheet.show()
+    }
+
+    private fun showRename(index: Int, entry: WireCodec.ScratchPadEntry) {
+        val edit = PadPanels.inputBox(a, "草稿纸名字").apply {
+            setText(entry.title)
+            setSelection(text.length)
+        }
+        Sheet(a).title("改名")
+            .content(edit)
+            .action("取消")
+            .action("保存", primary = true) { requestRename(index, edit.text.toString().trim()) }
+            .show()
+    }
+
+    private fun confirmDelete(index: Int, entry: WireCodec.ScratchPadEntry) {
+        Sheet(a)
+            .title("删除《${displayName(entry)}》？")
+            .subtitle("纸上的全部笔迹会一起删掉，这一步不可撤销。")
+            .action("取消")
+            .action("删除", primary = true) { requestDelete(index) }
+            .show()
     }
 
     private fun optionRow(label: String, cur: Boolean, onClick: () -> Unit): View =
@@ -421,5 +518,6 @@ class PadScratch(private val a: Activity) {
         val pct = canvas.zoomPct()
         barZoom.setTextIfChanged(if (pct == 100) "" else "$pct%")
         mapBtn.setActive(canvas.minimapOn, Ui.onSurface(a), Ui.accent(a))
+        pageBtn.setActive(entry.showPage, Ui.onSurface(a), Ui.accent(a))
     }
 }

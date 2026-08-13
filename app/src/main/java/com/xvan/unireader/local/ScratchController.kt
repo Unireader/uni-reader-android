@@ -16,6 +16,7 @@ import com.xvan.unireader.local.store.Iso
 import com.xvan.unireader.local.store.ScratchPad
 import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.shared.PadPanels
+import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.ScratchCanvas
@@ -97,6 +98,7 @@ class ScratchController(private val a: Activity) {
     private val barName: TextView
     private val barZoom: TextView
     private val mapBtn: ImageButton
+    private val pageBtn: ImageButton
 
     init {
         canvas.visibility = View.GONE
@@ -130,6 +132,9 @@ class ScratchController(private val a: Activity) {
             updateBar()
         }
         row.addView(mapBtn)
+        // 页面底图（v10）：把这张纸锚定的那一页垫在纸下面当参照（跟着纸走、跨端同步）
+        pageBtn = Ui.iconButton(a, R.drawable.ic_doc, "显示所在页面", on) { toggleShowPage() }
+        row.addView(pageBtn)
         row.addView(Ui.iconButton(a, R.drawable.ic_palette, "纸样", on) { showPaperPanel() })
         barZoom = Ui.body(a, "", variant = false).apply {
             textSize = 12f
@@ -146,10 +151,60 @@ class ScratchController(private val a: Activity) {
 
     // ---------- 绑定（切标签页/装载完时调） ----------
 
-    fun bind(q: StoreQueue?, docId: String, pads: List<ScratchPad>) {
+    /**
+     * 切标签页/装载完时重绑。[src]/[aspect] 是**页面底图**要用的两样东西：
+     * 页图从哪来（本机 Pdfium）+ 那一页的显示纵横比（页高/页宽）。标签页还没装载完时传 null，
+     * 装载完 `attachTab` 会带着真家伙再绑一次。
+     */
+    fun bind(
+        q: StoreQueue?,
+        docId: String,
+        pads: List<ScratchPad>,
+        src: PageImageSource? = null,
+        aspect: ((Int) -> Float)? = null,
+    ) {
         queue = q
         this.docId = docId
+        pageSource = src
+        pageAspect = aspect
+        canvas.pageSource = src
         applyPads(pads, docId)
+        applyPageUnder()
+    }
+
+    // ---------- 页面底图（v10；几何契约见 ScratchGeom.pageRect） ----------
+
+    private var pageSource: PageImageSource? = null
+    private var pageAspect: ((Int) -> Float)? = null
+
+    /** 把「当前这张纸要不要垫页、垫哪一页、垫在哪」交给画布（关掉/没图源即撤掉） */
+    private fun applyPageUnder() {
+        val pad = openPad
+        if (pad == null || !pad.showPage || pageSource == null) {
+            canvas.setPageUnder(-1, null)
+            return
+        }
+        val asp = pageAspect?.invoke(pad.anchorPage) ?: 0f
+        canvas.setPageUnder(
+            pad.anchorPage,
+            ScratchGeom.pageRect(pad.anchorX.toFloat(), pad.anchorY.toFloat(), asp),
+        )
+    }
+
+    /** 开/关页面底图：乐观生效 + 落库（同 setPaper 的口径，真源回推为准） */
+    private fun toggleShowPage() {
+        val q = queue ?: return
+        val pad = openPad ?: return
+        val did = docId
+        val updated = pad.copy(showPage = !pad.showPage, updatedAt = Iso.now())
+        openPad = updated
+        applyPageUnder()
+        updateBar()
+        q.submit("改页面底图 ${pad.id.take(8)}", { s ->
+            runCatching { s.upsertScratchPad(updated) }
+                .onFailure { Log.e(TAG, "页面底图开关写库失败", it) }
+            s.scratchPads(did)
+        }, { list -> applyPads(list, did) })
     }
 
     /** 当前开着哪张（给「纸开着时笔迹只落纸上」的判定与 HUD） */
@@ -163,6 +218,7 @@ class ScratchController(private val a: Activity) {
         openPad = pad
         canvas.setPaper(pad.bg, pad.pattern)
         canvas.openSession()   // 打开一律回中（视口不落库不上线，三端各自独立缩放滚动）
+        applyPageUnder()
         canvas.visibility = View.VISIBLE
         barView.visibility = View.VISIBLE
         updateBar()
@@ -254,6 +310,7 @@ class ScratchController(private val a: Activity) {
             id = UUID.randomUUID().toString(), documentId = did, title = "",
             anchorPage = page, anchorX = nx.toDouble(), anchorY = ny.toDouble(),
             bg = ScratchPad.DEFAULT_BG, pattern = ScratchPad.DEFAULT_PATTERN,
+            showPage = true,   // 在页面某处新建的纸，那一页就该在眼前（同 Mac；老纸迁移过来是关的）
             createdAt = now, updatedAt = now,
         )
         q.submit("新建草稿纸 第${page + 1}页", { s ->
@@ -517,6 +574,7 @@ class ScratchController(private val a: Activity) {
             } else if (cur != op) {
                 openPad = cur
                 canvas.setPaper(cur.bg, cur.pattern)
+                applyPageUnder()
             }
         }
         onPinsChanged?.invoke(
@@ -532,5 +590,6 @@ class ScratchController(private val a: Activity) {
         val pct = canvas.zoomPct()
         barZoom.setTextIfChanged(if (pct == 100) "" else "$pct%")
         mapBtn.setActive(canvas.minimapOn, Ui.onSurface(a), Ui.accent(a))
+        pageBtn.setActive(op.showPage, Ui.onSurface(a), Ui.accent(a))
     }
 }

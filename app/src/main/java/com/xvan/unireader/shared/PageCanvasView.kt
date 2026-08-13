@@ -555,6 +555,7 @@ open class PageCanvasView @JvmOverloads constructor(
      * 该页的显示纵横比（高/宽）。页内归一化空间里 x/y 尺度不同，凡是**量角度或量距离**的地方
      * 都得先用它把 y 折算成与 x 同尺度：尺子吸附（`PadConst.rulerSnap`）、长按位移判定、
      * 环形盘的扇区角度都靠这一个口径。同 Mac 的 `AppModel.currentPageAspect`。
+     * 草稿纸的**页面底图**也用它定页矩形的高（`ScratchGeom.pageRect`）。
      */
     fun pageAspect(page: Int): Float =
         if (page in 0 until pageCount) dispH[page] / max(1f, pw()) else 1f

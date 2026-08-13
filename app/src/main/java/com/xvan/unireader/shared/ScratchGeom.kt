@@ -31,6 +31,13 @@ object ScratchGeom {
      */
     const val ERASER_REF_W = 800f
 
+    /**
+     * 页面底图的宽度（画布 dp，**三端契约**，Mac `ScratchPad.pageRefWidth` / web `PAD_PAGE_REF_W`）：
+     * 画布没有「页宽」这回事，页图就按这个固定宽度落在画布上，高由页面纵横比推，
+     * **锚点落在画布原点**。三端对不上的表现是「同一张纸，Mac 上写在公式旁边、平板上写到页边空白处」。
+     */
+    const val PAGE_REF_W = 800f
+
     // ---- 底纹契约数（handoff §4.2 的表，三端对齐过，直接用别自己拍） ----
     const val GRID_BASE = 24f     // 画布步长起点，按 2 的幂折算
     const val GRID_MIN = 22f      // 屏幕间距（dp）舒适区间下限
@@ -96,7 +103,22 @@ object ScratchGeom {
      * 笔迹集合（含正在写的这一笔的点集）的画布包围盒 `[x, y, w, h]`；空集 → null。
      * 软边界 / 适应内容 / minimap 共用（同 Mac `ScratchBounds.contentBounds`）。
      */
-    fun contentBounds(strokes: List<Stroke>, livePts: List<Pt3>? = null): FloatArray? {
+    /**
+     * 页面底图在画布上的矩形 `[x, y, w, h]`（契约见 [PAGE_REF_W]）：宽恒 800 dp，
+     * 高 = 宽 × [aspect]（页高/页宽，**显示尺寸**口径：CropBox 优先、含 rotation），
+     * 锚点 ([nx], [ny] 页内归一化) 落在画布原点。
+     */
+    fun pageRect(nx: Float, ny: Float, aspect: Float): FloatArray {
+        val w = PAGE_REF_W
+        val h = w * (if (aspect > 0f) aspect else 1.4142f)   // 拿不到页面尺寸时按 A4 兜底
+        return floatArrayOf(-nx * w, -ny * h, w, h)
+    }
+
+    /**
+     * @param page 页面底图矩形（开着底图才非 null）：**它也算内容**，
+     *   否则空白纸上垫了页，软边界只认笔迹、根本走不到页边。
+     */
+    fun contentBounds(strokes: List<Stroke>, livePts: List<Pt3>? = null, page: FloatArray? = null): FloatArray? {
         var x0 = Float.MAX_VALUE
         var y0 = Float.MAX_VALUE
         var x1 = -Float.MAX_VALUE
@@ -109,6 +131,11 @@ object ScratchGeom {
         }
         for (s in strokes) for (p in s.pts) eat(p)
         livePts?.forEach(::eat)
+        if (page != null) {
+            any = true
+            x0 = min(x0, page[0]); x1 = max(x1, page[0] + page[2])
+            y0 = min(y0, page[1]); y1 = max(y1, page[1] + page[3])
+        }
         if (!any) return null
         return floatArrayOf(x0, y0, x1 - x0, y1 - y0)
     }

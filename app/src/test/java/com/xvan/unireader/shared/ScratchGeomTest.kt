@@ -131,6 +131,31 @@ class ScratchGeomTest {
     }
 
     @Test
+    fun 页面底图矩形按锚点落在画布原点() {
+        // 三端契约：宽恒 800，高 = 800×aspect，锚点 (nx,ny) 落在画布原点 →
+        // rect 原点 = (−nx·W, −ny·H)。对不上就是「同一张纸两端写的位置不一样」。
+        val r = ScratchGeom.pageRect(0.25f, 0.5f, 1.5f)
+        assertArrayEquals(floatArrayOf(-200f, -600f, 800f, 1200f), r, 1e-4f)
+        // 拿不到页面尺寸（aspect<=0）按 A4 兜底，不能算出 0 高
+        val fallback = ScratchGeom.pageRect(0f, 0f, 0f)
+        assertEquals(800f * 1.4142f, fallback[3], 1e-3f)
+    }
+
+    @Test
+    fun 页面底图也算内容() {
+        val page = ScratchGeom.pageRect(0.5f, 0.5f, 1f)   // (-400,-400,800,800)
+        // 空纸 + 垫页 → 包围盒就是页矩形（否则软边界只认笔迹，空白纸上垫了页也走不到页边）
+        val onlyPage = ScratchGeom.contentBounds(emptyList(), null, page)!!
+        assertArrayEquals(page, onlyPage, 1e-4f)
+        // 笔迹在页外 → 并集覆盖两者
+        val s = Stroke(0, Pen(0, 0, 0, 1f, 4f, 0), listOf(Pt3(1200f, -900f, 0.5f)))
+        val both = ScratchGeom.contentBounds(listOf(s), null, page)!!
+        assertArrayEquals(floatArrayOf(-400f, -900f, 1600f, 1300f), both, 1e-4f)
+        // 不垫页时行为一字不变
+        assertNull(ScratchGeom.contentBounds(emptyList(), null, null))
+    }
+
+    @Test
     fun 锚点缩放点下内容不动() {
         // origin=(10,20) zoom=2，锚 (100,50) 的画布点 = (60,45)；放大 1.5 倍后它必须还在 (100,50)
         val v = ScratchGeom.zoomAt(10f, 20f, 2f, 1.5f, 100f, 50f)

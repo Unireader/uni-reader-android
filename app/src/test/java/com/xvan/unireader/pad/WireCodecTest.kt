@@ -18,7 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 69 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 75 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -118,6 +118,18 @@ class WireCodecTest {
             66 to WireCodec.encodeScratchMove(0, 0f, 1.0f),
             // #67 scratchMove{index:65535, nx:1.0, ny:0}（u16 上界）
             67 to WireCodec.encodeScratchMove(0xFFFF, 1.0f, 0f),
+            // #70 scratchPageShow{index:0, show:true}（v10 页面底图开关）
+            70 to WireCodec.encodeScratchPageShow(0, true),
+            // #71 scratchPageShow{index:65535, show:false}——show=0 专防被 `!= 0` 之外的兜底吃掉
+            71 to WireCodec.encodeScratchPageShow(0xFFFF, false),
+            // #72 scratchDelete{index:0}
+            72 to WireCodec.encodeScratchDelete(0),
+            // #73 scratchDelete{index:65535}（u16 上界）
+            73 to WireCodec.encodeScratchDelete(0xFFFF),
+            // #74 scratchRename{index:3, title:"第三张·推导"}（非 ASCII 走 str 的 UTF-8 长度前缀）
+            74 to WireCodec.encodeScratchRename(3, "第三张·推导"),
+            // #75 scratchRename{index:0, title:""}（空串 = 回到「草稿纸 N」兜底名）
+            75 to WireCodec.encodeScratchRename(0, ""),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -307,13 +319,19 @@ class WireCodecTest {
         val m49 = WireCodec.decode(unhex(VECTORS[48])) as WireCodec.Msg.ModeSel
         assertEquals(MODE_LASSO, m49.mode)
 
-        // #57 scratchpads{open:1, list:[P1(推导,dots), P2(空标题,grid)]}；bg 线上拆 r/g/b/a
+        // #57 scratchpads{open:1, list:[P1(推导,dots,页面底图开), P2(空标题,grid,关)]}；bg 线上拆 r/g/b/a
         val m57 = WireCodec.decode(unhex(VECTORS[56])) as WireCodec.Msg.ScratchPads
         assertEquals(1, m57.open)
         assertEquals(
             listOf(
-                WireCodec.ScratchPadEntry("P1", "推导", 3, 0.25f, 0.5f, 255, 255, 255, 1.0f, WireCodec.PATTERN_DOTS),
-                WireCodec.ScratchPadEntry("P2", "", 0, 0.5f, 0.125f, 250, 248, 240, 1.0f, WireCodec.PATTERN_GRID),
+                WireCodec.ScratchPadEntry(
+                    "P1", "推导", 3, 0.25f, 0.5f, 255, 255, 255, 1.0f, WireCodec.PATTERN_DOTS,
+                    showPage = true,
+                ),
+                WireCodec.ScratchPadEntry(
+                    "P2", "", 0, 0.5f, 0.125f, 250, 248, 240, 1.0f, WireCodec.PATTERN_GRID,
+                    showPage = false,
+                ),
             ),
             m57.list,
         )
@@ -372,7 +390,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(69, VECTORS.size)
+        assertEquals(75, VECTORS.size)
     }
 
     @Test
@@ -385,7 +403,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 69 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 75 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -443,7 +461,7 @@ class WireCodecTest {
             "3b0600e99885e8afbb0200020041311b00e6b7b1e585a5e79086e8a7a3e8aea1e7ae97e69cbae7b3bbe7bb9f010200423204005349435000",
             "3c06006162633132330300000100000000000000000900e7acace4b880e7aba00101040000000000803e0a00312e3120e5bc95e8a880000000000000000000000900e59d8fe4b9a6e7adbe",
             "29070000000000003f",
-            "3d01000200020050310600e68ea8e5afbc030000000000803e0000003fffffff0000803f01020050320000000000000000003f0000003efaf8f00000803f02",
+            "3d01000200020050310600e68ea8e5afbc030000000000803e0000003fffffff0000803f0101020050320000000000000000003f0000003efaf8f00000803f0200",
             "3dffff0000",
             "3e07000000010000001414140000803f000020410302000000f1c2008080420000003f00000044000002c10000803f",
             "2b0200",
@@ -456,6 +474,12 @@ class WireCodecTest {
             "2effff0000803f00000000",
             "3f00000000000000000000803f",
             "3f785634120000803f00000000",
+            "2f000001",
+            "2fffff00",
+            "480000",
+            "48ffff",
+            "4903001100e7acace4b889e5bca0c2b7e68ea8e5afbc",
+            "4900000000",
         )
     }
 }

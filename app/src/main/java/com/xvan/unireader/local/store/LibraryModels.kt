@@ -131,6 +131,11 @@ data class ScratchPad(
     val anchorY: Double,
     val bg: String,
     val pattern: String,
+    /**
+     * 页面底图（v10）：把这张纸锚定的那一页垫在纸下面当参照（几何契约见 `ScratchGeom.pageRect`）。
+     * v9 老库没有 `show_page` 列 → 读取侧兜底 false；**新建的纸默认 true**（同 Mac）。
+     */
+    val showPage: Boolean,
     val createdAt: String,
     val updatedAt: String,
 ) {

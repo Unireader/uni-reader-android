@@ -1,6 +1,7 @@
 package com.xvan.unireader.shared
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -127,6 +128,74 @@ class ScratchCanvas @JvmOverloads constructor(
         invalidate()
     }
 
+    // ---------- 页面底图（v10；契约见 ../PROTOCOL.md §4.4 与 [ScratchGeom.PAGE_REF_W]） ----------
+    //
+    // 「这张纸挂在哪一页」以前只有页面上那枚图钉知道；开了这个开关，那一页就垫在纸下面当参照。
+    // 位置/大小由宿主按契约算好（[setPageUnder] 收画布坐标矩形），**图从哪来**照旧走
+    // [PageImageSource]（模式1 = 本机 Pdfium / 模式2 = HTTP 找 Mac 要），本类不知道自己在哪种模式下。
+    // 层序：纸色 → 底纹 → **页图** → 笔迹（页图只是参照物，墨永远在最上面）。
+    // 夜间不反色：夜间滤镜只挂在 `PageCanvasView` 的页图层上，这层天然排除（同纸色/底纹）。
+
+    /** 宿主注入的页图来源（两模式各自的实现，同 `PageCanvasView`） */
+    var pageSource: PageImageSource? = null
+
+    private var pageUnderIndex = -1
+    private var pageUnderRect: FloatArray? = null
+    private var pageUnderBmp: Bitmap? = null
+    private var pageReqW = 0        // 已经按多宽请求过（跨档才重取，否则捏合每帧都在发请求）
+    private var pageFails = 0       // 这一页连续取不到几次了（见 ensurePageBitmap 的有限重试）
+
+    /**
+     * 设置/撤掉页面底图。[rect] = 画布坐标 `[x,y,w,h]`（宿主用 [ScratchGeom.pageRect] 算），
+     * null 或 [page] < 0 = 不垫页。换页/换纸都从这里进，位图按需异步取。
+     */
+    fun setPageUnder(page: Int, rect: FloatArray?) {
+        val changed = page != pageUnderIndex
+        pageUnderIndex = if (rect == null) -1 else page
+        pageUnderRect = if (pageUnderIndex < 0) null else rect
+        if (changed || pageUnderRect == null) {
+            pageUnderBmp = null
+            pageReqW = 0
+            pageFails = 0
+        }
+        clampViewport()
+        invalidate()
+    }
+
+    /**
+     * 页图像素宽：按当前缩放折进 [PageWidths] 的**共用档位**（不另立一套——阅读画布刚看过的
+     * 那一页多半就在同一档的缓存里，另立档位等于每张纸都重渲/重下一份大图）。
+     */
+    private fun pageStepWidthPx(): Int = PageWidths.snap((ScratchGeom.PAGE_REF_W * zoom * density).toInt())
+
+    /**
+     * 按需取页图（onDraw 里发现该换档就发一次请求；回调可能在后台线程，post 回主线程再上屏）。
+     * 取不到（模式2 掉包/模式1 页坏）**有限次重试**：一直不重试的话，纸上会永远糊着一块占位白；
+     * 无限重试则等于每帧一次网络请求。
+     */
+    private fun ensurePageBitmap() {
+        val idx = pageUnderIndex
+        val src = pageSource
+        if (idx < 0 || src == null) return
+        val w = pageStepWidthPx()
+        if (w == pageReqW) return   // 这一档已经取到/正在途中
+        pageReqW = w
+        src.request(idx, w) { bmp ->
+            post {
+                // 排队期间可能已经换纸/换页/关了底图——判据一律现读
+                if (pageUnderIndex != idx) return@post
+                if (bmp != null) {
+                    pageUnderBmp = bmp
+                    pageFails = 0
+                    invalidate()
+                } else if (pageFails < MAX_PAGE_RETRY) {
+                    pageFails++
+                    pageReqW = 0        // 放行下一帧再试一次
+                }
+            }
+        }
+    }
+
     /** 真源回推：整表替换（正在写的这一笔不受影响——它还没进 [strokes]） */
     fun setStrokes(list: List<Stroke>) {
         strokes.clear()
@@ -204,7 +273,7 @@ class ScratchCanvas @JvmOverloads constructor(
     // ---------- 视口维护 ----------
 
     private fun contentBounds(): FloatArray? =
-        ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null })
+        ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null }, pageUnderRect)
 
     private fun clampViewport() {
         val c = ScratchGeom.clampOrigin(ox, oy, zoom, contentBounds(), viewWdp(), viewHdp())
@@ -560,15 +629,20 @@ class ScratchCanvas @JvmOverloads constructor(
     // ---------- 绘制 ----------
 
     private val patternPaint = Paint()
+    // 页面底图：白底/描边一支，位图一支（位图那支要双线性过滤，缩放档之间不能糊成马赛克）
+    private val pagePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pageBmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val pageDst = RectF()
     private val miniPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val miniPath = Path()
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
 
-    private fun hasContent() = strokes.isNotEmpty() || livePts.isNotEmpty()
+    private fun hasContent() = strokes.isNotEmpty() || livePts.isNotEmpty() || pageUnderRect != null
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(bgColor)
         drawPattern(canvas)
+        drawPageUnder(canvas)   // 底纹之上、笔迹之下（页图只是参照物，墨永远在最上面）
         // 视口外的笔迹裁掉（画布是无界的一大坨，不裁就是每帧把整张纸重画一遍；同 web 的 boxHits）
         val z = zoom
         val x0 = ox
@@ -589,6 +663,34 @@ class ScratchCanvas @JvmOverloads constructor(
             overlays.drawEraserRing(canvas, ringX, ringY, t.eraserSize * ScratchGeom.ERASER_REF_W * z * density)
         }
         if (minimapOn && hasContent()) drawMinimap(canvas)
+    }
+
+    /**
+     * 页面底图：把这张纸**锚定的那一页**垫在纸上当参照（几何契约见 [ScratchGeom.pageRect]）。
+     * 图还没取到时先铺一块白 + 描边占位（免得开了开关却什么都没有、以为开关坏了）；
+     * 描边是必需的——白页压白纸看不出页边在哪（Mac 样张里就是靠它才分得出来）。
+     */
+    private fun drawPageUnder(c: Canvas) {
+        val r = pageUnderRect ?: return
+        ensurePageBitmap()
+        val z = zoom
+        val left = (r[0] - ox) * z * density
+        val top = (r[1] - oy) * z * density
+        val right = left + r[2] * z * density
+        val bottom = top + r[3] * z * density
+        if (right < 0 || bottom < 0 || left > width || top > height) return   // 整块在视口外
+        pagePaint.style = Paint.Style.FILL
+        pagePaint.color = Color.WHITE
+        c.drawRect(left, top, right, bottom, pagePaint)
+        val bmp = pageUnderBmp
+        if (bmp != null && !bmp.isRecycled) {
+            pageDst.set(left, top, right, bottom)
+            c.drawBitmap(bmp, null, pageDst, pageBmpPaint)
+        }
+        pagePaint.style = Paint.Style.STROKE
+        pagePaint.strokeWidth = 1f
+        pagePaint.color = withAlpha(inkColor, 0.3f)
+        c.drawRect(left, top, right, bottom, pagePaint)
     }
 
     /** 粗筛：这条笔迹的包围盒与可视画布矩形有没有交集（逐点算一遍比重画便宜得多，同 web boxHits） */
@@ -747,6 +849,20 @@ class ScratchCanvas @JvmOverloads constructor(
         c.clipRect(miniRect)
         fun mx(x: Float) = miniRect.left + dp(f.ox) + (x - f.wx) * f.s * density
         fun my(y: Float) = miniRect.top + dp(f.oy) + (y - f.wy) * f.s * density
+        // 页面底图：只画一个淡框（缩略图里塞整页图既贵又看不清，框足以说明「页在这儿」；同 Mac/web）
+        pageUnderRect?.let { pr ->
+            val l = mx(pr[0])
+            val t = my(pr[1])
+            val rr = mx(pr[0] + pr[2])
+            val bb = my(pr[1] + pr[3])
+            miniPaint.style = Paint.Style.FILL
+            miniPaint.color = Color.argb(26, 255, 255, 255)
+            c.drawRect(l, t, rr, bb, miniPaint)
+            miniPaint.style = Paint.Style.STROKE
+            miniPaint.strokeWidth = 1f
+            miniPaint.color = Color.argb(115, 255, 255, 255)
+            c.drawRect(l, t, rr, bb, miniPaint)
+        }
         // 骨架线即可（minimap 不必还原笔型/压感，1px 折线最省也最清楚）
         miniPaint.style = Paint.Style.STROKE
         miniPaint.strokeWidth = 1f
@@ -786,5 +902,8 @@ class ScratchCanvas @JvmOverloads constructor(
         const val MINI_PAD = 12f
         /** 面板内边距：缩略内容与视口框都不许贴到圆角边框上（同 Mac 的 inset=9） */
         const val MINI_INSET = 9f
+
+        /** 页面底图取不到时的重试次数上限（无限重试 = 每帧一次网络请求） */
+        const val MAX_PAGE_RETRY = 3
     }
 }
