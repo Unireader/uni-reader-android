@@ -198,13 +198,15 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         padView = PadView(this).apply {
             listener = this@PadActivity
-            // 页图源（PageCanvasView 的注入口）：模式2 从 Mac 取整页 PNG，widthPx 由 Mac 定、这里忽略。
+            // 页图源（PageCanvasView 的注入口）：模式2 从 Mac 取整页图。
+            // **widthPx 要透传**——从前这里丢掉它、一律吃 Mac 写死的 1600px，于是 Pad 6 横屏
+            // （视口 2880）拿到的图要放大 1.8 倍，比模式1 糊一档（见 PageFetcher 的说明）。
             // 换文档后的在途回调按 null 丢弃——旧 v 的页图贴到新文档上就是花屏。
             imageSource = object : PageImageSource {
                 override fun request(page: Int, widthPx: Int, cb: (Bitmap?) -> Unit) {
                     val v = docV
                     val f = fetcher ?: run { cb(null); return }
-                    f.fetch(page, v) { bmp -> cb(if (v == docV) bmp else null) }
+                    f.fetch(page, v, widthPx) { bmp -> cb(if (v == docV) bmp else null) }
                 }
 
                 override fun clear() {

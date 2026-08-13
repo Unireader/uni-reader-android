@@ -9,6 +9,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.util.LruCache
 import com.xvan.unireader.shared.PageImageSource
+import com.xvan.unireader.shared.PageWidths
 import io.legere.pdfiumandroid.PdfiumCore
 import java.io.Closeable
 import java.io.File
@@ -34,13 +35,8 @@ class PdfSource(
     companion object {
         const val TAG = "UniReader/Pdf"
 
-        /** 宽度档位：连续缩放时不为每个像素宽度各渲一张，档位内复用（同 Mac 的分级思路） */
-        val WIDTH_STEPS = intArrayOf(480, 720, 1080, 1440, 2160, 2880)
-
-        fun defaultCacheBytes(): Int {
-            val heap = Runtime.getRuntime().maxMemory()
-            return min(192L * 1024 * 1024, heap / 3).toInt()
-        }
+        /** 档位与缓存额度**两模式共用**，见 [PageWidths]（模式2 把档位随 `?w=` 报给 Mac） */
+        fun defaultCacheBytes(): Int = PageWidths.defaultCacheBytes()
 
         /**
          * 背景标签页的缓存上限（`ANDROID-STANDALONE-PLAN.md §13`）。
@@ -126,7 +122,7 @@ class PdfSource(
 
     override fun request(page: Int, widthPx: Int, cb: (Bitmap?) -> Unit) {
         if (page < 0 || page >= pageCount) { cb(null); return }
-        val w = snapWidth(widthPx)
+        val w = PageWidths.snap(widthPx)
         cache.get(key(page, w))?.let { cb(it); return }   // 命中即同步返回，不排队
         synchronized(queue) {
             if (closed) { cb(null); return }
@@ -161,13 +157,6 @@ class PdfSource(
     }
 
     private fun key(page: Int, widthPx: Int) = "$page@$widthPx"
-
-    /** 归到最近的不小于目标宽度的档位（超过最大档位就用最大档位，别无限放大内存） */
-    private fun snapWidth(widthPx: Int): Int {
-        val w = max(1, widthPx)
-        for (s in WIDTH_STEPS) if (s >= w) return s
-        return WIDTH_STEPS.last()
-    }
 
     private fun workLoop() {
         while (true) {
