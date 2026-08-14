@@ -284,12 +284,15 @@ class ScratchController(private val a: Activity) {
             )
         }
         list.addView(Ui.divider(a))
-        list.addView(
-            PadPanels.iconRow(a, R.drawable.ic_plus, "在当前位置新建") {
-                dlg?.dismiss()
-                createAtCurrentPosition()
-            },
-        )
+        // 纸开着时不给「新建」：草稿纸模式下再点新建会又叠一张，要先收起这张再建（与模式2 PadScratch 同款）
+        if (!isOpen) {
+            list.addView(
+                PadPanels.iconRow(a, R.drawable.ic_plus, "在当前位置新建") {
+                    dlg?.dismiss()
+                    createAtCurrentPosition()
+                },
+            )
+        }
         sheet.content(list)
         sheet.action("取消")
         dlg = sheet.show()
