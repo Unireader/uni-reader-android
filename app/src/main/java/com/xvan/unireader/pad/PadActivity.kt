@@ -285,9 +285,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { padView.turn(prev = false) }
             gap()
             icon("mode", TopBar.modeIcon(MODE_NOTE), "切换模式") { padView.cycleMode() }
+            // 「切换笔」只在笔模式下出现且染当前笔色（refresh() 维护），其余模式占位纯属误导
             icon("pen", R.drawable.ic_nib, "切换笔") { padView.cyclePen() }
             icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
-            icon("text", R.drawable.ic_text, "文字笔记") { padView.toggleNoteMode() }
+            // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
+            // 点下去界面毫无变化，用户无法预期笔落下会变成「开编辑器」
             // 草稿纸：盖在 PDF 之上的无限白板（列表 + 「在当前位置新建」，见 PadScratch）
             icon("scratch", R.drawable.ic_scratch, "草稿纸") { scratch.showList() }
             // 锁缩放常驻（与模式1 同一位置、同一图标——两边的顶栏必须还是同一条栏）
@@ -397,6 +399,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         applyScratchMargin()
         setDot(false)
         applyGraphVisibility()
+        applyLatVisibility()
         refresh()
     }
 
@@ -542,15 +545,35 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             history.addView(Ui.spacer(this, 12))
         }
         renderHistory()
+        // 连接校验（大按钮与回车都走这条）：失败留在原地改，成功才关窗
+        fun submit() {
+            val host = hostEdit.text.toString().trim()
+            val token = tokenEdit.text.toString().trim()
+            if (host.isEmpty() || token.isEmpty()) {
+                err.text = "host 和 token 都要填"
+                err.visibility = View.VISIBLE
+                return
+            }
+            connect(host, token)
+            dlgRef?.dismiss()
+        }
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(history)
             addView(hostEdit)
             addView(tokenEdit, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
             addView(err)
+            // 主操作 = 「连接」大按钮；「扫码连接」是次要路径，收成无边框文字按钮
             addView(
-                Ui.button(this@PadActivity, "扫码连接") { startScan() },
+                Ui.button(this@PadActivity, "连接", filled = true) { submit() },
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) },
+            )
+            addView(
+                Ui.textButton(this@PadActivity, "扫码连接") { startScan() },
+                LinearLayout.LayoutParams(-2, -2).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    topMargin = dp(4)
+                },
             )
             addView(
                 CheckBox(this@PadActivity).apply {
@@ -564,22 +587,23 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 },
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
             )
+            addView(
+                CheckBox(this@PadActivity).apply {
+                    text = "显示延迟读数"
+                    setTextColor(Ui.onSurface(this@PadActivity))
+                    isChecked = prefs.getBoolean("showLat", true)
+                    setOnCheckedChangeListener { _, checked ->
+                        prefs.edit().putBoolean("showLat", checked).apply()
+                        applyLatVisibility()
+                    }
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
+            )
         }
         val dlg = Sheet(this)
             .title("连接 Mac")
             .content(form)
             .action("取消")
-            .action("连接", primary = true, dismiss = false) { d ->
-                val host = hostEdit.text.toString().trim()
-                val token = tokenEdit.text.toString().trim()
-                if (host.isEmpty() || token.isEmpty()) {
-                    err.text = "host 和 token 都要填"
-                    err.visibility = View.VISIBLE
-                    return@action
-                }
-                connect(host, token)
-                d.dismiss()
-            }
             .show()
         dlgRef = dlg
         dialogHost = hostEdit
@@ -591,6 +615,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private fun applyGraphVisibility() {
         val show = getSharedPreferences("conn", MODE_PRIVATE).getBoolean("showGraph", true)
         graphView.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    /** 顶栏延迟读数（rtt/e2e/…）的显隐：与 showGraph 同一份 prefs，都是「连接设置」这一件事 */
+    private fun applyLatVisibility() {
+        val show = getSharedPreferences("conn", MODE_PRIVATE).getBoolean("showLat", true)
+        latText.visibility = if (show) View.VISIBLE else View.GONE
     }
 
     private fun startScan() {
@@ -676,10 +706,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setIcon("mode", TopBar.modeIcon(padView.mode))
         bar.setActive("mode", padView.mode != MODE_PAGE)
         bar.setActive("ruler", padView.rulerOn)
-        bar.setActive("text", padView.noteMode)
         bar.setActive("scratch", scratch.isOpen)
         bar.setActive("lock", padView.zoomLocked)
-        bar.setEnabled("pen", padView.mode == MODE_NOTE)
+        // 「切换笔」只在笔模式下出现，并染当前笔的颜色（其余模式它不出现，见 buildUi 的注释）
+        bar.setVisible("pen", padView.mode == MODE_NOTE)
+        bar.setTint("pen", padView.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = padView.twoFingerScroll
 

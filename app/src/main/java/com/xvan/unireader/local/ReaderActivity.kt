@@ -285,11 +285,12 @@ class ReaderActivity : Activity() {
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { cur()?.turn(prev = false) }
             gap()
             icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") { cur()?.cycleMode(); refreshHud() }
+            // 「切换笔」只在笔模式下出现且染当前笔色（refreshHud() 维护），其余模式占位纯属误导
             icon("pen", R.drawable.ic_nib, "切换笔") { cur()?.cyclePen(); refreshHud() }
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
             icon("ruler", R.drawable.ic_ruler, "尺子") { cur()?.toggleRuler(); refreshHud() }
-            // 文字笔记模式（M5）：开着时笔点页面 = 开编辑器而不是写字，与模式2 的「文字」键同一开关
-            icon("text", R.drawable.ic_text, "文字笔记") { cur()?.toggleNoteMode(); refreshHud() }
+            // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
+            // 点下去界面毫无变化，用户无法预期笔落下会变成「开编辑器」
             // 草稿纸：盖在 PDF 之上的无限白板（列表 + 「在当前位置新建」，见 ScratchController）
             icon("scratch", R.drawable.ic_scratch, "草稿纸") { scratch.showList() }
             // 锁缩放：本来在 ⋯ 里，2026-08-12 用户要求提上来常驻——写字时误缩放是**当场**要止住的事，
@@ -1035,6 +1036,7 @@ class ReaderActivity : Activity() {
         if (canvas == null) {
             // 没有当前画布（还在装载 / 刚关掉最后一篇）：胶囊收起来，别显示上一篇的笔和图层
             bar.setPageLabel("—/—", "100%")
+            bar.setVisible("pen", false)
             capsules.visibility = View.GONE
             return
         }
@@ -1044,9 +1046,10 @@ class ReaderActivity : Activity() {
         bar.setIcon("mode", TopBar.modeIcon(canvas.mode))
         bar.setActive("mode", canvas.mode != MODE_PAGE)
         bar.setActive("ruler", canvas.rulerOn)
-        bar.setActive("text", canvas.noteMode)
         bar.setActive("lock", canvas.zoomLocked)
-        bar.setEnabled("pen", canvas.mode == MODE_NOTE)
+        // 「切换笔」只在笔模式下出现，并染当前笔的颜色（与模式2 同一套表达）
+        bar.setVisible("pen", canvas.mode == MODE_NOTE)
+        bar.setTint("pen", canvas.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = canvas.twoFingerScroll
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App

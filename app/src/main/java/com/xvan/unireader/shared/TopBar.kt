@@ -1,6 +1,7 @@
 package com.xvan.unireader.shared
 
 import android.app.Activity
+import android.content.res.ColorStateList
 import android.util.Log
 import android.view.Gravity
 import android.view.Menu
@@ -24,7 +25,8 @@ import com.xvan.unireader.shared.Ui.setActive
  *
  * 形态（用户 2026-07-30 定）：**全图标单行 + 右侧溢出菜单**。
  * - 模式键的图标随当前模式变（✎ ⌫ ✋ ⬚），点一下轮换——语义与从前的文字键完全一样。
- * - 开关类（尺子/文字）按下去是 accent 底色 + accent 图标，不再靠给文案加"✓"。
+ * - 开关类（尺子）按下去是 accent 底色 + accent 图标，不再靠给文案加"✓"。
+ * - 「切换笔」只在笔模式下出现（[setVisible]），并染当前笔的颜色（[setTint]）。
  * - 低频项（夜间、页图显隐、锁缩放、图层、跳页、连接设置…）进 ⋯，用系统 `PopupMenu`：
  *   勾选态是原生的 checkable item，**每次弹出现算**，不缓存——缓存就会出现"菜单里没勾但功能开着"。
  *
@@ -168,44 +170,61 @@ class TopBar(private val a: Activity) {
      * 实测「文字笔记」会被裁成 42px 宽——按得到一半，比收起来更糟）。
      *
      * 触摸目标不缩：48dp 是系统无障碍下限，为了多塞一个键把它压小是拿手指准头换排版。
-     * 收谁由 [icon] 的 `spillFirst` 定。**结果没变就直接返回**——不然改可见性会再触发一次
-     * 布局，来回抖。
+     * 收谁由 [icon] 的 `spillFirst` 定。被 [setVisible] 藏掉的键不参与宽度计算、也不进 ⋯。
      */
     private fun reflow() {
+        if (items.isEmpty()) return
         val avail = iconScroll.width
-        if (avail <= 0 || items.isEmpty()) return
-        val unit = Ui.dp(a, Ui.TOUCH)
-        // need 一律按**全部**键算起（不是按当前可见的），否则收过一次之后就再也长不回来了
-        var need = items.size * unit + gapsPx
-        val toSpill = ArrayList<Item>()
-        // ① `spillFirst` 的**整组一起收**：◀▶ 是一对，只收走一个会让人以为是 BUG。
-        val first = items.filter { it.spillFirst }
-        if (need > avail && first.isNotEmpty()) {
-            toSpill.addAll(first)
-            need -= first.size * unit
-        }
-        // ② 还不够就从队尾逐个收（越靠后越次要，与声明顺序一致）
-        var i = items.size - 1
-        while (need > avail && i >= 0) {
-            val it = items[i]
-            if (it !in toSpill) {
-                toSpill.add(it)
-                need -= unit
+        val shown = items.filter { it.key !in hidden }
+        if (avail > 0) {
+            val unit = Ui.dp(a, Ui.TOUCH)
+            // need 一律按**全部可见**键算起（不是按当前没收的），否则收过一次之后就再也长不回来了
+            var need = shown.size * unit + gapsPx
+            val toSpill = ArrayList<Item>()
+            // ① `spillFirst` 的**整组一起收**：◀▶ 是一对，只收走一个会让人以为是 BUG。
+            val first = shown.filter { it.spillFirst }
+            if (need > avail && first.isNotEmpty()) {
+                toSpill.addAll(first)
+                need -= first.size * unit
             }
-            i--
+            // ② 还不够就从队尾逐个收（越靠后越次要，与声明顺序一致）
+            var i = shown.size - 1
+            while (need > avail && i >= 0) {
+                val it = shown[i]
+                if (it !in toSpill) {
+                    toSpill.add(it)
+                    need -= unit
+                }
+                i--
+            }
+            if (toSpill.map { it.key } != spilled.map { it.key }) {
+                Log.i(TAG, "顶栏宽度不够（可用 ${avail}px），收进溢出菜单：${toSpill.joinToString { it.desc }}")
+                spilled = toSpill
+            }
         }
-        if (toSpill.map { it.key } == spilled.map { it.key }) return
-        spilled = toSpill
-        if (toSpill.isNotEmpty()) {
-            Log.i(TAG, "顶栏宽度不够（可用 ${avail}px），收进溢出菜单：${toSpill.joinToString { it.desc }}")
-        }
-        // **必须 post**：这里是在 layout 回调里，此刻改可见性触发的 requestLayout 会被本轮布局吞掉
-        // （系统只会打一行 "requestLayout() improperly called during layout"），
-        // 结果是算对了却没生效——上一版就栽在这儿：日志说收了「上一页」，屏幕上它还在，
-        // 「文字笔记」照旧被裁成 42px。`spilled` 已先更新，所以不会反复 post。
+        // **必须 post**：这里可能是在 layout 回调里，此刻改可见性触发的 requestLayout 会被本轮布局
+        // 吞掉（"requestLayout() improperly called during layout"）。可见性按「被藏 或 被收」现算
+        // 并总是应用——同值 setVisibility 是 no-op 不会来回抖，而 setVisible 引起的这次 reflow
+        // spill 结果往往没变，靠「结果没变就返回」省掉它的话藏键就永远不生效了。
         icons.post {
-            for (it in items) it.btn.visibility = if (it in spilled) View.GONE else View.VISIBLE
+            for (it in items) {
+                it.btn.visibility = if (it.key in hidden || it in spilled) View.GONE else View.VISIBLE
+            }
         }
+    }
+
+    /** 被 [setVisible] 藏掉的键（如「切换笔」只在笔模式下出现）：不占宽度、不进 ⋯ */
+    private val hidden = HashSet<String>()
+
+    /** 显示/藏掉某个键（藏 = 从栏上拿走，不是置灰——置灰用 [setEnabled]） */
+    fun setVisible(key: String, visible: Boolean) {
+        val changed = if (visible) hidden.remove(key) else hidden.add(key)
+        if (changed) reflow()
+    }
+
+    /** 给某个键的图标染色（「切换笔」染当前笔色）；null = 回默认 barOn */
+    fun setTint(key: String, color: Int?) {
+        keyed[key]?.imageTintList = ColorStateList.valueOf(color ?: Ui.barOn(a))
     }
 
     /** 往右侧固定区插一个自定义 View（模式2 的延迟指标），排在页码之前 */
@@ -225,7 +244,8 @@ class TopBar(private val a: Activity) {
 
     private fun showOverflow() {
         // 被挤下去的键排在最前：它们本来该在栏上，用户是在这儿"找"它们，不是在浏览设置
-        val spill = spilled.map { s -> MenuItem(s.desc, null, s.onClick) }
+        // （被 setVisible 藏掉的键不进 ⋯——藏掉就是不想让它出现）
+        val spill = spilled.filter { it.key !in hidden }.map { s -> MenuItem(s.desc, null, s.onClick) }
         val list = spill + (overflowItems?.invoke() ?: emptyList())
         if (list.isEmpty()) return
         val menu = PopupMenu(a, overflowBtn, Gravity.END)

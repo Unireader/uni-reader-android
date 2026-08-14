@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.RippleDrawable
 import android.util.TypedValue
 import android.view.Gravity
@@ -106,10 +107,16 @@ object Ui {
     fun ImageButton.setActive(active: Boolean, on: Int, accent: Int) {
         val c = context
         imageTintList = ColorStateList.valueOf(if (active) accent else on)
-        background =
+        val bg =
             if (active) rippleOver(c, round(col(c, R.color.accent_container), RADIUS, c), RADIUS, accent)
             else rippleOver(c, null, RADIUS, on)
+        // 激活底色横向内缩 3dp：按钮本身是 48dp 满格排的（顶栏/草稿纸浮条都没有间距），
+        // 两个相邻开关同时激活时底色会连成一整片、分不清是几个键。触摸区不变，只缩底色。
+        background = if (active) InsetDrawable(bg, dp(c, 3), 0, dp(c, 3), 0) else bg
     }
+
+    /** Pen → ARGB（顶栏「切换笔」图标染色等「按笔色显示」的场合共用这一处换算） */
+    fun penArgb(p: Pen): Int = Color.argb((p.a * 255f).roundToInt().coerceIn(0, 255), p.r, p.g, p.b)
 
     /** 文字按钮：填充式（主操作）或描边式（次要操作），扁平、圆角 12 */
     fun button(c: Context, label: String, filled: Boolean = false, onClick: () -> Unit): TextView =
