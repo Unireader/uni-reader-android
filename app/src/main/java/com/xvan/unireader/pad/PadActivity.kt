@@ -161,6 +161,23 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         if (hasFocus) enterImmersive()   // 弹窗/切回前台后系统栏会回来，重新收掉
     }
 
+    /** 指标行的宽度上限：竖屏 1080 下整行指标比按钮组还宽，压到 120dp 省略显示（§9.3）；横屏不限 */
+    private fun latMaxWidth(): Int =
+        if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT) {
+            dp(120)
+        } else {
+            Int.MAX_VALUE
+        }
+
+    /**
+     * 转屏不再重建 Activity（manifest 声明了 configChanges，重建会把 WS/UDP 连接断掉）：
+     * 布局随各视图的 onSizeChanged 自适应，方向相关的一次性判定只有指标行宽度这一条，在这里重判。
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        latText.maxWidth = latMaxWidth()
+    }
+
     /** 收起/展开顶栏（同网页 hideBar/showBar）：收起后右上角浮一枚小按钮，画布拿到整屏 */
     private fun setBarHidden(hidden: Boolean) {
         topbar.visibility = if (hidden) View.GONE else View.VISIBLE
@@ -252,10 +269,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 整行指标（rtt/e2e/nackRTT/mv-s/nack/resend）要 650px，竖屏 1080 下比按钮组还宽。
             // 谁都不肯让 = 按钮被挤没（§9.3 那个 BUG 的真正原因）。**按钮优先**：窄屏把这行压到
             // 120dp 省略显示，宽屏（模式2 的正常场景＝横屏平板）保持整行不变。
-            // 旋转会重建 Activity（manifest 没声明 configChanges），所以这里判一次就够。
-            if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT) {
-                maxWidth = dp(120)
-            }
+            maxWidth = latMaxWidth()
         }
         // 顶栏与模式1 是同一份（shared/TopBar）：键的顺序刻意也一样，只多「文档 / 连接设置 /
         // 收起顶栏」这三件模式2 独有的事（真源在 Mac，所以还有个连接态小圆点）。

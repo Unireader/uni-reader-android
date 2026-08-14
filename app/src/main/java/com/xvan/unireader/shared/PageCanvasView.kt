@@ -426,8 +426,12 @@ open class PageCanvasView @JvmOverloads constructor(
     private var firstGeometryDone = false
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        // 转屏/分屏：宽度一变，dispH 全按新 vw 比例重算，scrollY 原值会落到别的页
+        // （实测：竖屏 21 页转横屏变 13 页）。先记下「页 + 页内比例」，重算后锚回原处。
+        val anchor = if (oldw > 0 && w != oldw && pageCount > 0) topVisiblePage() to topFrac() else null
         super.onSizeChanged(w, h, oldw, oldh)
         onGeomChanged()
+        if (anchor != null) scrollToPageFrac(anchor.first, anchor.second)
         maybeFirstGeometry()
     }
 

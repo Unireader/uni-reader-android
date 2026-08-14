@@ -47,11 +47,16 @@
         <activity
             android:name=".local.ReaderActivity"
             android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="false" />
 
-        <!-- 模式2 输入板（原 MainActivity，现由 Launcher 启动） -->
+        <!-- 模式2 输入板（原 MainActivity，现由 Launcher 启动）。
+          configChanges 必须有：不声明的话转屏会重建 Activity，onDestroy 里 udp.close()/client.close()
+          直接把 WS/UDP 连接断了（且进程内 PDF 渲染缓存、乐观笔迹全丢）。声明后转屏只回调
+          onConfigurationChanged，视图随 onSizeChanged 自适应重排。 -->
         <activity
             android:name=".pad.PadActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="false" />
     </application>
 
