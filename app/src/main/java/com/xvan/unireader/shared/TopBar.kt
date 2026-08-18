@@ -24,7 +24,7 @@ import com.xvan.unireader.shared.Ui.setActive
  * 两边只声明"我有哪几个键、按下去干什么"。
  *
  * 形态（用户 2026-07-30 定）：**全图标单行 + 右侧溢出菜单**。
- * - 模式键的图标随当前模式变（✎ ⌫ ✋ ⬚），点一下轮换——语义与从前的文字键完全一样。
+ * - 模式键 2026-08 从顶栏移除（图标怎么调都与栏上其他键不是一个视觉重量）：切模式走环形盘。
  * - 开关类（尺子）按下去是 accent 底色 + accent 图标，不再靠给文案加"✓"。
  * - 「切换笔」只在笔模式下出现（[setVisible]），并染当前笔的颜色（[setTint]）。
  * - 低频项（夜间、页图显隐、锁缩放、图层、跳页、连接设置…）进 ⋯，用系统 `PopupMenu`：
@@ -37,14 +37,6 @@ class TopBar(private val a: Activity) {
 
     companion object {
         const val TAG = "UniReader/TopBar"
-
-        /** 模式 → 图标（`MODE_NOTE/ERASE/PAGE/LASSO`，顺序与 `PadConst.MODE_LABELS` 一致） */
-        fun modeIcon(mode: Int): Int = when (mode) {
-            MODE_ERASE -> R.drawable.ic_mode_eraser
-            MODE_PAGE -> R.drawable.ic_mode_pan
-            MODE_LASSO -> R.drawable.ic_mode_lasso
-            else -> R.drawable.ic_mode_pen
-        }
     }
 
     /** 溢出菜单的一项。[checked] 非空即渲染成可勾选项（原生 checkable） */

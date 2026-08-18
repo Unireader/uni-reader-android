@@ -284,7 +284,7 @@ class ReaderActivity : Activity() {
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { cur()?.turn(prev = true) }
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { cur()?.turn(prev = false) }
             gap()
-            icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") { cur()?.cycleMode(); refreshHud() }
+            // 顶栏不再放模式键：模式切换走环形盘（RK_ERASE/RK_PAGE/选笔），栏上少一个键
             // 「切换笔」只在笔模式下出现且染当前笔色（refreshHud() 维护），其余模式占位纯属误导
             icon("pen", R.drawable.ic_nib, "切换笔") { cur()?.cyclePen(); refreshHud() }
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
@@ -1042,9 +1042,7 @@ class ReaderActivity : Activity() {
         }
         capsules.visibility = View.VISIBLE
         bar.setPageLabel(canvas.hudPage(), canvas.hudZoom())
-        // 模式键的图标随当前模式变，开关键按下去是 accent 底色——两模式同一套表达（shared/TopBar）
-        bar.setIcon("mode", TopBar.modeIcon(canvas.mode))
-        bar.setActive("mode", canvas.mode != MODE_PAGE)
+        // 模式键已从顶栏移除（切模式走环形盘）；开关键按下去是 accent 底色——两模式同一套表达（shared/TopBar）
         bar.setActive("ruler", canvas.rulerOn)
         bar.setActive("lock", canvas.zoomLocked)
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（与模式2 同一套表达）

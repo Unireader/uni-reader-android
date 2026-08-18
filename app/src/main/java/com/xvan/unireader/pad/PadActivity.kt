@@ -284,7 +284,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { padView.turn(prev = true) }
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { padView.turn(prev = false) }
             gap()
-            icon("mode", TopBar.modeIcon(MODE_NOTE), "切换模式") { padView.cycleMode() }
+            // 顶栏不再放模式键：模式切换走环形盘（RK_ERASE/RK_PAGE/选笔）与 Mac 远程，栏上少一个键
             // 「切换笔」只在笔模式下出现且染当前笔色（refresh() 维护），其余模式占位纯属误导
             icon("pen", R.drawable.ic_nib, "切换笔") { padView.cyclePen() }
             icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
@@ -700,11 +700,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             )
         )
         // 顶栏这几行与模式1 的 `refreshHud` 是同一套表达（shared/TopBar）：
-        // 模式键换图标、开关键上 accent 底色。两边各写一份文案的时代就此结束。
+        // 开关键上 accent 底色。两边各写一份文案的时代就此结束。
         bar.setPageLabel(padView.hudPage(), padView.hudZoom())
         drawer.setCurrentPage(padView.topVisiblePage())   // 目录的「当前章节」追踪
-        bar.setIcon("mode", TopBar.modeIcon(padView.mode))
-        bar.setActive("mode", padView.mode != MODE_PAGE)
         bar.setActive("ruler", padView.rulerOn)
         bar.setActive("scratch", scratch.isOpen)
         bar.setActive("lock", padView.zoomLocked)
