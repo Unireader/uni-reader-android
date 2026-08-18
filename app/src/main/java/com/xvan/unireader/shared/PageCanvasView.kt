@@ -56,8 +56,19 @@ open class PageCanvasView @JvmOverloads constructor(
     protected open fun onErase(page: Int, pts: List<Pt2>) {}
     protected open fun onEraseEnd() {}
 
-    /** 框选移动提交：box 为归一化 x0,y0,x1,y1——真源侧要拿它重新判定命中，不信本地下标 */
-    protected open fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float) {}
+    /**
+     * 框选移动提交：box 为归一化 x0,y0,x1,y1、poly 为自由框选路径（扁平数组，≥3 点）——
+     * 真源侧要拿它们重新判定命中（多边形优先，见 ../PROTOCOL.md `lassoMove`），不信本地下标
+     */
+    protected open fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {}
+
+    /**
+     * 框选缩放提交：box/poly 同上；`(ax, ay)` = 缩放锚点（被拖手柄的对侧手柄），
+     * `(sx, sy)` = 按轴缩放比（已 clamp 0.05...20）——真源侧复判命中后 `InkEdit.scaled`
+     */
+    protected open fun onLassoScaleCommit(
+        page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
+    ) {}
     protected open fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String) {}
     protected open fun onNoteDelete(id: String, page: Int, nx: Float, ny: Float) {}
 
@@ -650,8 +661,18 @@ open class PageCanvasView @JvmOverloads constructor(
         strokes.clear()
         strokes.addAll(list)
         if (!activePen) clearCur()   // 正在写的这笔不清，避免闪断
-        // 框选移动已提交、正等这条回来：新数据本身就是移动后的真源，乐观预览到此为止
-        if (lassoCommitted) clearLasso()
+        // 框选移动/缩放已提交、正等这条回来。分层记账（lassoMirrorSplit，模式2）：这条到了 = 笔迹层
+        // 改画真源（该层命中下标随新数组作废），notes 层继续乐观预览直到它的镜像也到；两条都到齐才
+        // clearLasso——否则先到的那条把乐观变换全清掉，另一层跳回原位再跳回来 = 闪烁（2026-08-18 用户报，
+        // Mac 的 broadcastStrokes/broadcastNotes 是两条独立广播，到达顺序与间隔无保证）。
+        // 模式1 的回推一趟带齐两层（同一主线程回调连发），保持「任意回推即清」的旧行为。
+        if (lassoCommitted) {
+            if (lassoMirrorSplit) {
+                lassoSyncStrokes = true
+                lassoSelection?.let { lassoSelection = it.copy(strokeIdx = emptyList()) }
+                if (lassoSyncNotes) clearLasso()
+            } else clearLasso()
+        }
         invalidate()
     }
 
@@ -667,7 +688,15 @@ open class PageCanvasView @JvmOverloads constructor(
     fun setNotes(list: List<TextNote>) {
         notes.clear()
         notes.addAll(list)
-        if (lassoCommitted) clearLasso()
+        // 框选提交后的分层记账：与 setStrokes 对称（见那里的长注释）——notes 层改画真源，
+        // 笔迹层继续乐观直到其镜像到达；两条都到齐才 clearLasso。
+        if (lassoCommitted) {
+            if (lassoMirrorSplit) {
+                lassoSyncNotes = true
+                lassoSelection?.let { lassoSelection = it.copy(noteIdx = emptyList()) }
+                if (lassoSyncStrokes) clearLasso()
+            } else clearLasso()
+        }
         invalidate()
     }
 
@@ -811,17 +840,21 @@ open class PageCanvasView @JvmOverloads constructor(
 
         drawTextFills(canvas)
 
-        // 静态笔迹层（框选提交待回传期间：命中项按位移量乐观渲染）。
+        // 静态笔迹层（框选提交待回传期间：命中项按位移/缩放乐观渲染）。
         // ⚠️ 性能红线：`strokes` 是**全文档**笔迹（模式2 的 `broadcastStrokes` 就是整篇发过来的），
         // 页图/文字铺色/图钉都按可见范围跳过了，笔迹也得裁——但**光裁页救不了正在写字的那一页**
         // （它恰恰就是可见页，一条都裁不掉），每条笔迹的几何缓存才是滚动流畅的关键，见 [InkRenderer]。
-        val sel = if (lassoCommitted) lassoSelection else null
+        // 分层记账：strokes 镜像一到（lassoSyncStrokes）笔迹层即改画真源，乐观只作用于还没到的层。
+        val sel = if (lassoCommitted && !lassoSyncStrokes) lassoSelection else null
+        val sc = lassoScale?.takeIf { sel != null && (it[2] != 1f || it[3] != 1f) }
         for (i in strokes.indices) {
             val s = strokes[i]
             val sp = s.page.toInt()
             if (sp < firstVis || sp > lastVis) continue
             if (sel != null && sel.page == sp && sel.strokeIdx.contains(i)) {
-                ink.drawStroke(canvas, s, this, lassoDx, lassoDy)
+                // 缩放提交待回传：按 InkEdit.scaled 语义（点集绕锚点按轴缩放 + 线宽 ×√(sx·sy)）乐观渲染
+                if (sc != null) ink.drawStroke(canvas, InkEdit.scaled(s, sc[0], sc[1], sc[2], sc[3]), this)
+                else ink.drawStroke(canvas, s, this, lassoDx, lassoDy)
             } else {
                 ink.drawStroke(canvas, s, this)
             }
@@ -829,7 +862,9 @@ open class PageCanvasView @JvmOverloads constructor(
         // 活体层：正在写的这一笔
         if (curActive) ink.drawLive(canvas, curPage, curStrokePen, curPts, this)
 
-        drawNoteMarkers(canvas, sel)
+        // 注解层与笔迹层分开记账：notes 镜像没到才继续乐观
+        val noteSel = if (lassoCommitted && !lassoSyncNotes) lassoSelection else null
+        drawNoteMarkers(canvas, noteSel)
 
         // 橡皮尺寸圆环（擦除模式 + 开关开 + 有笔尖位置）
         val ringAt = eraserRingAt
@@ -874,9 +909,13 @@ open class PageCanvasView @JvmOverloads constructor(
      */
     protected fun drawTextFills(canvas: Canvas) {
         if (fills.isEmpty()) return
-        // 正在拖/已提交待回推的选中注解：底色要跟着图钉一起走（图钉的偏移见 drawNoteMarkers）
-        val sel = lassoSelection?.takeIf { lassoDragMode == 2 || lassoCommitted }
+        // 正在拖/已提交待回推的选中注解：底色要跟着图钉一起走（图钉的变换见 drawNoteMarkers）。
+        // 分层记账：notes 镜像一到（lassoSyncNotes）注解层即改画真源，乐观只作用于还没到的层。
+        val sel = lassoSelection?.takeIf {
+            lassoDragMode == 2 || lassoDragMode == 3 || (lassoCommitted && !lassoSyncNotes)
+        }
         val moving = sel?.noteIdx?.mapNotNull { notes.getOrNull(it)?.id }?.toSet() ?: emptySet()
+        val sc = lassoScale?.takeIf { sel != null && (it[2] != 1f || it[3] != 1f) }
         for (f in fills) {
             val page = f.page.toInt()
             if (page !in 0 until pageCount) continue
@@ -884,15 +923,29 @@ open class PageCanvasView @JvmOverloads constructor(
             if (top + dispH[page] < barH || top > height) continue   // 整页在视口外：跳过这条的全部行框
             val color = Color.argb((f.a * 255f).roundToInt().coerceIn(0, 255), f.r, f.g, f.b)
             val on = f.noteId.isNotEmpty() && sel != null && sel.page == page && f.noteId in moving
-            val ox = if (on) lassoDx else 0f
-            val oy = if (on) lassoDy else 0f
+            val ox = if (on && sc == null) lassoDx else 0f
+            val oy = if (on && sc == null) lassoDy else 0f
             for (r in f.rects) {
-                overlays.drawTextFill(
-                    canvas,
-                    viewX(page, r[0] + ox), viewY(page, r[1] + oy),
-                    viewX(page, r[0] + r[2] + ox), viewY(page, r[1] + r[3] + oy),
-                    color,
-                )
+                if (on && sc != null) {
+                    // 缩放 ghost：行框绕锚点按轴缩放（同 InkEdit.scaled(TextNote) 的 rects 语义）
+                    val sr = InkEdit.scaledRect(
+                        doubleArrayOf(r[0].toDouble(), r[1].toDouble(), r[2].toDouble(), r[3].toDouble()),
+                        sc[0].toDouble(), sc[1].toDouble(), sc[2].toDouble(), sc[3].toDouble(),
+                    )
+                    overlays.drawTextFill(
+                        canvas,
+                        viewX(page, sr[0].toFloat()), viewY(page, sr[1].toFloat()),
+                        viewX(page, (sr[0] + sr[2]).toFloat()), viewY(page, (sr[1] + sr[3]).toFloat()),
+                        color,
+                    )
+                } else {
+                    overlays.drawTextFill(
+                        canvas,
+                        viewX(page, r[0] + ox), viewY(page, r[1] + oy),
+                        viewX(page, r[0] + r[2] + ox), viewY(page, r[1] + r[3] + oy),
+                        color,
+                    )
+                }
             }
         }
     }
@@ -905,7 +958,7 @@ open class PageCanvasView @JvmOverloads constructor(
             var nnx = n.nx
             var nny = n.ny
             if (sel != null && sel.page == n.page.toInt() && sel.noteIdx.contains(i)) {
-                nnx += lassoDx; nny += lassoDy
+                if (lassoGhost(nnx, nny, tmp2)) { nnx = tmp2[0]; nny = tmp2[1] }
             }
             val page = n.page.toInt()
             if (page !in 0 until pageCount) continue
@@ -955,35 +1008,59 @@ open class PageCanvasView @JvmOverloads constructor(
         }
     }
 
-    // —— 框选移动（lasso：拖空白=框选 / 拖选中高亮框内=移动；本地判定只为预览，Mac 复判执行） ——
+    // —— 框选（lasso：拖空白=自由框选 / 拖选中高亮框内=移动 / 拖手柄=缩放；本地判定只为预览，真源复判执行） ——
 
     /**
      * 本地判定的选中集：镜像 Mac `LassoSelection`，但这里只用于渲染高亮——命中算法是客户端
-     * 复刻的一份乐观预览（同 eraseHit 先例），提交移动时 Mac 用真源重新判定，不信任这里的下标。
+     * 复刻的一份乐观预览（同 eraseHit 先例），提交移动/缩放时真源用同一套算法重新判定，不信任这里的下标。
      */
     protected data class LassoSelection(
         val page: Int,
-        val box: FloatArray,          // x0,y0,x1,y1（归一化，提交时原样带给 Mac 复判）
+        val box: FloatArray,          // x0,y0,x1,y1（路径包围盒，归一化，提交时原样带给真源复判）
+        val poly: FloatArray,         // 自由框选路径（扁平数组 ≥3 点，提交时原样带上：多边形命中）
         val strokeIdx: List<Int>,
         val noteIdx: List<Int>,
-        val bounds: FloatArray,       // x,y,w,h：命中内容的联合包围盒（画高亮框用）
+        val bounds: FloatArray,       // x,y,w,h：命中内容的联合包围盒（画高亮框/手柄用）
     )
 
     protected var lassoSelection: LassoSelection? = null
-    protected var lassoDragMode = 0                 // 0=无手势 1=框选 2=移动
+    protected var lassoDragMode = 0                 // 0=无手势 1=框选 2=移动 3=缩放
     protected var lassoAnchorPage = -1
     protected var lassoAnchorNx = 0f
     protected var lassoAnchorNy = 0f
     protected var lassoDownX = 0f
     protected var lassoDownY = 0f
     protected var lassoMoved = false
-    protected var lassoCurNx = 0f
-    protected var lassoCurNy = 0f
-    protected var lassoHasCur = false
+    protected val lassoPath = ArrayList<Pt2>()      // 进行中的自由框选路径（页内归一化）
+    protected var lassoHandle = -1                  // 缩放中拖的是哪个手柄（0..7 = tl,tr,bl,br,t,b,l,r）
+    protected var lassoScale: FloatArray? = null    // [ax, ay, sx, sy]（缩放 ghost + 提交值）
     protected var lassoDx = 0f
     protected var lassoDy = 0f
     protected var lassoCommitted = false
     protected var lassoTimeout: Runnable? = null
+
+    /**
+     * 真源镜像是否**分层记账**的开关（模式2 = true）：模式2 的 strokes/notes 是 Mac 两条独立广播，
+     * 到达顺序/间隔无保证——乐观预览只能随各自的镜像**分层**退场（见 setStrokes/setNotes）。
+     * 模式1 真源在进程内、回推一趟带齐两层，无此问题，保持 false（任意回推即清，旧行为不变）。
+     */
+    protected open val lassoMirrorSplit: Boolean get() = false
+
+    /** 提交等待期：strokes/notes 镜像各自是否已到（true = 那层已改画真源，乐观变换停止作用于它） */
+    protected var lassoSyncStrokes = false
+    protected var lassoSyncNotes = false
+
+    /** 8 个手柄的名字序（四角 + 四边中点）：下标即 [lassoHandle] 与 [lassoHandlePts] 的输出序 */
+    private val lassoOpp = intArrayOf(3, 2, 1, 0, 5, 4, 7, 6)   // 对侧手柄：角的对角 / 边的对边中点
+
+    private val lassoBoxTmp = FloatArray(4)         // lassoViewBox 的输出（x,y,w,h，视口 px）
+    private val lassoHandleTmp = FloatArray(16)     // lassoHandlePts 的输出（8×2，视口 px）
+    private var lassoViewPts = FloatArray(256)      // 路径/halo 点集映射到视口坐标的复用缓冲
+
+    private fun ensureViewPts(n: Int): FloatArray {
+        if (lassoViewPts.size < n) lassoViewPts = FloatArray(n * 2)
+        return lassoViewPts
+    }
 
     fun clearLasso() {
         lassoTimeout?.let { handler.removeCallbacks(it) }
@@ -992,23 +1069,34 @@ open class PageCanvasView @JvmOverloads constructor(
         lassoDragMode = 0
         lassoAnchorPage = -1
         lassoMoved = false
-        lassoHasCur = false
+        lassoHandle = -1
+        lassoPath.clear()
+        lassoScale = null
         lassoCommitted = false
+        lassoSyncStrokes = false
+        lassoSyncNotes = false
         lassoDx = 0f; lassoDy = 0f
         invalidate()
     }
 
-    /** 框选命中（本地复刻 Mac `finishLassoSelect`：任一点落框=命中笔迹，锚点落框=命中注解） */
-    protected fun lassoHitTest(page: Int, x0: Float, y0: Float, x1: Float, y1: Float): LassoSelection? {
-        val rx0 = min(x0, x1); val rx1 = max(x0, x1)
-        val ry0 = min(y0, y1); val ry1 = max(y0, y1)
+    /**
+     * 框选命中（本地复刻 Mac `finishLassoSelect` / web `lassoHitTest`：笔迹任一点落多边形内=命中，
+     * 注解锚点落多边形内=命中；边界上的点算内）。`poly` 为扁平数组，< 3 点不构成选区。
+     */
+    protected fun lassoHitTest(page: Int, poly: FloatArray): LassoSelection? {
+        if (poly.size < 6) return null
+        var bx0 = 1f; var by0 = 1f; var bx1 = 0f; var by1 = 0f
+        for (i in poly.indices step 2) {
+            bx0 = min(bx0, poly[i]); bx1 = max(bx1, poly[i])
+            by0 = min(by0, poly[i + 1]); by1 = max(by1, poly[i + 1])
+        }
         val sIdx = ArrayList<Int>()
         val nIdx = ArrayList<Int>()
         var lox = 1f; var loy = 1f; var hix = 0f; var hiy = 0f
         for (i in strokes.indices) {
             val s = strokes[i]
             if (s.page.toInt() != page) continue
-            if (s.pts.none { it.x in rx0..rx1 && it.y in ry0..ry1 }) continue
+            if (s.pts.none { InkEdit.pointInPolygon(it.x, it.y, poly) }) continue
             sIdx.add(i)
             for (pt in s.pts) {
                 lox = min(lox, pt.x); loy = min(loy, pt.y)
@@ -1018,21 +1106,69 @@ open class PageCanvasView @JvmOverloads constructor(
         for (i in notes.indices) {
             val n = notes[i]
             if (n.page.toInt() != page) continue
-            if (n.nx < rx0 || n.nx > rx1 || n.ny < ry0 || n.ny > ry1) continue
+            if (!InkEdit.pointInPolygon(n.nx, n.ny, poly)) continue
             nIdx.add(i)
             lox = min(lox, n.nx); loy = min(loy, n.ny)
             hix = max(hix, n.nx); hiy = max(hiy, n.ny)
         }
         if (sIdx.isEmpty() && nIdx.isEmpty()) return null
         return LassoSelection(
-            page, floatArrayOf(rx0, ry0, rx1, ry1), sIdx, nIdx,
+            page, floatArrayOf(bx0, by0, bx1, by1), poly.copyOf(), sIdx, nIdx,
             floatArrayOf(lox, loy, hix - lox, hiy - loy),
         )
     }
 
     /**
-     * 越过死区后判一次形态：落笔点落在当前选中高亮框内（含 8dp 抓手余量）→ 移动；
-     * 否则重新框选（并放弃旧选中，同 Mac 逻辑）。
+     * 当前选中集的屏显框（视口 px，外扩 6dp + 最小 16dp，**不含 ghost**）：
+     * 高亮框渲染、框内命中判定、手柄位置共用这一份，别各算各的（同 Mac `lassoDisplayBox` 惯例）。
+     */
+    protected fun lassoViewBox(out: FloatArray): Boolean {
+        val sel = lassoSelection ?: return false
+        val b = sel.bounds
+        val x0 = viewX(sel.page, b[0]); val y0 = viewY(sel.page, b[1])
+        val x1 = viewX(sel.page, b[0] + b[2]); val y1 = viewY(sel.page, b[1] + b[3])
+        val pad = dp(6f)
+        out[0] = min(x0, x1) - pad
+        out[1] = min(y0, y1) - pad
+        out[2] = max(kotlin.math.abs(x1 - x0) + pad * 2, dp(16f))
+        out[3] = max(kotlin.math.abs(y1 - y0) + pad * 2, dp(16f))
+        return true
+    }
+
+    /** 8 个手柄的屏显位置（视口 px，**不含 ghost**；序 = 名字序 tl,tr,bl,br,t,b,l,r） */
+    protected fun lassoHandlePts(out: FloatArray) {
+        val x = lassoBoxTmp[0]; val y = lassoBoxTmp[1]
+        val w = lassoBoxTmp[2]; val h = lassoBoxTmp[3]
+        val xs = floatArrayOf(x, x + w, x, x + w, x + w / 2, x + w / 2, x, x + w)
+        val ys = floatArrayOf(y, y, y + h, y + h, y, y + h, y + h / 2, y + h / 2)
+        for (i in 0 until 8) { out[i * 2] = xs[i]; out[i * 2 + 1] = ys[i] }
+    }
+
+    /** ghost 是否生效：拖动中（move/scale，includeDrag=true 时）或已提交等真源回传期间 */
+    protected fun lassoGhostOn(includeDrag: Boolean): Boolean =
+        lassoSelection != null &&
+            (lassoCommitted || (includeDrag && (lassoDragMode == 2 || lassoDragMode == 3)))
+
+    /**
+     * 选中集点变换（页内归一化，clamp 0...1）：scale = 绕锚点按轴缩放，否则 = move 平移
+     * （镜像 Mac `lassoGhostPoint` 语义——数据不动，画的时候偏）。无变换返回 false（out 不动）。
+     */
+    protected fun lassoGhost(nx: Float, ny: Float, out: FloatArray): Boolean {
+        val sc = lassoScale
+        if (sc != null && (sc[2] != 1f || sc[3] != 1f)) {
+            out[0] = (sc[0] + (nx - sc[0]) * sc[2]).coerceIn(0f, 1f)
+            out[1] = (sc[1] + (ny - sc[1]) * sc[3]).coerceIn(0f, 1f)
+            return true
+        }
+        if (lassoDx == 0f && lassoDy == 0f) return false
+        out[0] = (nx + lassoDx).coerceIn(0f, 1f)
+        out[1] = (ny + lassoDy).coerceIn(0f, 1f)
+        return true
+    }
+
+    /**
+     * 越过死区后判一次形态：落笔点命中某手柄（≤10dp）→ 缩放；落在当前选中高亮框内
+     * （含 8dp 抓手余量）→ 移动；否则重新自由框选（并放弃旧选中，同 Mac/web 逻辑）。
      */
     protected fun handleLassoMove(x: Float, y: Float) {
         if (lassoAnchorPage < 0) return
@@ -1041,86 +1177,192 @@ open class PageCanvasView @JvmOverloads constructor(
             lassoMoved = true
             var m = 1
             val sel = lassoSelection
-            if (sel != null && sel.page == lassoAnchorPage) {
-                val b = sel.bounds
-                val px0 = viewX(sel.page, b[0]); val py0 = viewY(sel.page, b[1])
-                val px1 = viewX(sel.page, b[0] + b[2]); val py1 = viewY(sel.page, b[1] + b[3])
-                val g = dp(8f)
-                if (lassoDownX >= min(px0, px1) - g && lassoDownX <= max(px0, px1) + g &&
-                    lassoDownY >= min(py0, py1) - g && lassoDownY <= max(py0, py1) + g
-                ) m = 2
+            if (sel != null && sel.page == lassoAnchorPage && lassoViewBox(lassoBoxTmp)) {
+                lassoHandlePts(lassoHandleTmp)
+                var hit = -1
+                for (i in 0 until 8) {
+                    if (hypot(lassoDownX - lassoHandleTmp[i * 2], lassoDownY - lassoHandleTmp[i * 2 + 1]) <= dp(10f)) {
+                        hit = i; break
+                    }
+                }
+                if (hit >= 0) {
+                    m = 3
+                    lassoHandle = hit
+                    // 缩放锚点 = 对侧手柄（屏显 → 页内归一化折算一次，整个拖动期间不变）
+                    val opp = lassoOpp[hit]
+                    pageLocClamped(lassoHandleTmp[opp * 2], lassoHandleTmp[opp * 2 + 1], sel.page, tmp2)
+                    lassoScale = floatArrayOf(tmp2[0], tmp2[1], 1f, 1f)
+                } else {
+                    val g = dp(8f)
+                    if (lassoDownX >= lassoBoxTmp[0] - g && lassoDownX <= lassoBoxTmp[0] + lassoBoxTmp[2] + g &&
+                        lassoDownY >= lassoBoxTmp[1] - g && lassoDownY <= lassoBoxTmp[1] + lassoBoxTmp[3] + g
+                    ) m = 2
+                }
             }
             lassoDragMode = m
-            if (m == 1) lassoSelection = null
+            if (m == 1) {
+                lassoSelection = null
+                lassoPath.clear()
+                lassoPath.add(Pt2(lassoAnchorNx, lassoAnchorNy))
+            }
         }
         pageLocClamped(x, y, lassoAnchorPage, tmp2)
-        if (lassoDragMode == 1) {
-            lassoCurNx = tmp2[0]; lassoCurNy = tmp2[1]; lassoHasCur = true
-        } else if (lassoDragMode == 2) {
-            lassoDx = tmp2[0] - lassoAnchorNx
-            lassoDy = tmp2[1] - lassoAnchorNy
+        when (lassoDragMode) {
+            1 -> {
+                // 自由路径：≥3dp 抽稀（更密的点对多边形命中无增益，白耗 O(点数×边数)）
+                val last = lassoPath.last()
+                val lx = viewX(lassoAnchorPage, last.x)
+                val ly = viewY(lassoAnchorPage, last.y)
+                if (hypot(x - lx, y - ly) >= dp(3f)) lassoPath.add(Pt2(tmp2[0], tmp2[1]))
+            }
+            2 -> {
+                lassoDx = tmp2[0] - lassoAnchorNx
+                lassoDy = tmp2[1] - lassoAnchorNy
+            }
+            3 -> updateLassoScale(x, y)
         }
         invalidate()
     }
 
     /**
+     * 缩放手柄拖动中：由被拖手柄当前位置与原「手柄→对侧手柄」向量算缩放比（屏显空间；
+     * 按轴线性变换，与归一化坐标严格等价，同 Mac `updateLassoScaleGhost` / web `handleLassoMove`），
+     * clamp 0.05...20。**角手柄 = 等比**（取变化幅度更大的一轴；安卓没有 Shift，不做自由两轴）、
+     * **边中点手柄 = 单轴**（另一轴恒 1）。
+     */
+    private fun updateLassoScale(x: Float, y: Float) {
+        val sel = lassoSelection ?: return
+        val h = lassoHandle
+        if (h < 0) return
+        val sc = lassoScale ?: return
+        if (!lassoViewBox(lassoBoxTmp)) return
+        lassoHandlePts(lassoHandleTmp)
+        val aVx = viewX(sel.page, sc[0]); val aVy = viewY(sel.page, sc[1])
+        val denomX = lassoHandleTmp[h * 2] - aVx
+        val denomY = lassoHandleTmp[h * 2 + 1] - aVy
+        var sx = 1f; var sy = 1f
+        when (h) {
+            4, 5 -> if (kotlin.math.abs(denomY) > 1f) sy = (y - aVy) / denomY        // t/b 竖向单轴
+            6, 7 -> if (kotlin.math.abs(denomX) > 1f) sx = (x - aVx) / denomX        // l/r 横向单轴
+            else -> if (kotlin.math.abs(denomX) > 1f && kotlin.math.abs(denomY) > 1f) {
+                sx = (x - aVx) / denomX; sy = (y - aVy) / denomY
+                val s = if (kotlin.math.abs(sx - 1) >= kotlin.math.abs(sy - 1)) sx else sy
+                sx = s; sy = s
+            }
+        }
+        sc[2] = sx.coerceIn(0.05f, 20f)
+        sc[3] = sy.coerceIn(0.05f, 20f)
+    }
+
+    /** 提交后的共同收尾：标 committed + 记账位清零 + 1s 兜底超时（现在只是保险丝：Mac 零命中也会回传未变镜像） */
+    private fun commitLassoPending() {
+        lassoCommitted = true
+        lassoSyncStrokes = false
+        lassoSyncNotes = false
+        lassoTimeout?.let { handler.removeCallbacks(it) }
+        val r = Runnable { lassoTimeout = null; if (lassoCommitted) clearLasso() }
+        lassoTimeout = r
+        handler.postDelayed(r, 1000)
+        invalidate()
+    }
+
+    /**
      * 松手收尾：纯点击（未越过死区）→ 清选中（同 Mac `.onTapGesture` 无条件清）；
-     * 框选 → 本地判定命中集（只渲染高亮，不上行）；移动 → 提交位移给 Mac（真源复判 + 持久化）。
+     * 框选 → 本地判定命中集（只渲染高亮，不上行）；移动/缩放 → 提交给真源（复判 + 持久化）。
      */
     protected fun finishLasso() {
         val page = lassoAnchorPage
         if (!lassoMoved || lassoDragMode == 0) {
             if (lassoSelection != null) { lassoSelection = null; invalidate() }
-        } else if (lassoDragMode == 1 && page >= 0 && lassoHasCur) {
-            lassoSelection = lassoHitTest(page, lassoAnchorNx, lassoAnchorNy, lassoCurNx, lassoCurNy)
+        } else if (lassoDragMode == 1 && page >= 0 && lassoPath.size >= 3) {
+            val poly = FloatArray(lassoPath.size * 2)
+            for (i in lassoPath.indices) { poly[i * 2] = lassoPath[i].x; poly[i * 2 + 1] = lassoPath[i].y }
+            lassoSelection = lassoHitTest(page, poly)
             // 「框了但没选中」与「框错页了」长得一模一样，不打点只能靠猜
-            Log.i(
-                TAG,
-                "框选 page=$page 框=(${"%.3f".format(min(lassoAnchorNx, lassoCurNx))}," +
-                    "${"%.3f".format(min(lassoAnchorNy, lassoCurNy))})-" +
-                    "(${"%.3f".format(max(lassoAnchorNx, lassoCurNx))}," +
-                    "${"%.3f".format(max(lassoAnchorNy, lassoCurNy))}) 命中 笔迹=" +
-                    "${lassoSelection?.strokeIdx?.size ?: 0} 注解=${lassoSelection?.noteIdx?.size ?: 0}",
-            )
+            Log.i(TAG, "框选 page=$page 路径=${lassoPath.size}点 命中 笔迹=${lassoSelection?.strokeIdx?.size ?: 0} 注解=${lassoSelection?.noteIdx?.size ?: 0}")
             invalidate()
         } else if (lassoDragMode == 2) {
             val sel = lassoSelection
             if (sel != null && (lassoDx != 0f || lassoDy != 0f)) {
-                onLassoMoveCommit(sel.page, sel.box, lassoDx, lassoDy)
-                lassoCommitted = true
-                lassoTimeout?.let { handler.removeCallbacks(it) }
-                // 兜底：Mac 判定为零命中/零变化时不会回传 strokes/notes，靠超时清掉乐观预览
-                val r = Runnable { lassoTimeout = null; if (lassoCommitted) clearLasso() }
-                lassoTimeout = r
-                handler.postDelayed(r, 1000)
-                invalidate()
+                onLassoMoveCommit(sel.page, sel.box, lassoDx, lassoDy, sel.poly)
+                commitLassoPending()
+            }
+        } else if (lassoDragMode == 3) {
+            val sel = lassoSelection
+            val sc = lassoScale
+            if (sel != null && sc != null && (sc[2] != 1f || sc[3] != 1f)) {
+                onLassoScaleCommit(sel.page, sel.box, sc[0], sc[1], sc[2], sc[3], sel.poly)
+                commitLassoPending()
             }
         }
         lassoDragMode = 0
         lassoMoved = false
-        lassoHasCur = false
+        lassoHandle = -1
         lassoAnchorPage = -1
-        if (!lassoCommitted) { lassoDx = 0f; lassoDy = 0f }
+        lassoPath.clear()
+        if (!lassoCommitted) { lassoDx = 0f; lassoDy = 0f; lassoScale = null }
     }
 
     protected fun drawLassoOverlay(canvas: Canvas) {
-        if (lassoDragMode == 1 && lassoAnchorPage >= 0 && lassoHasCur) {
+        // 进行中的自由框选虚线路径
+        if (lassoDragMode == 1 && lassoAnchorPage >= 0 && lassoPath.size >= 2) {
             val pg = lassoAnchorPage
-            overlays.drawLassoBox(
-                canvas,
-                viewX(pg, min(lassoAnchorNx, lassoCurNx)), viewY(pg, min(lassoAnchorNy, lassoCurNy)),
-                viewX(pg, max(lassoAnchorNx, lassoCurNx)), viewY(pg, max(lassoAnchorNy, lassoCurNy)),
-            )
+            val buf = ensureViewPts(lassoPath.size * 2)
+            for (i in lassoPath.indices) {
+                buf[i * 2] = viewX(pg, lassoPath[i].x)
+                buf[i * 2 + 1] = viewY(pg, lassoPath[i].y)
+            }
+            overlays.drawLassoPath(canvas, buf, lassoPath.size)
         }
         val sel = lassoSelection ?: return
-        val tx = if (lassoDragMode == 2 || lassoCommitted) lassoDx else 0f
-        val ty = if (lassoDragMode == 2 || lassoCommitted) lassoDy else 0f
-        val b = sel.bounds
+        if (!lassoViewBox(lassoBoxTmp)) return
+        val ghost = lassoGhostOn(true)
+
+        // —— 选中笔迹光晕（所见即所选；ghost 期间随变换预览，注解不加光晕——高亮框已覆盖） ——
+        // strokes 镜像已到（lassoSyncStrokes）则跳过：那层已改画真源，halo 的命中下标随回传作废。
+        if (!lassoSyncStrokes) for (idx in sel.strokeIdx) {
+            val s = strokes.getOrNull(idx) ?: continue
+            if (s.page.toInt() != sel.page) continue
+            val wPx = dp(s.pen.w + 5f)   // 线宽 = 笔宽 + 5，与笔迹渲染同一尺度（dp → px）
+            if (s.pts.size == 1) {
+                var nx = s.pts[0].x; var ny = s.pts[0].y
+                if (ghost && lassoGhost(nx, ny, tmp2)) { nx = tmp2[0]; ny = tmp2[1] }
+                overlays.drawLassoHaloDot(canvas, viewX(sel.page, nx), viewY(sel.page, ny), wPx / 2f)
+                continue
+            }
+            val buf = ensureViewPts(s.pts.size * 2)
+            for (j in s.pts.indices) {
+                var nx = s.pts[j].x; var ny = s.pts[j].y
+                if (ghost && lassoGhost(nx, ny, tmp2)) { nx = tmp2[0]; ny = tmp2[1] }
+                buf[j * 2] = viewX(sel.page, nx)
+                buf[j * 2 + 1] = viewY(sel.page, ny)
+            }
+            overlays.drawLassoHalo(canvas, buf, s.pts.size, wPx)
+        }
+
+        // —— 高亮框 + 8 手柄（ghost：scale 绕锚点缩放 / move 平移；屏显坐标系直接变换） ——
+        val sc = lassoScale?.takeIf { ghost && (it[2] != 1f || it[3] != 1f) }
+        val gdx = if (ghost && sc == null) lassoDx * pw() else 0f
+        val gdy = if (ghost && sc == null) lassoDy * dispH[sel.page] else 0f
+        val aVx = if (sc != null) viewX(sel.page, sc[0]) else 0f
+        val aVy = if (sc != null) viewY(sel.page, sc[1]) else 0f
+        fun gx(v: Float): Float = if (sc != null) aVx + (v - aVx) * sc[2] else v + gdx
+        fun gy(v: Float): Float = if (sc != null) aVy + (v - aVy) * sc[3] else v + gdy
+        val bx = lassoBoxTmp[0]; val by = lassoBoxTmp[1]
+        val bw = lassoBoxTmp[2]; val bh = lassoBoxTmp[3]
+        // 非等比缩放下四角不再贴包络，取四点的外接轴对齐框（同 web/Mac 的 lo/hi 归并）
+        val cxs = floatArrayOf(gx(bx), gx(bx + bw), gx(bx), gx(bx + bw))
+        val cys = floatArrayOf(gy(by), gy(by), gy(by + bh), gy(by + bh))
         overlays.drawLassoSelection(
             canvas,
-            viewX(sel.page, b[0] + tx), viewY(sel.page, b[1] + ty),
-            viewX(sel.page, b[0] + b[2] + tx), viewY(sel.page, b[1] + b[3] + ty),
+            cxs.min(), cys.min(), cxs.max(), cys.max(),
         )
+        lassoHandlePts(lassoHandleTmp)
+        for (i in 0 until 8) {
+            lassoHandleTmp[i * 2] = gx(lassoHandleTmp[i * 2])
+            lassoHandleTmp[i * 2 + 1] = gy(lassoHandleTmp[i * 2 + 1])
+        }
+        overlays.drawLassoHandles(canvas, lassoHandleTmp)
     }
 
     // —— 平移 / 惯性 / 滚动上报 ——
@@ -1631,7 +1873,7 @@ open class PageCanvasView @JvmOverloads constructor(
                 beginProbe(loc.page, loc.nx, loc.ny)
             }
             MODE_LASSO -> {
-                // 落笔点记下来即可：拖动形态（框选/移动）在越过死区那一刻才判定
+                // 落笔点记下来即可：拖动形态（框选/移动/缩放）在越过死区那一刻才判定
                 // （镜像 Mac `DragGesture(minimumDistance: 2)` 起点一次性判定，纯点击不触发手势）
                 lassoAnchorPage = loc.page
                 lassoAnchorNx = loc.nx

@@ -22,7 +22,6 @@ import com.xvan.unireader.shared.TextNote
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 
 /**
  * 模式1（本地开工作区）的画布：`PageCanvasView` + 「提交给本机 SQLite」。
@@ -240,40 +239,35 @@ class LocalCanvasView @JvmOverloads constructor(
         onInkChanged?.invoke()
     }
 
-    // ---------- 框选移动 ----------
+    // ---------- 框选移动 / 缩放 ----------
 
     /**
-     * 框选移动的**权威执行**（M4）：与 Mac `AppModel.applyLassoMove` 逐条对齐——
-     * 只动锚定页、`dx/dy` 全零不动、退化成线/点的框（宽或高为 0）不动、命中口径是「任一点落框内」、
-     * 平移走 [InkEdit.translated]（逐点 clamp）。
+     * 框选移动的**权威执行**（M4）：与 Mac `AppModel.applyLassoMove`（多边形尾部形态）逐条对齐——
+     * 只动锚定页、`dx/dy` 全零不动、命中口径是「笔迹任一点落多边形内、注解 anchor 中心落多边形内」
+     * （[InkEdit.pointInPolygon]，边界算内），平移走 [InkEdit.translated]（逐点 clamp）。
      *
-     * 钩子只给 `box` 不给下标，是因为模式2 要把它发给 Mac 复判（不信任客户端的本地判定）。
+     * 钩子给 `box`+`poly` 不给下标，是因为模式2 要把它们发给 Mac 复判（不信任客户端的本地判定）。
      * 模式1 的真源就在进程内，所以照同一口径拿 `strokes` 重判一次——它已按可见图层过滤过
      * （见 `applyStrokes`），与 Mac 的 `vis.contains(layerId)` 同效：**隐藏图层的笔迹不会被移走**，
      * 否则用户会移动到自己看不见的东西。
      *
-     * 文字注解那一半（M5 补齐）：命中口径同样照抄 Mac——**框与 anchor 相交**，或框**含住 anchor
-     * 中心点**。点注解的 anchor 是零尺寸，相交那一支恒假（空矩形不与任何矩形相交），实际生效的是
-     * 中心点那一支，正好等于基类本地预览用的「锚点落框」；选区注解才走相交。
+     * 文字注解那一半（M5 补齐）：权威命中要用**库里的 anchor**（含宽高，取中心点判）——内存中的
+     * `notes` 只有落点一个坐标；选区注解的 anchor 有宽高，中心点与落点不是同一个位置。
      */
-    override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float) {
+    override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {
         val q = store ?: return
         if (dx == 0f && dy == 0f) return
-        val x0 = min(box[0], box[2]); val x1 = max(box[0], box[2])
-        val y0 = min(box[1], box[3]); val y1 = max(box[1], box[3])
-        if (x1 - x0 <= 0f || y1 - y0 <= 0f) return
         // 笔迹这半边在主线程按内存里的 `strokes` 定格（`Stroke` 不可变，可以安全递给队列线程）；
-        // 注解那半边的权威命中要用**库里的 anchor**（含宽高），所以放进作业里读——内存中的 `notes`
-        // 只有落点一个坐标，拿它判的话选区注解永远只在左上角那一个点上才算命中。
+        // 注解那半边的权威命中放进作业里读库（理由见上）。
         val hits = strokes.filter { st ->
             st.id.isNotEmpty() && st.page.toInt() == page &&
-                st.pts.any { it.x in x0..x1 && it.y in y0..y1 }
+                st.pts.any { InkEdit.pointInPolygon(it.x, it.y, poly) }
         }
         q.submit(
             "框选移动落库",
             { s ->
                 val noteHits = runCatching {
-                    s.noteAnchors(documentId).filter { it.page == page && anchorHit(it, x0, y0, x1, y1) }
+                    s.noteAnchors(documentId).filter { it.page == page && anchorHit(it, poly) }
                 }.onFailure { Log.e(TAG, "读注解 anchor 失败，本次只移笔迹", it) }
                     .getOrDefault(emptyList())
                 if (hits.isNotEmpty() || noteHits.isNotEmpty()) {
@@ -302,13 +296,53 @@ class LocalCanvasView @JvmOverloads constructor(
         )
     }
 
-    /** 框 ∩ anchor ≠ ∅，或框含住 anchor 中心（Mac `rect.intersects(n.anchor) || rect.contains(mid)`） */
-    private fun anchorHit(a: NoteAnchor, x0: Float, y0: Float, x1: Float, y1: Float): Boolean {
-        val intersects = a.w > 0f && a.h > 0f &&
-            a.x < x1 && a.x + a.w > x0 && a.y < y1 && a.y + a.h > y0
-        val midIn = (a.x + a.w / 2f) in x0..x1 && (a.y + a.h / 2f) in y0..y1
-        return intersects || midIn
+    /**
+     * 框选缩放的**权威执行**：与 Mac `AppModel.applyLassoScale` 逐条对齐——同一套多边形复判命中，
+     * 笔迹走 [InkEdit.scaled]（点集绕锚点按轴缩放 + clamp、线宽 ×√(sx·sy) 同步缩），
+     * 注解 anchor/rects 同缩放（字号不缩，见 [LibraryStore.scaleTextNote]）。落库/回推机制与移动相同。
+     */
+    override fun onLassoScaleCommit(
+        page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
+    ) {
+        val q = store ?: return
+        if (sx <= 0f || sy <= 0f || (sx == 1f && sy == 1f)) return
+        // 缩放后的新点集/新笔宽在主线程一次算好再定格（同移动的理由：`Stroke` 不可变可跨线程）
+        val hits = strokes.filter { st ->
+            st.id.isNotEmpty() && st.page.toInt() == page &&
+                st.pts.any { InkEdit.pointInPolygon(it.x, it.y, poly) }
+        }.map { InkEdit.scaled(it, ax, ay, sx, sy) }
+        q.submit(
+            "框选缩放落库",
+            { s ->
+                val noteHits = runCatching {
+                    s.noteAnchors(documentId).filter { it.page == page && anchorHit(it, poly) }
+                }.onFailure { Log.e(TAG, "读注解 anchor 失败，本次只缩笔迹", it) }
+                    .getOrDefault(emptyList())
+                if (hits.isNotEmpty() || noteHits.isNotEmpty()) {
+                    runCatching {
+                        s.transaction {
+                            for (h in hits) s.updateStrokePoints(h.id, h.pts, h.pen.w)
+                            for (n in noteHits) s.scaleTextNote(n.id, ax, ay, sx, sy)
+                        }
+                        Log.i(
+                            TAG,
+                            "框选缩放落库：笔迹 ${hits.size} 条，注解 ${noteHits.size} 条 " +
+                                "sx=${"%.3f".format(sx)} sy=${"%.3f".format(sy)}",
+                        )
+                    }.onFailure { Log.e(TAG, "框选缩放写库失败，回退到库里的状态", it) }
+                }
+                inkSnapshot(s) to if (noteHits.isEmpty()) null else noteSnapshot(s)
+            },
+            { (ink, notes) ->
+                applyStrokes(ink.all, ink.hidden)
+                notes?.let { applyNotes(it.notes, it.fills) }
+            },
+        )
     }
+
+    /** 注解 anchor 中心落多边形内（Mac `noteHit` 的多边形形态；零尺寸点注解即锚点本身） */
+    private fun anchorHit(a: NoteAnchor, poly: FloatArray): Boolean =
+        InkEdit.pointInPolygon(a.x + a.w / 2f, a.y + a.h / 2f, poly)
 
     // 擦除的 move 帧不落库（一笔擦完再算差异）
     override fun onErase(page: Int, pts: List<Pt2>) = Unit

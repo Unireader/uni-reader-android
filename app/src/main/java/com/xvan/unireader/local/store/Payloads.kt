@@ -93,6 +93,12 @@ class InkPayload(val raw: JSONObject) {
         return this
     }
 
+    /** 只改线宽（框选缩放后回写：笔宽 ×√(sx·sy)，调用方已 clamp），其余键原样保留 */
+    fun withWidth(w: Double): InkPayload {
+        raw.put("width", w)
+        return this
+    }
+
     /**
      * 只写/摘 `padId` 键（null = 摘掉），其余键原样保留——**原地改，不整体重建**
      * （本端不认识的键一个都不许丢，见文件头纪律）。

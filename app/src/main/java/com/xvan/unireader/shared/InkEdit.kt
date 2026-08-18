@@ -9,6 +9,7 @@ package com.xvan.unireader.shared
  * | `rulerSnap` | [PadConst.rulerSnap]（几何常量与它同源，就近放） |
  * | `splitStroke` | 本文件（[PageCanvasView.eraseHit] 的局部擦除分支调它） |
  * | `translated`  | 本文件 |
+ * | `scaled` / `pointInPolygon` | 本文件（框选缩放 / 自由框选多边形命中） |
  *
  * 这几个都是**同一算法多份实现**（Mac/网页/安卓各一份），改一处必须同步其余——
  * 对不上的表现是「同一个工作区在两端看到的笔迹位置不一样」。
@@ -77,5 +78,69 @@ object InkEdit {
         val y1 = cl(r[1] + dy)
         val y2 = cl(r[1] + r[3] + dy)
         return doubleArrayOf(minOf(x1, x2), minOf(y1, y2), kotlin.math.abs(x2 - x1), kotlin.math.abs(y2 - y1))
+    }
+
+    /**
+     * 框选缩放：点集绕锚点 `(ax, ay)` 按轴缩放 `(p−a)×s+a`，x/y 各 clamp 回页内 [0,1]
+     * （压感/id/layerId/padId 不动）。线宽按几何平均 `√(sx·sy)` 同步缩放并 clamp 到 0.5...40——
+     * 笔迹放大不变细、缩小不变粗（同 Mac `InkEdit.scaled`；s 本身由调用方 clamp 过）。
+     * 归一化坐标 x/y 两轴尺度不同，但按轴缩放是逐轴线性变换，无需 aspect 折算。
+     */
+    fun scaled(s: Stroke, ax: Float, ay: Float, sx: Float, sy: Float): Stroke {
+        val pts = s.pts.map {
+            Pt3(
+                (ax + (it.x - ax) * sx).coerceIn(0f, 1f),
+                (ay + (it.y - ay) * sy).coerceIn(0f, 1f),
+                it.p,
+            )
+        }
+        val w = (s.pen.w * kotlin.math.sqrt(sx * sy)).coerceIn(0.5f, 40f)
+        return Stroke(s.page, s.pen.copy(w = w), pts, s.id, s.layerId, s.padId)
+    }
+
+    /**
+     * 归一化 rect 缩放（文字注解的 anchor 与逐行 rects，框选缩放用）：min/max 角各绕锚点
+     * 按轴缩放并 clamp 到 0~1——同 Mac `InkEdit.scaledRect`（与 [translatedRect] 同一套两角口径，
+     * 贴页边时宽/高跟着收缩；字号不缩——注解是文字不是图形）。
+     */
+    fun scaledRect(r: DoubleArray, ax: Double, ay: Double, sx: Double, sy: Double): DoubleArray {
+        fun cl(v: Double) = v.coerceIn(0.0, 1.0)
+        val x1 = cl(ax + (r[0] - ax) * sx)
+        val x2 = cl(ax + (r[0] + r[2] - ax) * sx)
+        val y1 = cl(ay + (r[1] - ay) * sy)
+        val y2 = cl(ay + (r[1] + r[3] - ay) * sy)
+        return doubleArrayOf(minOf(x1, x2), minOf(y1, y2), kotlin.math.abs(x2 - x1), kotlin.math.abs(y2 - y1))
+    }
+
+    /**
+     * 点在不规则多边形内（自由框选命中）：射线法（向右水平射线计奇偶交点）。
+     * 与 Mac `InkEdit.pointInPolygon`、web `render.ts` 同名函数**同一算法三份实现**，改一处必须同步。
+     * `poly` 是扁平数组 `[x0,y0,x1,y1,…]`（页内归一化），首尾自动闭合；< 3 个点恒 false；
+     * 恰在边界上的点判内（框线擦到也算选中，手感宽；容差 1e-9，故内部按 Double 算）。
+     */
+    fun pointInPolygon(px: Float, py: Float, poly: FloatArray): Boolean {
+        val n = poly.size / 2
+        if (n < 3) return false
+        val x = px.toDouble()
+        val y = py.toDouble()
+        var inside = false
+        var j = n - 1
+        for (i in 0 until n) {
+            val ax = poly[i * 2].toDouble(); val ay = poly[i * 2 + 1].toDouble()
+            val bx = poly[j * 2].toDouble(); val by = poly[j * 2 + 1].toDouble()
+            // 边界判定：p 落在线段 a-b 上（共线且在包围盒内）
+            val cross = (x - ax) * (by - ay) - (y - ay) * (bx - ax)
+            if (kotlin.math.abs(cross) < 1e-9 &&
+                x >= minOf(ax, bx) - 1e-9 && x <= maxOf(ax, bx) + 1e-9 &&
+                y >= minOf(ay, by) - 1e-9 && y <= maxOf(ay, by) + 1e-9
+            ) return true
+            // 射线法：边跨越 p.y 水平线时，比较交点 x 与 p.x
+            if ((ay > y) != (by > y)) {
+                val xInt = ax + (y - ay) / (by - ay) * (bx - ax)
+                if (x < xInt) inside = !inside
+            }
+            j = i
+        }
+        return inside
     }
 }

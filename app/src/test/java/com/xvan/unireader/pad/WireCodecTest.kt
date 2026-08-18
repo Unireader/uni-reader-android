@@ -18,7 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 75 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 78 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -130,6 +130,18 @@ class WireCodecTest {
             74 to WireCodec.encodeScratchRename(3, "第三张·推导"),
             // #75 scratchRename{index:0, title:""}（空串 = 回到「草稿纸 N」兜底名）
             75 to WireCodec.encodeScratchRename(0, ""),
+            // #76 lassoMove 带尾部多边形：{page:2, box(0.2,0.3)-(0.6,0.5), d(0.1,-0.05), poly 3 点}
+            76 to WireCodec.encodeLassoMove(
+                2, 0.2f, 0.3f, 0.6f, 0.5f, 0.1f, -0.05f,
+                floatArrayOf(0.2f, 0.3f, 0.6f, 0.3f, 0.4f, 0.5f),
+            ),
+            // #77 lassoScale{page:1, box(0.2,0.3)-(0.6,0.5), a(0.2,0.3), s(1.5,0.75)}
+            77 to WireCodec.encodeLassoScale(1, 0.2f, 0.3f, 0.6f, 0.5f, 0.2f, 0.3f, 1.5f, 0.75f),
+            // #78 lassoScale 带尾部多边形（poly 4 点）
+            78 to WireCodec.encodeLassoScale(
+                1, 0.2f, 0.3f, 0.6f, 0.5f, 0.2f, 0.3f, 1.5f, 0.75f,
+                floatArrayOf(0.2f, 0.3f, 0.6f, 0.3f, 0.6f, 0.5f, 0.2f, 0.5f),
+            ),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -390,7 +402,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(75, VECTORS.size)
+        assertEquals(78, VECTORS.size)
     }
 
     @Test
@@ -403,7 +415,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 75 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 78 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -480,6 +492,9 @@ class WireCodecTest {
             "48ffff",
             "4903001100e7acace4b889e5bca0c2b7e68ea8e5afbc",
             "4900000000",
+            "4702000000cdcc4c3e9a99993e9a99193f0000003fcdcccc3dcdcc4cbd0300cdcc4c3e9a99993e9a99193f9a99993ecdcccc3e0000003f",
+            "4a01000000cdcc4c3e9a99993e9a99193f0000003fcdcc4c3e9a99993e0000c03f0000403f",
+            "4a01000000cdcc4c3e9a99993e9a99193f0000003fcdcc4c3e9a99993e0000c03f0000403f0400cdcc4c3e9a99993e9a99193f9a99993e9a99193f0000003fcdcc4c3e0000003f",
         )
     }
 }

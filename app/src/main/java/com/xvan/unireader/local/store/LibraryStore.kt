@@ -229,6 +229,31 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /**
+     * 缩放一条文字注解（框选缩放）：anchor 与 payload 里的每个 rect 绕锚点 `(ax, ay)` 按轴缩放，
+     * 各角 clamp 到 0~1——与 Mac `InkEdit.scaled(TextNote)` 同一实现（[InkEdit.scaledRect]）。
+     * **字号不缩**（注解是文字不是图形），点注解的零尺寸 anchor 照样缩放，rects 为空则只动 anchor。
+     */
+    fun scaleTextNote(noteId: String, ax: Float, ay: Float, sx: Float, sy: Float) {
+        val n = db.query("SELECT * FROM note WHERE id=?", arrayOf(noteId)) { note(it) }.firstOrNull()
+            ?: return
+        val p = TextNotePayload.parse(n.payload) ?: return
+        val a = InkEdit.scaledRect(
+            doubleArrayOf(n.anchorX, n.anchorY, n.anchorW, n.anchorH),
+            ax.toDouble(), ay.toDouble(), sx.toDouble(), sy.toDouble(),
+        )
+        val rs = p.rects().map {
+            InkEdit.scaledRect(it, ax.toDouble(), ay.toDouble(), sx.toDouble(), sy.toDouble())
+        }
+        upsertNote(
+            n.copy(
+                anchorX = a[0], anchorY = a[1], anchorW = a[2], anchorH = a[3],
+                payload = if (rs.isEmpty()) p.bytes() else p.withRects(rs).bytes(),
+                updatedAt = nowIso(),
+            ),
+        )
+    }
+
+    /**
      * 页面上要铺的所有色块：高亮（kind=3）按自身颜色 0.38，选区注解（kind=0 且有 rects）按
      * 类型色/通用暖黄 0.32——透明度口径见 [PadConst.FILL]，与 Mac `PageCellView` 一致。
      *
@@ -389,10 +414,11 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /**
-     * 改一条已有笔迹的点集（局部擦除切段后的存活段 / 框选平移）。
-     * 原 payload 的其余键（含本端还不认识的）原样保留，anchor 随新点集重算。
+     * 改一条已有笔迹的点集（局部擦除切段后的存活段 / 框选平移 / 框选缩放）。
+     * 原 payload 的其余键（含本端还不认识的）原样保留，anchor 随新点集重算；
+     * [width] 非空时同步改线宽（框选缩放：笔宽 ×√(sx·sy)，调用方已按 Mac 口径 clamp）。
      */
-    fun updateStrokePoints(noteId: String, pts: List<Pt3>) {
+    fun updateStrokePoints(noteId: String, pts: List<Pt3>, width: Float? = null) {
         val n = db.query("SELECT * FROM note WHERE id=?", arrayOf(noteId)) { note(it) }.firstOrNull()
             ?: return
         val p = InkPayload.parse(n.payload) ?: return
@@ -400,7 +426,7 @@ class LibraryStore(private val db: Db) : Closeable {
         upsertNote(
             n.copy(
                 anchorX = b[0], anchorY = b[1], anchorW = b[2], anchorH = b[3],
-                payload = p.withPoints(pts).bytes(),
+                payload = (if (width != null) p.withWidth(width.toDouble()) else p).withPoints(pts).bytes(),
                 updatedAt = nowIso(),
             ),
         )

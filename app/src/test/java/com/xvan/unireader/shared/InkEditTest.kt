@@ -109,4 +109,104 @@ class InkEditTest {
         assertEquals(1, out.size)
         assertTrue(out[0] === s)
     }
+
+    // ---------- scaled（框选缩放） ----------
+
+    @Test
+    fun 点集绕锚点按轴缩放并逐点clamp() {
+        // 锚点 (0.5,0.5)，sx=2、sy=0.5：x 向翻倍（越界的逐点停在页边），y 向减半
+        val s = Stroke(0, pen, listOf(Pt3(0.6f, 0.6f, 0.4f), Pt3(0.9f, 0.7f, 0.9f)), id = "a")
+        val out = InkEdit.scaled(s, 0.5f, 0.5f, 2f, 0.5f)
+        assertEquals(0.7f, out.pts[0].x, 1e-6f)
+        assertEquals(0.55f, out.pts[0].y, 1e-6f)
+        assertEquals("越界点 clamp 在页边，不是整条推回来", 1f, out.pts[1].x, 0f)
+        assertEquals(0.6f, out.pts[1].y, 1e-6f)
+        assertEquals("压感不参与缩放", 0.4f, out.pts[0].p, 0f)
+        assertEquals("a", out.id)
+    }
+
+    @Test
+    fun 缩放继承id与layerId与padId() {
+        val s = Stroke(
+            page = 0, pen = pen,
+            pts = listOf(Pt3(0.4f, 0.4f, 0.5f), Pt3(0.6f, 0.6f, 0.5f)),
+            id = "note-id", layerId = "layer-id", padId = "pad-id",
+        )
+        val out = InkEdit.scaled(s, 0.5f, 0.5f, 1.5f, 1.5f)
+        assertEquals("note-id", out.id)
+        assertEquals("layer-id", out.layerId)
+        assertEquals("pad-id", out.padId)
+    }
+
+    @Test
+    fun 线宽按几何平均缩放并clamp到半到四十() {
+        val w = { width: Float, sx: Float, sy: Float ->
+            InkEdit.scaled(Stroke(0, pen.copy(w = width), listOf(Pt3(0.5f, 0.5f, 0.5f))), 0f, 0f, sx, sy).pen.w
+        }
+        // √(2×0.5)=1：等比平均不变，线宽不动
+        assertEquals(6f, w(6f, 2f, 0.5f), 1e-6f)
+        // √(4×4)=4：6→24
+        assertEquals(24f, w(6f, 4f, 4f), 1e-6f)
+        // 缩没防护：6×√(0.05×0.05)=0.3 → clamp 0.5
+        assertEquals(0.5f, w(6f, 0.05f, 0.05f), 1e-6f)
+        // 撑爆防护：20×√(4×4)=80 → clamp 40
+        assertEquals(40f, w(20f, 4f, 4f), 1e-6f)
+    }
+
+    @Test
+    fun 矩形缩放两个角各绕锚点clamp() {
+        // 未越界：绕 (0,0) 放大两倍，尺寸跟着翻倍
+        assertRect(
+            doubleArrayOf(0.2, 0.4, 0.4, 0.2),
+            InkEdit.scaledRect(doubleArrayOf(0.1, 0.2, 0.2, 0.1), 0.0, 0.0, 2.0, 2.0),
+            "未越界时尺寸按倍率变化",
+        )
+        // 右下越界：角停在 1，宽高收缩（同 translatedRect 的两角口径）
+        // (0.3,0.3,0.4,0.4) 绕原点 ×2 → 角 (0.6,0.6) 与 (1.4,1.4) clamp 成 (1,1)：宽/高 0.8→0.4
+        assertRect(
+            doubleArrayOf(0.6, 0.6, 0.4, 0.4),
+            InkEdit.scaledRect(doubleArrayOf(0.3, 0.3, 0.4, 0.4), 0.0, 0.0, 2.0, 2.0),
+            "越界角 clamp 在页边",
+        )
+        // 单轴缩放：另一轴不动（边中点手柄的提交语义）
+        assertRect(
+            doubleArrayOf(0.2, 0.2, 0.4, 0.1),
+            InkEdit.scaledRect(doubleArrayOf(0.1, 0.2, 0.2, 0.1), 0.0, 0.0, 2.0, 1.0),
+            "sy=1 时 y 与高度不变",
+        )
+        // 点注解的零尺寸 anchor 照样缩放
+        assertRect(
+            doubleArrayOf(0.7, 0.4, 0.0, 0.0),
+            InkEdit.scaledRect(doubleArrayOf(0.9, 0.6, 0.0, 0.0), 0.5, 0.2, 0.5, 0.5),
+            "零尺寸 anchor 缩放后仍是零尺寸",
+        )
+    }
+
+    // ---------- pointInPolygon（自由框选命中） ----------
+
+    private val unitSquare = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+
+    @Test
+    fun 多边形内外判定() {
+        assertTrue(InkEdit.pointInPolygon(0.5f, 0.5f, unitSquare))
+        assertTrue(!InkEdit.pointInPolygon(1.5f, 0.5f, unitSquare))
+        assertTrue(!InkEdit.pointInPolygon(0.5f, -0.1f, unitSquare))
+        // 凹多边形：凹陷处判外（矩形判定会把这里误判成内）
+        val concave = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0.5f, 0.5f, 0f, 1f)
+        assertTrue(!InkEdit.pointInPolygon(0.5f, 0.8f, concave))
+        assertTrue(InkEdit.pointInPolygon(0.2f, 0.5f, concave))
+    }
+
+    @Test
+    fun 边界上的点算内() {
+        assertTrue("顶点", InkEdit.pointInPolygon(0f, 0f, unitSquare))
+        assertTrue("边上", InkEdit.pointInPolygon(0.5f, 0f, unitSquare))
+    }
+
+    @Test
+    fun 少于三个点不构成选区() {
+        assertTrue(!InkEdit.pointInPolygon(0.5f, 0.5f, floatArrayOf(0f, 0f, 1f, 1f)))
+        assertTrue(!InkEdit.pointInPolygon(0.5f, 0.5f, floatArrayOf(0.5f, 0.5f)))
+        assertTrue(!InkEdit.pointInPolygon(0.5f, 0.5f, FloatArray(0)))
+    }
 }

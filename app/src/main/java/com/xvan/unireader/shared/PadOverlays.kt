@@ -86,43 +86,92 @@ class PadOverlays(private val density: Float) {
         c.drawCircle(x, y, r, p)
     }
 
-    // ---------- 框选移动 ----------
+    // ---------- 框选（自由路径 / 光晕 / 高亮框 / 缩放手柄） ----------
 
     private val dash = DashPathEffect(floatArrayOf(dp(5f), dp(4f)), 0f)
     private val dashSel = DashPathEffect(floatArrayOf(dp(6f), dp(4f)), 0f)
 
-    /** 进行中的框选虚线矩形 */
-    fun drawLassoBox(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
-        rect.set(min(x0, x1), min(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
+    /** 框选蓝 rgba(31,111,235,·)：三端同一套色（Mac accent / web drawLasso），按透明度分档 */
+    private fun lassoBlue(a: Int) = Color.argb(a, 31, 111, 235)
+
+    /**
+     * 进行中的自由框选虚线路径（`pts` = 视口坐标扁平数组 `[x0,y0,…]`，`n` = 点数）：
+     * 淡蓝填充 + 蓝色虚线描边，自动闭合（同 web `drawLasso` 的 select 分支）。
+     */
+    fun drawLassoPath(c: Canvas, pts: FloatArray, n: Int) {
+        if (n < 2) return
+        path.reset()
+        path.moveTo(pts[0], pts[1])
+        for (i in 1 until n) path.lineTo(pts[i * 2], pts[i * 2 + 1])
+        path.close()
         p.style = Paint.Style.FILL
-        p.color = Color.argb(15, 31, 111, 235)
-        c.drawRect(rect, p)
+        p.color = lassoBlue(15)            // 0.06
+        c.drawPath(path, p)
         p.style = Paint.Style.STROKE
         p.strokeWidth = dp(1f)
-        p.color = Color.argb(230, 31, 111, 235)
+        p.color = lassoBlue(230)           // 0.9
         p.pathEffect = dash
-        c.drawRect(rect, p)
+        c.drawPath(path, p)
         p.pathEffect = null
     }
 
-    /** 选中集高亮框（带 6dp 内边距、圆角） */
+    /**
+     * 选中笔迹的光晕包边（所见即所选，同 Mac `lassoStrokeHalo` / web `drawLasso`）：
+     * 半透明蓝描边，线宽 = 笔宽 + 5（与笔迹渲染同一尺度，调用方算好 px），圆头圆角。
+     */
+    fun drawLassoHalo(c: Canvas, pts: FloatArray, n: Int, widthPx: Float) {
+        if (n < 2) return
+        path.reset()
+        path.moveTo(pts[0], pts[1])
+        for (i in 1 until n) path.lineTo(pts[i * 2], pts[i * 2 + 1])
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = widthPx
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeJoin = Paint.Join.ROUND
+        p.color = lassoBlue(89)            // 0.35
+        c.drawPath(path, p)
+        p.strokeCap = Paint.Cap.BUTT
+        p.strokeJoin = Paint.Join.MITER
+    }
+
+    /** 单点笔迹的光晕：实心圆点（半径 = (笔宽+5)/2，同 web drawLasso 的单点分支） */
+    fun drawLassoHaloDot(c: Canvas, x: Float, y: Float, r: Float) {
+        p.style = Paint.Style.FILL
+        p.color = lassoBlue(89)            // 0.35
+        c.drawCircle(x, y, r, p)
+    }
+
+    /**
+     * 选中集高亮框（圆角虚线）。**矩形由调用方算好**（内容包围盒外扩 + ghost 变换后的
+     * 最终视口坐标）——框的几何只有 [PageCanvasView] 一份真源，这里只照画。
+     */
     fun drawLassoSelection(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
-        val pad = dp(6f)
-        val l = min(x0, x1) - pad
-        val t = min(y0, y1) - pad
-        val w = maxOf(kotlin.math.abs(x1 - x0) + pad * 2, dp(16f))
-        val h = maxOf(kotlin.math.abs(y1 - y0) + pad * 2, dp(16f))
-        rect.set(l, t, l + w, t + h)
+        rect.set(min(x0, x1), min(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
         val r = dp(4f)
         p.style = Paint.Style.FILL
-        p.color = Color.argb(20, 31, 111, 235)
+        p.color = lassoBlue(20)            // 0.08
         c.drawRoundRect(rect, r, r, p)
         p.style = Paint.Style.STROKE
         p.strokeWidth = dp(1.5f)
-        p.color = Color.argb(230, 31, 111, 235)
+        p.color = lassoBlue(230)           // 0.9
         p.pathEffect = dashSel
         c.drawRoundRect(rect, r, r, p)
         p.pathEffect = null
+    }
+
+    /**
+     * 8 个缩放手柄（`pts` = 视口坐标扁平数组 8×2，调用方算好——含 ghost 变换）：
+     * 半透明蓝填充 + 蓝描边的小圆点（同 Mac `lassoHighlight` / web `drawLasso` 的手柄样式）。
+     */
+    fun drawLassoHandles(c: Canvas, pts: FloatArray) {
+        val r = dp(4.5f)
+        p.style = Paint.Style.FILL
+        p.color = lassoBlue(64)            // 0.25
+        for (i in 0 until 8) c.drawCircle(pts[i * 2], pts[i * 2 + 1], r, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = dp(1.5f)
+        p.color = lassoBlue(242)           // 0.95
+        for (i in 0 until 8) c.drawCircle(pts[i * 2], pts[i * 2 + 1], r, p)
     }
 
     // ---------- 长按进度环 ----------

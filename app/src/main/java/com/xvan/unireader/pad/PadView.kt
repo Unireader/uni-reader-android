@@ -45,6 +45,13 @@ class PadView @JvmOverloads constructor(
 
     var listener: Listener? = null
 
+    /**
+     * 模式2 的真源镜像是 Mac 的 `broadcastStrokes()`/`broadcastNotes()` **两条独立广播**
+     * （WS/UDP 不同通道，到达顺序与间隔无保证）——框选提交的乐观预览必须随各自镜像分层退场，
+     * 任一条到了就全清会让另一层跳回原位再跳回来（闪烁，2026-08-18 用户报）。
+     */
+    override val lassoMirrorSplit: Boolean get() = true
+
     /** 已应用的 Mac viewport 序号（去重用；换文档归零） */
     private var vpSeq = 0L
 
@@ -74,8 +81,18 @@ class PadView @JvmOverloads constructor(
         listener?.sendRel(WireCodec.encodeEraseEnd())
     }
 
-    override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float) {
-        listener?.sendCtl(WireCodec.encodeLassoMove(page.toLong(), box[0], box[1], box[2], box[3], dx, dy))
+    override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {
+        listener?.sendCtl(
+            WireCodec.encodeLassoMove(page.toLong(), box[0], box[1], box[2], box[3], dx, dy, poly),
+        )
+    }
+
+    override fun onLassoScaleCommit(
+        page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
+    ) {
+        listener?.sendCtl(
+            WireCodec.encodeLassoScale(page.toLong(), box[0], box[1], box[2], box[3], ax, ay, sx, sy, poly),
+        )
     }
 
     override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String) {

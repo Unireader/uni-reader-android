@@ -65,6 +65,7 @@ object WireCodec {
     const val OP_PAD_GEOM = 0x45
     const val OP_ERASER = 0x46
     const val OP_LASSO_MOVE = 0x47
+    const val OP_LASSO_SCALE = 0x4A
     const val OP_NACK = 0x50
 
     // phase / dir（§2）
@@ -228,6 +229,17 @@ object WireCodec {
         fun pen(p: Pen) { u8(p.r); u8(p.g); u8(p.b); f32(p.a); f32(p.w); u8(p.brush) }
         fun pts3(pts: List<Pt3>) { u16(pts.size); for (p in pts) { f32(p.x); f32(p.y); f32(p.p) } }
         fun pts2(pts: List<Pt2>) { u16(pts.size); for (p in pts) { f32(p.x); f32(p.y) } }
+
+        /**
+         * 尾部可选多边形（lassoMove/lassoScale，PROTOCOL.md §4.1）：扁平数组 [x0,y0,x1,y1,…]，
+         * 缺省/<3 点一律不写（老形态字节不变）。
+         */
+        fun polyTail(poly: FloatArray?) {
+            if (poly == null || poly.size < 6) return
+            u16(poly.size / 2)
+            for (v in poly) f32(v)
+        }
+
         fun bytes(): ByteArray = buf.copyOf(n)
     }
 
@@ -386,11 +398,31 @@ object WireCodec {
     fun encodeLayerAdd(): ByteArray =
         Writer().apply { u8(OP_LAYER_ADD) }.bytes()
 
-    /** 框选移动提交：框选矩形（Mac 用真源复判命中）+ 位移，均页内归一化 */
+    /**
+     * 框选移动提交：框选区域包围盒（Mac 用真源复判命中）+ 位移，均页内归一化。
+     * [poly] = 自由框选路径（扁平数组，≥3 点）作尾部可选多边形——有它 Mac 按多边形命中复判，
+     * 缺省按矩形（老形态字节不变，PROTOCOL.md §4.1）。
+     */
     fun encodeLassoMove(
         page: Long, x0: Float, y0: Float, x1: Float, y1: Float, dx: Float, dy: Float,
+        poly: FloatArray? = null,
     ): ByteArray = Writer().apply {
         u8(OP_LASSO_MOVE); u32(page); f32(x0); f32(y0); f32(x1); f32(y1); f32(dx); f32(dy)
+        polyTail(poly)
+    }.bytes()
+
+    /**
+     * 框选缩放提交（0x4A）：包围盒 + 缩放锚点 `(ax, ay)`（被拖手柄的对侧手柄）+ 按轴缩放比
+     * `(sx, sy)`（调用方已 clamp 0.05...20），均页内归一化；[poly] 尾部语义同 lassoMove。
+     */
+    fun encodeLassoScale(
+        page: Long, x0: Float, y0: Float, x1: Float, y1: Float,
+        ax: Float, ay: Float, sx: Float, sy: Float,
+        poly: FloatArray? = null,
+    ): ByteArray = Writer().apply {
+        u8(OP_LASSO_SCALE); u32(page); f32(x0); f32(y0); f32(x1); f32(y1)
+        f32(ax); f32(ay); f32(sx); f32(sy)
+        polyTail(poly)
     }.bytes()
 
     /** 打开/关闭草稿纸（index = scratchpads 列表下标；-1 = 关闭，线上 0xFFFF） */
