@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  框选模式：虚线绳圈 + 尾（自由框选，不是矩形选框）
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M11.6,3.4 C14.9,3.3 17.6,4.2 19.4,6.2 M20.6,9.4 C20.9,11.2 20.4,13 19.2,14.4 M16.4,16.4 C15.2,16.8 14,16.9 12.8,16.9 M9.8,16.5 C7.2,16 5.1,14.7 3.9,12.8 M3.5,9.6 C4,6.9 6.4,4.5 9.4,3.7 M12.8,16.9 C11.3,17.9 11.1,19.6 12.3,20.8"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

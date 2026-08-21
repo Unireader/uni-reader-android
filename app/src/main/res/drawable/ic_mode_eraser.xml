@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  擦除模式：斜置橡皮块 + 桌面线
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M5.777,12.166 L12.566,5.377 A1.7,1.7 0 0 1 14.97,5.377 L18.223,8.63 A1.7,1.7 0 0 1 18.223,11.034 L11.434,17.823 A1.7,1.7 0 0 1 9.03,17.823 L5.777,14.57 A1.7,1.7 0 0 1 5.777,12.166 Z M7.828,10.115 L13.485,15.772 M4.4,19.82 L19.6,19.82"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
