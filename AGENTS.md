@@ -28,6 +28,10 @@ cd android
 ./gradlew test                       # JVM 单测：WireCodecTest / InkEditTest / ScratchGeomTest
 ./gradlew connectedDebugAndroidTest  # 插桩测试，要设备或模拟器（见下：数据层只能在设备上验）
 ./pack.sh                            # release 打包；adb 恰好一台设备时顺带安装（--debug / --no-install）
+
+python3 tools/icons/gen.py           # 改图标：改几何 → 重新生成全部 ic_*.xml + 自检
+python3 tools/icons/gen.py --check   # 只自检不写盘（bbox / 重心 / 尺寸 / 引用一致性）
+python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大图（要 matplotlib）
 ```
 
 - 新克隆先补 `local.properties`（本机文件，不入 git）：`sdk.dir` + `releaseStorePassword` / `releaseKeyPassword`。
@@ -52,6 +56,11 @@ cd android
   一个工作区一份 `LibraryStore`+`StoreQueue` 全部标签页共用，标签页懒装载、LRU 只保活 3 篇。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
+- **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，
+  **不许手改 XML**（改了下次生成就没了）。加/改图标 = 改 `gen.py` 里的 `ICONS()` 再重跑。
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 只有圆点这类元素允许填充。
+  生成前逐个量 bbox，超出安全区、重心偏出 12±0.4、尺寸不在区间、或与代码里的
+  `R.drawable.ic_*` 引用对不上（画了没人用 / 用了没画 / res 里有手工残留），**当场报错不写盘**。
 
 ## 红线与高频坑
 
@@ -66,6 +75,12 @@ cd android
   **锚点落在画布原点**（`../PROTOCOL.md §4.4`）。改一个数三端一起改，否则同一张纸两端写的位置不一样。
 - **单写者约束**：工作区没有任何同步/加锁机制，**同一时间只能有一端打开同一个工作区**。
 - UI **扁平、原生、不拟物**；颜色只走语义名，别硬编码色值。
+- **别手写图标 XML**。2026-08 之前 28 个图标是手写的，规格靠人肉复制 → 飘成三种线宽
+  （1.6/1.8/2.0）、四种视觉尺寸（`ic_nib` 内容只占 6..18，`ic_lock` 撑到 3..22 差点被裁），
+  `ic_ruler` 靠 `<group rotation>` 把矩形甩出画布，`ic_nib`（"切换笔"）画的是水滴、
+  `ic_palette`（"纸样"）画的是调色盘。整套已按 `tools/icons/gen.py` 重做，规格只写一次。
+  **图标大小以真机/模拟器上的成品为准**：斜置细杆（笔）和只有两笔的角标，按 bbox
+  等大时在栏上看着就是小一号——这两个的尺寸是照着截图回调出来的，别按数字"纠正"回去。
 - **给已经设过 padding 的 View 换背景，一律走 `Ui.setBackgroundKeepPadding`**，别直接
   `background = …`。`View.setBackground()` 会调 `Drawable.getPadding()`，返回 true 就**拿它
   覆盖 View 自己的 padding**——`InsetDrawable` 就是这种。图标按钮的内容框全靠 13dp padding

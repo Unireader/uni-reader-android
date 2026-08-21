@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 24dp 描边图标；颜色由代码 setTint（bar_on / on_surface / accent），别在这里写死语义色 -->
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  溢出菜单：三点
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp" android:height="24dp"
-    android:viewportWidth="24" android:viewportHeight="24">
-    <path android:pathData="M6,12 m-1.7,0 a1.7,1.7 0 1,0 3.4,0 a1.7,1.7 0 1,0 -3.4,0 M12,12 m-1.7,0 a1.7,1.7 0 1,0 3.4,0 a1.7,1.7 0 1,0 -3.4,0 M18,12 m-1.7,0 a1.7,1.7 0 1,0 3.4,0 a1.7,1.7 0 1,0 -3.4,0" android:fillColor="#FFFFFFFF"/>
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M4.05,12 A1.55,1.55 0 1 1 7.15,12 A1.55,1.55 0 1 1 4.05,12 Z M10.45,12 A1.55,1.55 0 1 1 13.55,12 A1.55,1.55 0 1 1 10.45,12 Z M16.85,12 A1.55,1.55 0 1 1 19.95,12 A1.55,1.55 0 1 1 16.85,12 Z"
+        android:fillColor="#FFFFFFFF" />
 </vector>

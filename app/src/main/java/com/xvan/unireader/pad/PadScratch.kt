@@ -237,7 +237,7 @@ class PadScratch(private val a: Activity) {
         // 页面底图（v10）：开/关都只发请求（scratchPageShow），Mac 判定后回推 scratchpads
         pageBtn = Ui.iconButton(a, R.drawable.ic_doc, "显示所在页面", on) { requestToggleShowPage() }
         row.addView(pageBtn)
-        row.addView(Ui.iconButton(a, R.drawable.ic_palette, "纸样", on) { showPaperPanel() })
+        row.addView(Ui.iconButton(a, R.drawable.ic_paper, "纸样", on) { showPaperPanel() })
         barZoom = Ui.body(a, "", variant = false).apply {
             textSize = 12f
             setPadding(Ui.dp(a, 4), 0, Ui.dp(a, 4), 0)

@@ -135,7 +135,7 @@ class ScratchController(private val a: Activity) {
         // 页面底图（v10）：把这张纸锚定的那一页垫在纸下面当参照（跟着纸走、跨端同步）
         pageBtn = Ui.iconButton(a, R.drawable.ic_doc, "显示所在页面", on) { toggleShowPage() }
         row.addView(pageBtn)
-        row.addView(Ui.iconButton(a, R.drawable.ic_palette, "纸样", on) { showPaperPanel() })
+        row.addView(Ui.iconButton(a, R.drawable.ic_paper, "纸样", on) { showPaperPanel() })
         barZoom = Ui.body(a, "", variant = false).apply {
             textSize = 12f
             setPadding(Ui.dp(a, 4), 0, Ui.dp(a, 4), 0)

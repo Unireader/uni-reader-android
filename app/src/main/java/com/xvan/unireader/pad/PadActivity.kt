@@ -286,7 +286,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             gap()
             // 顶栏不再放模式键：模式切换走环形盘（RK_ERASE/RK_PAGE/选笔）与 Mac 远程，栏上少一个键
             // 「切换笔」只在笔模式下出现且染当前笔色（refresh() 维护），其余模式占位纯属误导
-            icon("pen", R.drawable.ic_nib, "切换笔") { padView.cyclePen() }
+            icon("pen", R.drawable.ic_pen, "切换笔") { padView.cyclePen() }
             icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
             // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
             // 点下去界面毫无变化，用户无法预期笔落下会变成「开编辑器」

@@ -286,7 +286,7 @@ class ReaderActivity : Activity() {
             gap()
             // 顶栏不再放模式键：模式切换走环形盘（RK_ERASE/RK_PAGE/选笔），栏上少一个键
             // 「切换笔」只在笔模式下出现且染当前笔色（refreshHud() 维护），其余模式占位纯属误导
-            icon("pen", R.drawable.ic_nib, "切换笔") { cur()?.cyclePen(); refreshHud() }
+            icon("pen", R.drawable.ic_pen, "切换笔") { cur()?.cyclePen(); refreshHud() }
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
             icon("ruler", R.drawable.ic_ruler, "尺子") { cur()?.toggleRuler(); refreshHud() }
             // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
