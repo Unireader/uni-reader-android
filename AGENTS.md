@@ -66,6 +66,14 @@ cd android
   **锚点落在画布原点**（`../PROTOCOL.md §4.4`）。改一个数三端一起改，否则同一张纸两端写的位置不一样。
 - **单写者约束**：工作区没有任何同步/加锁机制，**同一时间只能有一端打开同一个工作区**。
 - UI **扁平、原生、不拟物**；颜色只走语义名，别硬编码色值。
+- **给已经设过 padding 的 View 换背景，一律走 `Ui.setBackgroundKeepPadding`**，别直接
+  `background = …`。`View.setBackground()` 会调 `Drawable.getPadding()`，返回 true 就**拿它
+  覆盖 View 自己的 padding**——`InsetDrawable` 就是这种。图标按钮的内容框全靠 13dp padding
+  锁在 22dp，框子一变 `FIT_CENTER` 立刻把图标放大；更阴的是取消激活时换上的 `RippleDrawable`
+  的 `getPadding()` 返回 false，View **不还原**，胀完就一直胀着。
+  2026-08 实测：顶栏尺子点一下 18.5 → 36.0 画布单位（≈1.94 倍），再关掉仍是 34.9，
+  于是「点过的键比没点过的大一圈」。查这类问题**别去调图标几何**——先量渲染像素，
+  跟 `gen.py --check` 打印的声明值一比，对不上就是别的地方在改缩放。
 - **模拟器验证的四个坑**（`../ANDROID-STANDALONE-PLAN.md §11.2`，都误判过，别重踩）：
   ① `adb pull` 库要连 `-wal`/`-shm` 一起拉，否则新写入还在 WAL 里、读到的是旧数据；
   ② 按 `uiautomator dump` 出的文本定位点击，别记坐标（最近列表会重排）；

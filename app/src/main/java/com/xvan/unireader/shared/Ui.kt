@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.RippleDrawable
 import android.util.TypedValue
@@ -103,6 +104,29 @@ object Ui {
         setOnClickListener { onClick() }
     }
 
+    /**
+     * 换背景但**保住内边距**。
+     *
+     * `View.setBackground()` 会调一次 `Drawable.getPadding()`，返回 true 就拿它**覆盖掉
+     * View 自己的 padding**——`InsetDrawable` 正是这种（它把 inset 当 padding 报出去）。
+     * 图标按钮的内容框全靠那 13dp padding 定死在 22dp；框子一被改大，`FIT_CENTER`
+     * 当场把 24dp 的图标放大到新框里。
+     *
+     * 而且**回不来**：取消激活时换上的 `RippleDrawable` 的 `getPadding()` 返回 false，
+     * View 不还原，于是胀完就一直胀着。2026-08 模拟器实测：尺子点一下 18.5 → 36.0 画布单位
+     * （≈1.94 倍），再关掉仍是 34.9——顶栏上「点过的键比没点过的大一圈」就是这么来的。
+     *
+     * 所以**凡是给已经设过 padding 的 View 换背景，一律走这里**，别直接 `background =`。
+     */
+    fun View.setBackgroundKeepPadding(d: Drawable?) {
+        val l = paddingLeft
+        val t = paddingTop
+        val r = paddingRight
+        val b = paddingBottom
+        background = d
+        setPadding(l, t, r, b)
+    }
+
     /** 切换图标按钮的开关态（底色 + 图标色一起变，见 [iconButton]） */
     fun ImageButton.setActive(active: Boolean, on: Int, accent: Int) {
         val c = context
@@ -112,7 +136,9 @@ object Ui {
             else rippleOver(c, null, RADIUS, on)
         // 激活底色横向内缩 3dp：按钮本身是 48dp 满格排的（顶栏/草稿纸浮条都没有间距），
         // 两个相邻开关同时激活时底色会连成一整片、分不清是几个键。触摸区不变，只缩底色。
-        background = if (active) InsetDrawable(bg, dp(c, 3), 0, dp(c, 3), 0) else bg
+        // 必须走 setBackgroundKeepPadding：InsetDrawable 会把 inset 当 padding 顶掉按钮自己的
+        // 13dp，图标当场胀成约 1.9 倍且再也缩不回去（详见那个方法的注释）。
+        setBackgroundKeepPadding(if (active) InsetDrawable(bg, dp(c, 3), 0, dp(c, 3), 0) else bg)
     }
 
     /** Pen → ARGB（顶栏「切换笔」图标染色等「按笔色显示」的场合共用这一处换算） */
