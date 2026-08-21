@@ -15,6 +15,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -250,10 +251,19 @@ class ReaderActivity : Activity() {
      * `DOWN` 被上游整个吞掉。只认 DOWN 的话那一次就静默失效，表现正是「按了没反应，要多按好几次」。
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val ours = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
+        val side = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
             event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN ||
             event.keyCode == KeyEvent.KEYCODE_ESCAPE
-        if (!ours) return super.dispatchKeyEvent(event)
+        // 键盘快捷键（硬件键盘，与 Mac/web 同约定）：e 橡皮来回切 / 1-9 直选笔 / n 笔记 / v 翻页 / l 框选。
+        // 文本框焦点（重命名/文字笔记编辑）或带修饰键时一律放行，不抢输入。
+        val shortcut = !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed &&
+            currentFocus !is EditText &&
+            (
+                event.keyCode == KeyEvent.KEYCODE_E || event.keyCode == KeyEvent.KEYCODE_N ||
+                    event.keyCode == KeyEvent.KEYCODE_V || event.keyCode == KeyEvent.KEYCODE_L ||
+                    event.keyCode in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9
+                )
+        if (!side && !shortcut) return super.dispatchKeyEvent(event)
 
         // 长按重复不算新的一次按键；同一次按键的另一半（DOWN 已处理过就轮到 UP）直接吃掉
         val fresh = event.repeatCount == 0 && event.downTime != lastHandledKeyDown
@@ -270,6 +280,11 @@ class ReaderActivity : Activity() {
             KeyEvent.KEYCODE_PAGE_UP -> canvas.cycleMode()
             KeyEvent.KEYCODE_PAGE_DOWN -> canvas.cyclePen()
             KeyEvent.KEYCODE_ESCAPE -> canvas.clearLasso()
+            KeyEvent.KEYCODE_E -> canvas.toggleEraser()
+            KeyEvent.KEYCODE_N -> canvas.setModeLocal(MODE_NOTE)
+            KeyEvent.KEYCODE_V -> canvas.setModeLocal(if (canvas.mode == MODE_PAGE) MODE_NOTE else MODE_PAGE)
+            KeyEvent.KEYCODE_L -> canvas.setModeLocal(if (canvas.mode == MODE_LASSO) MODE_NOTE else MODE_LASSO)
+            in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> canvas.selectPen(event.keyCode - KeyEvent.KEYCODE_1)
         }
         refreshHud()
         return true

@@ -243,6 +243,35 @@ open class PageCanvasView @JvmOverloads constructor(
         onHudChanged()
     }
 
+    /** 键盘直切模式（n/v/l 键）：本地切 → 同步 Mac；切走框选即放弃选中。与 cycleMode 同收尾，只是目标指定。 */
+    fun setModeLocal(m: Int) {
+        if (m !in PadConst.MODE_LABELS.indices || m == mode) return
+        if (activePen) endPen()
+        if (mode == MODE_LASSO) clearLasso()
+        mode = m
+        eraserRingAt = null
+        endHover()
+        onModeChanged(mode)
+        invalidate()
+        onHudChanged()
+    }
+
+    /** e 键：橡皮 ⇄ 笔记 来回切（Mac 单键监视器 / web toggleErase 同语义）。 */
+    fun toggleEraser() = setModeLocal(if (mode == MODE_ERASE) MODE_NOTE else MODE_ERASE)
+
+    /** 数字键直选某支笔：与 cyclePen 同语义（选笔即回笔记模式），只是指定槽位不轮替。 */
+    fun selectPen(i: Int) {
+        if (i !in pens.indices) return
+        if (activePen) endPen()
+        penIndex = i
+        if (mode == MODE_LASSO) clearLasso()
+        mode = MODE_NOTE
+        onPenSelected(penIndex)
+        onModeChanged(mode)
+        invalidate()
+        onHudChanged()
+    }
+
     fun toggleNoteMode() {
         noteMode = !noteMode
         onHudChanged()

@@ -436,10 +436,19 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
      * 齐的，所以丢在系统那一层，应用侧只能两边都认。
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val ours = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
+        val side = event.keyCode == KeyEvent.KEYCODE_PAGE_UP ||
             event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN ||
             event.keyCode == KeyEvent.KEYCODE_ESCAPE
-        if (!ours) return super.dispatchKeyEvent(event)
+        // 键盘快捷键（硬件键盘，与 Mac/web 同约定）：e 橡皮来回切 / 1-9 直选笔 / n 笔记 / v 翻页 / l 框选。
+        // 文本框焦点（连接设置/重命名）或带修饰键时一律放行，不抢输入。
+        val shortcut = !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed &&
+            currentFocus !is EditText &&
+            (
+                event.keyCode == KeyEvent.KEYCODE_E || event.keyCode == KeyEvent.KEYCODE_N ||
+                    event.keyCode == KeyEvent.KEYCODE_V || event.keyCode == KeyEvent.KEYCODE_L ||
+                    event.keyCode in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9
+                )
+        if (!side && !shortcut) return super.dispatchKeyEvent(event)
 
         // 长按重复不算新的一次按键；同一次按键的另一半（DOWN 已处理过就轮到 UP）直接吃掉
         val fresh = event.repeatCount == 0 && event.downTime != lastHandledKeyDown
@@ -455,6 +464,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             KeyEvent.KEYCODE_PAGE_UP -> padView.cycleMode()
             KeyEvent.KEYCODE_PAGE_DOWN -> padView.cyclePen()
             KeyEvent.KEYCODE_ESCAPE -> padView.clearLasso()
+            KeyEvent.KEYCODE_E -> padView.toggleEraser()
+            KeyEvent.KEYCODE_N -> padView.setModeLocal(MODE_NOTE)
+            KeyEvent.KEYCODE_V -> padView.setModeLocal(if (padView.mode == MODE_PAGE) MODE_NOTE else MODE_PAGE)
+            KeyEvent.KEYCODE_L -> padView.setModeLocal(if (padView.mode == MODE_LASSO) MODE_NOTE else MODE_LASSO)
+            in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> padView.selectPen(event.keyCode - KeyEvent.KEYCODE_1)
         }
         return true
     }
