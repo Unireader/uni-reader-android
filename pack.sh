@@ -8,6 +8,10 @@ cd "$(dirname "$0")"
 #   ./pack.sh                # release 打包；有且仅有一台 adb 设备时安装
 #   ./pack.sh --debug        # debug 打包（同样尝试安装）
 #   ./pack.sh --no-install   # 只打包不安装
+#   ./pack.sh --no-bump      # release 但不自动升版本号
+#
+# 版本号：release 打包前自动改 app/build.gradle.kts（versionCode+1、versionName patch+1），
+# debug 不动。想升 minor/major 就手动改 versionName，脚本只加最后一位。
 #
 # 签名（debug/release 同一证书，见 app/build.gradle.kts）：
 #   keystore = ~/.keystores/xVanTuring.jks (alias key0)
@@ -15,12 +19,14 @@ cd "$(dirname "$0")"
 
 VARIANT="release"
 DO_INSTALL=1
+DO_BUMP=1
 for arg in "$@"; do
     case "$arg" in
         --debug) VARIANT="debug" ;;
         --release) VARIANT="release" ;;
         --no-install) DO_INSTALL=0 ;;
-        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        --no-bump) DO_BUMP=0 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "未知参数：$arg（-h 看用法）" >&2; exit 2 ;;
     esac
 done
@@ -41,6 +47,24 @@ if [ -z "$SDK_DIR" ] && [ -f local.properties ]; then
 fi
 ADB="$SDK_DIR/platform-tools/adb"
 APKSIGNER=$(ls -d "$SDK_DIR"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1 || true)
+
+# --- 自动升版本：release 打包前改 app/build.gradle.kts（code+1 / patch+1） ---
+if [ "$VARIANT" = "release" ] && [ "$DO_BUMP" -eq 1 ]; then
+    GRADLE_FILE="app/build.gradle.kts"
+    CODE=$(sed -n 's/^ *versionCode = \([0-9][0-9]*\).*/\1/p' "$GRADLE_FILE" | head -1)
+    NAME=$(sed -n 's/^ *versionName = "\([^"]*\)".*/\1/p' "$GRADLE_FILE" | head -1)
+    if [ -z "$CODE" ] || ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$NAME"; then
+        echo "解析版本号失败（$GRADLE_FILE 里应有 versionCode = N / versionName = \"x.y.z\"），" >&2
+        echo "请手动修正或用 --no-bump 跳过。" >&2
+        exit 1
+    fi
+    NEW_CODE=$((CODE + 1))
+    IFS='.' read -r VMAJ VMIN VPAT <<< "$NAME"
+    NEW_NAME="$VMAJ.$VMIN.$((VPAT + 1))"
+    sed -i '' -e "s/versionCode = $CODE/versionCode = $NEW_CODE/" \
+              -e "s/versionName = \"$NAME\"/versionName = \"$NEW_NAME\"/" "$GRADLE_FILE"
+    echo "==> 版本：$NAME($CODE) → $NEW_NAME($NEW_CODE)"
+fi
 
 # --- 构建 ---
 TASK="assemble$(tr '[:lower:]' '[:upper:]' <<< "${VARIANT:0:1}")${VARIANT:1}"
