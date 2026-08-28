@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  画板模式：页面 + 两侧向外的箭头（页两边的空白也能写字 = 横向摊开）
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M10.7,3.9 L13.3,3.9 A1.4,1.4 0 0 1 14.7,5.3 L14.7,18.7 A1.4,1.4 0 0 1 13.3,20.1 L10.7,20.1 A1.4,1.4 0 0 1 9.3,18.7 L9.3,5.3 A1.4,1.4 0 0 1 10.7,3.9 Z M7.3,12 L2.9,12 M5.1,9.8 L2.7,12 L5.1,14.2 M16.7,12 L21.1,12 M18.9,9.8 L21.3,12 L18.9,14.2"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

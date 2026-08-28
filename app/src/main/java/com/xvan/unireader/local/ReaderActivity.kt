@@ -314,6 +314,9 @@ class ReaderActivity : Activity() {
             // 锁缩放：本来在 ⋯ 里，2026-08-12 用户要求提上来常驻——写字时误缩放是**当场**要止住的事，
             // 翻两级菜单已经晚了。窄屏排不下时 TopBar 会自己把它收回 ⋯（desc 就是那一行的标题）。
             icon("lock", R.drawable.ic_lock, "锁定缩放") { cur()?.toggleZoomLock(); saveTools() }
+            // 画板模式（逐文档，存库里的 canvas_mode）：页面两侧的空白也能写字。
+            // 常驻顶栏而不是进 ⋯——它是写字过程中会来回切的开关（同锁缩放的理由）。
+            icon("canvas", R.drawable.ic_canvas, "画板模式") { cur()?.toggleCanvasMode(); refreshHud() }
             pageLabel.setOnClickListener { showGotoPage() }
             // 低频项进 ⋯：勾选态每次弹出现算，所以这里存的是生成器（见 TopBar.overflowItems）
             overflowItems = {
@@ -324,8 +327,6 @@ class ReaderActivity : Activity() {
                     listOf(
                         TopBar.MenuItem("夜间模式", c.night) { c.toggleNight(); saveTools() },
                         TopBar.MenuItem("显示页面图", c.showPage) { c.toggleShowPage(); refreshHud() },
-                        // 画板模式（逐文档，存库里的 canvas_mode）：页面两侧的空白也能写字
-                        TopBar.MenuItem("画板模式", c.canvasModeOn()) { c.toggleCanvasMode(); refreshHud() },
                         // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
                         TopBar.MenuItem("双指滚动（防误触）", c.twoFingerScroll) {
                             c.toggleTwoFingerScroll(); saveTools()
@@ -1077,6 +1078,7 @@ class ReaderActivity : Activity() {
         bar.setActive("mode", canvas.mode != MODE_PAGE)
         bar.setActive("ruler", canvas.rulerOn)
         bar.setActive("lock", canvas.zoomLocked)
+        bar.setActive("canvas", canvas.canvasModeOn())
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（与模式2 同一套表达）
         bar.setVisible("pen", canvas.mode == MODE_NOTE)
         bar.setTint("pen", canvas.curPenOrNull()?.let { Ui.penArgb(it) })

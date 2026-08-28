@@ -296,6 +296,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("scratch", R.drawable.ic_scratch, "草稿纸") { scratch.showList() }
             // 锁缩放常驻（与模式1 同一位置、同一图标——两边的顶栏必须还是同一条栏）
             icon("lock", R.drawable.ic_lock, "锁定缩放") { padView.toggleZoomLock() }
+            // 画板模式：**只发请求**，Mac 是开关与页边宽度的唯一真源（同 openPad 的惯例）——
+            // 它执行后广播 `canvas` 回来，本端在 onCanvas 里才改布局，所以按下去到画面变化
+            // 之间隔着一个 RTT。常驻顶栏而不是进 ⋯，与模式1 对齐。
+            icon("canvas", R.drawable.ic_canvas, "画板模式") {
+                client?.send(WireCodec.encodeCanvas(!padView.canvasModeOn()))
+            }
+            setEnabled("canvas", connected)   // 断线时灰掉（它只发请求，没连上按了没反应）
             addTail(dot, 0)
             addTail(latText, 1)
             pageLabel.setOnClickListener {
@@ -305,11 +312,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 listOf(
                     TopBar.MenuItem("夜间模式", padView.night) { padView.toggleNight() },
                     TopBar.MenuItem("显示页面图", padView.showPage) { padView.toggleShowPage() },
-                    // 画板模式：**只发请求**，Mac 是开关与页边宽度的唯一真源（同 openPad 的惯例）；
-                    // 它执行后广播 `canvas` 回来，本端在 onCanvas 里才改布局。
-                    TopBar.MenuItem("画板模式", padView.canvasModeOn()) {
-                        client?.send(WireCodec.encodeCanvas(!padView.canvasModeOn()))
-                    },
                     // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
                     TopBar.MenuItem("双指滚动（防误触）", padView.twoFingerScroll) {
                         padView.toggleTwoFingerScroll()
@@ -411,11 +413,18 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     }
 
     private fun setDot(on: Boolean) {
+        connected = on
         dot.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(if (on) 0xFF3FB950.toInt() else 0xFFF85149.toInt())
         }
+        // 画板模式是**发给 Mac 的请求**，没连上按了会静默无反应 → 断线时灰掉
+        // （模式/笔/尺子那几个是本地状态，断线照样能按，故只有这一颗要跟着连接走）
+        if (::bar.isInitialized) bar.setEnabled("canvas", on)
     }
+
+    /** 认证通过没（`setDot` 维护）：只发请求的那些键要据此禁用 */
+    private var connected = false
 
     /** 返回键：抽屉开着先关抽屉（同系统抽屉惯例）；纸开着先关纸（发 scratchOpen(-1)，同模式1） */
     @Deprecated("Deprecated in Java")
@@ -729,6 +738,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("ruler", padView.rulerOn)
         bar.setActive("scratch", scratch.isOpen)
         bar.setActive("lock", padView.zoomLocked)
+        bar.setActive("canvas", padView.canvasModeOn())
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（其余模式它不出现，见 buildUi 的注释）
         bar.setVisible("pen", padView.mode == MODE_NOTE)
         bar.setTint("pen", padView.curPenOrNull()?.let { Ui.penArgb(it) })
