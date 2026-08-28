@@ -28,7 +28,8 @@ import kotlin.math.roundToInt
  * 图层的接口一律**按下标**（`onSelect(i)`/`onToggleVisible(i, v)`），因为线格式就是按下标发的；
  * 模式1 那边自己拿下标去 `LibInkLayer` 列表换 id。
  *
- * 文档下拉不在这儿——那是纯线格式概念（模式1 的书库来自 SQLite），留在 `pad/PadDocsPicker.kt`。
+ * 文档下拉不在这儿——「在已打开的几篇之间切」现在是 [DocTabsBar]（2026-08-28 起两模式共用），
+ * 「开一篇还没打开的」是 [ReaderDrawer] 的书库页。
  */
 object PadPanels {
 

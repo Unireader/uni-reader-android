@@ -31,8 +31,12 @@ import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.MODE_PAGE
 import com.xvan.unireader.shared.NOTE_TAP
+import com.xvan.unireader.shared.DocTabsBar
+import com.xvan.unireader.shared.LibItem
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
+import com.xvan.unireader.shared.ReaderDrawer
+import com.xvan.unireader.shared.TocItem
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
@@ -88,13 +92,18 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     // —— Mac 下发的列表状态（面板消费） ——
     private var docs = listOf<WireCodec.DocEntry>()
-    private var docSelected = ""
-    private var docFollowing = true
     private var layers = listOf<Layer>()
     private var layerIdx = 0
 
-    /** 左侧拉抽屉（目录 / 书库）。数据由 Mac 的 `toc`/`library` 广播喂 */
-    private lateinit var drawer: PadDrawer
+    /** 左侧拉抽屉（目录 / 书库），与模式1 共用一份。数据由 Mac 的 `toc`/`library` 广播喂 */
+    private lateinit var drawer: ReaderDrawer
+
+    /**
+     * 标签页栏，与模式1 共用一份 —— 但这里是 Mac 已打开窗口（`docs` 广播）的**只读镜像**：
+     * 点标签 = `selectDoc` 切过去，`+` = 开书库让 Mac `openDoc` 新开一个，**没有 ×**
+     * （关窗仍在 Mac 上做，线协议里没有「关」，用户 2026-08-28 拍板）。
+     */
+    private lateinit var tabsBar: DocTabsBar
 
     /** 草稿纸（模式2 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板；真源在 Mac，这里只发请求 */
     private lateinit var scratch: PadScratch
@@ -275,14 +284,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 120dp 省略显示，宽屏（模式2 的正常场景＝横屏平板）保持整行不变。
             maxWidth = latMaxWidth()
         }
-        // 顶栏与模式1 是同一份（shared/TopBar）：键的顺序刻意也一样，只多「文档 / 连接设置 /
-        // 收起顶栏」这三件模式2 独有的事（真源在 Mac，所以还有个连接态小圆点）。
+        // 顶栏与模式1 是同一份（shared/TopBar），2026-08-28 起**常驻键完全一致、顺序也一致**；
+        // 模式2 只在末尾多一个连接态小圆点 + 延迟读数，⋯ 里多「收起顶栏 / 连接设置」两件独有的事。
         bar = TopBar(this).apply {
-            icon("docs", R.drawable.ic_doc, "选择文档") {
-                PadDocsPicker.show(this@PadActivity, docs, docSelected, docFollowing) {
-                    client?.send(WireCodec.encodeSelectDoc(it))
-                }
-            }
+            // 「选择文档」那颗键 2026-08-28 拿掉了：它做的事（在 Mac 已开的几篇之间切）现在是
+            // 标签页栏本身，一眼看得见哪几篇开着、点哪个切哪个，比翻一个对话框直接。
             icon("toc", R.drawable.ic_list, "目录 / 书库") { drawer.toggle() }
             gap()
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { padView.turn(prev = true) }
@@ -319,6 +325,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     TopBar.MenuItem("双指滚动（防误触）", padView.twoFingerScroll) {
                         padView.toggleTwoFingerScroll()
                     },
+                    // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
+                    TopBar.MenuItem("锁定水平滚动", padView.hLocked) { padView.toggleHLock() },
                     TopBar.MenuItem("图层…") { showLayerPanel() },
                     TopBar.MenuItem("跳到第…页") {
                         PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
@@ -331,7 +339,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         (dot.layoutParams as LinearLayout.LayoutParams).apply {
             width = dp(8); height = dp(8); marginEnd = dp(8)
         }
-        topbar = bar.view
+        // 顶栏 + 标签页栏是一整块「上边的壳」（与模式1 的 chrome 同构）：一起显示、一起被
+        // 「收起顶栏」收掉，画布让开的高度也是两条之和（barHeightPx）
+        topbar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(bar.view, LinearLayout.LayoutParams(-1, -2))
+        }
         showBarBtn = Ui.iconButton(this, R.drawable.ic_chevron_down, "展开顶栏", Ui.barOn(this)) {
             setBarHidden(false)
         }.apply {
@@ -361,7 +374,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         graphView = LatencyGraphView(this)
 
-        drawer = PadDrawer(this).apply {
+        drawer = ReaderDrawer(this).apply {
             onJump = { page, frac ->
                 // 本地立刻滚过去 + 上行让 Mac 跟到同一处（Mac 走它自己那条 origin="toc" 锚点路径，
                 // 跳完再 viewport 回推——本地已在位，回推是同一处，不会打架）
@@ -371,6 +384,18 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             }
             onOpenDoc = { id -> client?.send(WireCodec.encodeOpenDoc(id)) }
         }
+
+        // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释）。工作区名来自 `library` 广播，
+        // 点它开书库——模式1 那里是「切工作区」，模式2 的工作区由 Mac 定、平板换不了。
+        tabsBar = DocTabsBar(this).apply {
+            canClose = false
+            chipTrailingIcon = R.drawable.ic_book
+            setWorkspace("书库")   // 占位：`library` 广播一到就换成 Mac 那边的工作区名
+            onSwitchWorkspace = { drawer.open(ReaderDrawer.TAB_LIB) }
+            onSelect = { i -> docs.getOrNull(i)?.let { client?.send(WireCodec.encodeSelectDoc(it.id)) } }
+            onAdd = { drawer.open(ReaderDrawer.TAB_LIB) }
+        }
+        topbar.addView(tabsBar.view, LinearLayout.LayoutParams(-1, -2))
 
         val root = FrameLayout(this).apply {
             addView(padView, FrameLayout.LayoutParams(-1, -1))
@@ -394,7 +419,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             addView(
                 graphView,
                 FrameLayout.LayoutParams(dp(200), dp(90), Gravity.TOP or Gravity.END).apply {
-                    topMargin = bar.height() + dp(8); marginEnd = dp(8)
+                    topMargin = bar.height() + tabsBar.height() + dp(8); marginEnd = dp(8)
                 },
             )
             // 纸上的悬浮工具条：贴顶栏下方居中（topMargin 同由 applyScratchMargin 给）
@@ -406,7 +431,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
         setContentView(root)
-        barHeightPx = bar.height()
+        barHeightPx = bar.height() + tabsBar.height()
         padView.setBarHeight(barHeightPx.toFloat())
         applyScratchMargin()
         setDot(false)
@@ -885,18 +910,23 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         runOnUiThread { refresh() }
     }
 
+    /**
+     * `docs` = Mac 已打开的**窗口会话**列表 + 当前选中的那个（`PROTOCOL.md §4.2`）。
+     * 标签页栏就是它的只读镜像：一条广播来了整条重建，本地不猜、不留自己的一份"打开中"状态。
+     */
     override fun onDocs(following: Boolean, selected: String, list: List<WireCodec.DocEntry>) = runOnUiThread {
-        docFollowing = following
-        docSelected = selected
         docs = list
+        tabsBar.setTabs(list.map { it.title }, list.indexOfFirst { it.id == selected })
     }
 
     override fun onLibrary(ws: String, list: List<WireCodec.LibEntry>) = runOnUiThread {
-        drawer.setLibrary(ws, list)
+        // 线格式类型 → 中立模型：`shared/` 那边不许认识 WireCodec（依赖方向单向）
+        drawer.setLibrary(ws, list.map { LibItem(it.id, it.title, it.open) })
+        tabsBar.setWorkspace(ws)
     }
 
     override fun onToc(docId: String, list: List<WireCodec.TocEntry>) = runOnUiThread {
-        drawer.setToc(docId, list)
+        drawer.setToc(docId, list.map { TocItem(it.depth, it.page, it.frac, it.label) })
     }
 
     override fun onNotes(list: List<TextNote>) = runOnUiThread {
@@ -910,6 +940,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     }
 
     override fun onRadial(m: WireCodec.Msg.Radial) = runOnUiThread {
+        // 打点：用户报「Mac 上盘出来了、安卓上没出来」。盘走 WS，与 `strokes` 全量镜像同一条有序
+        // 通道，镜像大了就会把这一帧压在后面（队头阻塞）。这里记**收到**时刻 + 此刻笔还在不在纸上
+        // ——`endPen` 抬笔即无条件收盘，所以「到得太晚、人已抬笔」的表现正是「安卓没显示」。
+        // 与 Mac 那条「环形盘呼出 …（下发中）」一减，就是这一帧在路上花的时间。
+        Log.i(
+            PageCanvasView.TAG,
+            "收到 radial open=${m.open} 扇区=${m.items.size} 笔还在纸上=${padView.isPenDown()}",
+        )
         padView.setRadial(m)
     }
 

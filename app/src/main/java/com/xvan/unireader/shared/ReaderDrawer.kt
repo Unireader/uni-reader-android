@@ -1,4 +1,4 @@
-package com.xvan.unireader.pad
+package com.xvan.unireader.shared
 
 import android.app.Activity
 import android.content.res.ColorStateList
@@ -13,39 +13,41 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.xvan.unireader.R
-import com.xvan.unireader.shared.Ui
 import kotlin.math.min
 
 /**
- * 左侧拉抽屉：「目录」= 当前文档的 PDF 目录（可折叠树，点条目跳到章节标题那一行）；
- * 「书库」= 工作区全部文档（含 Mac 还没打开的，点它让 Mac 新开一个窗口）。
+ * 左侧拉抽屉，**模式1 与模式2 共用这一份**：「目录」= 当前文档的 PDF 目录（可折叠树，
+ * 点条目跳到章节标题那一行）；「书库」= 工作区全部文档，点它打开。
  *
- * **只有模式2 有**（同 [PadDocsPicker]）：两份数据都是 Mac 的 `toc`/`library` 广播推下来的线格式
- * 概念，模式1 的目录/书库来自本地 PDF 与工作区 SQLite。故它住在 `pad/` 而不是 `shared/`
- * ——那边不许认识 [WireCodec]（依赖方向单向：`pad`/`local` → `shared`）。
+ * 它原先只有模式2 有（住在 `pad/`，直接吃 `WireCodec.TocEntry`/`LibEntry`）。2026-08-28
+ * 用户要「模式1 也要有目录」，于是搬进 `shared/` 并把数据换成中立模型（[TocItem]/[LibItem]）：
+ * 模式2 从 Mac 的 `toc`/`library` 广播转一层，模式1 从本机 Pdfium 书签与工作区 SQLite 读。
+ * **依赖方向仍是单向的**（`pad`/`local` → `shared`），这边一行都不认识 `WireCodec`。
  *
- * 目录数据是**先序拍平 + depth**（PROTOCOL.md §4.2），树结构在这里按 depth 就地重建：
+ * 目录数据是**先序拍平 + depth**（`../PROTOCOL.md §4.2`），树结构在这里按 depth 就地重建：
  * 前一项 depth 更小者即父。线上不必编码嵌套，这边也不必递归。
  *
- * 用自绘覆盖层而不是 [com.xvan.unireader.shared.Sheet]：抽屉要贴着左边缘满高滑出，
- * 而 Sheet 是居中卡片。它直接加进 `PadActivity` 的 root FrameLayout，显示时盖住画布
- * （抽屉开着时不该还能在下面写字）。
+ * 用自绘覆盖层而不是 [Sheet]：抽屉要贴着左边缘满高滑出，而 Sheet 是居中卡片。
+ * 它直接加进 Activity 的 root FrameLayout，显示时盖住画布（抽屉开着时不该还能在下面写字）。
  */
-class PadDrawer(private val a: Activity) {
+class ReaderDrawer(private val a: Activity) {
 
-    private companion object {
+    companion object {
         const val TAG = "UniReader/Drawer"
+
+        /** 打开时停在哪一页（[open] 的参数） */
         const val TAB_TOC = 0
         const val TAB_LIB = 1
-        const val MAX_W = 340        // 面板最宽（dp）：平板上不让它占掉半屏
-        const val WIDTH_RATIO = 0.82f
+
+        private const val MAX_W = 340        // 面板最宽（dp）：平板上不让它占掉半屏
+        private const val WIDTH_RATIO = 0.82f
     }
 
     private var tab = TAB_TOC
-    private var toc: List<WireCodec.TocEntry> = emptyList()
+    private var toc: List<TocItem> = emptyList()
     private var tocDocId = ""
     private var docV = ""
-    private var lib: List<WireCodec.LibEntry> = emptyList()
+    private var lib: List<LibItem> = emptyList()
     private var wsName = ""
     private var curPage = 0
     private val expanded = HashSet<Int>()
@@ -130,7 +132,7 @@ class PadDrawer(private val a: Activity) {
      * 目录到货。**不在这里核对 [docId]**，只记下来——切档时 `layout` 与 `toc` 两条广播的先后
      * 没有保证，核对留到渲染时（见 [tocReady]），不然先到的那条会被白白丢掉。
      */
-    fun setToc(docId: String, list: List<WireCodec.TocEntry>) {
+    fun setToc(docId: String, list: List<TocItem>) {
         tocDocId = docId
         toc = list
         expanded.clear()
@@ -138,7 +140,7 @@ class PadDrawer(private val a: Activity) {
         if (isOpen && tab == TAB_TOC) rebuild()
     }
 
-    fun setLibrary(ws: String, list: List<WireCodec.LibEntry>) {
+    fun setLibrary(ws: String, list: List<LibItem>) {
         wsName = ws
         lib = list
         Log.i(TAG, "收到书库 ${list.size} 条，工作区「$ws」")
@@ -308,14 +310,15 @@ class PadDrawer(private val a: Activity) {
         }
     }
 
-    private fun libRow(d: WireCodec.LibEntry, badge: View?): LinearLayout = LinearLayout(a).apply {
+    private fun libRow(d: LibItem, badge: View?): LinearLayout = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         isClickable = true
         background = Ui.rippleOver(a, null, Ui.RADIUS, Ui.onSurface(a))
         setPadding(a.dp(8), a.dp(12), a.dp(8), a.dp(12))
         setOnClickListener {
-            // 已打开的也发 openDoc：Mac 端 openPadDoc 会自己识别并切到那个窗口（PROTOCOL.md §4.1）
+            // 已打开的也照发：两模式的接收端都会自己识别并切过去，而不是重复开一份
+            // （模式2 = Mac `openPadDoc`，见 `../PROTOCOL.md §4.1`；模式1 = `openDoc` 切到那个标签页）
             onOpenDoc(d.id)
             close()
         }

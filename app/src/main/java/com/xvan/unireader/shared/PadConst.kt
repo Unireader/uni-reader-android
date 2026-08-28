@@ -70,6 +70,21 @@ object PadConst {
         const val MOVE_CANCEL = 14f      // 位移超此 dp → 判为在画，不呼出
         const val MOVE_CANCEL_NORM = 0.02f
         const val DEADZONE_NORM = 0.045f // 中心取消区（页宽未知时）；已知页宽时用 RD.HUB
+
+        /**
+         * 第二道闸：**笔尖速度**（2026-08-28 用户报「很容易误触」）。
+         *
+         * 只看「离落笔点的总位移」挡不住小字：写一个小字全程都在 14dp 半径里打转，停留满 1s
+         * 就被当成长按、盘凭空弹出来。而**写字必然在动、长按必然不动**——用滑动窗口内的平均速度
+         * 一判就分得干净。两道闸并存：位移管「跑远了」，速度管「一直在动」。
+         *
+         * ⚠️ 与 Mac `AppModel` 的 `holdSpeedWindow`/`holdSpeedPx`/`holdSpeedNorm` 是**同一套常量的
+         * 两份实现**（模式2 的长按判定跑在 Mac，模式1 跑在本机），改一边必须同步另一边。
+         */
+        const val SPEED_WINDOW_MS = 150L        // 速度判定的滑动窗口
+        const val SPEED_MIN_DT_MS = 40L         // 窗口太短时分母噪声会放大成假速度，不判
+        const val MOVE_CANCEL_SPEED = 30f       // 窗口内平均速度超此 dp/s → 判为在画
+        const val MOVE_CANCEL_SPEED_NORM = 0.043f  // 同上的归一化/秒回退（≈ 30/700，与位移那对同比例）
     }
 
     /**

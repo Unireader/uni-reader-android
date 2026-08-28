@@ -1,4 +1,4 @@
-package com.xvan.unireader.local
+package com.xvan.unireader.shared
 
 import android.app.Activity
 import android.content.res.ColorStateList
@@ -11,19 +11,22 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.xvan.unireader.R
-import com.xvan.unireader.shared.Ui
 
 /**
- * 模式1 的标签页栏：`[工作区名 ⌄] │ 文档A ×│ 文档B ×│ +`（`ANDROID-STANDALONE-PLAN.md §13`）。
+ * 标签页栏，**模式1 与模式2 共用这一份**：`[工作区名 ⌄] │ 文档A ×│ 文档B ×│ +`
+ * （`../ANDROID-STANDALONE-PLAN.md §13`）。
  *
- * **只有模式1 有**：模式2 的「开哪一篇」由 Mac 决定（平板跟随激活窗口），平板这边没有多篇并存的
- * 概念，所以它住在 `local/` 而不是 `shared/`。
+ * 它原先只有模式1 有（住在 `local/`），因为模式2「开哪一篇」由 Mac 决定。2026-08-28 用户要
+ * 「模式2 也对齐模式1 的 tab」——**但真源仍在 Mac**：模式2 的这条栏是 Mac 已打开窗口
+ * （`docs` 广播）的**只读镜像**，点标签 = `selectDoc` 切过去，`+` = 从书库 `openDoc` 让 Mac 新开一个，
+ * **不给 ×**（关窗口仍在 Mac 上做，线协议里没有「关」这条，用户 2026-08-28 拍板）。
+ * 差异全靠 [canClose]/[chipTrailingIcon] 两个开关表达，其余一行代码都不分模式。
  *
- * 形态与顶栏（`shared/TopBar`）同源：扁平、圆角、语义色、系统涟漪，深浅色跟随 `values-night`。
+ * 形态与顶栏（[TopBar]）同源：扁平、圆角、语义色、系统涟漪，深浅色跟随 `values-night`。
  * 三块从左到右固定语义——
- * - **工作区芯片**（最左，不随标签横滑）：当前工作区名 + `⌄`，点它切工作区。它是「快捷切工作区」
- *   的唯一入口，所以**必须常驻可见**，不能跟着标签一起滑走。
- * - **标签区**（中间，可横滑）：一篇一个芯片，当前那篇是 accent 底 + accent 字；每个芯片右侧一个 ×。
+ * - **工作区芯片**（最左，不随标签横滑）：当前工作区名 + 尾标。模式1 点它切工作区（`⌄`），
+ *   模式2 点它开书库（📖，工作区由 Mac 定、平板换不了）。它**必须常驻可见**，不能跟着标签一起滑走。
+ * - **标签区**（中间，可横滑）：一篇一个芯片，当前那篇是 accent 底 + accent 字；模式1 每个芯片右侧一个 ×。
  * - **加号**（最右，不随标签横滑）：在本工作区里再开一篇。
  *
  * 触摸尺寸这里**破例低于 48dp**（芯片高 [CHIP]、× 命中 [CLOSE]）：顶栏已经占了 57dp，
@@ -58,6 +61,20 @@ class DocTabsBar(private val a: Activity) {
 
     /** 点最右的 + */
     var onAdd: () -> Unit = {}
+
+    /**
+     * 标签芯片带不带 ×。模式2 = false：「开着哪几篇」的真源在 Mac，关窗要在 Mac 上做
+     * （线协议没有「关」，见类注释）。**必须在第一次 [setTabs] 之前设好**。
+     */
+    var canClose = true
+
+    /** 工作区芯片的尾标：模式1 `⌄`（点它切工作区）／模式2 📖（点它开书库，工作区换不了） */
+    var chipTrailingIcon = R.drawable.ic_chevron_down
+        set(v) {
+            if (field == v) return
+            field = v
+            wsChip.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_folder, 0, v, 0)
+        }
 
     private var wsName = ""
 
@@ -171,7 +188,8 @@ class DocTabsBar(private val a: Activity) {
                 },
                 LinearLayout.LayoutParams(-2, -2),
             )
-            addView(closeButton(fg, index))
+            // 模式2 没有 ×，右侧补上与左侧对称的内边距，芯片才不会看着左重右轻
+            if (canClose) addView(closeButton(fg, index)) else setPadding(Ui.dp(a, 12), 0, Ui.dp(a, 12), 0)
         }
     }
 

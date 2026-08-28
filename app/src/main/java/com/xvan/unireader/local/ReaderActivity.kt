@@ -31,6 +31,8 @@ import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.local.store.toUiLayers
 import com.xvan.unireader.shared.CanvasMargin
 import com.xvan.unireader.shared.Bg
+import com.xvan.unireader.shared.DocTabsBar
+import com.xvan.unireader.shared.LibItem
 import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
@@ -39,11 +41,13 @@ import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
+import com.xvan.unireader.shared.ReaderDrawer
 import com.xvan.unireader.shared.ScratchCanvas
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
+import com.xvan.unireader.shared.TocItem
 import com.xvan.unireader.shared.TopBar
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.brushName
@@ -159,6 +163,9 @@ class ReaderActivity : Activity() {
     private lateinit var canvasHost: FrameLayout
     private lateinit var bar: TopBar
     private lateinit var tabsBar: DocTabsBar
+
+    /** 左侧拉抽屉（目录 / 书库），与模式2 共用一份。目录由 [PdfSource.toc] 喂，书库由库队列读 */
+    private lateinit var drawer: ReaderDrawer
     private lateinit var openingLabel: TextView
     private lateinit var capsules: LinearLayout
     private lateinit var penStat: TextView
@@ -175,6 +182,9 @@ class ReaderActivity : Activity() {
 
     /** 库里全部文档的 id→标题（"+"的列表与新标签页的初始标题用它，省一次读库） */
     private var libTitles = mapOf<String, String>()
+
+    /** 当前工作区显示名（标签页栏的工作区芯片、抽屉书库页的分组标题都用它） */
+    private var workspaceName = ""
 
     private val tabs = ArrayList<Tab>()
     private var active = -1
@@ -298,6 +308,13 @@ class ReaderActivity : Activity() {
         // 形状/间距/开关态的表达/溢出菜单的行为都由它统一。
         // **每个键都要受得住"当前没有画布"**（标签页还在装载、或刚关掉最后一篇）。
         bar = TopBar(this).apply {
+            // 「目录 / 书库」与模式2 同一颗键、同一个位置、同一份抽屉（shared/ReaderDrawer）。
+            // 开之前先刷一次书库（模式2 的 `library` 是 Mac 主动广播的，模式1 得自己去库里读）
+            icon("toc", R.drawable.ic_list, "目录 / 书库") {
+                if (!drawer.isOpen) refreshDrawerLibrary()
+                drawer.toggle()
+            }
+            gap()
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { cur()?.turn(prev = true) }
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { cur()?.turn(prev = false) }
             gap()
@@ -331,6 +348,8 @@ class ReaderActivity : Activity() {
                         TopBar.MenuItem("双指滚动（防误触）", c.twoFingerScroll) {
                             c.toggleTwoFingerScroll(); saveTools()
                         },
+                        // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
+                        TopBar.MenuItem("锁定水平滚动", c.hLocked) { c.toggleHLock(); saveTools() },
                         TopBar.MenuItem("图层…") { showLayers() },
                         TopBar.MenuItem("跳到第…页") { showGotoPage() },
                         TopBar.MenuItem("打开另一篇…") { showDocPicker() },
@@ -344,6 +363,16 @@ class ReaderActivity : Activity() {
             onSelect = { i -> if (i != active) activate(i) }
             onClose = { i -> closeTab(i) }
             onAdd = { showDocPicker() }
+        }
+        // 左侧拉抽屉（目录 / 书库），与模式2 共用一份。目录来自本机 Pdfium 书签、书库来自工作区库，
+        // 两样都在这里转成中立模型喂给它（shared/ 不认识 SQLite 也不认识线格式）。
+        drawer = ReaderDrawer(this).apply {
+            onJump = { page, frac ->
+                // frac 恒 0（Pdfium 只给页号，见 PdfSource.toc），所以这一跳落在页顶
+                cur()?.scrollToPageFrac(page, frac)
+                refreshHud()
+            }
+            onOpenDoc = { id -> openDoc(id) }
         }
         // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）。
         // 面板改完即时生效（基类自己管），这里只负责把结果存下来——模式2 那两个回调是上行给 Mac 的，
@@ -413,6 +442,8 @@ class ReaderActivity : Activity() {
                 scratch.barView,
                 FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
             )
+            // 抽屉加在最后 = 盖在最上层（含 chrome 与全部浮层）：开着时下面一律不响应（同模式2）
+            addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
         setContentView(root)
         barH = bar.height()
@@ -460,6 +491,7 @@ class ReaderActivity : Activity() {
      */
     private fun openWorkspace(dir: File, initialDoc: String?) {
         workspace = dir
+        workspaceName = dir.name
         tabsBar.setWorkspace(dir.name)
         title = dir.name
         showOpening("正在打开 ${dir.name}…")
@@ -485,7 +517,10 @@ class ReaderActivity : Activity() {
         val q = StoreQueue(o.store)
         queue = q
         libTitles = o.docs.associate { it.id to it.title }
-        tabsBar.setWorkspace(o.name.ifEmpty { dir.name })
+        workspaceName = o.name.ifEmpty { dir.name }
+        tabsBar.setWorkspace(workspaceName)
+        libDocs = o.docs
+        pushDrawerLibrary()
 
         // 这个卷建不起 WAL（FAT32/exFAT 的 U 盘，§9.3）：不是错误，但得说一声——退出时的
         // checkpoint 会变成空操作，「搬运前先把 -wal 合并回主库」那层保险在这里没有。
@@ -668,6 +703,53 @@ class ReaderActivity : Activity() {
         tabsBar.setTabs(tabs.map { it.title }, active)
     }
 
+    // ---------- 抽屉（目录 / 书库），与模式2 共用 shared/ReaderDrawer ----------
+
+    /**
+     * 已经把**装载完**那一份目录推给抽屉的是哪一篇（空 = 还没推过真目录）。
+     * 拿它挡重复推送：[ReaderDrawer.setToc] 会清掉用户手动折叠的分支，同一篇不该反复清。
+     */
+    private var drawerTocId = ""
+
+    /** 工作区当前的书库快照（顺序与书库页一致）；`open` 标记由 [tabs] 现算 */
+    private var libDocs = listOf<LibDocument>()
+
+    /**
+     * 把当前标签页的目录喂给抽屉。模式2 的目录是 Mac 的 `toc` 广播，模式1 就在 [PdfSource.toc]
+     * 里现成放着——两边最后都变成同一份 [TocItem] 表交给同一个抽屉画。
+     *
+     * 标签页还在装载时 `pdf` 是空的，[ReaderDrawer] 会显示「本文档没有目录」；装载完
+     * [attachTab] 再推一次就补上了。
+     */
+    private fun pushDrawerToc() {
+        val t = curTab()
+        val id = t?.docId ?: ""
+        val toc = t?.pdf?.toc                     // 还在装载时是 null：先推空的占位，装载完再推真的
+        if (toc != null && id == drawerTocId) return
+        drawer.setDocV(id)                        // 与 setToc 的 docId 对上才敢渲染（同模式2 的核对）
+        drawer.setToc(id, toc ?: emptyList())
+        drawerTocId = if (toc != null) id else ""
+    }
+
+    /** 去库里读一次书库列表喂抽屉（异步；模式2 那边是 Mac 主动广播 `library`） */
+    private fun refreshDrawerLibrary() {
+        val q = queue ?: return
+        q.submit("读书库列表（抽屉）", { s -> s.allDocuments() }, { docs ->
+            libDocs = docs
+            libTitles = docs.associate { it.id to it.title }   // 抽屉里点开的那篇要拿得到标题
+            pushDrawerLibrary()
+        })
+    }
+
+    /** 用手上这份快照重推书库（`open` 标记随标签页增删变，不必再去库里读一遍） */
+    private fun pushDrawerLibrary() {
+        val opened = tabs.map { it.docId }.toSet()
+        drawer.setLibrary(
+            workspaceName,
+            libDocs.map { LibItem(it.id, it.title, opened.contains(it.id)) },
+        )
+    }
+
     /** 打开（或切到）本工作区的某一篇 */
     private fun openDoc(docId: String) {
         val i = tabs.indexOfFirst { it.docId == docId }
@@ -703,6 +785,8 @@ class ReaderActivity : Activity() {
         // 装载完 attachTab 会带着读好的纸列表再绑一次）
         scratch.bind(queue, t.docId, t.pads, t.pdf, pageAspectOf(t))
         refreshTabsBar()
+        pushDrawerToc()      // 换篇 = 换目录
+        pushDrawerLibrary()  // 「已打开」标记跟着标签页集合走
         title = t.title
         saveTabSet()
         val c = t.canvas
@@ -813,6 +897,7 @@ class ReaderActivity : Activity() {
         val c = newCanvas(t)
         t.canvas = c
         t.pdf = src
+        pushDrawerToc()   // 装载完才有 PdfSource，目录到这一步才拿得到（activate 那次是空的）
         t.layers = d.layers
         t.pads = d.pads
         canvasHost.addView(c, FrameLayout.LayoutParams(-1, -1))
@@ -906,6 +991,7 @@ class ReaderActivity : Activity() {
         if (to.showPage != from.showPage) to.toggleShowPage()
         if (to.zoomLocked != from.zoomLocked) to.toggleZoomLock()
         if (to.twoFingerScroll != from.twoFingerScroll) to.toggleTwoFingerScroll()
+        if (to.hLocked != from.hLocked) to.toggleHLock()
         if (to.rulerOn != from.rulerOn) to.toggleRuler()
         if (to.noteMode != from.noteMode) to.toggleNoteMode()
         to.setMode(from.mode)
@@ -1072,6 +1158,7 @@ class ReaderActivity : Activity() {
         }
         capsules.visibility = View.VISIBLE
         bar.setPageLabel(canvas.hudPage(), canvas.hudZoom())
+        drawer.setCurrentPage(canvas.topVisiblePage())   // 目录的「当前章节」追踪（同模式2）
         // 模式键的图标随当前模式变，开关键按下去是 accent 底色——两模式同一套表达（shared/TopBar）
         // 翻页模式不点亮：它是"没在写字"的常态，常态不该一直亮着
         bar.setIcon("mode", TopBar.modeIcon(canvas.mode))
@@ -1256,6 +1343,11 @@ class ReaderActivity : Activity() {
 
     /** 返回键先关草稿纸（同 Mac 的 Esc），没开着才走正常返回 */
     override fun onBackPressed() {
+        // 抽屉开着先关抽屉（同系统抽屉惯例，与模式2 逐条一致）
+        if (drawer.isOpen) {
+            drawer.close()
+            return
+        }
         if (scratch.isOpen) {
             scratch.close()
             return

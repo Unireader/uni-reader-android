@@ -60,10 +60,12 @@ object ToolPrefs {
             if (o.optBoolean("night", false) != canvas.night) canvas.toggleNight()
             if (o.optBoolean("zoomLocked", false) != canvas.zoomLocked) canvas.toggleZoomLock()
             if (o.optBoolean("twoFingerScroll", false) != canvas.twoFingerScroll) canvas.toggleTwoFingerScroll()
+            if (o.optBoolean("hLocked", false) != canvas.hLocked) canvas.toggleHLock()
             Log.i(
                 TAG,
                 "工具状态已复原：笔 ${canvas.penList().size} 支 当前=${canvas.penIndex} " +
-                    "夜间=${canvas.night} 锁缩放=${canvas.zoomLocked} 双指滚动=${canvas.twoFingerScroll}",
+                    "夜间=${canvas.night} 锁缩放=${canvas.zoomLocked} 双指滚动=${canvas.twoFingerScroll} " +
+                    "锁横向=${canvas.hLocked}",
             )
         } catch (e: Exception) {
             Log.w(TAG, "工具状态解析失败，按默认走", e)
@@ -94,6 +96,7 @@ object ToolPrefs {
                 // 锁缩放 / 双指滚动：设一次用很久的**防误触偏好**，不存的话每次启动都要重新去点一遍
                 .put("zoomLocked", canvas.zoomLocked)
                 .put("twoFingerScroll", canvas.twoFingerScroll)
+                .put("hLocked", canvas.hLocked)
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(KEY, o.toString()).apply()
         } catch (e: Exception) {

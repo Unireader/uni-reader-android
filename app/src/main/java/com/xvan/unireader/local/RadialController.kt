@@ -1,5 +1,6 @@
 package com.xvan.unireader.local
 
+import android.os.SystemClock
 import android.util.Log
 import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_NOTE
@@ -64,6 +65,11 @@ class RadialController(private val view: PageCanvasView) {
     private var highlight = -1
     private var items = listOf<RadialItem>()
 
+    /** 长按候选期间的笔位采样（y 已乘页面纵横比折成与 x 同尺度），只保留窗口内的那几个 */
+    private val sampleX = ArrayList<Float>(16)
+    private val sampleY = ArrayList<Float>(16)
+    private val sampleT = ArrayList<Long>(16)
+
     private val fire = Runnable { fireLongPress() }
 
     /**
@@ -77,18 +83,48 @@ class RadialController(private val view: PageCanvasView) {
         cy = ny
         watching = true
         movedFar = false
+        sampleX.clear(); sampleY.clear(); sampleT.clear()
+        sampleX.add(nx); sampleY.add(ny * view.pageAspect(page)); sampleT.add(SystemClock.uptimeMillis())
         view.setPressRing(true, page, nx, ny)
         view.postDelayed(fire, PadConst.LP.HOLD_MS)
     }
 
-    /** 笔移：盘开着 = 选扇区；否则看是不是已经在画了（在画就撤销长按候选） */
+    /**
+     * 笔移：盘开着 = 选扇区；否则看是不是已经在画了（在画就撤销长按候选）。
+     *
+     * **两道闸，任一条中即撤**（与 Mac `checkLongPressMovement` 逐条对齐）：
+     * ① 离落笔点的总位移超 [PadConst.LP.MOVE_CANCEL]（跑远了）；
+     * ② [PadConst.LP.SPEED_WINDOW_MS] 窗口内的平均速度超 [PadConst.LP.MOVE_CANCEL_SPEED]
+     *    （一直在动 = 在写字 —— 只看总位移挡不住小字，见那里的注释）。
+     */
     fun move(nx: Float, ny: Float) {
         if (active) {
             updateHighlight(nx, ny)
             return
         }
         if (!watching || movedFar) return
-        if (exceeds(dist(nx, ny), PadConst.LP.MOVE_CANCEL, PadConst.LP.MOVE_CANCEL_NORM)) {
+        var moving = exceeds(dist(nx, ny), PadConst.LP.MOVE_CANCEL, PadConst.LP.MOVE_CANCEL_NORM)
+
+        // 速度闸：只保留窗口内的采样（外加**窗口外最近的那一个**当参照点，否则刚落笔时无从比起）
+        val now = SystemClock.uptimeMillis()
+        val aspect = view.pageAspect(page)
+        sampleX.add(nx); sampleY.add(ny * aspect); sampleT.add(now)
+        while (sampleT.size > 1 && now - sampleT[1] > PadConst.LP.SPEED_WINDOW_MS) {
+            sampleX.removeAt(0); sampleY.removeAt(0); sampleT.removeAt(0)
+        }
+        if (!moving && sampleT.isNotEmpty()) {
+            val dt = now - sampleT[0]
+            if (dt >= PadConst.LP.SPEED_MIN_DT_MS) {
+                val d = hypot(nx - sampleX[0], ny * aspect - sampleY[0])
+                moving = exceeds(
+                    d / (dt / 1000f),
+                    PadConst.LP.MOVE_CANCEL_SPEED,
+                    PadConst.LP.MOVE_CANCEL_SPEED_NORM,
+                )
+            }
+        }
+
+        if (moving) {
             movedFar = true
             view.removeCallbacks(fire)
             view.setPressRing(false, page, cx, cy)

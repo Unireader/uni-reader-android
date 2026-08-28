@@ -10,7 +10,9 @@ import android.util.Log
 import android.util.LruCache
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.PageWidths
+import com.xvan.unireader.shared.TocItem
 import io.legere.pdfiumandroid.PdfiumCore
+import io.legere.pdfiumandroid.api.Bookmark
 import java.io.Closeable
 import java.io.File
 import java.util.ArrayDeque
@@ -47,6 +49,9 @@ class PdfSource(
          */
         const val BACKGROUND_CACHE_BYTES = 32 * 1024 * 1024
 
+        /** 书签递归上限（防循环书签把栈吃穿；Pdfium 自己那层也有同类上限） */
+        const val MAX_TOC_DEPTH = 16
+
         /**
          * 页的显示尺寸（pt，已含旋转换边），**逐字对齐 Mac 端 `PageBitmap.displaySize`**：
          * CropBox 宽高都 >0 就用 CropBox，否则用 MediaBox；再按页旋转换边。
@@ -80,6 +85,47 @@ class PdfSource(
 
     /** 逐页显示尺寸（pt）。打开时一次性取全（同 §7：塞进同一个 pagesWH） */
     val pageSizes: List<FloatArray> = readAllPageSizes()
+
+    /**
+     * PDF 书签 → [TocItem] 先序拍平表（与 Mac `toc` 广播、与 [ReaderDrawer] 吃的是同一形状）。
+     *
+     * 打开时一次性取全：书签表就几百条，取一次几毫秒，比每次开抽屉再算省事得多。
+     *
+     * **`frac` 恒 0**：pdfiumandroid 的书签 API 只给 `pageIdx`（`FPDFDest_GetDestPageIndex`），
+     * 页内位置要 `FPDFDest_GetLocationInPage` 才有，那个没暴露出来。所以模式1 的目录跳转只到页顶，
+     * 章节从页中部起时会落在上一节末尾附近——这是 API 的限制，不是漏做（见 [TocItem.frac]）。
+     *
+     * `pageIdx` 为负 = destination 解不出目标页（真实 PDF 里很常见），照 [TocItem.page] 的约定
+     * 原样留成 -1，交给抽屉渲染成不可点的灰行。
+     */
+    val toc: List<TocItem> = readToc()
+
+    private fun readToc(): List<TocItem> = try {
+        val out = ArrayList<TocItem>()
+        synchronized(docLock) { flattenToc(doc.getTableOfContents(), 0, out) }
+        Log.i(TAG, "${file.name} 目录 ${out.size} 条")
+        out
+    } catch (e: Exception) {
+        // 目录取不到只是没有目录，不该挡住开文档（同 §9 的一贯口径）
+        Log.w(TAG, "${file.name} 目录读取失败，按无目录走", e)
+        emptyList()
+    }
+
+    private fun flattenToc(list: List<Bookmark>, depth: Int, out: MutableList<TocItem>) {
+        if (depth > MAX_TOC_DEPTH) return   // 循环书签的兜底（Pdfium 自己也有递归上限）
+        for (b in list) {
+            val page = b.pageIdx
+            out.add(
+                TocItem(
+                    depth = depth,
+                    page = if (page in 0 until pageCount) page.toInt() else -1,
+                    frac = 0f,
+                    label = b.title.orEmpty(),
+                ),
+            )
+            if (b.children.isNotEmpty()) flattenToc(b.children, depth + 1, out)
+        }
+    }
 
     // ---------- 缓存与工作线程 ----------
 

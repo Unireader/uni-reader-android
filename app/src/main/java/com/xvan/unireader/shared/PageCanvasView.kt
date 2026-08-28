@@ -209,6 +209,19 @@ open class PageCanvasView @JvmOverloads constructor(
         protected set
 
     /**
+     * 锁定水平滚动：内容的**横向位置不再跟手改变**（单指/双指拖动、松手惯性一律只走纵向）。
+     *
+     * 用在放大了看、或画板模式下页边写字的时候：那两种情形里横向位置是刻意调好的，
+     * 而竖着划一道很难不带一点横向分量，页面于是慢慢往旁边飘。锁缩放挡的是"写着写着变大小"，
+     * 这条挡的是"写着写着跑偏"，两件事各一个开关。
+     *
+     * **缩放引起的横向重锚不受影响**：捏合改了 zoom 时 `scrollX` 照旧跟着锚点比例走，
+     * 否则放大后画面会横向乱跳；只有"zoom 没变的双指整体挪动"才被这条挡下（见 [pinchMove]）。
+     */
+    var hLocked = false
+        protected set
+
+    /**
      * 双指滚动模式（防误触）：**单指划动不再平移页面**，滚动与缩放一律双指。
      *
      * 已有的两道防线（笔落下时忽略手指、接触面积大于 [PadConst.PALM] 的忽略）挡不住
@@ -314,6 +327,12 @@ open class PageCanvasView @JvmOverloads constructor(
 
     fun toggleTwoFingerScroll() {
         twoFingerScroll = !twoFingerScroll
+        onHudChanged()
+    }
+
+    fun toggleHLock() {
+        hLocked = !hLocked
+        cancelMomentum()   // 正在甩的那一下也得当场停住横向，不然开关按下去还会飘一段
         onHudChanged()
     }
 
@@ -1658,7 +1677,7 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     protected fun panBy(dx: Float, dy: Float) {
-        scrollX = (scrollX + dx).coerceIn(0f, maxScrollX)
+        if (!hLocked) scrollX = (scrollX + dx).coerceIn(0f, maxScrollX)
         scrollY = (scrollY + dy).coerceIn(0f, maxScrollY)
         afterPan()
     }
@@ -1670,6 +1689,7 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 松手惯性：按松手速度继续滚，0.94^(dt/16) 指数衰减，碰边界该轴停；期间持续上报 */
     protected fun startMomentum() {
         cancelMomentum()
+        if (hLocked) vx = 0f   // 横向锁死，甩出去的那一下也不许带横向分量
         if (hypot(vx, vy) < 0.05f) return
         momentumRunning = true
         var last = SystemClock.uptimeMillis()
@@ -2026,13 +2046,18 @@ open class PageCanvasView @JvmOverloads constructor(
         val d = hypot(a.x - b.x, a.y - b.y)
         val mx = (a.x + b.x) / 2f
         val my = (a.y + b.y) / 2f
+        val z0 = zoom
         if (!zoomLocked) zoom = (pc.z0 * d / pc.d0).coerceIn(PadConst.MIN_ZOOM, PadConst.MAX_ZOOM)
         recompute()
+        val x0 = scrollX
         scrollY = (pc.fy * totalH - (my - barH)).coerceIn(0f, maxScrollY)
         // scrollX 的基准是**内容**左缘，而 fx 抓的是**页内**比例 → 画板模式下要补上左侧页边那一段
         // （关着时 cmargin()==0，与画板模式之前同式）。
         scrollX = if (contentWidth() > vw) (cmargin() * pw() + pc.fx * pw() - mx).coerceIn(0f, maxScrollX)
                   else 0f
+        // 锁横向：zoom 没变 = 这是双指整体挪动，横向该被挡下；zoom 变了则是缩放重锚，照旧
+        // （不然放大后画面会横向乱跳，见 [hLocked]）。
+        if (hLocked && zoom == z0) scrollX = x0.coerceIn(0f, maxScrollX)
         ensureImages()
         invalidate()
         emitGeom()   // 页宽变了要告诉 Mac（选笔盘的像素判定基准），与位置无关、不构成回环

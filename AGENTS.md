@@ -52,6 +52,13 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （`pad/PageFetcher` = HTTP 从 Mac 取 `/page.png?i=N`／`local/PdfSource` = 本机 Pdfium）。
   「本地乐观预览 + 真源回推」两模式同一条路径，只是模式1 的真源就在进程内。
 - `shared/` 改一处两模式同时受益——这是「同一个 App」的全部意义，别在 `pad/`、`local/` 各抄一份。
+- **导航三件套 2026-08-28 起也共用**：`shared/TopBar`（顶栏，早就是）+ `shared/ReaderDrawer`
+  （左侧抽屉：目录 / 书库）+ `shared/DocTabsBar`（标签页栏）。数据走中立模型 `shared/ReaderNav.kt`
+  （`TocItem`/`LibItem`）：模式2 从 Mac 的 `toc`/`library`/`docs` 广播转一层，模式1 从
+  `PdfSource.toc`（Pdfium 书签）与工作区 SQLite 读。**`shared/` 一行都不许认识 `WireCodec`。**
+  两模式的差异只由开关表达，不分叉代码：`DocTabsBar.canClose`（模式2 = false，「开着哪几篇」
+  真源在 Mac，关窗要在 Mac 上做）、`chipTrailingIcon`（模式1 `⌄` 切工作区 / 模式2 📖 开书库）。
+  **模式1 的目录只能跳到页顶**：pdfiumandroid 的书签 API 只给页号不给页内位置，故 `TocItem.frac` 恒 0。
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
 - 模式1 的阅读界面 = 「一个工作区」的多标签页（`ReaderActivity` + `DocTabsBar` + `TabSet`）：
@@ -85,6 +92,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   **不能靠 clamp 收边**——那会把页外笔迹压成页边一条竖线，该由 canvas clip 裁）；
   ③ 变换（`InkEdit.translated/scaled` 的 `xMargin`，默认 0 = 不出本页）。
   页边宽度**模式2 由 Mac 下发**（`canvas` 0x4B），**模式1 本机从笔迹算**（`CanvasMargin`）。
+- **环形选笔盘的长按判据是「位移 + 速度」两道闸**（2026-08-28 用户报「很容易误触」）。
+  只看「离落笔点的总位移」挡不住小字：写一个小字全程都在 14dp 半径里打转，停满 1s 盘就凭空弹出来。
+  加了滑动窗口内的平均速度（写字必然在动、长按必然不动）。常量在 `PadConst.LP`，
+  **与 Mac `AppModel` 的 `holdSpeed*` 是同一套的两份实现**（模式2 的判定跑在 Mac），改一边同步另一边。
 - **`ackRel` 对账：落墨与擦除是两件事，别用同一条判据**（2026-08-28 修，`../PROTOCOL.md §4.2`）。
   整份丢弃一份回推快照，只因为它**比本地的擦除旧**（比 `lastEraseRel`）。拿「本端已发出的最后一个
   `seqRel`」去比是错的：ink move 每 8ms 就是一个新序号，连续快写时判据永远为真、快照一份都进不来，
