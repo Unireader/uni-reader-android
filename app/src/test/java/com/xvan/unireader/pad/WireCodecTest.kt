@@ -15,12 +15,13 @@ import com.xvan.unireader.shared.RK_SCRATCH
 import com.xvan.unireader.shared.RK_TEXT
 import com.xvan.unireader.shared.TextNote
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 84 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 85 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -233,6 +234,14 @@ class WireCodecTest {
         assertEquals(305419896L, m52.ackRel)
         assertEquals(1, m52.list.size)
         assertEquals(listOf(Pt3(0.5f, 0.25f, 0.5f), Pt3(0.75f, 0.125f, 1.0f)), m52.list[0].pts)
+        assertFalse("strokes(0x36) 是整表替换", m52.append)
+
+        // #85 strokesAppend（0x4C）：与 #52 除首字节外逐字节相同，解出来只差 append 这一位
+        assertEquals(VECTORS[51].substring(2), VECTORS[84].substring(2))
+        val m85 = WireCodec.decode(unhex(VECTORS[84])) as WireCodec.Msg.Strokes
+        assertTrue("strokesAppend(0x4C) 是追加", m85.append)
+        assertEquals(305419896L, m85.ackRel)
+        assertEquals(m52.list, m85.list)
 
         // #54 library{ws:"阅读", list:[{A1,…,open}, {B2,SICP,未开}]}
         val m54 = WireCodec.decode(unhex(VECTORS[53])) as WireCodec.Msg.Library
@@ -436,7 +445,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(84, VECTORS.size)
+        assertEquals(85, VECTORS.size)
     }
 
     @Test
@@ -537,6 +546,9 @@ class WireCodecTest {
             "4b0100002040",
             // #84 canvas 的 C→S 形态（只有 on 有意义，margin 恒 0）
             "4b0100000000",
+            // #85 strokesAppend（0x4C）：与 #52 的 strokes 除首字节外**逐字节相同**
+            "4c7856341201000000010000001414140000803f000020410302000000003f0000803e" +
+                "0000003f0000403f0000003e0000803f",
         )
     }
 }

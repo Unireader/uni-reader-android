@@ -68,6 +68,9 @@ object WireCodec {
     const val OP_LASSO_MOVE = 0x47
     const val OP_LASSO_SCALE = 0x4A
     const val OP_CANVAS = 0x4B
+
+    /** 与 [OP_STROKES] 逐字节相同，语义是「追加」（`../PROTOCOL.md §4.2`） */
+    const val OP_STROKES_APPEND = 0x4C
     const val OP_NACK = 0x50
 
     // phase / dir（§2）
@@ -139,9 +142,14 @@ object WireCodec {
         data class Page(val v: Long, val index: Long, val count: Long, val w: Float, val h: Float) : Msg()
         data class Layout(val docId: String, val v: String, val count: Long, val pages: List<Pair<Float, Float>>) : Msg()
         data object InkCancel : Msg()
-        /** Mac 回传的全部成形笔迹（唯一真源） */
-        /** @param ackRel Mac 已连续处理到的本端 REL seq（PROTOCOL.md §4.2）；0 = 没建 UDP 会话 */
-        data class Strokes(val ackRel: Long, val list: List<Stroke>) : Msg()
+        /**
+         * Mac 回传的成形笔迹（唯一真源）。[append] = 这一份是**追加**（`strokesAppend`, 0x4C）
+         * 而不是整表替换（`strokes`, 0x36）—— 两者 payload 逐字节相同，只差这一个语义位。
+         * Mac 只在纯追加（收笔）时用追加帧，擦除/框选/图层/切档一律照旧发全量（`PROTOCOL.md §4.2`）。
+         *
+         * @param ackRel Mac 已**应用**到的本端 REL seq（`PROTOCOL.md §4.2`）；0 = 没建 UDP 会话
+         */
+        data class Strokes(val ackRel: Long, val list: List<Stroke>, val append: Boolean = false) : Msg()
         data class Nack(val seqs: List<Long>) : Msg()
         /** Mac 视口下发（force 绕过 seq 去重） */
         data class Viewport(val page: Long, val frac: Float, val seq: Long, val force: Boolean) : Msg()
@@ -485,7 +493,8 @@ object WireCodec {
         if (d.isEmpty()) return null
         return try {
             val r = Reader(d)
-            when (r.u8()) {
+            val op = r.u8()
+            when (op) {
                 OP_AUTH_OK ->
                     if (r.remaining >= 6) Msg.AuthOK(r.u32(), r.u16()) else Msg.AuthOK(0, 0)
                 OP_AUTH_FAIL -> Msg.AuthFail
@@ -500,13 +509,14 @@ object WireCodec {
                     Msg.Layout(docId, v, count, pages)
                 }
                 OP_INK_CANCEL -> Msg.InkCancel
-                OP_STROKES -> {
+                // 两者 payload 逐字节相同，只差语义（整表替换 / 追加），故共用一段解码
+                OP_STROKES, OP_STROKES_APPEND -> {
                     val ackRel = r.u32()
                     val n = r.u32()
                     val list = ArrayList<Stroke>()
                     var i = 0L
                     while (i < n && r.remaining > 0) { list.add(Stroke(r.u32(), r.pen(), r.pts3())); i++ }
-                    Msg.Strokes(ackRel, list)
+                    Msg.Strokes(ackRel, list, append = op == OP_STROKES_APPEND)
                 }
                 OP_VIEWPORT -> Msg.Viewport(r.u32(), r.f32(), r.u32(), r.u8() == 1)
                 OP_PENS -> {

@@ -851,6 +851,32 @@ open class PageCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * 真源**追加**了这几条（模式2 的 `strokesAppend` 0x4C，`PROTOCOL.md §4.2`）。
+     *
+     * Mac 只在纯追加（收笔）那一处发它——全量镜像每收一笔就重发整篇是 O(n²)，写久了 `e2e` 一路爬，
+     * 大帧还会把后面几十字节的控制帧压在 WS 队列里。擦除/框选/图层显隐/切档仍走 [setStrokes]。
+     *
+     * 与 [setStrokes] 的两处不同，都是追加语义天然带来的：
+     * - **不需要那道擦除闸**（`lastEraseRel > ackRel` 就整份丢弃）：追加不会把擦掉的笔迹复活。
+     * - **只销账、不整批清**：`ackRel` 已追上的乐观笔在这里退场，没追上的原样留着继续画。
+     *   销账与追加**在同一次操作里**完成，屏幕上恰好一条，不会先双份再闪掉。
+     */
+    fun appendStrokes(list: List<Stroke>, ackRel: Long = 0L) {
+        strokesRecvAt = System.currentTimeMillis()   // 真源活着的证明，同 setStrokes
+        strokes.addAll(list)
+        if (ackRel > 0L && pendingInk.isNotEmpty()) {
+            val it = pendingInk.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                if (e.value > ackRel) continue       // 真源还没收下这一笔，乐观版继续顶着
+                strokes.removeAll { s -> s.id == e.key }
+                it.remove()
+            }
+        }
+        invalidate()
+    }
+
     fun onInkCancel() {
         radialActive = true
         clearCur()

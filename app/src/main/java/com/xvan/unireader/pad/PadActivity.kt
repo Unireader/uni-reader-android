@@ -881,14 +881,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         padView.onInkCancel()
     }
 
-    override fun onStrokes(ackRel: Long, list: List<Stroke>) = runOnUiThread {
-        // ink end 发出 → 收到 strokes 广播 = e2e
+    override fun onStrokes(ackRel: Long, list: List<Stroke>, append: Boolean) = runOnUiThread {
+        // ink end 发出 → 收到回推 = e2e（收笔那一下 Mac 发的正是追加帧）
         if (tEnd > 0) {
             e2e = (System.currentTimeMillis() - tEnd).toDouble()
             graphView.addE2e(e2e.toFloat())
         }
-        // e2e 爬升的诊断打点（1s 一条）：`strokes` 是**全量**镜像，Mac 每收一条 ink end 就整篇重发一次，
-        // 于是 e2e ∝ 文档累计笔迹量。要判断「是不是被镜像体积拖的」，看这条的 点数/字节数 随时间涨没涨。
+        // 回推体积的诊断打点（1s 一条）：追加帧的体积与文档大小无关，全量帧才随累计笔迹涨。
+        // 若 e2e 还在爬，看这条是哪一种、多大——写字时应当基本都是「追加」且恒定在几 KB。
         val now = System.currentTimeMillis()
         if (now - lastStrokeLogAt >= 1000) {
             lastStrokeLogAt = now
@@ -896,12 +896,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             for (s in list) pts += s.pts.size
             Log.i(
                 PageCanvasView.TAG,
-                "回推 strokes ${list.size}条/${pts}点 ≈${pts * 12 / 1024}KB " +
+                "回推 ${if (append) "追加" else "全量"} ${list.size}条/${pts}点 ≈${pts * 12 / 1024}KB " +
                     "ackRel=$ackRel sentRel=${udp?.sentRel ?: 0L} e2e=${e2e.toInt()}ms",
             )
         }
-        // ackRel 要配上「本端已发出到哪」才有意义：两者一比就知道这份全量快照含不含我刚发的输入
-        padView.setStrokes(list, ackRel, udp?.sentRel ?: 0L)
+        // 追加只需 ackRel（销账乐观笔）；全量还要配上「本端已发出到哪」才分得清中途快照
+        if (append) padView.appendStrokes(list, ackRel)
+        else padView.setStrokes(list, ackRel, udp?.sentRel ?: 0L)
         refresh()
     }
 
