@@ -305,6 +305,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 listOf(
                     TopBar.MenuItem("夜间模式", padView.night) { padView.toggleNight() },
                     TopBar.MenuItem("显示页面图", padView.showPage) { padView.toggleShowPage() },
+                    // 画板模式：**只发请求**，Mac 是开关与页边宽度的唯一真源（同 openPad 的惯例）；
+                    // 它执行后广播 `canvas` 回来，本端在 onCanvas 里才改布局。
+                    TopBar.MenuItem("画板模式", padView.canvasModeOn()) {
+                        client?.send(WireCodec.encodeCanvas(!padView.canvasModeOn()))
+                    },
                     // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
                     TopBar.MenuItem("双指滚动（防误触）", padView.twoFingerScroll) {
                         padView.toggleTwoFingerScroll()

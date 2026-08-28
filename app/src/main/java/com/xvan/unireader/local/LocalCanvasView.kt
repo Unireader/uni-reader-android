@@ -259,9 +259,6 @@ class LocalCanvasView @JvmOverloads constructor(
         if (id.isNotEmpty() && q != null) q.submit("画板模式", { it.setCanvasMode(id, on) }, {})
     }
 
-    /** 当前是否开着画板模式（顶栏图标的选中态） */
-    fun canvasModeOn(): Boolean = canvasOn
-
     /** 笔迹增删/移动后重算页边软边界（只在开着时做；同 Mac `refreshCanvasMargin`） */
     private fun refreshCanvasMargin() {
         if (!canvasOn) return

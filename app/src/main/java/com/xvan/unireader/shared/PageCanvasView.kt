@@ -408,6 +408,9 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 每侧页边宽度（**页宽的倍数**）；见 [CanvasMargin] */
     protected var canvasMargin = 0f
 
+    /** 当前是否开着画板模式（顶栏开关的选中态；两模式共用） */
+    fun canvasModeOn(): Boolean = canvasOn
+
     /** 每侧页边宽度（页宽的倍数），关着即 0 */
     protected fun cmargin(): Float = if (canvasOn) max(0f, canvasMargin) else 0f
     /** 可滚动内容总宽（页 + 两侧页边） */

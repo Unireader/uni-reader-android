@@ -403,6 +403,13 @@ object WireCodec {
     fun encodeEraser(size: Float, mode: Int, ring: Boolean): ByteArray =
         Writer().apply { u8(OP_ERASER); f32(size); u8(mode); u8(if (ring) 1 else 0) }.bytes()
 
+    /**
+     * 请求切画板模式（C→S）。**只有 `on` 有意义**，margin 一律编 0——页边宽度轮不到客户端定
+     * （../PROTOCOL.md `canvas`）。Mac 执行后照旧广播权威值回来，本端那时才改布局。
+     */
+    fun encodeCanvas(on: Boolean): ByteArray =
+        Writer().apply { u8(OP_CANVAS); u8(if (on) 1 else 0); f32(0f) }.bytes()
+
     /** 图层请求：切换当前作画图层（index = layers 列表下标） */
     fun encodeLayerSelect(index: Int): ByteArray =
         Writer().apply { u8(OP_LAYER_SELECT); u16(index) }.bytes()

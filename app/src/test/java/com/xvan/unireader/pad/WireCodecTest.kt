@@ -20,7 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 83 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 84 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -428,12 +428,15 @@ class WireCodecTest {
         val far = WireCodec.decode(unhex(VECTORS[82])) as WireCodec.Msg.Canvas
         assertTrue(far.on)
         assertEquals(2.5f, far.margin, 0f)
+
+        // #84 C→S 形态：本端编出来的请求帧要与向量逐字节相同（margin 恒 0）
+        assertEquals(VECTORS[83], hex(WireCodec.encodeCanvas(true)))
     }
 
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(83, VECTORS.size)
+        assertEquals(84, VECTORS.size)
     }
 
     @Test
@@ -446,7 +449,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 83 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 84 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -532,6 +535,8 @@ class WireCodecTest {
             "4b0000000000",
             "4b010000003f",
             "4b0100002040",
+            // #84 canvas 的 C→S 形态（只有 on 有意义，margin 恒 0）
+            "4b0100000000",
         )
     }
 }
