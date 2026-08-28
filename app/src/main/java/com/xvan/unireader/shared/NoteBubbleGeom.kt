@@ -18,7 +18,8 @@ object NoteBubbleGeom {
     const val PAD = 0.55f       // 内边距 ÷ 字号
     const val RADIUS = 0.5f     // 圆角 ÷ 字号
     const val GAP = 0.25f       // 图钉与气泡的间隙 ÷ 字号
-    const val EDIT = 1.7f       // 右上角铅笔的边长（= 热区）÷ 字号
+    const val EDIT = 1.7f       // 右上角「编辑」按钮的边长（= 热区）÷ 字号
+    const val ICON = 0.78f      // 图标画多大 ÷ 按钮边长（热区比图标大一圈，好点）
     const val MAX_LINES = 10    // 超出即截断（全文去编辑器里看）
 
     /** 一只气泡的屏显几何（视口 px）+ 已折好的行。 */

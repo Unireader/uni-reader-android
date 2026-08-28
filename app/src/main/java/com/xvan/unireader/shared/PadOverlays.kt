@@ -86,18 +86,62 @@ class PadOverlays(private val density: Float) {
             val top = b.y + b.pad + i * b.fs * NoteBubbleGeom.LINE_H
             c.drawText(b.lines[i], b.x + b.pad, top - fm.ascent, textPaint)
         }
-        if (b.edit > 0f) {   // 右上角铅笔（热区 = 这块方形，见 PageCanvasView.noteEditHit）
-            textPaint.textAlign = Paint.Align.CENTER
-            textPaint.textSize = b.fs * 1.05f
-            textPaint.color = Color.argb(153, 0, 0, 0)
-            c.drawText(
-                "✎",
-                b.x + b.w - b.edit / 2f - b.pad * 0.4f,
-                b.y + b.edit / 2f + b.pad * 0.4f + centerBaseline(),
-                textPaint,
+        if (b.edit > 0f) {   // 右上角「编辑」图标（热区 = 这块方形，见 PageCanvasView.noteEditHit）
+            val s = b.edit * NoteBubbleGeom.ICON
+            drawEditIcon(
+                c,
+                b.x + b.w - b.edit / 2f - b.pad * 0.4f - s / 2f,
+                b.y + b.edit / 2f + b.pad * 0.4f - s / 2f,
+                s,
             )
         }
         textPaint.textAlign = Paint.Align.CENTER
+    }
+
+    /**
+     * 「编辑」图标：**画出来的**（原先是 `✎` 字符，字形随系统字体走、各机器长得都不一样还飘基线）。
+     * 形状照 macOS 的 SF Symbol `square.and.pencil`：右上角开口的方框 + 斜插出去的铅笔——
+     * 裸铅笔在这个尺寸下读起来只是一道斜杠（2026-08-27 用户报「有点丑」）。
+     * 坐标是 24 网格；**web `render.ts drawEditIcon` 是同一组数，改一边必须同步另一边**。
+     */
+    private fun drawEditIcon(c: Canvas, x: Float, y: Float, s: Float) {
+        val u = s / 24f
+        val col = Color.argb(140, 0, 0, 0)
+        fun px(v: Float) = x + v * u
+        fun py(v: Float) = y + v * u
+        val r = 3f
+        // 方框：右上角开口（缺口留给铅笔），另三角圆角 3
+        path.reset()
+        path.moveTo(px(14f), py(4.5f))
+        path.lineTo(px(4.5f + r), py(4.5f))
+        path.quadTo(px(4.5f), py(4.5f), px(4.5f), py(4.5f + r))
+        path.lineTo(px(4.5f), py(19.5f - r))
+        path.quadTo(px(4.5f), py(19.5f), px(4.5f + r), py(19.5f))
+        path.lineTo(px(19.5f - r), py(19.5f))
+        path.quadTo(px(19.5f), py(19.5f), px(19.5f), py(19.5f - r))
+        path.lineTo(px(19.5f), py(10f))
+        p.style = Paint.Style.STROKE
+        p.color = col
+        p.strokeWidth = maxOf(1f, 2f * u)
+        p.strokeJoin = Paint.Join.ROUND
+        p.strokeCap = Paint.Cap.ROUND
+        c.drawPath(path, p)
+        p.strokeJoin = Paint.Join.MITER
+        p.strokeCap = Paint.Cap.BUTT
+
+        // 铅笔：笔杆 + 笔尖（填充，小尺寸下比描边清楚）
+        p.style = Paint.Style.FILL
+        path.reset()
+        path.moveTo(px(19.08f), py(3.08f))
+        path.lineTo(px(20.92f), py(4.92f))
+        path.lineTo(px(14.92f), py(10.92f))
+        path.lineTo(px(13.08f), py(9.08f))
+        path.close()
+        path.moveTo(px(13.08f), py(9.08f))
+        path.lineTo(px(14.92f), py(10.92f))
+        path.lineTo(px(12.44f), py(11.56f))
+        path.close()
+        c.drawPath(path, p)
     }
 
     /** 折行用的量字回调（[NoteBubbleGeom.layout] 要按气泡字号量宽度） */
