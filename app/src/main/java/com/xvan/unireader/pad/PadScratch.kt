@@ -15,6 +15,7 @@ import android.widget.TextView
 import com.xvan.unireader.R
 import com.xvan.unireader.local.ScratchController
 import com.xvan.unireader.shared.PadPanels
+import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
@@ -53,8 +54,8 @@ class PadScratch(private val a: Activity) {
 
     // ---- 出口（PadActivity 接线；全部是「请求」/RT 帧，权威状态等 Mac 回推） ----
 
-    /** UDP 可靠流（ink/erase，同页内 RT 的通道选择） */
-    var sendRel: ((ByteArray) -> Unit)? = null
+    /** UDP 可靠流（ink/erase，同页内 RT 的通道选择）。**返回本帧的 REL 序号**，用于与回推的 ackRel 对账 */
+    var sendRel: ((ByteArray) -> Long)? = null
 
     /** WS 可靠通道（scratchOpen/scratchAdd/scratchPaper 请求） */
     var sendCtl: ((ByteArray) -> Unit)? = null
@@ -112,11 +113,15 @@ class PadScratch(private val a: Activity) {
         val entry = pads.getOrNull(open)
         if (entry == null) {
             openPadId = null
+            pendingOpt.clear()   // 上一张纸没等到真源的乐观笔，跟着画布状态一起作废
             canvas.setPageUnder(-1, null)
             canvas.visibility = View.GONE
             barView.visibility = View.GONE
         } else {
-            if (entry.id != openPadId) canvas.openSession()   // 换纸/新开：丢上一张的本地状态并回中
+            if (entry.id != openPadId) {
+                canvas.openSession()   // 换纸/新开：丢上一张的本地状态并回中
+                pendingOpt.clear()
+            }
             openPadId = entry.id
             canvas.setPaper(bgCss(entry), patternName(entry.pattern))
             applyPageUnder(entry)
@@ -134,14 +139,28 @@ class PadScratch(private val a: Activity) {
      * 收 `scratchStrokes`：当前打开那张纸的全量笔迹镜像（没开纸时 Mac 发 n=0 → 清掉本地残留）。
      *
      * ackRel 判据与页内 `PageCanvasView.setStrokes` **一字不差**（PROTOCOL.md §4.2）：
-     * 这份快照生成时 Mac 还没处理完我发出的输入（sentRel > ackRel）→ 它比本地乐观状态旧，
-     * 应用它就是把刚写完/刚擦掉的恢复出来再等下一份纠偏；擦除手势还没抬笔时一律信本地
-     * （最后一批擦除点可能还在 8ms 批缓冲里没 flush，那时 sentRel 没涨、判据会误判）。
+     * 只有**擦除**会被比本地旧的快照实质破坏（把刚擦掉的恢复出来再等下一份纠偏），所以整份丢弃
+     * 只看 [lastEraseRel]；落墨是纯追加，`ackRel` 还没追上的那几笔由 [pendingOpt] 顶着照画。
+     * 擦除手势还没抬笔时一律信本地（最后一批擦除点可能还在 8ms 批缓冲里没 flush，判据会误判）。
      */
+    @Suppress("UNUSED_PARAMETER")
     fun applyStrokes(ackRel: Long, list: List<Stroke>, sentRel: Long) {
-        if (ackRel > 0L && sentRel > ackRel) return
+        strokesRecvAt = System.currentTimeMillis()
         if (erasing) return
-        canvas.setStrokes(list)   // 正在写的这一笔不受影响（它还没进 strokes，见 ScratchCanvas）
+        if (ackRel > 0L && lastEraseRel > ackRel) return
+        // 逐条认领乐观笔：ackRel 追上的进了真源随整表退场，没追上的原样留着（否则闪一下）
+        val keep = ArrayList<Stroke>(pendingOpt.size)
+        if (ackRel > 0L) {
+            val it = pendingOpt.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                val s = if (e.value > ackRel) canvas.strokeById(e.key) else null
+                if (s != null) keep.add(s) else it.remove()
+            }
+        } else {
+            pendingOpt.clear()   // ackRel 不适用（UDP 会话未建）：照单全收
+        }
+        canvas.setStrokes(list, keep)   // 正在写的这一笔不受影响（它还没进 strokes，见 ScratchCanvas）
     }
 
     // ---------- RT 流（纸开着时的唯一提交口；坐标已是画布坐标，page 恒 0） ----------
@@ -151,6 +170,15 @@ class PadScratch(private val a: Activity) {
     private val eraseBatch = ArrayList<Pt2>()
     private var erasing = false   // 一次擦除手势进行中（onEraseAt 置位，onEraseFinish 收尾）
     private var optSeq = 0L
+
+    /** 乐观笔迹 id → 该笔 ink end 帧的 REL 序号（同页内 `PageCanvasView.pendingInk`） */
+    private val pendingOpt = LinkedHashMap<String, Long>()
+
+    /** 最后一帧擦除的 REL 序号（同页内 `PageCanvasView.lastEraseRel`） */
+    private var lastEraseRel = 0L
+
+    /** 最近一次收到 `scratchStrokes` 回推的时刻（采纳与否都算）：真源还活着的证明 */
+    private var strokesRecvAt = 0L
 
     // ---- 工具条读数（init 里装配） ----
     private val barName: TextView
@@ -173,10 +201,27 @@ class PadScratch(private val a: Activity) {
             onMoveFrame?.invoke()
         }
         if (eraseBatch.isNotEmpty()) {
-            sendRel?.invoke(WireCodec.encodeEraseMove(0, ArrayList(eraseBatch)))
+            lastEraseRel = sendRel?.invoke(WireCodec.encodeEraseMove(0, ArrayList(eraseBatch))) ?: 0L
             eraseBatch.clear()
             onMoveFrame?.invoke()
         }
+    }
+
+    /**
+     * 乐观笔迹的兜底撤销：判据是「真源哑了」而不是「等够久了」——只要还在收 `scratchStrokes`
+     * （哪怕比本地旧没采纳），就说明 Mac 活着、这一笔迟早回来，续一轮接着等。
+     * 同页内 `PageCanvasView.scheduleOptExpire`（写得快 + 回推慢时按固定时限硬撤 = 用户看到的闪烁）。
+     */
+    private fun scheduleOptExpire(id: String) {
+        handler.postDelayed({
+            if (!pendingOpt.containsKey(id)) return@postDelayed
+            if (System.currentTimeMillis() - strokesRecvAt < PageCanvasView.OPT_INK_TIMEOUT_MS) {
+                scheduleOptExpire(id)
+                return@postDelayed
+            }
+            pendingOpt.remove(id)
+            canvas.removeStroke(id)
+        }, PageCanvasView.OPT_INK_TIMEOUT_MS)
     }
 
     init {
@@ -189,13 +234,14 @@ class PadScratch(private val a: Activity) {
         canvas.onStrokeEnd = { pen, pts ->
             flush()   // 尾批必须先于 end 出去（UDP 可靠有序，先发先处理）
             onInkEndSent?.invoke()
-            sendRel?.invoke(WireCodec.encodeInkEnd())
+            val seq = sendRel?.invoke(WireCodec.encodeInkEnd()) ?: 0L
             // 乐观落地（同 PageCanvasView 的 pendingInk）：真源回推前先挂进画布，不然
-            // 「活体层已清、scratchStrokes 还没到」之间上一笔会闪一下。回推被接受时整表替换，
-            // 乐观笔自然消失；Mac 掉线真源永远不会来，3s 兜底撤掉（同页内的 OPT_INK_TIMEOUT_MS）。
+            // 「活体层已清、scratchStrokes 还没到」之间上一笔会闪一下。回推的 ackRel 追上这一帧
+            // 的 REL 序号才销账（见 applyStrokes）；Mac 掉线真源永远不会来，由 scheduleOptExpire 兜底。
             val id = "opt:s${optSeq++}"
             canvas.addCommitted(Stroke(0, pen, pts, id))
-            handler.postDelayed({ canvas.removeStroke(id) }, 3000)
+            pendingOpt[id] = seq
+            scheduleOptExpire(id)
         }
         // 擦除：本地乐观擦除 ScratchCanvas 自己做了，这里只负责把途经点上线
         canvas.onEraseAt = { x, y ->
@@ -204,7 +250,7 @@ class PadScratch(private val a: Activity) {
         }
         canvas.onEraseFinish = {
             flush()
-            sendRel?.invoke(WireCodec.encodeEraseEnd())
+            lastEraseRel = sendRel?.invoke(WireCodec.encodeEraseEnd()) ?: 0L
             erasing = false
         }
         canvas.onViewportChanged = { updateBar() }

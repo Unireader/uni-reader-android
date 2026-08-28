@@ -107,6 +107,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private var mvRate = 0
     private var statusMsg = ""
 
+    /** 回推体积打点的上次时刻（1s 一条，见 onStrokes）：e2e 爬升是不是被全量镜像拖的，看它 */
+    private var lastStrokeLogAt = 0L
+
     // —— 连接弹窗（扫码结果要回写，故持引用） ——
     private var connDialog: AlertDialog? = null
     private var dialogHost: EditText? = null
@@ -235,7 +238,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         // 草稿纸：覆盖层画布 + 浮条 + 回调（出口全是发给 Mac 的请求/RT 帧，权威状态等回推）
         scratch = PadScratch(this).apply {
-            sendRel = { udp?.sendRel(it) }
+            sendRel = { udp?.sendRel(it) ?: 0L }
             sendCtl = { client?.send(it) }
             onMoveFrame = { mvCount++ }
             onInkEndSent = { tEnd = System.currentTimeMillis() }
@@ -859,6 +862,19 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             e2e = (System.currentTimeMillis() - tEnd).toDouble()
             graphView.addE2e(e2e.toFloat())
         }
+        // e2e 爬升的诊断打点（1s 一条）：`strokes` 是**全量**镜像，Mac 每收一条 ink end 就整篇重发一次，
+        // 于是 e2e ∝ 文档累计笔迹量。要判断「是不是被镜像体积拖的」，看这条的 点数/字节数 随时间涨没涨。
+        val now = System.currentTimeMillis()
+        if (now - lastStrokeLogAt >= 1000) {
+            lastStrokeLogAt = now
+            var pts = 0
+            for (s in list) pts += s.pts.size
+            Log.i(
+                PageCanvasView.TAG,
+                "回推 strokes ${list.size}条/${pts}点 ≈${pts * 12 / 1024}KB " +
+                    "ackRel=$ackRel sentRel=${udp?.sentRel ?: 0L} e2e=${e2e.toInt()}ms",
+            )
+        }
         // ackRel 要配上「本端已发出到哪」才有意义：两者一比就知道这份全量快照含不含我刚发的输入
         padView.setStrokes(list, ackRel, udp?.sentRel ?: 0L)
         refresh()
@@ -950,6 +966,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     override fun sendCtl(body: ByteArray) {
         client?.send(body)
     }
+
+    override fun sentRelSeq(): Long = udp?.sentRel ?: 0L
 
     override fun onInkEndSent() {
         tEnd = System.currentTimeMillis()

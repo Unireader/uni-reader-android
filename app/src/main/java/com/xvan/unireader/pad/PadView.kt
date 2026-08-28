@@ -32,6 +32,7 @@ class PadView @JvmOverloads constructor(
         fun sendRel(body: ByteArray)      // UDP 可靠流（ink/erase/probe）
         fun sendUnrel(body: ByteArray)    // UDP 不可靠流（scroll/hover）
         fun sendCtl(body: ByteArray)      // WS 可靠通道（mode/pen/padGeom/lassoMove/textNote…）
+        fun sentRelSeq(): Long            // 已发出的最后一个 REL 序号（与回推的 ackRel 对账）
         fun onInkEndSent()                // e2e 计时起点（ink end 发出时刻）
         fun onMoveFrame()                 // mv/s 计数（每发一帧 ink/erase move）
         fun onHudChanged()                // 页码/缩放/工具变化 → 顶栏刷新
@@ -74,6 +75,9 @@ class PadView @JvmOverloads constructor(
         listener?.onInkEndSent()   // 计时起点必须在发之前取，否则把编码耗时也算进 e2e
         listener?.sendRel(WireCodec.encodeInkEnd())
     }
+
+    /** 乐观笔迹/擦除与 Mac 回推快照对账的序号源（见 `PageCanvasView.sentRelSeq`） */
+    override fun sentRelSeq(): Long = listener?.sentRelSeq() ?: 0L
 
     override fun onErase(page: Int, pts: List<Pt2>) {
         listener?.sendRel(WireCodec.encodeEraseMove(page.toLong(), pts))

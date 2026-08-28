@@ -196,13 +196,22 @@ class ScratchCanvas @JvmOverloads constructor(
         }
     }
 
-    /** 真源回推：整表替换（正在写的这一笔不受影响——它还没进 [strokes]） */
-    fun setStrokes(list: List<Stroke>) {
+    /**
+     * 真源回推：整表替换（正在写的这一笔不受影响——它还没进 [strokes]）。
+     *
+     * @param keep 真源里**还没有**的乐观笔迹（`ackRel` 还没追上），原样接在末尾——不然「活体层已清、
+     *   回推还没到」之间会露出空窗，肉眼就是上一笔闪一下。判据在 `PadScratch.applyStrokes`。
+     */
+    fun setStrokes(list: List<Stroke>, keep: List<Stroke> = emptyList()) {
         strokes.clear()
         strokes.addAll(list)
+        strokes.addAll(keep)
         clampViewport()
         invalidate()
     }
+
+    /** 按本地 id 找一条已落画布的笔迹（乐观笔迹认领用；找不到 = 已被本地擦除/切段） */
+    fun strokeById(id: String): Stroke? = strokes.firstOrNull { it.id == id }
 
     /** 收笔后宿主生成的带 id 笔迹并进画布（乐观落地，同 `LocalCanvasView.onInkEnd` 的套路） */
     fun addCommitted(s: Stroke) {
