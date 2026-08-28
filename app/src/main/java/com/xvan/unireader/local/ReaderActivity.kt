@@ -34,6 +34,7 @@ import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.MODE_PAGE
+import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
@@ -866,7 +867,9 @@ class ReaderActivity : Activity() {
         onHud = { if (curTab() === tab) refreshHud() }
         // 文字笔记：编辑器面板与模式2 是同一份（shared/PadPanels），只是保存去处不同——
         // 那边编帧发给 Mac，这边直接落 note 表（kind=0）
-        onNoteEditor = { id, page, nx, ny, text, isNew -> editNote(tab, id, page, nx, ny, text, isNew) }
+        onNoteEditor = { id, page, nx, ny, text, isNew, display ->
+            editNote(tab, id, page, nx, ny, text, isNew, display)
+        }
         // 草稿纸图钉：手指单击打开对应那张纸（笔点不算——笔是用来写字的，见 PageCanvasView.onFingerTap）
         onPinTap = { padId -> scratch.openById(padId) }
         // 图钉拖动松手：只挪锚点（页不变），落库由 ScratchController 走 StoreQueue
@@ -874,7 +877,7 @@ class ReaderActivity : Activity() {
         // 环形盘新扇区：盘心即锚点（等价「在当前位置新建」，只是位置用长按那一处）
         onRadialScratchAdd = { page, nx, ny -> scratch.createAt(page, nx, ny) }
         onRadialTextNote = { page, nx, ny ->
-            editNote(tab, java.util.UUID.randomUUID().toString(), page, nx, ny, "", true)
+            editNote(tab, java.util.UUID.randomUUID().toString(), page, nx, ny, "", true, NOTE_TAP)
         }
     }
 
@@ -1168,12 +1171,14 @@ class ReaderActivity : Activity() {
      * 已有的改成空 = 删除（Mac `applyTextNote` 里空 upsert 就是删）。落库走画布的钩子，
      * 由它落完再整表回推——这里不直接碰 store，免得内存与库分叉。
      */
-    private fun editNote(t: Tab, id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean) {
+    private fun editNote(
+        t: Tab, id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean, display: Int,
+    ) {
         PadPanels.showNoteEditor(
-            this, text, isNew,
-            onSave = { s ->
+            this, text, isNew, display,
+            onSave = { s, d ->
                 if (s.isEmpty()) { if (!isNew) t.canvas?.deleteNote(id, page, nx, ny) }
-                else t.canvas?.upsertNote(id, page, nx, ny, s)
+                else t.canvas?.upsertNote(id, page, nx, ny, s, d)
             },
             onDelete = { t.canvas?.deleteNote(id, page, nx, ny) },
         )

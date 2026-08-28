@@ -59,6 +59,56 @@ class PadOverlays(private val density: Float) {
         textPaint.isFakeBoldText = false
     }
 
+    // ---------- 文字笔记展开气泡 ----------
+
+    /**
+     * 一条展开的笔记气泡：纸白底 + 发丝描边 + 深灰正文，右上角可选铅笔。
+     * **无投影无渐变**（红线：不拟物）；夜间只反转页图那一层，故气泡照旧可读。
+     *
+     * 尺寸/位置由 [NoteBubbleGeom] 算好（页宽的比例，三端同一套数），这里只负责画。
+     */
+    fun drawNoteBubble(c: Canvas, b: NoteBubbleGeom.Box) {
+        rect.set(b.x, b.y, b.x + b.w, b.y + b.h)
+        val rad = min(b.fs * NoteBubbleGeom.RADIUS, min(b.w, b.h) / 2f)
+        p.style = Paint.Style.FILL
+        p.color = Color.argb(247, 255, 253, 242)
+        c.drawRoundRect(rect, rad, rad, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = dp(1f)
+        p.color = Color.argb(46, 0, 0, 0)
+        c.drawRoundRect(rect, rad, rad, p)
+
+        textPaint.textAlign = Paint.Align.LEFT
+        textPaint.textSize = b.fs
+        textPaint.color = Color.rgb(31, 31, 33)
+        val fm = textPaint.fontMetrics
+        for (i in b.lines.indices) {
+            val top = b.y + b.pad + i * b.fs * NoteBubbleGeom.LINE_H
+            c.drawText(b.lines[i], b.x + b.pad, top - fm.ascent, textPaint)
+        }
+        if (b.edit > 0f) {   // 右上角铅笔（热区 = 这块方形，见 PageCanvasView.noteEditHit）
+            textPaint.textAlign = Paint.Align.CENTER
+            textPaint.textSize = b.fs * 1.05f
+            textPaint.color = Color.argb(153, 0, 0, 0)
+            c.drawText(
+                "✎",
+                b.x + b.w - b.edit / 2f - b.pad * 0.4f,
+                b.y + b.edit / 2f + b.pad * 0.4f + centerBaseline(),
+                textPaint,
+            )
+        }
+        textPaint.textAlign = Paint.Align.CENTER
+    }
+
+    /** 折行用的量字回调（[NoteBubbleGeom.layout] 要按气泡字号量宽度） */
+    fun measureNoteText(text: String, fontSize: Float): Float {
+        textPaint.textAlign = Paint.Align.LEFT
+        textPaint.textSize = fontSize
+        val w = textPaint.measureText(text)
+        textPaint.textAlign = Paint.Align.CENTER
+        return w
+    }
+
     // ---------- 文字铺色（高亮 kind=3 / 选区注解 kind=0 的底色） ----------
 
     /**

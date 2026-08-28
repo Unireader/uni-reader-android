@@ -1,6 +1,9 @@
 package com.xvan.unireader.local.store
 
 import android.util.Log
+import com.xvan.unireader.shared.NOTE_ALWAYS
+import com.xvan.unireader.shared.NOTE_HOVER
+import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
@@ -172,6 +175,22 @@ class TextNotePayload(val raw: JSONObject) {
     /** 笔记类型 id（JSON 键是 snake_case 的 `type_id`）；缺键/空 → null＝通用 */
     val typeId: String? get() = raw.optString("type_id").ifEmpty { null }
 
+    /**
+     * 展开方式（JSON 键 `display`，值是 Mac `NoteDisplay` 的小写串）：
+     * `tap`=点击 `hover`=悬停 `always`=始终。缺键/未知值 → [NOTE_TAP]（零迁移，同 `type_id` 先例）。
+     */
+    val display: Int get() = when (raw.optString("display")) {
+        "hover" -> NOTE_HOVER
+        "always" -> NOTE_ALWAYS
+        else -> NOTE_TAP
+    }
+
+    /** 只改展开方式（正文/锚点/引文一个不动） */
+    fun withDisplay(d: Int): TextNotePayload {
+        raw.put("display", displayKey(d))
+        return this
+    }
+
     /** 选区逐行归一化框 `[x, y, w, h]`（渲染精确高亮用） */
     fun rects(): List<DoubleArray> {
         val arr = raw.optJSONArray("rects") ?: return emptyList()
@@ -221,13 +240,21 @@ class TextNotePayload(val raw: JSONObject) {
         }
 
         /** 新建点注解（无选区）：quote/rects 空、无 color，键集与 Mac 一致 */
-        fun ofPointNote(text: String, typeId: String? = null): TextNotePayload {
+        fun ofPointNote(text: String, typeId: String? = null, display: Int = NOTE_TAP): TextNotePayload {
             val o = JSONObject()
             o.put("quote", "")
             o.put("text", text)
             o.put("rects", JSONArray())
             if (typeId != null) o.put("type_id", typeId)
+            o.put("display", displayKey(display))
             return TextNotePayload(o)
+        }
+
+        /** 展开方式 → payload 里的串（Mac `NoteDisplay.rawValue`，跨平台可读） */
+        fun displayKey(d: Int): String = when (d) {
+            NOTE_HOVER -> "hover"
+            NOTE_ALWAYS -> "always"
+            else -> "tap"
         }
     }
 }

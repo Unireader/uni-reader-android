@@ -55,7 +55,9 @@ class LocalCanvasView @JvmOverloads constructor(
     var onInkChanged: (() -> Unit)? = null
 
     /** 文字笔记模式下点页面：宿主开编辑器（isNew=false 是点中了已有笔记，同模式2） */
-    var onNoteEditor: ((id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean) -> Unit)? = null
+    var onNoteEditor: (
+        (id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean, display: Int) -> Unit
+    )? = null
 
     /**
      * 长按呼盘的**本地判定**（M6）。模式2 里这段在 Mac 上跑，平板只画；模式1 自己判——
@@ -79,9 +81,9 @@ class LocalCanvasView @JvmOverloads constructor(
     }
 
     override fun onOpenNoteEditor(
-        id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean,
+        id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean, display: Int,
     ) {
-        onNoteEditor?.invoke(id, page, nx, ny, text, isNew)
+        onNoteEditor?.invoke(id, page, nx, ny, text, isNew, display)
     }
 
     override fun onDetachedFromWindow() {
@@ -371,12 +373,12 @@ class LocalCanvasView @JvmOverloads constructor(
      * 基类已经乐观更新了本地 `notes`，这里落库后照旧整表重读回推——真源在库里，
      * 内存镜像与库分叉的话，「编辑完看着变了、重开又变回去」这种问题最难查。
      */
-    override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String) {
+    override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String, display: Int) {
         val q = store ?: return
         q.submit(
             "文字注解落库 page=$page",
             { s ->
-                runCatching { s.upsertTextNote(documentId, id, page, nx, ny, text) }
+                runCatching { s.upsertTextNote(documentId, id, page, nx, ny, text, display) }
                     .onSuccess { Log.i(TAG, "文字注解落库 page=$page id=${id.take(8)} 字数=${text.length}") }
                     .onFailure { Log.e(TAG, "文字注解写库失败", it) }
                 noteSnapshot(s)
@@ -453,8 +455,10 @@ class LocalCanvasView @JvmOverloads constructor(
         return null
     }
 
-    override fun onFingerTap(x: Float, y: Float) {
-        pinAt(x, y)?.let { onPinTap?.invoke(it.padId) }
+    override fun onFingerTap(x: Float, y: Float): Boolean {
+        val pin = pinAt(x, y) ?: return false
+        onPinTap?.invoke(pin.padId)
+        return true
     }
 
     // ---------- 图钉拖动（同页内挪锚点：本地乐观移动，松手落库，重读回推为权威） ----------

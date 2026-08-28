@@ -3,6 +3,8 @@ package com.xvan.unireader.pad
 import com.xvan.unireader.shared.Layer
 import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
+import com.xvan.unireader.shared.NOTE_ALWAYS
+import com.xvan.unireader.shared.NOTE_HOVER
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
@@ -18,7 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 78 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 80 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -142,6 +144,9 @@ class WireCodecTest {
                 1, 0.2f, 0.3f, 0.6f, 0.5f, 0.2f, 0.3f, 1.5f, 0.75f,
                 floatArrayOf(0.2f, 0.3f, 0.6f, 0.3f, 0.6f, 0.5f, 0.2f, 0.5f),
             ),
+            // #79 textNote 带展开方式：{id:"n3", upsert, page:1, (0.25,0.5), "悬浮", display=悬浮}
+            // display=点击(0) 的老形态由 #38/#39 覆盖（它们的字节各多了一个 00 尾字节）
+            79 to WireCodec.encodeTextNote("n3", WireCodec.NOTE_UPSERT, 1, 0.25f, 0.5f, "悬浮", NOTE_HOVER),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -306,6 +311,16 @@ class WireCodecTest {
             m40.list,
         )
 
+        // #80 notes 带展开方式：display 逐条不同（0 之外的两个值最容易被兜底吃掉）
+        val m80 = WireCodec.decode(unhex(VECTORS[79])) as WireCodec.Msg.Notes
+        assertEquals(
+            listOf(
+                TextNote("n1", 0, 0.5f, 0.5f, "hello", NOTE_ALWAYS),
+                TextNote("n2", 3, 0.25f, 0.75f, "笔记", NOTE_HOVER),
+            ),
+            m80.list,
+        )
+
         // #42/#43 eraser（双向消息，S→C 方向解码）
         val m42 = WireCodec.decode(unhex(VECTORS[41])) as WireCodec.Msg.Eraser
         assertEquals(0.02f, m42.size, 0f)
@@ -402,7 +417,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(78, VECTORS.size)
+        assertEquals(80, VECTORS.size)
     }
 
     @Test
@@ -415,7 +430,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 78 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 80 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -454,9 +469,9 @@ class WireCodecTest {
             "4500008044",
             "3800",
             "3801030000000000003f0000803e",
-            "2402006e3100020000000000003f0000803e0600e689b9e6b3a8",
-            "2402006e3101020000000000003f0000803e0000",
-            "39020002006e31000000000000003f0000003f050068656c6c6f02006e32030000000000803e0000403f0600e7ac94e8aeb0",
+            "2402006e3100020000000000003f0000803e0600e689b9e6b3a800",
+            "2402006e3101020000000000003f0000803e000000",
+            "39020002006e31000000000000003f0000003f050068656c6c6f0002006e32030000000000803e0000403f0600e7ac94e8aeb000",
             "2501000200185ad20000003f0000004100ffd6280000803e0000b04102",
             "460ad7a33c0101",
             "460000003f0000",
@@ -495,6 +510,8 @@ class WireCodecTest {
             "4702000000cdcc4c3e9a99993e9a99193f0000003fcdcccc3dcdcc4cbd0300cdcc4c3e9a99993e9a99193f9a99993ecdcccc3e0000003f",
             "4a01000000cdcc4c3e9a99993e9a99193f0000003fcdcc4c3e9a99993e0000c03f0000403f",
             "4a01000000cdcc4c3e9a99993e9a99193f0000003fcdcc4c3e9a99993e0000c03f0000403f0400cdcc4c3e9a99993e9a99193f9a99993e9a99193f0000003fcdcc4c3e0000003f",
+            "2402006e3300010000000000803e0000003f0600e682ace6b5ae01",
+            "39020002006e31000000000000003f0000003f050068656c6c6f0202006e32030000000000803e0000403f0600e7ac94e8aeb001",
         )
     }
 }

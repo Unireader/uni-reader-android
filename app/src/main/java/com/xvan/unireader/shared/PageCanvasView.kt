@@ -69,7 +69,9 @@ open class PageCanvasView @JvmOverloads constructor(
     protected open fun onLassoScaleCommit(
         page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
     ) {}
-    protected open fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String) {}
+    protected open fun onNoteUpsert(
+        id: String, page: Int, nx: Float, ny: Float, text: String, display: Int = NOTE_TAP,
+    ) {}
     protected open fun onNoteDelete(id: String, page: Int, nx: Float, ny: Float) {}
 
     /** 长按检测用的笔位置流（模式2 由 Mac 判长按呼出选笔盘；模式1 本地判，M6） */
@@ -95,6 +97,7 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 文字笔记模式下点页面：打开编辑器（isNew=false 时是点中了已有笔记） */
     protected open fun onOpenNoteEditor(
         id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean,
+        display: Int = NOTE_TAP,
     ) {}
 
     /**
@@ -102,7 +105,8 @@ open class PageCanvasView @JvmOverloads constructor(
      * 只认手指、不认笔——平板上笔是用来写字的，让笔点图钉必然会在图钉上落笔时误触发
      * （web `input.ts endTouch` 的同款决策）。
      */
-    protected open fun onFingerTap(x: Float, y: Float) {}
+    /// 返回 true = 这一下被子类吃掉了（点开了草稿纸）；false 时基类接着判文字笔记（[tapNote]）。
+    protected open fun onFingerTap(x: Float, y: Float): Boolean = false
 
     // —— 图钉拖动（草稿纸图钉页内挪锚点；手指专用，同 onFingerTap 的只认手指决策） ——
     //
@@ -742,9 +746,9 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     /** 编辑器保存：乐观更新本地列表并上行（Mac 随后回传 notes 全量镜像） */
-    fun upsertNote(id: String, page: Int, nx: Float, ny: Float, text: String) {
-        onNoteUpsert(id, page, nx, ny, text)
-        val rec = TextNote(id, page.toLong(), nx, ny, text)
+    fun upsertNote(id: String, page: Int, nx: Float, ny: Float, text: String, display: Int = NOTE_TAP) {
+        onNoteUpsert(id, page, nx, ny, text, display)
+        val rec = TextNote(id, page.toLong(), nx, ny, text, display)
         val i = notes.indexOfFirst { it.id == id }
         if (i >= 0) notes[i] = rec else notes.add(rec)
         invalidate()
@@ -894,6 +898,7 @@ open class PageCanvasView @JvmOverloads constructor(
         // 注解层与笔迹层分开记账：notes 镜像没到才继续乐观
         val noteSel = if (lassoCommitted && !lassoSyncNotes) lassoSelection else null
         drawNoteMarkers(canvas, noteSel)
+        drawNoteBubbles(canvas, noteSel)   // 气泡压在标记之上
 
         // 橡皮尺寸圆环（擦除模式 + 开关开 + 有笔尖位置）
         val ringAt = eraserRingAt
@@ -996,6 +1001,109 @@ open class PageCanvasView @JvmOverloads constructor(
             if (y < barH - r || y > height + r || x < -r || x > width + r) continue
             overlays.drawNoteMarker(canvas, x, y, r, n.text)
         }
+    }
+
+    // —— 文字笔记展开气泡（每条自己的 display：0=点击 1=悬停 2=始终）——
+    // 几何全在 [NoteBubbleGeom]（三端同一套比例常数），这里只做「哪几条展开着 + 画在哪一页」。
+
+    /** 点开着的笔记（**瞬态、不落库/不上行**：这是本机此刻看不看得见正文，不是笔记的属性） */
+    protected val noteExpanded = HashSet<String>()
+
+    /** 笔正悬停在哪条笔记的标记上（`hover` 模式的展开条件）；手指没有悬停，走点击降级 */
+    protected var noteHoverId: String? = null
+
+    /** 笔记标记半径（视口 px）：与 [drawNoteMarkers] 同一口径，命中判定/气泡避让共用 */
+    protected fun noteMarkerRadius(): Float = (pw() * 0.02f).coerceIn(dp(12f), dp(22f))
+
+    /** 一条笔记标记此刻的视口坐标（含框选乐观变换），画标记/布气泡/命中判定共用 */
+    private fun noteViewPos(i: Int, sel: LassoSelection?, out: FloatArray): Boolean {
+        val n = notes[i]
+        val page = n.page.toInt()
+        if (page !in 0 until pageCount) return false
+        var nnx = n.nx
+        var nny = n.ny
+        if (sel != null && sel.page == page && sel.noteIdx.contains(i)) {
+            if (lassoGhost(nnx, nny, tmp2)) { nnx = tmp2[0]; nny = tmp2[1] }
+        }
+        out[0] = viewX(page, nnx)
+        out[1] = viewY(page, nny)
+        return true
+    }
+
+    /** 第 i 条笔记此刻的气泡几何（不展开/不在页内 → null） */
+    private fun noteBubbleBox(i: Int, sel: LassoSelection?): NoteBubbleGeom.Box? {
+        val n = notes[i]
+        if (!NoteBubbleGeom.visible(n, noteExpanded, noteHoverId)) return null
+        val pos = FloatArray(2)
+        if (!noteViewPos(i, sel, pos)) return null
+        val page = n.page.toInt()
+        val top = barH + offY[page] - scrollY
+        return NoteBubbleGeom.layout(
+            n.text, pw(), pos[0], pos[1], noteMarkerRadius(),
+            contentLeft(), top, contentLeft() + pw(), top + dispH[page],
+            NoteBubbleGeom.sticky(n, noteExpanded),
+        ) { s, fs -> overlays.measureNoteText(s, fs) }
+    }
+
+    protected fun drawNoteBubbles(canvas: Canvas, sel: LassoSelection?) {
+        if (notes.isEmpty()) return
+        for (i in notes.indices) {
+            val b = noteBubbleBox(i, sel) ?: continue
+            if (b.y > height || b.y + b.h < barH) continue
+            overlays.drawNoteBubble(canvas, b)
+        }
+    }
+
+    /** 笔记标记命中 → 那条笔记（热区比画出来的略大，同草稿纸图钉） */
+    protected fun noteMarkerHit(x: Float, y: Float): TextNote? {
+        if (notes.isEmpty()) return null
+        val sel = if (lassoCommitted && !lassoSyncNotes) lassoSelection else null
+        val r = noteMarkerRadius()
+        val hot = maxOf(r + dp(6f), dp(22f))
+        val pos = FloatArray(2)
+        for (i in notes.indices.reversed()) {
+            if (!noteViewPos(i, sel, pos)) continue
+            if (abs(x - pos[0]) <= hot && abs(y - pos[1]) <= hot) return notes[i]
+        }
+        return null
+    }
+
+    /** 展开气泡右上角铅笔命中 → 那条笔记：点它进编辑器 */
+    protected fun noteEditHit(x: Float, y: Float): TextNote? {
+        if (notes.isEmpty()) return null
+        val sel = if (lassoCommitted && !lassoSyncNotes) lassoSelection else null
+        for (i in notes.indices.reversed()) {
+            val b = noteBubbleBox(i, sel) ?: continue
+            if (NoteBubbleGeom.hitEdit(b, x, y)) return notes[i]
+        }
+        return null
+    }
+
+    /**
+     * 手指单击落在笔记上：先看铅笔（进编辑器），再看标记（展开/收起气泡）。
+     * 返回 true = 这一下被笔记吃掉了，调用方别再当别的手势。
+     * **只认手指**——笔是用来写字的（同草稿纸图钉的纪律）。
+     */
+    protected fun tapNote(x: Float, y: Float): Boolean {
+        val edit = noteEditHit(x, y)
+        if (edit != null) {
+            onOpenNoteEditor(edit.id, edit.page.toInt(), edit.nx, edit.ny, edit.text, false, edit.display)
+            return true
+        }
+        val n = noteMarkerHit(x, y) ?: return false
+        if (n.text.isEmpty()) return false     // 空正文没有可展开的东西
+        if (!noteExpanded.remove(n.id)) noteExpanded.add(n.id)
+        invalidate()
+        return true
+    }
+
+    /** 笔悬停命中笔记标记 → 记下它（只对 `hover` 模式的笔记生效；变了才重画） */
+    protected fun hoverNote(x: Float, y: Float) {
+        val n = noteMarkerHit(x, y)
+        val id = if (n != null && n.text.isNotEmpty() && n.display == NOTE_HOVER) n.id else null
+        if (id == noteHoverId) return
+        noteHoverId = id
+        invalidate()
     }
 
     // —— 擦除：本地即时命中（与 Mac eraseNear 两模式一一对应）+ Mac 回传统一 ——
@@ -1701,7 +1809,8 @@ open class PageCanvasView @JvmOverloads constructor(
                         wasPinDrag ->
                             if (e.actionMasked == MotionEvent.ACTION_UP) onPinDragEnd(ux, uy)
                             else onPinDragCancel()
-                        tap -> onFingerTap(tx, ty)
+                        // 草稿纸图钉优先（与 web `endTouch` 同序），没命中再判文字笔记标记/气泡铅笔
+                        tap -> if (!onFingerTap(tx, ty)) tapNote(tx, ty)
                     }
                 }
             }
@@ -1836,10 +1945,10 @@ open class PageCanvasView @JvmOverloads constructor(
                     it.page.toInt() == loc.page && hypot(it.nx - loc.nx, it.ny - loc.ny) < PadConst.NOTE_HIT
                 }
                 if (hit != null) {
-                    onOpenNoteEditor(hit.id, hit.page.toInt(), hit.nx, hit.ny, hit.text, false)
+                    onOpenNoteEditor(hit.id, hit.page.toInt(), hit.nx, hit.ny, hit.text, false, hit.display)
                 } else {
                     onOpenNoteEditor(
-                        UUID.randomUUID().toString(), loc.page, loc.nx, loc.ny, "", true
+                        UUID.randomUUID().toString(), loc.page, loc.nx, loc.ny, "", true, NOTE_TAP
                     )
                 }
             }
@@ -2041,6 +2150,9 @@ open class PageCanvasView @JvmOverloads constructor(
         logStylus(e, "generic")
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE -> {
+                // 笔悬停在笔记标记上 → `hover` 模式那条笔记展开正文（**只认笔**：手指没有悬停这回事，
+                // 触摸走点击降级，见 tapNote）。与上报给 Mac 的 hover 光标彼此独立，任何模式下都生效。
+                if (!activePen) hoverNote(e.getX(0), e.getY(0))
                 if (!activePen && mode != MODE_PAGE) {
                     val loc = locate(e.getX(0), e.getY(0))
                     if (loc != null) {
@@ -2075,6 +2187,7 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     protected fun endHover() {
+        if (noteHoverId != null) { noteHoverId = null; invalidate() }   // 笔离开 = 悬浮气泡收起
         if (!hoverOn && eraserRingAt == null) return
         hoverOn = false
         if (eraserRingAt != null) { eraserRingAt = null; invalidate() }

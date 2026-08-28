@@ -36,7 +36,9 @@ class PadView @JvmOverloads constructor(
         fun onMoveFrame()                 // mv/s 计数（每发一帧 ink/erase move）
         fun onHudChanged()                // 页码/缩放/工具变化 → 顶栏刷新
         /** 文字笔记模式下点页面：打开编辑器（isNew=false 时是点中了已有笔记） */
-        fun onOpenNoteEditor(id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean)
+        fun onOpenNoteEditor(
+            id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean, display: Int,
+        )
         /** 手指单击草稿纸图钉（index = scratchpads 列表下标；宿主发 scratchOpen 请求） */
         fun onScratchPinTap(index: Int)
         /** 手指拖动图钉松手（页内归一化新锚点，已钳位 0~1；宿主发 scratchMove 请求） */
@@ -95,8 +97,10 @@ class PadView @JvmOverloads constructor(
         )
     }
 
-    override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String) {
-        listener?.sendCtl(WireCodec.encodeTextNote(id, WireCodec.NOTE_UPSERT, page.toLong(), nx, ny, text))
+    override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String, display: Int) {
+        listener?.sendCtl(
+            WireCodec.encodeTextNote(id, WireCodec.NOTE_UPSERT, page.toLong(), nx, ny, text, display),
+        )
     }
 
     override fun onNoteDelete(id: String, page: Int, nx: Float, ny: Float) {
@@ -153,9 +157,9 @@ class PadView @JvmOverloads constructor(
     }
 
     override fun onOpenNoteEditor(
-        id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean,
+        id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean, display: Int,
     ) {
-        listener?.onOpenNoteEditor(id, page, nx, ny, text, isNew)
+        listener?.onOpenNoteEditor(id, page, nx, ny, text, isNew, display)
     }
 
     override fun onDocumentReset() {
@@ -224,8 +228,10 @@ class PadView @JvmOverloads constructor(
         return null
     }
 
-    override fun onFingerTap(x: Float, y: Float) {
-        pinAt(x, y)?.let { listener?.onScratchPinTap(it.index) }
+    override fun onFingerTap(x: Float, y: Float): Boolean {
+        val pin = pinAt(x, y) ?: return false
+        listener?.onScratchPinTap(pin.index)
+        return true
     }
 
     // ---------- 图钉拖动（同页内挪锚点：本地乐观移动，松手发 scratchMove，scratchpads 回推为权威） ----------

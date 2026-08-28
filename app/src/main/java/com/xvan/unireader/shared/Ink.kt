@@ -88,7 +88,23 @@ data class Stroke(
  * （`anchor.minX/minY`），模式1 从库里读也取同两列，两模式的标记因此落在同一处。
  * Mac 自己的阅读区会把选区注解的图钉挪到行末右侧，那是 Mac 的显示偏好，不进这个模型。
  */
-data class TextNote(val id: String, val page: Long, val nx: Float, val ny: Float, val text: String)
+data class TextNote(
+    val id: String,
+    val page: Long,
+    val nx: Float,
+    val ny: Float,
+    val text: String,
+    /**
+     * 展开方式（每条笔记自己的属性，与 Mac `NoteDisplay` 同值）：
+     * `0`=点击展开 `1`=悬停展开（笔悬停；手指没有悬停 → 降级为点击）`2`=始终展开。
+     * 线上是 `notes`/`textNote` 尾部的 u8，模式1 从 payload 的 `display` 键读；缺省一律 0。
+     */
+    val display: Int = NOTE_TAP,
+)
+
+const val NOTE_TAP = 0
+const val NOTE_HOVER = 1
+const val NOTE_ALWAYS = 2
 
 /**
  * 一片**文字铺色**：kind=3 高亮的荧光底，或 kind=0 选区注解的类型色底（`PageCellView` 的最底两层）。

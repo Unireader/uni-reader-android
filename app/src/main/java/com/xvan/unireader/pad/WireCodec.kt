@@ -1,6 +1,7 @@
 package com.xvan.unireader.pad
 
 import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt2
 import com.xvan.unireader.shared.Pt3
@@ -375,8 +376,17 @@ object WireCodec {
         Writer().apply { u8(OP_PAD_GEOM); f32(pageW) }.bytes()
 
     /** 文字笔记增删（op 见 NOTE_*；空文本 upsert 被 Mac 视为 delete） */
-    fun encodeTextNote(id: String, op: Int, page: Long, nx: Float, ny: Float, text: String): ByteArray =
-        Writer().apply { u8(OP_TEXT_NOTE); str(id); u8(op); u32(page); f32(nx); f32(ny); str(text) }.bytes()
+    fun encodeTextNote(
+        id: String,
+        op: Int,
+        page: Long,
+        nx: Float,
+        ny: Float,
+        text: String,
+        display: Int = NOTE_TAP,
+    ): ByteArray = Writer().apply {
+        u8(OP_TEXT_NOTE); str(id); u8(op); u32(page); f32(nx); f32(ny); str(text); u8(display)
+    }.bytes()
 
     /** 改笔宽后整表上行（Mac 按下标对齐写回；数目不符 Mac 整包丢弃） */
     fun encodePenset(active: Int, list: List<Pen>): ByteArray =
@@ -560,7 +570,8 @@ object WireCodec {
                     val list = ArrayList<TextNote>(n)
                     var i = 0
                     while (i < n && r.remaining > 0) {
-                        list.add(TextNote(r.str(), r.u32(), r.f32(), r.f32(), r.str())); i++
+                        // 尾部 u8 = 展开方式（0=点击 1=悬停 2=始终），见 ../PROTOCOL.md §4.2
+                        list.add(TextNote(r.str(), r.u32(), r.f32(), r.f32(), r.str(), r.u8())); i++
                     }
                     Msg.Notes(list)
                 }

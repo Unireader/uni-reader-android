@@ -4,6 +4,7 @@ import android.util.Log
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt3
@@ -162,7 +163,11 @@ class LibraryStore(private val db: Db) : Closeable {
             if (n.kind != NoteKind.TEXT) continue
             val p = TextNotePayload.parse(n.payload)
             if (p == null) { bad++; continue }
-            out.add(TextNote(n.id, n.page.toLong(), n.anchorX.toFloat(), n.anchorY.toFloat(), p.text))
+            out.add(
+                TextNote(
+                    n.id, n.page.toLong(), n.anchorX.toFloat(), n.anchorY.toFloat(), p.text, p.display,
+                ),
+            )
         }
         if (bad > 0) Log.w(TAG, "$documentId：$bad 条文字注解 payload 坏掉已跳过")
         return out
@@ -170,25 +175,34 @@ class LibraryStore(private val db: Db) : Closeable {
 
     /**
      * 新建或改写一条文字注解，语义逐条对齐 Mac `AppModel.applyTextNote`：
-     * - 已存在（含 Mac 建的**选区注解**）：**只改正文**，anchor/quote/rects/color/type_id 一律不动。
+     * - 已存在（含 Mac 建的**选区注解**）：**只改正文与展开方式**，anchor/quote/rects/color/type_id 一律不动。
      *   ——平板上编辑一条选区注解不该把它退化成点注解，那是不可逆的丢数据。
      * - 不存在：建一条零尺寸 anchor 的点注解（anchor=落点，quote/rects 空）。
      * - 空文本等价删除（同 Mac 丢弃空点注解的语义），调用方也可直接调 [deleteNote]。
      */
-    fun upsertTextNote(documentId: String, id: String, page: Int, nx: Float, ny: Float, text: String) {
+    fun upsertTextNote(
+        documentId: String,
+        id: String,
+        page: Int,
+        nx: Float,
+        ny: Float,
+        text: String,
+        display: Int = NOTE_TAP,
+    ) {
         if (text.isBlank()) { deleteNote(id); return }
         val old = db.query("SELECT * FROM note WHERE id=?", arrayOf(id)) { note(it) }.firstOrNull()
         val now = nowIso()
         if (old != null && old.kind == NoteKind.TEXT) {
-            val p = TextNotePayload.parse(old.payload) ?: TextNotePayload.ofPointNote(text)
-            upsertNote(old.copy(payload = p.withText(text).bytes(), updatedAt = now))
+            val p = TextNotePayload.parse(old.payload)
+                ?: TextNotePayload.ofPointNote(text, display = display)
+            upsertNote(old.copy(payload = p.withText(text).withDisplay(display).bytes(), updatedAt = now))
             return
         }
         upsertNote(
             LibNote(
                 id = id, documentId = documentId, kind = NoteKind.TEXT, page = page,
                 anchorX = nx.toDouble(), anchorY = ny.toDouble(), anchorW = 0.0, anchorH = 0.0,
-                payload = TextNotePayload.ofPointNote(text).bytes(),
+                payload = TextNotePayload.ofPointNote(text, display = display).bytes(),
                 createdAt = now, updatedAt = now,
             ),
         )

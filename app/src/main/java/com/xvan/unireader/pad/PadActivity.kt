@@ -30,6 +30,7 @@ import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.MODE_PAGE
+import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageImageSource
@@ -913,7 +914,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         val p = page.toInt()
         if (p !in 0 until padView.pageCountOrZero()) return@runOnUiThread
         if (p != padView.topVisiblePage()) padView.scrollToPageFrac(p, ny)
-        onOpenNoteEditor(java.util.UUID.randomUUID().toString(), p, nx, ny, "", true)
+        onOpenNoteEditor(java.util.UUID.randomUUID().toString(), p, nx, ny, "", true, NOTE_TAP)
     }
 
     // ---------- PadView.Listener（主线程） ----------
@@ -943,14 +944,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     }
 
     override fun onOpenNoteEditor(
-        id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean,
+        id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean, display: Int,
     ) {
         PadPanels.showNoteEditor(
-            this, text, isNew,
-            onSave = { t ->
+            this, text, isNew, display,
+            onSave = { t, d ->
                 // 空文本：新建 = 直接取消；已有 = 等同删除（与 Mac「空 upsert 即删除」语义一致）
                 if (t.isEmpty()) { if (!isNew) padView.deleteNote(id, page, nx, ny) }
-                else padView.upsertNote(id, page, nx, ny, t)
+                else padView.upsertNote(id, page, nx, ny, t, d)
             },
             onDelete = { padView.deleteNote(id, page, nx, ny) },
         )

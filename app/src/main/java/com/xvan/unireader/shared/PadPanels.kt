@@ -267,12 +267,16 @@ object PadPanels {
 
     // ---------- 文字笔记编辑器 ----------
 
-    /** 空文本保存 = 删除（与 Mac「空 upsert 即删除」语义一致）；新建时不显示删除按钮 */
+    /**
+     * 空文本保存 = 删除（与 Mac「空 upsert 即删除」语义一致）；新建时不显示删除按钮。
+     * 「展开方式」分段 = 这条笔记自己的属性（0=点击 1=悬浮 2=始终），随保存一起上行/落库。
+     */
     fun showNoteEditor(
         a: Activity,
         text: String,
         isNew: Boolean,
-        onSave: (String) -> Unit,
+        display: Int,
+        onSave: (String, Int) -> Unit,
         onDelete: () -> Unit,
     ) {
         val edit = inputBox(a, "输入笔记内容…").apply {
@@ -282,10 +286,29 @@ object PadPanels {
             gravity = Gravity.TOP or Gravity.START
             setSelection(text.length)
         }
-        val sheet = Sheet(a).title(if (isNew) "新建笔记" else "编辑笔记").content(edit)
+        var mode = display
+        val root = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(edit)
+        root.addView(Ui.groupTitle(a, "展开方式"))
+        val segRow = row(a)
+        val cells = ArrayList<TextView>(3)
+        lateinit var sync: () -> Unit
+        for ((i, name) in listOf("点击", "悬浮", "始终").withIndex()) {
+            val cell = segButton(a, name) { mode = i; sync() }
+            cells.add(cell)
+            segRow.addView(
+                cell,
+                LinearLayout.LayoutParams(0, -2, 1f).apply { if (i < 2) marginEnd = a.dp(8) },
+            )
+        }
+        sync = { for (i in cells.indices) setSegActive(a, cells[i], mode == i) }
+        sync()
+        root.addView(segRow)
+
+        val sheet = Sheet(a).title(if (isNew) "新建笔记" else "编辑笔记").content(root)
         if (!isNew) sheet.action("删除") { onDelete() }
         sheet.action("取消")
-            .action("保存", primary = true) { onSave(edit.text.toString().trim()) }
+            .action("保存", primary = true) { onSave(edit.text.toString().trim(), mode) }
             .show()
     }
 
