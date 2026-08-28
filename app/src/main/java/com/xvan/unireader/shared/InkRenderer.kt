@@ -122,7 +122,13 @@ class InkRenderer(private val density: Float) {
      * `ox`/`oy` 是框选移动的乐观位移（页内归一化，默认 0）——数据本身不动，只在画的时候偏一下，
      * 避免「松手弹回原位、Mac 回传才跳到新位置」的闪烁。
      */
-    fun drawStroke(c: Canvas, s: Stroke, m: PageMapper, ox: Float = 0f, oy: Float = 0f) {
+    /**
+     * [xMargin] = 画板模式下每侧页边宽度（页宽的倍数）：页内归一化 x 的 clamp 范围随之放宽到
+     * `-xMargin … 1+xMargin`，页边笔迹才画得到页外那片空白上（**不能靠 clamp 收边**——那会把
+     * 页外的笔迹压成页边一条竖线；画不画得出来由调用方的 canvas clip 裁，同 Mac / web）。
+     */
+    fun drawStroke(c: Canvas, s: Stroke, m: PageMapper, ox: Float = 0f, oy: Float = 0f,
+                   xMargin: Float = 0f) {
         if (s.pts.isEmpty()) return
         val page = s.page.toInt()
         val left = m.viewX(page, 0f)
@@ -133,7 +139,7 @@ class InkRenderer(private val density: Float) {
         var g = cache[s]
         // 0.5px 的容差：几何是像素级的，比这更小的页宽变化重建了也看不出来
         if (g == null || (!deferRebuild && (abs(g.pw - pw) > 0.5f || abs(g.ph - ph) > 0.5f))) {
-            g = buildPage(s.pen, s.pts, pw, ph)
+            g = buildPage(s.pen, s.pts, pw, ph, xMargin)
             cache[s] = g
             rebuilt++
         }
@@ -144,14 +150,14 @@ class InkRenderer(private val density: Float) {
      * 画**正在写的这一笔**（活体层）。几何每帧都在变，进缓存只会把 LRU 冲垮，所以每帧重建——
      * 但走的是与静态层同一个 [build]，两者观感因此一致（这是整个类只有一份绘制代码的理由）。
      */
-    fun drawLive(c: Canvas, page: Int, pen: Pen, pts: List<Pt3>, m: PageMapper) {
+    fun drawLive(c: Canvas, page: Int, pen: Pen, pts: List<Pt3>, m: PageMapper, xMargin: Float = 0f) {
         if (pts.isEmpty()) return
         val left = m.viewX(page, 0f)
         val pw = m.viewX(page, 1f) - left
         val top = m.viewY(page, 0f)
         val ph = m.viewY(page, 1f) - top
         if (pw <= 0f || ph <= 0f) return
-        render(c, buildPage(pen, pts, pw, ph), pen, left, top, pw, ph)
+        render(c, buildPage(pen, pts, pw, ph, xMargin), pen, left, top, pw, ph)
     }
 
     // ---------- 草稿纸（画布坐标：dp 逻辑点、可负无界，契约见 SCRATCHPAD-ANDROID-HANDOFF §1） ----------
@@ -191,10 +197,10 @@ class InkRenderer(private val density: Float) {
     // ---------- 几何构建（页局部像素坐标 / 草稿纸的「画布坐标×zoom」像素坐标） ----------
 
     /** 页内笔迹的映射：归一化点 × 页显示尺寸（clamp 回 [0,1]），线宽不随缩放变（屏幕 px） */
-    private fun buildPage(pen: Pen, pts: List<Pt3>, pw: Float, ph: Float): Geom =
+    private fun buildPage(pen: Pen, pts: List<Pt3>, pw: Float, ph: Float, xm: Float): Geom =
         build(
             pen, pts, pw, ph,
-            { it.x.coerceIn(0f, 1f) * pw },
+            { it.x.coerceIn(-xm, 1f + xm) * pw },
             { it.y.coerceIn(0f, 1f) * ph },
             density,
         )

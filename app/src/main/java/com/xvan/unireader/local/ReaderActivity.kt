@@ -29,6 +29,7 @@ import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.ScratchPad
 import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.local.store.toUiLayers
+import com.xvan.unireader.shared.CanvasMargin
 import com.xvan.unireader.shared.Bg
 import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
@@ -323,6 +324,8 @@ class ReaderActivity : Activity() {
                     listOf(
                         TopBar.MenuItem("夜间模式", c.night) { c.toggleNight(); saveTools() },
                         TopBar.MenuItem("显示页面图", c.showPage) { c.toggleShowPage(); refreshHud() },
+                        // 画板模式（逐文档，存库里的 canvas_mode）：页面两侧的空白也能写字
+                        TopBar.MenuItem("画板模式", c.canvasModeOn()) { c.toggleCanvasMode(); refreshHud() },
                         // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
                         TopBar.MenuItem("双指滚动（防误触）", c.twoFingerScroll) {
                             c.toggleTwoFingerScroll(); saveTools()
@@ -836,6 +839,13 @@ class ReaderActivity : Activity() {
             Log.i(TAG, "复原滚动 → 第 ${doc.readPage + 1} 页 ${"%.3f".format(doc.readFrac)} ok=$ok")
             refreshHud()
         }
+        // 画板模式（逐文档，库里的 canvas_mode）：**必须赶在几何首次就绪之前**定好页边宽度，
+        // 否则 onFirstGeometry 里的 applyHFrac 用的还是没有页边的内容宽，上次的横向位置会落偏。
+        // 模式1 本机就是页边宽度的真源，按这篇已读出来的笔迹算（同 `refreshCanvasMargin`）。
+        c.presetCanvas(
+            doc.canvasMode,
+            if (doc.canvasMode) CanvasMargin.marginFor(CanvasMargin.overflow(d.strokes)) else 0f,
+        )
         c.imageSource = src
         c.setPages(src.pageCount, src.pageSizes.map { it[0] to it[1] }, reset = true)
         c.store = q

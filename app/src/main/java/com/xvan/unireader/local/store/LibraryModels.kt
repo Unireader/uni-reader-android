@@ -27,8 +27,13 @@ data class LibDocument(
     val readFrac: Double,
     /** 上次缩放倍率（相对 fit-width，1=贴合宽度） */
     val readZoom: Double,
-    /** 上次横向滚动比例（offsetX / pageW，缩放态才非 0） */
+    /** 上次横向滚动比例（offsetX / pageW，缩放态/画板模式才非 0） */
     val readHFrac: Double,
+    /**
+     * 画板模式（Mac schema v12）：页面两侧的空白也是可书写区。
+     * 老库没这一列 → `Cursor.bool` 兜底 false，观感与从前一致。
+     */
+    val canvasMode: Boolean = false,
 )
 
 /** 一个内容版本＝一个 content hash（加 TOC 等致 hash 变即新增一个 variant）。 */

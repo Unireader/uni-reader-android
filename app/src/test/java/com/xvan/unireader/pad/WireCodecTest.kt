@@ -20,7 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 80 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 83 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -414,10 +414,26 @@ class WireCodecTest {
         assertEquals(0, m.udpPort)
     }
 
+    @Test
+    fun decodeCanvas() {
+        // #81~83 canvas（画板模式）：关 / 起步一档 / 跳过几档
+        val off = WireCodec.decode(unhex(VECTORS[80])) as WireCodec.Msg.Canvas
+        assertEquals(false, off.on)
+        assertEquals(0f, off.margin, 0f)
+
+        val one = WireCodec.decode(unhex(VECTORS[81])) as WireCodec.Msg.Canvas
+        assertTrue(one.on)
+        assertEquals(0.5f, one.margin, 0f)
+
+        val far = WireCodec.decode(unhex(VECTORS[82])) as WireCodec.Msg.Canvas
+        assertTrue(far.on)
+        assertEquals(2.5f, far.margin, 0f)
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(80, VECTORS.size)
+        assertEquals(83, VECTORS.size)
     }
 
     @Test
@@ -430,7 +446,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 80 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 83 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -512,6 +528,10 @@ class WireCodecTest {
             "4a01000000cdcc4c3e9a99993e9a99193f0000003fcdcc4c3e9a99993e0000c03f0000403f0400cdcc4c3e9a99993e9a99193f9a99993e9a99193f0000003fcdcc4c3e0000003f",
             "2402006e3300010000000000803e0000003f0600e682ace6b5ae01",
             "39020002006e31000000000000003f0000003f050068656c6c6f0202006e32030000000000803e0000403f0600e7ac94e8aeb001",
+            // #81~83 canvas（0x4B，S→C）：u8 on · f32 margin
+            "4b0000000000",
+            "4b010000003f",
+            "4b0100002040",
         )
     }
 }

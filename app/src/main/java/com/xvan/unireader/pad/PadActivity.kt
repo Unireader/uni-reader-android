@@ -890,6 +890,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         padView.setEraser(size, mode, ring)
     }
 
+    /** 画板模式：Mac 是页边宽度的唯一真源（逐文档），照它布局即可 */
+    override fun onCanvas(on: Boolean, margin: Float) = runOnUiThread {
+        padView.setCanvas(on, margin)
+    }
+
     override fun onScratchPads(open: Int, list: List<WireCodec.ScratchPadEntry>) = runOnUiThread {
         scratch.applyPads(open, list)   // Mac 是「开着哪张纸」的唯一真源：照做（开/关/换纸）
         refresh()

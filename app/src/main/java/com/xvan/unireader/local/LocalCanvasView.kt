@@ -11,6 +11,7 @@ import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteAnchor
 import com.xvan.unireader.local.store.StoreQueue
+import com.xvan.unireader.shared.CanvasMargin
 import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
@@ -238,7 +239,33 @@ class LocalCanvasView @JvmOverloads constructor(
         // 「笔迹少了几笔」这类问题不打点就只能靠猜：可见/总数分开记，一眼看出是没读到还是被图层滤掉了
         Log.i(TAG, "回推笔迹 可见=${shown.size}/${all.size} 隐藏图层=${hiddenLayerIds.size}")
         setStrokes(shown)
+        refreshCanvasMargin()   // 画板模式：本机是页边宽度的真源，笔迹一变就重算软边界
         onInkChanged?.invoke()
+    }
+
+    // ---------- 画板模式（逐文档，库里的 canvas_mode；模式1 本机就是真源）----------
+
+    /** 打开文档时按库里的开关 + 已有笔迹的越界量定页边宽度（须排在 [applyStrokes] 之后） */
+    fun applyCanvasMode(on: Boolean) {
+        setCanvas(on, if (on) CanvasMargin.marginFor(CanvasMargin.overflow(strokes)) else 0f)
+    }
+
+    /** 顶栏开关：改库 + 改本地布局（同 Mac 的 toggleCanvasMode，切换时页面摆回视口正中） */
+    fun toggleCanvasMode() {
+        val on = !canvasOn
+        applyCanvasMode(on)
+        val id = documentId
+        val q = store
+        if (id.isNotEmpty() && q != null) q.submit("画板模式", { it.setCanvasMode(id, on) }, {})
+    }
+
+    /** 当前是否开着画板模式（顶栏图标的选中态） */
+    fun canvasModeOn(): Boolean = canvasOn
+
+    /** 笔迹增删/移动后重算页边软边界（只在开着时做；同 Mac `refreshCanvasMargin`） */
+    private fun refreshCanvasMargin() {
+        if (!canvasOn) return
+        setCanvas(true, CanvasMargin.marginFor(CanvasMargin.overflow(strokes)))
     }
 
     // ---------- 框选移动 / 缩放 ----------
@@ -259,6 +286,7 @@ class LocalCanvasView @JvmOverloads constructor(
     override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {
         val q = store ?: return
         if (dx == 0f && dy == 0f) return
+        val xm = cmargin()   // 画板模式下页边笔迹可以在页外平移（队列线程用，先在主线程取好）
         // 笔迹这半边在主线程按内存里的 `strokes` 定格（`Stroke` 不可变，可以安全递给队列线程）；
         // 注解那半边的权威命中放进作业里读库（理由见上）。
         val hits = strokes.filter { st ->
@@ -276,7 +304,10 @@ class LocalCanvasView @JvmOverloads constructor(
                     runCatching {
                         // 整批一个事务：半途崩掉会留下「一半笔迹移了、一半没移」的画面（同擦除的理由，§9.3）
                         s.transaction {
-                            for (h in hits) s.updateStrokePoints(h.id, InkEdit.translated(h.pts, dx, dy))
+                            // xMargin：画板模式下页边笔迹要能在页外平移（同 Mac 的 inkXRange）
+                            for (h in hits) {
+                                s.updateStrokePoints(h.id, InkEdit.translated(h.pts, dx, dy, xm))
+                            }
                             for (n in noteHits) s.translateTextNote(n.id, dx, dy)
                         }
                         Log.i(
@@ -312,7 +343,7 @@ class LocalCanvasView @JvmOverloads constructor(
         val hits = strokes.filter { st ->
             st.id.isNotEmpty() && st.page.toInt() == page &&
                 st.pts.any { InkEdit.pointInPolygon(it.x, it.y, poly) }
-        }.map { InkEdit.scaled(it, ax, ay, sx, sy) }
+        }.map { InkEdit.scaled(it, ax, ay, sx, sy, cmargin()) }
         q.submit(
             "框选缩放落库",
             { s ->

@@ -80,13 +80,24 @@ class LibraryStore(private val db: Db) : Closeable {
 
     /**
      * 记录阅读进度（顶部所在页 + 页内比例 + 缩放倍率 + 横向滚动比例）。
-     * frac/hfrac 夹到 0~1，与 Mac 端 `updateProgress` 一致——越界值会让另一端复原时跳到页外。
+     * frac 夹到 0~1，与 Mac 端 `updateProgress` 一致——越界值会让另一端复原时跳到页外。
+     * hfrac = offsetX ÷ 页宽：**画板模式下页两侧还有页边，它可以大于 1**，故上限同 Mac 放到 20
+     *（硬夹到 1 会把横向位置截断，重开就跳回页面上）。
      */
     fun updateProgress(documentId: String, page: Int, frac: Double, zoom: Double, hfrac: Double) {
         db.exec(
             "UPDATE document SET read_page=?, read_frac=?, read_zoom=?, read_hfrac=? WHERE id=?",
-            arrayOf(page, frac.coerceIn(0.0, 1.0), zoom, hfrac.coerceIn(0.0, 1.0), documentId),
+            arrayOf(page, frac.coerceIn(0.0, 1.0), zoom, hfrac.coerceIn(0.0, 20.0), documentId),
         )
+    }
+
+    /** 画板模式开关（Mac schema v12，逐文档）。老库没这列时 SQLite 会报错 → 吞掉，不拦阅读。 */
+    fun setCanvasMode(documentId: String, on: Boolean) {
+        try {
+            db.exec("UPDATE document SET canvas_mode=? WHERE id=?", arrayOf(if (on) 1 else 0, documentId))
+        } catch (e: Exception) {
+            Log.w(TAG, "canvas_mode 列不存在（库是 Mac v11 及更早建的）：$e")
+        }
     }
 
     // ---------- variant / location ----------
@@ -697,7 +708,7 @@ class LibraryStore(private val db: Db) : Closeable {
         addedAt = c.str("added_at"), lastOpenedAt = c.str("last_opened_at"),
         sortOrder = c.int("sort_order"), readPage = c.int("read_page"),
         readFrac = c.dbl("read_frac"), readZoom = c.dbl("read_zoom", 1.0),
-        readHFrac = c.dbl("read_hfrac"),
+        readHFrac = c.dbl("read_hfrac"), canvasMode = c.bool("canvas_mode"),
     )
 
     private fun variant(c: android.database.Cursor) = LibVariant(

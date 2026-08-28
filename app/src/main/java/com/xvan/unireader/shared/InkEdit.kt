@@ -62,8 +62,13 @@ object InkEdit {
      * `min(1, max(0, ...))`，贴页边时笔迹会被压扁——两端要压扁得一模一样，
      * 差一点就是「平板上移到页边的笔迹，回 Mac 打开时形状不同」。
      */
-    fun translated(pts: List<Pt3>, dx: Float, dy: Float): List<Pt3> = pts.map {
-        Pt3((it.x + dx).coerceIn(0f, 1f), (it.y + dy).coerceIn(0f, 1f), it.p)
+    /**
+     * [xMargin] = 画板模式下每侧页边宽度（页宽的倍数）：x 的 clamp 放宽到 `-xMargin … 1+xMargin`，
+     * 页边笔迹才能在页外平移。**默认 0 = 不出本页**，与画板模式之前逐点同行为
+     *（同 Mac `InkEdit.translated` 的 `xRange` 参数）。
+     */
+    fun translated(pts: List<Pt3>, dx: Float, dy: Float, xMargin: Float = 0f): List<Pt3> = pts.map {
+        Pt3((it.x + dx).coerceIn(-xMargin, 1f + xMargin), (it.y + dy).coerceIn(0f, 1f), it.p)
     }
 
     /**
@@ -86,10 +91,10 @@ object InkEdit {
      * 笔迹放大不变细、缩小不变粗（同 Mac `InkEdit.scaled`；s 本身由调用方 clamp 过）。
      * 归一化坐标 x/y 两轴尺度不同，但按轴缩放是逐轴线性变换，无需 aspect 折算。
      */
-    fun scaled(s: Stroke, ax: Float, ay: Float, sx: Float, sy: Float): Stroke {
+    fun scaled(s: Stroke, ax: Float, ay: Float, sx: Float, sy: Float, xMargin: Float = 0f): Stroke {
         val pts = s.pts.map {
             Pt3(
-                (ax + (it.x - ax) * sx).coerceIn(0f, 1f),
+                (ax + (it.x - ax) * sx).coerceIn(-xMargin, 1f + xMargin),
                 (ay + (it.y - ay) * sy).coerceIn(0f, 1f),
                 it.p,
             )

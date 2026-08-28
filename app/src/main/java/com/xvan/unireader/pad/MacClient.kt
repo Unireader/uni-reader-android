@@ -56,6 +56,8 @@ class MacClient(
         fun onRadial(m: WireCodec.Msg.Radial)
         fun onPressRing(m: WireCodec.Msg.PressRing)
         fun onEraser(size: Float, mode: Int, ring: Boolean)
+        /** 画板模式（../PROTOCOL.md `canvas`）：页面两侧的空白也可书写；margin = 每侧页边 ÷ 页宽 */
+        fun onCanvas(on: Boolean, margin: Float)
         /** 草稿纸列表全量镜像（Mac 唯一真源）：open = 当前打开 list 里第几张，-1 = 没开 */
         fun onScratchPads(open: Int, list: List<WireCodec.ScratchPadEntry>)
         /** Mac 通知在该页的页内点开文字笔记编辑器（新建态；环形盘 textNote 扇区提交的结果） */
@@ -145,6 +147,7 @@ class MacClient(
             is WireCodec.Msg.Radial -> cb.onRadial(m)
             is WireCodec.Msg.PressRing -> cb.onPressRing(m)
             is WireCodec.Msg.Eraser -> cb.onEraser(m.size, m.mode, m.ring)
+            is WireCodec.Msg.Canvas -> cb.onCanvas(m.on, m.margin)
             is WireCodec.Msg.ScratchPads -> cb.onScratchPads(m.open, m.list)
             is WireCodec.Msg.NoteNew -> cb.onNoteNew(m.page, m.nx, m.ny)
             is WireCodec.Msg.ScratchStrokes -> cb.onScratchStrokes(m.ackRel, m.list)

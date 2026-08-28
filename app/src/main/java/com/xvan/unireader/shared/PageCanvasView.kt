@@ -396,10 +396,68 @@ open class PageCanvasView @JvmOverloads constructor(
     protected var availH = 1f
     protected var lastGeomW = -1f    // padGeom 上报去重（dp）
 
-    protected fun pw() = vw * zoom                                   // 页(内容)宽
-    protected fun contentLeft(): Float {
-        val p = pw()
-        return if (p <= vw) (vw - p) / 2f else -scrollX            // 内容左缘视口 x
+    protected fun pw() = vw * zoom                                   // 页宽
+
+    // —— 画板模式（../PROTOCOL.md `canvas`）：页面两侧的空白也可书写，内容因此比页面宽 ——
+    // 页边笔迹仍是页内笔迹，只是归一化 x 越出 0…1。模式2 由 Mac 下发 `canvas` 设定（唯一真源），
+    // 模式1 自己从库里的 canvas_mode + 笔迹越界量算（`CanvasMargin`）。
+    // 关着时 cmargin()==0，下面几个函数全部退化成画板模式之前的老式子。
+
+    /** 画板模式开关（两模式各自的入口写它，改完必须 onGeomChanged） */
+    protected var canvasOn = false
+    /** 每侧页边宽度（**页宽的倍数**）；见 [CanvasMargin] */
+    protected var canvasMargin = 0f
+
+    /** 每侧页边宽度（页宽的倍数），关着即 0 */
+    protected fun cmargin(): Float = if (canvasOn) max(0f, canvasMargin) else 0f
+    /** 可滚动内容总宽（页 + 两侧页边） */
+    protected fun contentWidth(): Float = pw() * (1f + 2f * cmargin())
+    /** 内容左缘视口 x（页边最左，画页边纸用）；窄于视口时整体居中 */
+    protected fun canvasLeft(): Float {
+        val c = contentWidth()
+        return if (c <= vw) (vw - c) / 2f else -scrollX
+    }
+    /** **页**左缘视口 x（页内归一化 x=0 处）——所有页内坐标换算都用它 */
+    protected fun contentLeft(): Float = canvasLeft() + cmargin() * pw()
+
+    /**
+     * 设画板模式。[on] 变了 = 切了开关 → **把页面摆回视口正中**（同 Mac `canvasModeChanged`
+     * 的 recenter）；只有 [margin] 变 = 软边界跳了一档 → **零位移补偿**（内容宽增量的一半，
+     * 页面在屏幕上纹丝不动，否则写字时页面会在笔下平移）。两种口径与 Mac / web 一一对应。
+     */
+    fun setCanvas(on: Boolean, margin: Float) {
+        val changedOn = canvasOn != on
+        val oldW = contentWidth()
+        canvasOn = on
+        canvasMargin = max(0f, margin)
+        ink.clearCache()   // 几何是按 clamp 后的点建的，页边一放宽/收窄，旧几何就是错的
+        recompute()
+        scrollX = if (changedOn) (cmargin() * pw() + (pw() - vw) / 2f).coerceIn(0f, maxScrollX)
+                  else (scrollX + (contentWidth() - oldW) / 2f).coerceIn(0f, maxScrollX)
+        scrollY = scrollY.coerceIn(0f, maxScrollY)
+        ensureImages()
+        invalidate()
+        onHudChanged()
+    }
+
+    /**
+     * 打开文档时的**初值**：只设字段，不补偿、不动滚动——几何随后由 `onFirstGeometry` 那条
+     * 复原链（applyZoom → applyHFrac → scrollToPageFrac）统一算。走 [setCanvas] 会在复原之前
+     * 先把 scrollX 摆到「页面居中」，上次存的横向位置就丢了。
+     */
+    fun presetCanvas(on: Boolean, margin: Float) {
+        canvasOn = on
+        canvasMargin = max(0f, margin)
+    }
+
+    /**
+     * 落笔中的乐观跳档（档位公式见 [CanvasMargin]，三端同一组常数）：写到离页边不足 slack
+     * 就本地先放宽一档。**只增不减**。模式2 里 Mac 的下发值随后覆盖；模式1 本机就是真源。
+     */
+    protected fun growCanvas(nx: Float) {
+        if (!canvasOn) return
+        val want = CanvasMargin.marginFor(CanvasMargin.overflowOf(nx))
+        if (want > canvasMargin) setCanvas(true, want)
     }
 
     fun setBarHeight(px: Float) {
@@ -446,7 +504,7 @@ open class PageCanvasView @JvmOverloads constructor(
         }
         totalH = max(0f, y - gapPx)
         maxScrollY = max(0f, totalH - availH)
-        maxScrollX = max(0f, p - vw)
+        maxScrollX = max(0f, contentWidth() - vw)   // 画板模式下 fit 也有横向可滚（页两侧的页边）
     }
 
     protected fun onGeomChanged() {
@@ -566,15 +624,20 @@ open class PageCanvasView @JvmOverloads constructor(
     // —— 坐标映射（跨页 + 缩放；视口坐标 ↔ 页内归一化） ——
     protected data class Loc(val page: Int, val nx: Float, val ny: Float)
 
-    protected fun locate(x: Float, vy: Float): Loc? {
+    /**
+     * [wide] = 画板模式下把 nx 放宽到页边（落墨/擦除/框选走这条），默认页内。
+     * 同 Mac `containerPointToPageNorm` 的 `xRange`：y 永远还是 0…1，页边只横向延伸。
+     */
+    protected fun locate(x: Float, vy: Float, wide: Boolean = false): Loc? {
         val cl = contentLeft()
         val p = pw()
+        val m = if (wide) cmargin() else 0f
         val docY = vy - barH + scrollY
         for (i in 0 until pageCount) {
             if (docY >= offY[i] && docY <= offY[i] + dispH[i]) {
                 return Loc(
                     i,
-                    ((x - cl) / p).coerceIn(0f, 1f),
+                    ((x - cl) / p).coerceIn(-m, 1f + m),
                     ((docY - offY[i]) / dispH[i]).coerceIn(0f, 1f),
                 )
             }
@@ -586,10 +649,11 @@ open class PageCanvasView @JvmOverloads constructor(
      * 框选专用：与 `locate` 不同，**不要求**命中某一页——超出锚定页上/下边缘时 clamp 到该页边缘。
      * 镜像 Mac `finishLassoSelect` 对拖出页外终点的处理，故手势允许指针滑出锚定页而不中断。
      */
-    protected fun pageLocClamped(x: Float, y: Float, page: Int, out: FloatArray) {
+    protected fun pageLocClamped(x: Float, y: Float, page: Int, out: FloatArray, wide: Boolean = false) {
         val cl = contentLeft()
         val p = pw()
-        out[0] = ((x - cl) / p).coerceIn(0f, 1f)
+        val m = if (wide) cmargin() else 0f
+        out[0] = ((x - cl) / p).coerceIn(-m, 1f + m)
         val docY = y - barH + scrollY
         out[1] = when {
             page !in 0 until pageCount -> 0f
@@ -848,6 +912,8 @@ open class PageCanvasView @JvmOverloads constructor(
         canvas.drawColor(gutterColor)
         val cl = contentLeft()
         val p = pw()
+        val wl = canvasLeft()          // 内容左缘（页边最左）
+        val ww = contentWidth()        // 页 + 两侧页边
         // 夜间模式只反转「页面」这一层：页图、白底、以及未取到图时的占位色都要一起反
         // （网页那边是给 bg canvas 整体加 CSS filter，白底同样被反成黑底）。墨迹/圆环不反。
         val f = if (night) nightFilter else null
@@ -863,8 +929,11 @@ open class PageCanvasView @JvmOverloads constructor(
             if (vy + dispH[i] < barH || vy > height) continue
             if (firstVis < 0) firstVis = i
             lastVis = i
-            tmpRect.set(cl, vy, cl + p, vy + dispH[i])
+            // 画板模式：白纸连同两侧页边一起铺（页边是「同一页的横向延伸」，不是另一块灰底）；
+            // 页图/占位色仍只占中间那 p 宽。关着时 wl==cl、ww==p，与画板模式之前逐像素同渲染。
+            tmpRect.set(wl, vy, wl + ww, vy + dispH[i])
             canvas.drawRect(tmpRect, pagePaint)
+            tmpRect.set(cl, vy, cl + p, vy + dispH[i])
             if (!showPage) continue   // 手写板模式：仅白底，不取图
             val bmp = images[i]
             if (bmp != null) canvas.drawBitmap(bmp, null, tmpRect, bitmapPaint)
@@ -880,20 +949,30 @@ open class PageCanvasView @JvmOverloads constructor(
         // 分层记账：strokes 镜像一到（lassoSyncStrokes）笔迹层即改画真源，乐观只作用于还没到的层。
         val sel = if (lassoCommitted && !lassoSyncStrokes) lassoSelection else null
         val sc = lassoScale?.takeIf { sel != null && (it[2] != 1f || it[3] != 1f) }
+        // 墨迹裁到「内容宽」（页 + 两侧页边），整层裁一次：同 Mac（`PageCellView` 的墨迹 Canvas
+        // 只有页宽 + 2×margin）与 web（`clipContent`）。画板关掉后页外的笔迹就此看不见。
+        val xm = cmargin()   // 页内归一化 x 的放宽量（画板模式），笔迹几何与乐观变换共用
+        val inkClip = canvas.save()
+        canvas.clipRect(wl, 0f, wl + ww, height.toFloat())
         for (i in strokes.indices) {
             val s = strokes[i]
             val sp = s.page.toInt()
             if (sp < firstVis || sp > lastVis) continue
             if (sel != null && sel.page == sp && sel.strokeIdx.contains(i)) {
                 // 缩放提交待回传：按 InkEdit.scaled 语义（点集绕锚点按轴缩放 + 线宽 ×√(sx·sy)）乐观渲染
-                if (sc != null) ink.drawStroke(canvas, InkEdit.scaled(s, sc[0], sc[1], sc[2], sc[3]), this)
-                else ink.drawStroke(canvas, s, this, lassoDx, lassoDy)
+                if (sc != null) {
+                    ink.drawStroke(canvas, InkEdit.scaled(s, sc[0], sc[1], sc[2], sc[3], xm), this,
+                                   xMargin = xm)
+                } else {
+                    ink.drawStroke(canvas, s, this, lassoDx, lassoDy, xMargin = xm)
+                }
             } else {
-                ink.drawStroke(canvas, s, this)
+                ink.drawStroke(canvas, s, this, xMargin = xm)
             }
         }
-        // 活体层：正在写的这一笔
-        if (curActive) ink.drawLive(canvas, curPage, curStrokePen, curPts, this)
+        // 活体层：正在写的这一笔（同在内容宽的裁剪内）
+        if (curActive) ink.drawLive(canvas, curPage, curStrokePen, curPts, this, xMargin = xm)
+        canvas.restoreToCount(inkClip)
 
         // 注解层与笔迹层分开记账：notes 镜像没到才继续乐观
         val noteSel = if (lassoCommitted && !lassoSyncNotes) lassoSelection else null
@@ -1115,7 +1194,7 @@ open class PageCanvasView @JvmOverloads constructor(
      *   改一边必须同步另一边）。
      */
     protected fun eraseHit(x: Float, y: Float) {
-        val loc = locate(x, y) ?: return
+        val loc = locate(x, y, wide = true) ?: return   // 页边的笔迹也要能擦到（画板模式）
         val r2 = eraserSize * eraserSize
         if (eraserMode == 0) {
             var changed = false
@@ -1293,12 +1372,14 @@ open class PageCanvasView @JvmOverloads constructor(
     protected fun lassoGhost(nx: Float, ny: Float, out: FloatArray): Boolean {
         val sc = lassoScale
         if (sc != null && (sc[2] != 1f || sc[3] != 1f)) {
-            out[0] = (sc[0] + (nx - sc[0]) * sc[2]).coerceIn(0f, 1f)
+            val m = cmargin()
+            out[0] = (sc[0] + (nx - sc[0]) * sc[2]).coerceIn(-m, 1f + m)
             out[1] = (sc[1] + (ny - sc[1]) * sc[3]).coerceIn(0f, 1f)
             return true
         }
         if (lassoDx == 0f && lassoDy == 0f) return false
-        out[0] = (nx + lassoDx).coerceIn(0f, 1f)
+        val m = cmargin()
+        out[0] = (nx + lassoDx).coerceIn(-m, 1f + m)
         out[1] = (ny + lassoDy).coerceIn(0f, 1f)
         return true
     }
@@ -1327,7 +1408,7 @@ open class PageCanvasView @JvmOverloads constructor(
                     lassoHandle = hit
                     // 缩放锚点 = 对侧手柄（屏显 → 页内归一化折算一次，整个拖动期间不变）
                     val opp = lassoOpp[hit]
-                    pageLocClamped(lassoHandleTmp[opp * 2], lassoHandleTmp[opp * 2 + 1], sel.page, tmp2)
+                    pageLocClamped(lassoHandleTmp[opp * 2], lassoHandleTmp[opp * 2 + 1], sel.page, tmp2, wide = true)
                     lassoScale = floatArrayOf(tmp2[0], tmp2[1], 1f, 1f)
                 } else {
                     val g = dp(8f)
@@ -1343,7 +1424,7 @@ open class PageCanvasView @JvmOverloads constructor(
                 lassoPath.add(Pt2(lassoAnchorNx, lassoAnchorNy))
             }
         }
-        pageLocClamped(x, y, lassoAnchorPage, tmp2)
+        pageLocClamped(x, y, lassoAnchorPage, tmp2, wide = true)
         when (lassoDragMode) {
             1 -> {
                 // 自由路径：≥3dp 抽稀（更密的点对多边形命中无增益，白耗 O(点数×边数)）
@@ -1888,7 +1969,10 @@ open class PageCanvasView @JvmOverloads constructor(
         if (!zoomLocked) zoom = (pc.z0 * d / pc.d0).coerceIn(PadConst.MIN_ZOOM, PadConst.MAX_ZOOM)
         recompute()
         scrollY = (pc.fy * totalH - (my - barH)).coerceIn(0f, maxScrollY)
-        scrollX = if (pw() > vw) (pc.fx * pw() - mx).coerceIn(0f, maxScrollX) else 0f
+        // scrollX 的基准是**内容**左缘，而 fx 抓的是**页内**比例 → 画板模式下要补上左侧页边那一段
+        // （关着时 cmargin()==0，与画板模式之前同式）。
+        scrollX = if (contentWidth() > vw) (cmargin() * pw() + pc.fx * pw() - mx).coerceIn(0f, maxScrollX)
+                  else 0f
         ensureImages()
         invalidate()
         emitGeom()   // 页宽变了要告诉 Mac（选笔盘的像素判定基准），与位置无关、不构成回环
@@ -1964,7 +2048,7 @@ open class PageCanvasView @JvmOverloads constructor(
         // 原来的工具，同 Windows Ink / Apple Pencil 的惯例。这是对用户报的「侧键切橡皮擦不灵敏」
         // 的一个推测实现：系统到底报不报这些信号，看 logStylus 的日志才能定（见那里的注释）。
         if (mode != MODE_PAGE && isEraserSignal(e)) {
-            val eloc = locate(x, y)
+            val eloc = locate(x, y, wide = true)
             if (eloc != null) {
                 penMode = MODE_ERASE
                 eraseHit(x, y)
@@ -1986,8 +2070,11 @@ open class PageCanvasView @JvmOverloads constructor(
             return
         }
 
-        val loc = locate(x, y)
+        // 落墨/擦除/框选：x 放宽到页边（画板模式），并按起笔点先把软边界长够
+        // （滚到页边深处再下笔的情形）。
+        val loc = locate(x, y, wide = true)
         if (loc == null) { activePen = false; penId = -1; return }
+        growCanvas(loc.nx)
         penMode = mode
         when (mode) {
             MODE_NOTE -> {
@@ -2031,7 +2118,8 @@ open class PageCanvasView @JvmOverloads constructor(
 
     /** 写/擦出页边界时把坐标 clamp 在起笔页内（capture 同款） */
     protected fun clampToPage(x: Float, y: Float, loc: Loc?, page: Int, out: FloatArray) {
-        out[0] = loc?.nx ?: ((x - contentLeft()) / pw()).coerceIn(0f, 1f)
+        val m = cmargin()
+        out[0] = loc?.nx ?: ((x - contentLeft()) / pw()).coerceIn(-m, 1f + m)
         out[1] = if (loc != null && loc.page == page) loc.ny
         else if (page in 0 until pageCount)
             ((y - barH + scrollY - offY[page]) / max(1f, dispH[page])).coerceIn(0f, 1f)
@@ -2047,7 +2135,7 @@ open class PageCanvasView @JvmOverloads constructor(
 
         if (penMode == MODE_LASSO) { handleLassoMove(x, y); return }
 
-        val loc = locate(x, y)
+        val loc = locate(x, y, wide = true)   // 页边也能写/擦（画板模式）
 
         if (penMode == MODE_PAGE) {
             // 环形盘开着时只发探针不平移
@@ -2068,6 +2156,7 @@ open class PageCanvasView @JvmOverloads constructor(
 
         if (penMode == MODE_NOTE) {
             clampToPage(x, y, loc, drawPage, tmp2)
+            growCanvas(tmp2[0])   // 写到离页边不足 slack 就本地先跳一档（模式2 的 Mac 值随后覆盖）
             var nx = tmp2[0]
             var ny = tmp2[1]
             if (lineStroke && !radialActive && curActive && curPts.isNotEmpty()) {

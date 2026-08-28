@@ -67,6 +67,7 @@ object WireCodec {
     const val OP_ERASER = 0x46
     const val OP_LASSO_MOVE = 0x47
     const val OP_LASSO_SCALE = 0x4A
+    const val OP_CANVAS = 0x4B
     const val OP_NACK = 0x50
 
     // phase / dir（§2）
@@ -166,6 +167,12 @@ object WireCodec {
         ) : Msg()
         /** 长按进度环（环形盘前置动画）；on=false 时其余字段无意义 */
         data class PressRing(val on: Boolean, val page: Long, val nx: Float, val ny: Float) : Msg()
+        /**
+         * 画板模式（../PROTOCOL.md `canvas`）：页面两侧的空白也是可书写区。
+         * [margin] = **每侧**页边宽度，单位是页宽的倍数（0.5 = 每侧半个页宽）；Mac 是唯一真源。
+         * 页边笔迹仍是页内笔迹，只是归一化 x 越出 0…1 —— 除本条外线格式一个字节没变。
+         */
+        data class Canvas(val on: Boolean, val margin: Float) : Msg()
         /** 橡皮设置（双向；size = 归一化半径＝页宽比，mode 0=整笔 1=局部） */
         data class Eraser(val size: Float, val mode: Int, val ring: Boolean) : Msg()
         /** 工作区书库全量镜像（含 Mac 尚未打开的文档） */
@@ -601,6 +608,7 @@ object WireCodec {
                 OP_PRESS_RING ->
                     if (r.u8() != 1) Msg.PressRing(false, 0, 0f, 0f)
                     else Msg.PressRing(true, r.u32(), r.f32(), r.f32())
+                OP_CANVAS -> Msg.Canvas(r.u8() != 0, r.f32())
                 OP_ERASER -> Msg.Eraser(r.f32(), r.u8(), r.u8() != 0)
                 OP_NACK -> {
                     val n = r.u16()

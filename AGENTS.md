@@ -71,12 +71,20 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - **同款算法多份实现，改一边必须同步其余端**：`shared/InkEdit.kt`（局部擦除切段/平移/框选缩放/多边形命中/尺子吸附）↔ Mac
   `Sources/App/InkEdit.swift` ↔ web 版；`pad/WireCodec.kt` ↔ `Sources/Resources/wire.js` ↔ `WireCodec.swift`；
   `shared/NoteBubbleGeom.kt`（文字笔记展开气泡的比例常数与位置规则）↔ Mac `Sources/Views/NoteBubbleView.swift`
-  的 `NoteBubble` ↔ web `render.ts` 的 `BUB`（`../REQUIREMENTS.md §1.2`）。
+  的 `NoteBubble` ↔ web `render.ts` 的 `BUB`（`../REQUIREMENTS.md §1.2`）；
+  `shared/CanvasMargin.kt`（画板模式的页边软边界档位：STEP/SLACK/LIMIT 三个常数 + `marginFor`）
+  ↔ Mac `Sources/App/CanvasMargin.swift` ↔ web `shared.ts` 的 `canvasMarginFor`。
   改完三端测试一起跑（安卓 `WireCodecTest` 的向量与 Mac/web 的跨端向量同源）。
 - **草稿纸画布坐标系 = 逻辑点（dp），原点＝创建点、可负无界**；橡皮半径按 `eraserRefWidth = 800`
   从页宽归一化折算，**三端必须同一个数**（`../SCRATCHPAD-ANDROID-HANDOFF.md §1`）。
   **页面底图**（v10）同理是三端契约：页宽恒 `ScratchGeom.PAGE_REF_W = 800` 画布 dp、高按页纵横比、
   **锚点落在画布原点**（`../PROTOCOL.md §4.4`）。改一个数三端一起改，否则同一张纸两端写的位置不一样。
+- **画板模式的页边不是新坐标系**：页边笔迹仍是**页内笔迹**（归属那一页），只是归一化 `x`
+  越出 `0…1`（单位还是页宽的倍数）。所以擦除/框选/图层/落库一律照旧，只有三处要跟着放宽：
+  ① 命中（`locate`/`pageLocClamped` 的 `wide` 参数）；② 渲染 clamp（`InkRenderer` 的 `xMargin`，
+  **不能靠 clamp 收边**——那会把页外笔迹压成页边一条竖线，该由 canvas clip 裁）；
+  ③ 变换（`InkEdit.translated/scaled` 的 `xMargin`，默认 0 = 不出本页）。
+  页边宽度**模式2 由 Mac 下发**（`canvas` 0x4B），**模式1 本机从笔迹算**（`CanvasMargin`）。
 - **单写者约束**：工作区没有任何同步/加锁机制，**同一时间只能有一端打开同一个工作区**。
 - UI **扁平、原生、不拟物**；颜色只走语义名，别硬编码色值。
 - **别手写图标 XML**。2026-08 之前 28 个图标是手写的，规格靠人肉复制 → 飘成三种线宽
