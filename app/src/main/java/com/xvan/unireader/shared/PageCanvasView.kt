@@ -838,16 +838,16 @@ open class PageCanvasView @JvmOverloads constructor(
         if (!activePen) clearCur()   // 正在写的这笔不清，避免闪断
         // 框选移动/缩放已提交、正等这条回来。分层记账（lassoMirrorSplit，模式2）：这条到了 = 笔迹层
         // 改画真源（该层命中下标随新数组作废），notes 层继续乐观预览直到它的镜像也到；两条都到齐才
-        // clearLasso——否则先到的那条把乐观变换全清掉，另一层跳回原位再跳回来 = 闪烁（2026-08-18 用户报，
+        // settleLasso——否则先到的那条把乐观变换全清掉，另一层跳回原位再跳回来 = 闪烁（2026-08-18 用户报，
         // Mac 的 broadcastStrokes/broadcastNotes 是两条独立广播，到达顺序与间隔无保证）。
-        // 模式1 的回推一趟带齐两层（同一主线程回调连发），保持「任意回推即清」的旧行为。
+        // 模式1 的回推一趟带齐两层（同一主线程回调连发），推迟一轮消息再结算（见 postSettleLasso）。
         if (lassoCommitted) {
             if (lassoMirrorSplit) {
                 lassoSyncStrokes = true
                 lassoSelection?.let { lassoSelection = it.copy(strokeIdx = emptyList()) }
-                if (lassoSyncNotes) clearLasso()
-            } else clearLasso()
-        }
+                if (lassoSyncNotes) settleLasso()
+            } else postSettleLasso()
+        } else refreshLassoSelection()   // 整表换过了：选中集的下标会失效，按多边形重判一次
         invalidate()
     }
 
@@ -890,14 +890,14 @@ open class PageCanvasView @JvmOverloads constructor(
         notes.clear()
         notes.addAll(list)
         // 框选提交后的分层记账：与 setStrokes 对称（见那里的长注释）——notes 层改画真源，
-        // 笔迹层继续乐观直到其镜像到达；两条都到齐才 clearLasso。
+        // 笔迹层继续乐观直到其镜像到达；两条都到齐才 settleLasso。
         if (lassoCommitted) {
             if (lassoMirrorSplit) {
                 lassoSyncNotes = true
                 lassoSelection?.let { lassoSelection = it.copy(noteIdx = emptyList()) }
-                if (lassoSyncStrokes) clearLasso()
-            } else clearLasso()
-        }
+                if (lassoSyncStrokes) settleLasso()
+            } else postSettleLasso()
+        } else refreshLassoSelection()   // 同 setStrokes：整表换过了，下标要按多边形重判
         invalidate()
     }
 
@@ -1514,12 +1514,7 @@ open class PageCanvasView @JvmOverloads constructor(
                     val opp = lassoOpp[hit]
                     pageLocClamped(lassoHandleTmp[opp * 2], lassoHandleTmp[opp * 2 + 1], sel.page, tmp2, wide = true)
                     lassoScale = floatArrayOf(tmp2[0], tmp2[1], 1f, 1f)
-                } else {
-                    val g = dp(8f)
-                    if (lassoDownX >= lassoBoxTmp[0] - g && lassoDownX <= lassoBoxTmp[0] + lassoBoxTmp[2] + g &&
-                        lassoDownY >= lassoBoxTmp[1] - g && lassoDownY <= lassoBoxTmp[1] + lassoBoxTmp[3] + g
-                    ) m = 2
-                }
+                } else if (lassoBoxContains(lassoDownX, lassoDownY)) m = 2
             }
             lassoDragMode = m
             if (m == 1) {
@@ -1576,6 +1571,68 @@ open class PageCanvasView @JvmOverloads constructor(
         sc[3] = sy.coerceIn(0.05f, 20f)
     }
 
+    /**
+     * 提交的移动/缩放已被真源采纳（镜像到齐）：**选中集不清空**，按变换后的多边形在真源的新数据上
+     * 重判一次，乐观变换退场——高亮框/手柄/光晕留在内容的新位置上继续跟着它（同 Mac
+     * `commitLassoMove` 末尾的 `lassoSelection = s`）。只有点空白、切工具、换文档才真的清
+     * （2026-08-29 用户报「索套移动后就消失了」）。
+     *
+     * 为什么按**多边形**重判而不是按 id 认领：模式2 的笔迹根本没有 id（线格式不传，见 `Ink.Stroke`
+     * 的注释），认不了；而多边形重判恰好与真源下一次收到 `lassoMove` 时的复判是同一口径
+     * （平移/缩放是仿射变换，点在多边形内的关系原样保持），反倒更贴——毕竟接着拖第二次时
+     * 真源看的就是这个变换后的多边形。命中为空（选中项已被擦除/删除）→ 清，同 Mac 的 `changed` 分支。
+     */
+    private fun settleLasso() {
+        lassoTimeout?.let { handler.removeCallbacks(it) }
+        lassoTimeout = null
+        val sel = lassoSelection
+        val poly = sel?.let { lassoCommittedPoly(it) }   // 必须在清掉 dx/scale 之前算
+        lassoCommitted = false
+        lassoSyncStrokes = false
+        lassoSyncNotes = false
+        lassoDx = 0f; lassoDy = 0f
+        lassoScale = null
+        lassoSelection = if (sel != null && poly != null) lassoHitTest(sel.page, poly) else null
+        invalidate()
+    }
+
+    /**
+     * 选中集在原地跟一次真源：整表替换过后（擦除/图层显隐/别处的框选）旧下标不再指向同一条笔迹，
+     * 拿选区多边形照原口径重判一遍——命中没了就自然清空。选中集现在会一直留到用户点空白
+     * （见 [settleLasso]），所以这一步必须做，否则光晕会画到不相干的笔迹上。手势/提交进行中不动它。
+     */
+    private fun refreshLassoSelection() {
+        val sel = lassoSelection ?: return
+        if (lassoDragMode != 0 || lassoCommitted) return
+        lassoSelection = lassoHitTest(sel.page, sel.poly)
+    }
+
+    /**
+     * 推迟到本轮主线程消息末尾再结算（模式1 用）：那边一趟回推带齐两层，但 `applyStrokes` /
+     * `applyNotes` 是先后两次调用——在 `setStrokes` 里当场重判会拿**还没更新的注解**去比新多边形，
+     * 注解那半必然落空。推迟一轮，两层都就位了再判。重复 post 无害：第一次结算已把 committed 落下。
+     */
+    private fun postSettleLasso() {
+        post { if (lassoCommitted) settleLasso() }
+    }
+
+    /** 选区多边形跟着刚提交的那次变换走（逐点过 [lassoGhost]，含同一套页内 clamp） */
+    private fun lassoCommittedPoly(sel: LassoSelection): FloatArray {
+        val poly = sel.poly.copyOf()
+        for (i in poly.indices step 2) {
+            if (lassoGhost(poly[i], poly[i + 1], tmp2)) { poly[i] = tmp2[0]; poly[i + 1] = tmp2[1] }
+        }
+        return poly
+    }
+
+    /** 点 (x,y) 是否落在当前选中高亮框内（视口 px，含 8dp 抓手余量）；无选中/框算不出 → false */
+    protected fun lassoBoxContains(x: Float, y: Float): Boolean {
+        if (lassoSelection == null || !lassoViewBox(lassoBoxTmp)) return false
+        val g = dp(8f)
+        return x >= lassoBoxTmp[0] - g && x <= lassoBoxTmp[0] + lassoBoxTmp[2] + g &&
+            y >= lassoBoxTmp[1] - g && y <= lassoBoxTmp[1] + lassoBoxTmp[3] + g
+    }
+
     /** 提交后的共同收尾：标 committed + 记账位清零 + 1s 兜底超时（现在只是保险丝：Mac 零命中也会回传未变镜像） */
     private fun commitLassoPending() {
         lassoCommitted = true
@@ -1589,13 +1646,16 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * 松手收尾：纯点击（未越过死区）→ 清选中（同 Mac `.onTapGesture` 无条件清）；
+     * 松手收尾：纯点击（未越过死区）→ **点在选中框外**才清选中（点框内当成「还要接着操作它」，
+     * 2026-08-29 用户要「点其他区域才消失」；Mac 那边是无条件清，此处刻意更宽松一档）；
      * 框选 → 本地判定命中集（只渲染高亮，不上行）；移动/缩放 → 提交给真源（复判 + 持久化）。
      */
     protected fun finishLasso() {
         val page = lassoAnchorPage
         if (!lassoMoved || lassoDragMode == 0) {
-            if (lassoSelection != null) { lassoSelection = null; invalidate() }
+            if (lassoSelection != null && !lassoBoxContains(lassoDownX, lassoDownY)) {
+                lassoSelection = null; invalidate()
+            }
         } else if (lassoDragMode == 1 && page >= 0 && lassoPath.size >= 3) {
             val poly = FloatArray(lassoPath.size * 2)
             for (i in lassoPath.indices) { poly[i * 2] = lassoPath[i].x; poly[i * 2 + 1] = lassoPath[i].y }

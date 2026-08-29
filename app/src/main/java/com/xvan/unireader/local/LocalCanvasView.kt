@@ -318,7 +318,7 @@ class LocalCanvasView @JvmOverloads constructor(
                 inkSnapshot(s) to if (noteHits.isEmpty()) null else noteSnapshot(s)
             },
             { (ink, notes) ->
-                // 回推后基类会自己清掉预览偏移（setStrokes 里 lassoCommitted → clearLasso），
+                // 回推后基类会自己清掉预览偏移（setStrokes 里 lassoCommitted → settleLasso），
                 // 与模式2 「等 Mac 广播回来才归位」同构。
                 applyStrokes(ink.all, ink.hidden)
                 notes?.let { applyNotes(it.notes, it.fills) }
