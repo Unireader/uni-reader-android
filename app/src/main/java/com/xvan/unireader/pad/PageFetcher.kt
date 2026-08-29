@@ -5,8 +5,10 @@ import android.graphics.BitmapFactory
 import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
+import com.xvan.unireader.shared.PageDiskCache
 import com.xvan.unireader.shared.PageWidths
 import java.util.concurrent.atomic.AtomicBoolean
+
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -37,8 +39,32 @@ import okhttp3.Request
  *
  * 缓存**按字节**（同模式1 的 `PdfSource`）：一张 2381px 宽的页图 ≈ 30MB，从前这里是
  * `LruCache(16)` 按**张数**记的 = 放任 700MB。见 [PageWidths.defaultCacheBytes]。
+ *
+ * ### 缓存跨文档保留 + 三格（2026-08-29，用户报「切标签页每次都要重新加载 PDF 页」）
+ *
+ * 键里带 `v`（Mac 的 `contentHash`），两篇文档的页图本就不会串，所以**换文档不再清缓存**
+ * （`PadActivity.onLayout` 从前一进新文档就 `evictAll`，切回去必然重下一遍）。
+ *
+ * 光不清没用，**算术上就不够**：横屏一张目标档页图 2880×4073×4 ≈ 47MB，而额度 = 堆/3，
+ * 小米 Pad 6 上堆才 256MB（无 `largeHeap`）→ 85MB，`LruCache` 里同时**只装得下一张**
+ * ——换篇文档翻一页就全没了，甚至同一篇上下滚都留不住。于是分三格，各自独立 LRU：
+ *
+ * | 格 | 额度 | 一张 | 作用 |
+ * |---|---|---|---|
+ * | 目标档位图 | [PageWidths.defaultCacheBytes]（堆/3，封顶 192MB） | 26~47MB | 当前这篇的即时滚动 |
+ * | 低清档位图（≤ [PageWidths.PREVIEW]） | [PageWidths.previewCacheBytes]（**额外的，不从上面切**） | 6.6MB | 切回刚才那篇**立刻有画面** |
+ * | 压缩字节（Mac 回的 JPEG 原样） | [PageWidths.rawCacheBytes] | 0.2~0.6MB | 位图被挤掉也**不必再回 Mac 要**，只剩解码 |
+ * | **磁盘**（`PageDiskCache`，同样是压缩字节） | 512MB | 0.2~0.6MB | 跨换文档/跨重启/Mac 掉线都还在 |
+ *
+ * ⚠️ **第一版（同日）把低清那格从总额里切**，结果目标档只剩 53MB、比改之前还装不下，
+ * 用户实测「还是会重新加载」。低清与字节两格都很小，必须是**加**上去的，别再切回来。
+ *
+ * 于是「切回刚才那篇」的账变成：低清位图（内存/磁盘）立刻贴 → 目标档从磁盘读几毫秒 + 解码
+ * 450~770ms。**仍不是「立刻清晰」**——那要求上一篇的目标档**位图**整张留在内存，85MB 装不下。
+ * 真要做只能动这三样之一：`largeHeap`（→ 512MB 堆）、页图改 `RGB_565`（字节减半）、
+ * 或位图改 `Config.HARDWARE`（走图形内存不占 Java 堆）。**都得先跟用户确认**（观感/内存取舍）。
  */
-class PageFetcher(private val host: String) {
+class PageFetcher(private val host: String, private val disk: PageDiskCache? = null) {
 
     private val client = OkHttpClient()
 
@@ -46,25 +72,60 @@ class PageFetcher(private val host: String) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
+    /** 低清档（≤ [PageWidths.PREVIEW]）单独一小格，**额外的**，见 [PageWidths.previewCacheBytes] */
+    private val low = object : LruCache<String, Bitmap>(PageWidths.previewCacheBytes()) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+
+    /** 压缩字节（Mac 回的 JPEG 原样）：位图被挤掉后至少省掉「等 Mac + 下载」那一段 */
+    private val raw = object : LruCache<String, ByteArray>(PageWidths.rawCacheBytes()) {
+        override fun sizeOf(key: String, value: ByteArray): Int = value.size
+    }
+
+    /** 这个档位归哪一格：两格各自 LRU，大图挤不掉小图（切标签页立刻有画面全靠它） */
+    private fun cacheOf(w: Int): LruCache<String, Bitmap> = if (w <= PageWidths.PREVIEW) low else cache
+
     init {
         // 一张 2381 宽的页图就是几十 MB，额度够装几页直接决定滚动时闪不闪白；堆上限还随机型变。
-        // 出问题时第一件事就是看这行，别再靠猜。
+        // 出问题时第一件事就是看这行，别再靠猜——「装得下几张」是这个功能的全部。
         Log.i(
             TAG,
-            "页图缓存额度 ${cache.maxSize() / 1024 / 1024}MB" +
-                "（堆上限 ${Runtime.getRuntime().maxMemory() / 1024 / 1024}MB）",
+            "页图缓存额度 目标档 ${cache.maxSize() / M}MB + 低清档 ${low.maxSize() / M}MB" +
+                " + 字节 ${raw.maxSize() / M}MB（堆上限 ${Runtime.getRuntime().maxMemory() / M}MB）",
         )
     }
 
-    /** 换文档时清缓存（旧 v 的页图全部作废） */
-    fun clear() = cache.evictAll()
+    /**
+     * 丢掉全部页图。**换文档不该调它**（那正是「切回刚才那篇又要重新加载」的由来，2026-08-29 修）：
+     * 缓存键里带 `v`，两篇文档的页图本来就不串。留给退出/换 Mac 这类真的要清空的场合。
+     */
+    fun clear() {
+        cache.evictAll()
+        low.evictAll()
+        raw.evictAll()
+        disk?.clear()
+    }
+
+    /**
+     * 缓存现状一行账（换文档时打一条）。**「切回来还要重下」的判据就看这行**：
+     * 走之前那篇有几张目标档在格子里，回来时还剩几张。
+     */
+    fun stats(): String =
+        "目标档 ${cache.snapshot().size}张/${cache.size() / M}MB，" +
+            "低清 ${low.snapshot().size}张/${low.size() / M}MB，" +
+            "字节 ${raw.snapshot().size}张/${raw.size() / 1024}KB" +
+            (disk?.let { "，${it.stats()}" } ?: "")
 
     /**
      * 取第 [index] 页、宽度约 [widthPx] 的页图。**[cb] 可能被调用两次**（先低清后高清），见类注释。
      */
     fun fetch(index: Int, v: String, widthPx: Int, cb: (Bitmap?) -> Unit) {
         val target = PageWidths.snap(widthPx)
-        cache.get(key(v, index, target))?.let { cb(it); return }
+        cacheOf(target).get(key(v, index, target))?.let {
+            Log.i(TAG, "页图 #$index@$target 命中位图，零等待")
+            cb(it)
+            return
+        }
 
         // 高清那趟一旦到货就不再让低清覆盖（「已经清楚了又变糊」比慢更难受）
         val hiDone = AtomicBoolean(false)
@@ -72,7 +133,8 @@ class PageFetcher(private val host: String) {
         // ① 低清占位。缓存里有更低的档位就零网络直接贴，否则去要 PREVIEW 档。
         val preview = PageWidths.previewFor(target)
         if (preview > 0) {
-            val ready = PageWidths.stepsBelow(target).firstNotNullOfOrNull { cache.get(key(v, index, it)) }
+            val ready = PageWidths.stepsBelow(target)
+                .firstNotNullOfOrNull { cacheOf(it).get(key(v, index, it)) }
             if (ready != null) cb(ready)
             else load(index, v, preview) { bmp -> if (bmp != null && !hiDone.get()) cb(bmp) }
         }
@@ -83,46 +145,68 @@ class PageFetcher(private val host: String) {
 
     private fun key(v: String, index: Int, w: Int) = "$v/$index@$w"
 
-    /** 单趟：HTTP → 解码 → 进缓存 → 回调（后台线程） */
+    /**
+     * 单趟：（字节缓存/磁盘命中则跳过 HTTP）→ 解码 → 进缓存 → 回调（后台线程）。
+     *
+     * 字节与磁盘两格是位图被挤掉之后的兜底：**位图没了不等于要重新回 Mac 要**。省下的是
+     * 「等 Mac + 下载」（300~450ms，还占着 Mac 那条串行服务队列），解码那 450~770ms 躲不掉
+     * （要躲得动像素或位深，见类注释末尾）。
+     */
     private fun load(index: Int, v: String, w: Int, cb: (Bitmap?) -> Unit) {
         Thread {
             // 页图到手的耗时账（对端那半在 Mac 的 `PadLog`，见 `../Sources/UniReaderApp.swift`）：
             // 「等 Mac」= 发出到响应头回来（含 Mac 串行服务队列的排队 + 渲染），
             // 「下载」「解码」分开记——它俩的治法完全不同（前者削字节，后者削像素/位深）。
+            val k = key(v, index, w)
             val t0 = SystemClock.uptimeMillis()
             var tHead = t0
             var tBody = t0
-            var bytes = 0
+            var src = "网络"
+            var cached = raw.get(k)
+            if (cached != null) src = "内存字节"
+            if (cached == null) {
+                cached = disk?.get(k)
+                if (cached != null) { src = "磁盘"; raw.put(k, cached!!) }
+            }
+            val fromNet = cached == null
             val bmp = try {
-                val url = "http://$host:8770/page.png?i=$index" +
-                    "&v=${java.net.URLEncoder.encode(v, "UTF-8")}&w=$w"
-                val req = Request.Builder().url(url).build()
-                client.newCall(req).execute().use { resp ->
-                    tHead = SystemClock.uptimeMillis()
-                    if (resp.isSuccessful) {
+                if (cached == null) {
+                    val url = "http://$host:8770/page.png?i=$index" +
+                        "&v=${java.net.URLEncoder.encode(v, "UTF-8")}&w=$w"
+                    val req = Request.Builder().url(url).build()
+                    client.newCall(req).execute().use { resp ->
+                        tHead = SystemClock.uptimeMillis()
                         // 先整块读进内存再解码：这样「下载」与「解码」才分得开。
-                        val raw = resp.body.bytes()
-                        bytes = raw.size
-                        tBody = SystemClock.uptimeMillis()
-                        BitmapFactory.decodeByteArray(raw, 0, raw.size)
-                    } else null
+                        if (resp.isSuccessful) cached = resp.body.bytes()
+                    }
                 }
+                tBody = SystemClock.uptimeMillis()
+                cached?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
             } catch (_: Exception) {
                 null
             }
             val t1 = SystemClock.uptimeMillis()
+            val bytes = cached?.size ?: 0
             Log.i(
                 TAG,
-                "页图 #$index@$w 等 Mac ${tHead - t0}ms + 下载 ${tBody - tHead}ms + 解码 ${t1 - tBody}ms" +
-                    " = ${t1 - t0}ms，${bytes / 1024}KB → " +
-                    (bmp?.let { "${it.width}x${it.height} ${it.byteCount / 1024 / 1024}MB" } ?: "失败"),
+                if (fromNet) {
+                    "页图 #$index@$w 等 Mac ${tHead - t0}ms + 下载 ${tBody - tHead}ms + 解码 ${t1 - tBody}ms" +
+                        " = ${t1 - t0}ms，${bytes / 1024}KB → "
+                } else {
+                    "页图 #$index@$w $src 命中，取 ${tBody - t0}ms + 解码 ${t1 - tBody}ms" +
+                        " = ${t1 - t0}ms，${bytes / 1024}KB → "
+                } + (bmp?.let { "${it.width}x${it.height} ${it.byteCount / M}MB" } ?: "失败"),
             )
-            if (bmp != null) cache.put(key(v, index, w), bmp)
+            if (bmp != null) {
+                cacheOf(w).put(k, bmp)
+                if (fromNet) cached?.let { raw.put(k, it); disk?.put(k, it) }
+            }
             cb(bmp)
         }.start()
     }
 
     private companion object {
         const val TAG = "UniReader/PageFetch"
+        const val M = 1024 * 1024
     }
 }

@@ -52,4 +52,25 @@ object PageWidths {
      * `LruCache(16)`）等于放任 700MB 的额度，必 OOM。
      */
     fun defaultCacheBytes(): Int = min(192L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 3).toInt()
+
+    /**
+     * 低清档（≤ [PREVIEW]）单独一小格，**额外的，不从 [defaultCacheBytes] 里切**
+     * （模式2 的 `PageFetcher` 用）。
+     *
+     * 为什么必须额外加而不是切：目标档一张就 26~47MB，而总额度在 256MB 堆上只有 85MB
+     * ——切走 32MB 后目标档连一张横屏页图都装不稳（2026-08-29 第一版就是这么把事情弄反的）。
+     * 低清档一张才 6.6MB，单留 21~24MB 能同时兜住三四页：**切回刚才那篇立刻有画面**，
+     * 目标档随后覆盖（正是 `PageFetcher` 两趟取图本来的路径）。
+     * 模式1 那边的对应物是 `PdfSource.BACKGROUND_CACHE_BYTES`（背景标签页缩到 32MB）。
+     */
+    fun previewCacheBytes(): Int =
+        min(24L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 12).toInt()
+
+    /**
+     * **压缩字节**（Mac 回的 JPEG 原样）的缓存额度：一页才 200~600KB，21~32MB 就能装几十页、
+     * 好几篇文档，所以位图被挤掉之后**至少不必再回 Mac 要一次**（省掉「等 Mac + 下载」那 300~450ms，
+     * 剩下的解码 450~770ms 是躲不掉的）。与位图那两格是两回事，别混在一起记账。
+     */
+    fun rawCacheBytes(): Int =
+        min(32L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 16).toInt()
 }

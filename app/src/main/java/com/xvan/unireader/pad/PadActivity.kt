@@ -37,6 +37,7 @@ import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.ReaderDrawer
 import com.xvan.unireader.shared.TocItem
+import com.xvan.unireader.shared.PageDiskCache
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
@@ -65,6 +66,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     companion object {
         const val REQ_CAMERA = 42
         const val DEBOUNCE_MS = 300L    // penset/eraser 上行防抖（同网页）
+
+        /**
+         * 页图磁盘缓存上限：一页压缩字节才 200~600KB，512MB 装得下上千页、好几篇书
+         * ——内存那 85MB 只装得下一两张，「切回刚才那篇不重下」全靠这一层（见 `PageDiskCache`）。
+         * 放 `cacheDir`，系统在存储紧张时可以自己清掉。
+         */
+        const val PAGE_DISK_BYTES = 512L * 1024 * 1024
     }
 
     private lateinit var dot: View
@@ -83,6 +91,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private var client: MacClient? = null
     private var udp: UdpSender? = null
     private var fetcher: PageFetcher? = null
+    private var pageDisk: PageDiskCache? = null
     private val handler = Handler(Looper.getMainLooper())
     private var docV = ""
 
@@ -736,7 +745,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         connHost = host
         connToken = token
         udp = UdpSender(host)
-        fetcher = PageFetcher(host)
+        // 页图磁盘缓存：整台设备一份（键里带文档 contentHash，不同 Mac/不同书都不会串），
+        // 所以按 host 重连也不重建——重建等于把好不容易攒下的几百页白扔了。
+        if (pageDisk == null) {
+            pageDisk = PageDiskCache(java.io.File(cacheDir, "pageimg"), PAGE_DISK_BYTES)
+        }
+        fetcher = PageFetcher(host, pageDisk)
         docV = ""
         client = MacClient(host, token, this)
         setDot(false)
@@ -845,11 +859,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     }
 
     override fun onLayout(docId: String, v: String, count: Long, pages: List<Pair<Float, Float>>) = runOnUiThread {
+        // 换文档**不清页图缓存**（2026-08-29 用户报「切标签页每次都要重新加载」）：缓存键里带了
+        // `v`（= Mac 的 `contentHash`，见 `AppModel` 的 layout 广播），两篇文档的页图本来就不会串；
+        // 留着就是「切回刚才那篇 = 零网络直接贴」。额度是按字节的 LRU（`PageWidths.defaultCacheBytes`），
+        // 多留几篇不会失控，装不下时按最久未用逐出。同一篇改了内容 → `v` 变 → 旧键自然没人再问，
+        // 跟着 LRU 老死即可。（清缓存只剩 `PageFetcher.clear`，留给退出/换 Mac 那条路。）
         val newV = v.ifEmpty { docId }
-        if (newV != docV) {
-            docV = newV
-            fetcher?.clear()   // 换文档：旧 v 页图全部作废
-        }
+        docV = newV
+        Log.i(PageCanvasView.TAG, "换文档 v=${newV.take(8)} 缓存 ${fetcher?.stats() ?: "—"}")
         padView.setLayout(docId, v, count.toInt(), pages)
         // 页尺寸到位后重算草稿纸的页面底图矩形（两条广播先后无保证，见 PadScratch.refreshPageUnder）
         scratch.refreshPageUnder()
