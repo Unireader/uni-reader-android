@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.SystemClock
 import android.util.Log
+import android.content.ComponentCallbacks2
 import android.util.LruCache
 import com.xvan.unireader.shared.PageDiskCache
 import com.xvan.unireader.shared.PageWidths
@@ -38,20 +39,22 @@ import okhttp3.Request
  * 那是下一步，要动 `shared/PageCanvasView` 的绘制路径，单独排。
  *
  * 缓存**按字节**（同模式1 的 `PdfSource`）：一张 2381px 宽的页图 ≈ 30MB，从前这里是
- * `LruCache(16)` 按**张数**记的 = 放任 700MB。见 [PageWidths.defaultCacheBytes]。
+ * `LruCache(16)` 按**张数**记的 = 放任 700MB。额度见 [PageWidths.cacheBytes]。
  *
  * ### 缓存跨文档保留 + 三格（2026-08-29，用户报「切标签页每次都要重新加载 PDF 页」）
  *
  * 键里带 `v`（Mac 的 `contentHash`），两篇文档的页图本就不会串，所以**换文档不再清缓存**
  * （`PadActivity.onLayout` 从前一进新文档就 `evictAll`，切回去必然重下一遍）。
  *
- * 光不清没用，**算术上就不够**：横屏一张目标档页图 2880×4073×4 ≈ 47MB，而额度 = 堆/3，
- * 小米 Pad 6 上堆才 256MB（无 `largeHeap`）→ 85MB，`LruCache` 里同时**只装得下一张**
- * ——换篇文档翻一页就全没了，甚至同一篇上下滚都留不住。于是分三格，各自独立 LRU：
+ * 光不清没用，**当时的额度在算术上就不够**：横屏一张目标档页图 2880×4073×4 ≈ 47MB，而额度
+ * 曾是 `maxMemory()/3`（Java 堆的 1/3）→ 小米 Pad 6 上只有 85MB，`LruCache` 里同时**只装得下一张**
+ * ——换篇文档翻一页就全没了。**那个公式本身是记错账**：API 26 起位图住 native 堆、不占 Java 堆，
+ * 现已改成按设备总内存算（[PageWidths.cacheBytes]，8GB → 384MB ≈ 8 张），并接上 `onTrimMemory`
+ * 主动还（[setForeground] / [onTrimMemory]）。分四格，各自独立 LRU：
  *
  * | 格 | 额度 | 一张 | 作用 |
  * |---|---|---|---|
- * | 目标档位图 | [PageWidths.defaultCacheBytes]（堆/3，封顶 192MB） | 26~47MB | 当前这篇的即时滚动 |
+ * | 目标档位图 | [PageWidths.cacheBytes]（总内存/20，64…384MB；后台缩到 32MB） | 26~47MB | 当前这篇的即时滚动 + 邻篇的当前屏 |
  * | 低清档位图（≤ [PageWidths.PREVIEW]） | [PageWidths.previewCacheBytes]（**额外的，不从上面切**） | 6.6MB | 切回刚才那篇**立刻有画面** |
  * | 压缩字节（Mac 回的 JPEG 原样） | [PageWidths.rawCacheBytes] | 0.2~0.6MB | 位图被挤掉也**不必再回 Mac 要**，只剩解码 |
  * | **磁盘**（`PageDiskCache`，同样是压缩字节） | 512MB | 0.2~0.6MB | 跨换文档/跨重启/Mac 掉线都还在 |
@@ -59,16 +62,23 @@ import okhttp3.Request
  * ⚠️ **第一版（同日）把低清那格从总额里切**，结果目标档只剩 53MB、比改之前还装不下，
  * 用户实测「还是会重新加载」。低清与字节两格都很小，必须是**加**上去的，别再切回来。
  *
- * 于是「切回刚才那篇」的账变成：低清位图（内存/磁盘）立刻贴 → 目标档从磁盘读几毫秒 + 解码
- * 450~770ms。**仍不是「立刻清晰」**——那要求上一篇的目标档**位图**整张留在内存，85MB 装不下。
- * 真要做只能动这三样之一：`largeHeap`（→ 512MB 堆）、页图改 `RGB_565`（字节减半）、
- * 或位图改 `Config.HARDWARE`（走图形内存不占 Java 堆）。**都得先跟用户确认**（观感/内存取舍）。
+ * 于是「切回刚才那篇」的账：目标档位图还在（384MB 装得下两三篇的当前屏）就是**零等待**；
+ * 被挤掉了退一步——低清位图立刻贴 + 目标档从磁盘读几毫秒 + 解码 450~770ms，全程不惊动 Mac。
+ *
+ * 还嫌不够时的下一步（**先跟用户确认**，都有代价）：模式2 解码改 `Config.HARDWARE`
+ * （像素进图形内存、几乎不占进程内存，但那之后页图不能再被软件 canvas 读写，且要备好分配失败的
+ * 兜底）；或 `RGB_565`（每张字节减半，扫描件可能有色带）。`largeHeap` **没用**——它只抬 Java 堆。
  */
-class PageFetcher(private val host: String, private val disk: PageDiskCache? = null) {
+class PageFetcher(
+    private val host: String,
+    private val disk: PageDiskCache? = null,
+    /** 目标档位图额度（字节）。按**设备总内存**算，见 [PageWidths.cacheBytes] */
+    private val fullCacheBytes: Int = PageWidths.LOW_RAM_CACHE_BYTES,
+) {
 
     private val client = OkHttpClient()
 
-    private val cache = object : LruCache<String, Bitmap>(PageWidths.defaultCacheBytes()) {
+    private val cache = object : LruCache<String, Bitmap>(fullCacheBytes) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
@@ -91,7 +101,8 @@ class PageFetcher(private val host: String, private val disk: PageDiskCache? = n
         Log.i(
             TAG,
             "页图缓存额度 目标档 ${cache.maxSize() / M}MB + 低清档 ${low.maxSize() / M}MB" +
-                " + 字节 ${raw.maxSize() / M}MB（堆上限 ${Runtime.getRuntime().maxMemory() / M}MB）",
+                " + 字节 ${raw.maxSize() / M}MB（Java 堆上限 ${Runtime.getRuntime().maxMemory() / M}MB" +
+                "——位图不占它，API 26 起在 native 堆）",
         )
     }
 
@@ -104,6 +115,44 @@ class PageFetcher(private val host: String, private val disk: PageDiskCache? = n
         low.evictAll()
         raw.evictAll()
         disk?.clear()
+    }
+
+    /**
+     * 前台/后台（`PadActivity.onResume` / `onTrimMemory`）：后台把**目标档**那格缩到背景额度，
+     * 低清与磁盘两格原样留着——切回来照样立刻有画面。同模式1 的 `PdfSource.setForeground`。
+     *
+     * ⚠️ 额度是按设备总内存给的（可到 384MB），native 内存超支不会抛 OOM，而是**整个进程被
+     * lowmemorykiller 干掉**（回来就是冷启）。所以退到后台必须主动还，别赌系统不来收。
+     */
+    fun setForeground(fg: Boolean) {
+        val want = if (fg) fullCacheBytes else minOf(PageWidths.BACKGROUND_CACHE_BYTES, fullCacheBytes)
+        if (cache.maxSize() == want) return
+        cache.resize(want)   // resize 会顺手按 LRU 淘汰超出的部分
+        Log.i(TAG, "目标档额度 → ${want / M}MB（前台=$fg），现存 ${cache.size() / M}MB")
+    }
+
+    /**
+     * 系统要内存了（`ComponentCallbacks2`）。判据分两档，**注意常量值不是一条单调刻度**：
+     * `UI_HIDDEN`(20) 及以上 = 界面已经不可见；`RUNNING_LOW`(10)/`RUNNING_CRITICAL`(15) 是
+     * **还在前台**但系统吃紧——那时不能把画面上的图丢了，只砍额度的一半。
+     */
+    fun onTrimMemory(level: Int) {
+        when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> setForeground(false)
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> {
+                val half = maxOf(PageWidths.BACKGROUND_CACHE_BYTES, fullCacheBytes / 2)
+                if (cache.maxSize() > half) {
+                    cache.resize(half)
+                    Log.i(TAG, "系统吃紧(level=$level)，目标档额度砍到 ${half / M}MB")
+                }
+            }
+        }
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+            // 快被杀了：位图两格全放掉（磁盘与压缩字节还在，回来重解码即可）
+            cache.evictAll()
+            low.evictAll()
+            Log.i(TAG, "系统吃紧(level=$level)，位图全部让出")
+        }
     }
 
     /**

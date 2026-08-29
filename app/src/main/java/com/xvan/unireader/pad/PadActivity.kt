@@ -39,6 +39,7 @@ import com.xvan.unireader.shared.ReaderDrawer
 import com.xvan.unireader.shared.TocItem
 import com.xvan.unireader.shared.PageDiskCache
 import com.xvan.unireader.shared.PageImageSource
+import com.xvan.unireader.shared.PageWidths
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.ScratchCanvas
@@ -145,7 +146,18 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onResume() {
         super.onResume()
-        client?.connectNow()   // 回前台：断了立刻重连，不等退避计时器
+        client?.connectNow()      // 回前台：断了立刻重连，不等退避计时器
+        fetcher?.setForeground(true)   // 退后台时让出去的页图额度，回来复原
+    }
+
+    /**
+     * 系统要内存了。页图额度是按设备总内存给的（可到 384MB），而位图住在 native 堆
+     * （API 26+）——超支不抛 OOM，是**整个进程被 lowmemorykiller 干掉**，回来就是冷启。
+     * 所以退到后台/系统吃紧时主动还，回前台再由 [onResume] 复原。
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        fetcher?.onTrimMemory(level)
     }
 
 
@@ -750,7 +762,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         if (pageDisk == null) {
             pageDisk = PageDiskCache(java.io.File(cacheDir, "pageimg"), PAGE_DISK_BYTES)
         }
-        fetcher = PageFetcher(host, pageDisk)
+        fetcher = PageFetcher(host, pageDisk, PageWidths.cacheBytes(this))
         docV = ""
         client = MacClient(host, token, this)
         setDot(false)
@@ -861,7 +873,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     override fun onLayout(docId: String, v: String, count: Long, pages: List<Pair<Float, Float>>) = runOnUiThread {
         // 换文档**不清页图缓存**（2026-08-29 用户报「切标签页每次都要重新加载」）：缓存键里带了
         // `v`（= Mac 的 `contentHash`，见 `AppModel` 的 layout 广播），两篇文档的页图本来就不会串；
-        // 留着就是「切回刚才那篇 = 零网络直接贴」。额度是按字节的 LRU（`PageWidths.defaultCacheBytes`），
+        // 留着就是「切回刚才那篇 = 零网络直接贴」。额度是按字节的 LRU（`PageWidths.cacheBytes`），
         // 多留几篇不会失控，装不下时按最久未用逐出。同一篇改了内容 → `v` 变 → 旧键自然没人再问，
         // 跟着 LRU 老死即可。（清缓存只剩 `PageFetcher.clear`，留给退出/换 Mac 那条路。）
         val newV = v.ifEmpty { docId }

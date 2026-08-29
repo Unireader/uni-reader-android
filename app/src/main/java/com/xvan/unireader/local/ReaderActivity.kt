@@ -2,6 +2,7 @@ package com.xvan.unireader.local
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
@@ -1339,6 +1340,35 @@ class ReaderActivity : Activity() {
         curTab()?.let { saveProgress(it) }
         // 顶栏切的夜间、环形盘/切笔键换的笔——都在这一刻存下来（面板改的已经即时存过了）
         cur()?.let { ToolPrefs.save(this, it) }
+    }
+
+    /**
+     * 系统要内存了（`ComponentCallbacks2`）。页图额度按设备总内存给（可到 384MB/篇），而位图
+     * 住在 native 堆（API 26+）——超支不抛 OOM，是**整个进程被 lowmemorykiller 干掉**，
+     * 回来就是冷启 + 重开 Pdfium。所以主动还：
+     *
+     * - `UI_HIDDEN`(20) 及以上 = 界面已不可见 → **所有**活着的标签页（含当前这篇）缩到背景额度；
+     *   位图（`images`）不动，回前台立刻还能画，避免「切回来白一下」。
+     * - `RUNNING_LOW`(10)/`RUNNING_CRITICAL`(15) = **还在前台**但系统吃紧 → 只有背景标签页让，
+     *   当前这篇照旧（把正在看的这一屏丢了才是最糟的体验）。
+     * - `COMPLETE`(80) = 快被杀了 → 背景标签页连位图一起丢。
+     *
+     * ⚠️ 常量值不是一条单调刻度（15 < 20），判据顺序别写反。回前台由 [onResume] 复原。
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        val cur = curTab()
+        for (t in tabs) {
+            val bg = t !== cur
+            if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN || bg) t.pdf?.setForeground(false)
+            if (bg && level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE) t.canvas?.trimImages()
+        }
+        Log.i(TAG, "系统要内存 level=$level：活着的标签页 ${tabs.count { it.pdf != null }} 篇已让出额度")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        curTab()?.pdf?.setForeground(true)   // 退后台时让出去的额度，回来复原
     }
 
     /** 返回键先关草稿纸（同 Mac 的 Esc），没开着才走正常返回 */

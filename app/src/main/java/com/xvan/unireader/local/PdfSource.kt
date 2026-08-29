@@ -30,24 +30,25 @@ import kotlin.math.roundToInt
 class PdfSource(
     ctx: Context,
     private val file: File,
-    /** 位图缓存上限（字节）。默认取可用堆的 1/3，上限 192MB（平板内存口径，见 §7） */
-    cacheBytes: Int = defaultCacheBytes(),
+    /** 位图缓存上限（字节）。默认按**设备总内存**算（见 [PageWidths.cacheBytes]，两模式同一口径） */
+    cacheBytes: Int = PageWidths.cacheBytes(ctx),
 ) : PageImageSource, Closeable {
 
     companion object {
         const val TAG = "UniReader/Pdf"
 
         /** 档位与缓存额度**两模式共用**，见 [PageWidths]（模式2 把档位随 `?w=` 报给 Mac） */
-        fun defaultCacheBytes(): Int = PageWidths.defaultCacheBytes()
+        fun defaultCacheBytes(ctx: Context): Int = PageWidths.cacheBytes(ctx)
 
         /**
          * 背景标签页的缓存上限（`ANDROID-STANDALONE-PLAN.md §13`）。
          *
-         * 多标签页之后同时活着的 `PdfSource` 最多 3 个，各按 [defaultCacheBytes]（堆的 1/3）
-         * 分配就是 100% 的堆——必然 OOM。所以只有**当前标签页**拿全额，退到背景就缩到这个数：
-         * 够留住刚才那一屏的几页（切回来是缓存命中，不闪白），又不至于三份加起来撑爆。
+         * 多标签页之后同时活着的 `PdfSource` 最多 3 个，各按 [defaultCacheBytes] 分配就是三倍
+         * 全额。所以只有**当前标签页**拿全额，退到背景就缩到这个数：够留住刚才那一屏的几页
+         * （切回来是缓存命中，不闪白），又不至于三份加起来撑爆。**两模式同一个数**，故定义在
+         * [PageWidths]（模式2 退到后台也缩到它，见 `PageFetcher.setForeground`）。
          */
-        const val BACKGROUND_CACHE_BYTES = 32 * 1024 * 1024
+        const val BACKGROUND_CACHE_BYTES = PageWidths.BACKGROUND_CACHE_BYTES
 
         /** 书签递归上限（防循环书签把栈吃穿；Pdfium 自己那层也有同类上限） */
         const val MAX_TOC_DEPTH = 16

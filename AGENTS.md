@@ -106,13 +106,19 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   乐观笔迹只能靠超时撤掉 → 用户看到「上一个字的笔画依次闪烁」。落墨**逐条认领**：每条乐观笔记下自己
   `ink end` 帧的 REL 序号（`UdpSender.sendRel` 同步返回），`ackRel` 追上才销账，没追上的叠在快照之上照画。
   乐观笔迹的兜底撤销判据是「**一份回推都没收到**」而不是「等够久了」——真源哑了才算掉线。
-- **页图缓存分四层，小格一律「加」不「切」**（2026-08-29 踩过，`../HISTORY.md` 同日第一节）。
-  横屏一张目标档页图 2880×4073×4 ≈ **47MB**，而 `LruCache` 额度 = 堆/3、本机无 `largeHeap` →
-  堆 256MB → 85MB，**同时只装得下一张**。所以：① 换文档**不许清缓存**（键里带 contentHash，
-  两篇文档本就不串；Mac 的 `AppModel.setPadRender` 也犯过同一个错）；② 低清档/压缩字节这类小格
-  必须是额外加的——第一版从 85MB 里切了 32MB 给低清，目标档只剩 53MB 比不改还糟；
-  ③ 真正兜住「切回刚才那篇」的是**磁盘缓存**（`shared/PageDiskCache`，压缩字节一页才 200~600KB，
-  512MB 装上千页）。查这类问题先看 `UniReader/PageFetch` 那行额度打点，别猜。
+- **页图缓存的额度别拿 `maxMemory()` 算**（2026-08-29 踩过两轮，`../HISTORY.md` 同日第一节）。
+  **API 26 起 `Bitmap` 像素在 native 堆，不占 Java 堆** → `maxMemory()`（本机 256MB =
+  `dalvik.vm.heapgrowthlimit`）跟页图没关系，拿它的 1/3 当预算 = 8GB 的平板上只肯留 85MB
+  ＝**一张横屏页图**（2880×4073×4 ≈ 47MB），换篇文档回来必然重下。同理 **`largeHeap` 对页图无用**。
+  现在两模式统一走 `PageWidths.cacheBytes(ctx)`＝总内存/20，夹 64…384MB。四条配套规矩：
+  ① 换文档**不许清缓存**（键里带 contentHash，两篇文档本就不串；Mac 的 `AppModel.setPadRender`
+  也犯过同一个错）；② 低清档/压缩字节这类小格必须是**额外加**的，不能从总额里切
+  （第一版从 85MB 里切 32MB 给低清，目标档只剩 53MB 比不改还糟）；③ 额度大了**必须接
+  `onTrimMemory`** 主动还——native 内存超支不抛 OOM，是整个进程被 lowmemorykiller 干掉、回来冷启
+  （`PadActivity`/`ReaderActivity` 两处已接，注意 `UI_HIDDEN`(20) > `RUNNING_CRITICAL`(15)，
+  常量不是单调刻度，判据顺序别写反）；④ 真正兜住「切回刚才那篇」的是**磁盘缓存**
+  （`shared/PageDiskCache`，压缩字节一页才 200~600KB，512MB 装上千页）。
+  查这类问题先看 `UniReader/PageFetch` 启动那行额度打点，别猜。
 - **单写者约束**：工作区没有任何同步/加锁机制，**同一时间只能有一端打开同一个工作区**。
 - UI **扁平、原生、不拟物**；颜色只走语义名，别硬编码色值。
 - **别手写图标 XML**。2026-08 之前 28 个图标是手写的，规格靠人肉复制 → 飘成三种线宽
