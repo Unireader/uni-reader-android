@@ -36,6 +36,7 @@ import com.xvan.unireader.shared.LibItem
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.ReaderDrawer
+import com.xvan.unireader.shared.RefWindow
 import com.xvan.unireader.shared.TocItem
 import com.xvan.unireader.shared.PageDiskCache
 import com.xvan.unireader.shared.PageImageSource
@@ -98,6 +99,73 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     // —— 连接参数（authOK 后持久化；重连时不依赖弹窗还在不在） ——
     private var connHost = ""
+
+    /** 工作区书库镜像（Mac `library` 广播）：抽屉与**参考窗**共用同一份。 */
+    private var libItems = listOf<LibItem>()
+
+    /**
+     * 参考窗（只读小窗，`../../../../../../../REF-WINDOW-PLAN.md`）。模式2 的三件事都走 Mac：
+     * 文档列表 = `library` 镜像、元信息 = `GET /docmeta?d=`、页图 = `/page.png?d=`。
+     * 都是**本端私有的只读显示**，线格式一个字节没加。
+     */
+    private val refWin by lazy {
+        RefWindow(
+            this,
+            object : RefWindow.Host {
+                override fun refPickDoc(cb: (String) -> Unit) {
+                    if (libItems.isEmpty()) return
+                    val ll = LinearLayout(this@PadActivity).apply { orientation = LinearLayout.VERTICAL }
+                    var dlg: android.app.AlertDialog? = null
+                    for (d in libItems) {
+                        ll.addView(
+                            Ui.textButton(this@PadActivity, d.title) { dlg?.dismiss(); cb(d.id) },
+                            LinearLayout.LayoutParams(-1, -2),
+                        )
+                    }
+                    dlg = Sheet(this@PadActivity).title("参考哪本")
+                        .content(android.widget.ScrollView(this@PadActivity).apply { addView(ll) })
+                        .action("取消").show()
+                }
+
+                override fun refOpen(id: String, cb: (RefWindow.Info?) -> Unit) {
+                    val h = connHost
+                    if (h.isEmpty()) { cb(null); return }
+                    Thread {
+                        val info = try {
+                            val q = java.net.URLEncoder.encode(id, "UTF-8")
+                            val txt = java.net.URL("http://$h:8770/docmeta?d=$q").readText()
+                            val o = org.json.JSONObject(txt)
+                            val arr = o.getJSONArray("pages")
+                            val pages = (0 until arr.length()).map {
+                                val p = arr.getJSONArray(it)
+                                p.getDouble(0).toFloat() to p.getDouble(1).toFloat()
+                            }
+                            RefWindow.Info(
+                                o.optString("title"), pages,
+                                o.optInt("readPage"), o.optDouble("readFrac").toFloat(),
+                                object : PageImageSource {
+                                    override fun request(page: Int, widthPx: Int, cbb: (Bitmap?) -> Unit) {
+                                        val f = fetcher ?: run { cbb(null); return }
+                                        // 第 4 个参数 = 库文档 id：缓存键与 URL 都带上它，
+                                        // 否则参考窗和正文的同页号会互相顶掉（PageFetcher.key）。
+                                        f.fetch(page, id, widthPx, id, cbb)
+                                    }
+                                    override fun clear() {}
+                                },
+                            )
+                        } catch (e: Exception) {
+                            null
+                        }
+                        runOnUiThread { cb(info) }
+                    }.start()
+                }
+
+                override fun refRelease() {
+                    // 取图走共享的 `fetcher`，参考文档那批图随 LRU 自然淘汰即可（没有独占资源要放）。
+                }
+            },
+        )
+    }
     private var connToken = ""
 
     // —— Mac 下发的列表状态（面板消费） ——
@@ -332,6 +400,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("canvas", R.drawable.ic_canvas, "画板模式") {
                 client?.send(WireCodec.encodeCanvas(!padView.canvasModeOn()))
             }
+            // 参考窗：另开一本书摆在旁边对照（纯本端只读显示，不上线）
+            icon("ref", R.drawable.ic_doc, "参考窗") { refWin.toggle() }
             setEnabled("canvas", connected)   // 断线时灰掉（它只发请求，没连上按了没反应）
             addTail(dot, 0)
             addTail(latText, 1)
@@ -424,6 +494,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // applyScratchMargin 负责），在页面画布之上（纸开着时吃掉全部指针事件，PDF 上一笔都
             // 落不下——这是这个功能的定义；probe/环形盘也因此天然不会在纸上触发）
             addView(scratch.canvas, FrameLayout.LayoutParams(-1, -1))
+            addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(topbar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(
                 showBarBtn,
@@ -951,7 +1022,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onLibrary(ws: String, list: List<WireCodec.LibEntry>) = runOnUiThread {
         // 线格式类型 → 中立模型：`shared/` 那边不许认识 WireCodec（依赖方向单向）
-        drawer.setLibrary(ws, list.map { LibItem(it.id, it.title, it.open) })
+        libItems = list.map { LibItem(it.id, it.title, it.open) }
+        drawer.setLibrary(ws, libItems)
         tabsBar.setWorkspace(ws)
     }
 

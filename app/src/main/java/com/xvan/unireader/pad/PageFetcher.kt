@@ -168,9 +168,13 @@ class PageFetcher(
     /**
      * 取第 [index] 页、宽度约 [widthPx] 的页图。**[cb] 可能被调用两次**（先低清后高清），见类注释。
      */
-    fun fetch(index: Int, v: String, widthPx: Int, cb: (Bitmap?) -> Unit) {
+    /**
+     * @param docId 非空 = 取**别的**文档的页图（参考窗，`/page.png?d=`）。缓存键、磁盘键都带上它，
+     *   否则参考窗和正文的同页号会互相顶掉。空串 = 当前跟随的那篇（旧行为，一字未改）。
+     */
+    fun fetch(index: Int, v: String, widthPx: Int, docId: String = "", cb: (Bitmap?) -> Unit) {
         val target = PageWidths.snap(widthPx)
-        cacheOf(target).get(key(v, index, target))?.let {
+        cacheOf(target).get(key(v, index, target, docId))?.let {
             Log.i(TAG, "页图 #$index@$target 命中位图，零等待")
             cb(it)
             return
@@ -183,16 +187,17 @@ class PageFetcher(
         val preview = PageWidths.previewFor(target)
         if (preview > 0) {
             val ready = PageWidths.stepsBelow(target)
-                .firstNotNullOfOrNull { cacheOf(it).get(key(v, index, it)) }
+                .firstNotNullOfOrNull { cacheOf(it).get(key(v, index, it, docId)) }
             if (ready != null) cb(ready)
-            else load(index, v, preview) { bmp -> if (bmp != null && !hiDone.get()) cb(bmp) }
+            else load(index, v, preview, docId) { bmp -> if (bmp != null && !hiDone.get()) cb(bmp) }
         }
 
         // ② 目标档
-        load(index, v, target) { bmp -> hiDone.set(true); cb(bmp) }
+        load(index, v, target, docId) { bmp -> hiDone.set(true); cb(bmp) }
     }
 
-    private fun key(v: String, index: Int, w: Int) = "$v/$index@$w"
+    private fun key(v: String, index: Int, w: Int, d: String = "") =
+        if (d.isEmpty()) "$v/$index@$w" else "$d|$v/$index@$w"
 
     /**
      * 单趟：（字节缓存/磁盘命中则跳过 HTTP）→ 解码 → 进缓存 → 回调（后台线程）。
@@ -201,12 +206,12 @@ class PageFetcher(
      * 「等 Mac + 下载」（300~450ms，还占着 Mac 那条串行服务队列），解码那 450~770ms 躲不掉
      * （要躲得动像素或位深，见类注释末尾）。
      */
-    private fun load(index: Int, v: String, w: Int, cb: (Bitmap?) -> Unit) {
+    private fun load(index: Int, v: String, w: Int, docId: String, cb: (Bitmap?) -> Unit) {
         Thread {
             // 页图到手的耗时账（对端那半在 Mac 的 `PadLog`，见 `../Sources/UniReaderApp.swift`）：
             // 「等 Mac」= 发出到响应头回来（含 Mac 串行服务队列的排队 + 渲染），
             // 「下载」「解码」分开记——它俩的治法完全不同（前者削字节，后者削像素/位深）。
-            val k = key(v, index, w)
+            val k = key(v, index, w, docId)
             val t0 = SystemClock.uptimeMillis()
             var tHead = t0
             var tBody = t0
@@ -221,7 +226,8 @@ class PageFetcher(
             val bmp = try {
                 if (cached == null) {
                     val url = "http://$host:8770/page.png?i=$index" +
-                        "&v=${java.net.URLEncoder.encode(v, "UTF-8")}&w=$w"
+                        "&v=${java.net.URLEncoder.encode(v, "UTF-8")}&w=$w" +
+                        (if (docId.isEmpty()) "" else "&d=${java.net.URLEncoder.encode(docId, "UTF-8")}")
                     val req = Request.Builder().url(url).build()
                     client.newCall(req).execute().use { resp ->
                         tHead = SystemClock.uptimeMillis()

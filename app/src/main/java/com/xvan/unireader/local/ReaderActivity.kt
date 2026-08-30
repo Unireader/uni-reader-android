@@ -43,6 +43,7 @@ import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.ReaderDrawer
+import com.xvan.unireader.shared.RefWindow
 import com.xvan.unireader.shared.ScratchCanvas
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Stroke
@@ -183,6 +184,72 @@ class ReaderActivity : Activity() {
 
     /** 库里全部文档的 id→标题（"+"的列表与新标签页的初始标题用它，省一次读库） */
     private var libTitles = mapOf<String, String>()
+
+    /** 参考窗那一份 Pdfium 实例（**第二份**，与正文各标签页的互不相干）。换书/关窗当场关掉。 */
+    private var refSource: PdfSource? = null
+
+    /**
+     * 参考窗（只读小窗，`../../../../../../../REF-WINDOW-PLAN.md`）。模式1 三件事全在本机：
+     * 文档列表 = 工作区书库、进度 = 库里的 read_page/read_frac、页图 = 第二个 `PdfSource`。
+     */
+    private val refWin by lazy {
+        RefWindow(
+            this,
+            object : RefWindow.Host {
+                override fun refPickDoc(cb: (String) -> Unit) {
+                    if (libTitles.isEmpty()) return
+                    val ll = LinearLayout(this@ReaderActivity).apply { orientation = LinearLayout.VERTICAL }
+                    var dlg: android.app.AlertDialog? = null
+                    for ((id, title) in libTitles) {
+                        ll.addView(
+                            Ui.textButton(this@ReaderActivity, title) { dlg?.dismiss(); cb(id) },
+                            LinearLayout.LayoutParams(-1, -2),
+                        )
+                    }
+                    dlg = Sheet(this@ReaderActivity).title("参考哪本")
+                        .content(android.widget.ScrollView(this@ReaderActivity).apply { addView(ll) })
+                        .action("取消").show()
+                }
+
+                override fun refOpen(id: String, cb: (RefWindow.Info?) -> Unit) {
+                    val q = queue ?: run { cb(null); return }
+                    val ws = workspace ?: run { cb(null); return }
+                    // 两跳，与正文打开文档同一条路数：库队列只读行（别让开 Pdfium 堵住别人落笔），
+                    // 读页尺寸表那步甩给 Bg。
+                    q.submit(
+                        "参考窗读文档 ${id.take(8)}",
+                        { s -> s.document(id)?.let { d -> Workspace.firstOpenablePdf(ws, s, id)?.let { d to it } } },
+                        { pair ->
+                            if (pair == null) { cb(null); return@submit }
+                            val (doc, file) = pair
+                            runInBackground(
+                                what = "参考窗开 PDF ${file.name}",
+                                work = { PdfSource(applicationContext, file) },
+                                ok = { src ->
+                                    refSource?.close()   // 换书 = 当场放掉上一本（它吊着一个文件）
+                                    refSource = src
+                                    cb(
+                                        RefWindow.Info(
+                                            doc.title,
+                                            src.pageSizes.map { it[0] to it[1] },
+                                            doc.readPage, doc.readFrac.toFloat(), src,
+                                        ),
+                                    )
+                                },
+                                fail = { cb(null) },
+                                discard = { it.close() },
+                            )
+                        },
+                    )
+                }
+
+                override fun refRelease() {
+                    refSource?.close()
+                    refSource = null
+                }
+            },
+        )
+    }
 
     /** 当前工作区显示名（标签页栏的工作区芯片、抽屉书库页的分组标题都用它） */
     private var workspaceName = ""
@@ -335,6 +402,8 @@ class ReaderActivity : Activity() {
             // 画板模式（逐文档，存库里的 canvas_mode）：页面两侧的空白也能写字。
             // 常驻顶栏而不是进 ⋯——它是写字过程中会来回切的开关（同锁缩放的理由）。
             icon("canvas", R.drawable.ic_canvas, "画板模式") { cur()?.toggleCanvasMode(); refreshHud() }
+            // 参考窗：另开一本书摆在旁边对照（只读，不落库、不上线）
+            icon("ref", R.drawable.ic_doc, "参考窗") { refWin.toggle() }
             pageLabel.setOnClickListener { showGotoPage() }
             // 低频项进 ⋯：勾选态每次弹出现算，所以这里存的是生成器（见 TopBar.overflowItems）
             overflowItems = {
@@ -430,6 +499,7 @@ class ReaderActivity : Activity() {
             // handoff §7.1 的白压白坑），在标签页画布之上（纸开着时吃掉全部指针事件，
             // PDF 上一笔都落不下——这是这个功能的定义）。topMargin 由 applyChromeHeight 让开 chrome。
             addView(scratch.canvas, FrameLayout.LayoutParams(-1, -1))
+            addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(chrome, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             addView(
@@ -1387,6 +1457,8 @@ class ReaderActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        refSource?.close()   // 参考窗那份 Pdfium 也要放，否则文件一直吊着（同 closeWorkspace 的理由）
+        refSource = null
         // 校验还没回来就退出：窗口先收掉，否则 WindowLeaked
         dismissBusy()
         // 收尾不在主线程：进度排进队列、关库（含 wal_checkpoint(TRUNCATE)）排在队尾由队列自己做，
