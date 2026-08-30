@@ -211,6 +211,10 @@ class ReaderActivity : Activity() {
                         .action("取消").show()
                 }
 
+                override fun refDefaultDoc(): String =
+                    // 当前标签那本优先（对照同一本书的不同页是常见用法），否则书库第一本
+                    curTab()?.docId ?: libTitles.keys.firstOrNull() ?: ""
+
                 override fun refOpen(id: String, cb: (RefWindow.Info?) -> Unit) {
                     val q = queue ?: run { cb(null); return }
                     val ws = workspace ?: run { cb(null); return }

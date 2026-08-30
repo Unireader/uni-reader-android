@@ -35,6 +35,12 @@ class RefWindow(private val ctx: Context, private val host: Host) {
     interface Host {
         /** 弹出「看哪本」的选择器（两模式各用自己的 Sheet 风格），选中回调库文档 id */
         fun refPickDoc(cb: (String) -> Unit)
+
+        /**
+         * 还没看过任何一本时的默认书（空串 = 没得默认，小窗保持空白）。
+         * 🔴 **不给默认就是首次打开一片空白**——用户 2026-08-30 实测报的第一条。
+         */
+        fun refDefaultDoc(): String
         /** 打开某文档：主线程回调页尺寸表 + 进度 + 取图源；取不到给 null */
         fun refOpen(id: String, cb: (Info?) -> Unit)
         /** 关掉小窗：宿主该释放它给过的取图源（模式1 是第二个 Pdfium 实例，别吊着文件） */
@@ -103,7 +109,7 @@ class RefWindow(private val ctx: Context, private val host: Host) {
             setPadding(Ui.dp(ctx, 4), 0, Ui.dp(ctx, 4), 0)
         }
 
-        val bar = LinearLayout(ctx).apply {
+        val bar = DragBar(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(Ui.container(ctx))
@@ -116,14 +122,17 @@ class RefWindow(private val ctx: Context, private val host: Host) {
             addView(Ui.iconButton(ctx, R.drawable.ic_chevron_down, "收起") { setCollapsed(true) })
             addView(Ui.iconButton(ctx, R.drawable.ic_close, "关闭") { close() })
         }
-        attachDrag(bar)
 
         content.apply {
             orientation = LinearLayout.VERTICAL
             addView(bar, LinearLayout.LayoutParams(-1, Ui.dp(ctx, BAR)))
             addView(canvas, LinearLayout.LayoutParams(-1, 0, 1f))
         }
-        panel.setBackgroundColor(Ui.surface(ctx))
+        // 🔴 圆角 + 描边 + 抬高投影：原先只是一块纯色矩形，压在 PDF 上根本分不出边界
+        // （用户 2026-08-30 报「小窗没有阴影很难分别边界」）。`clipToOutline` 让内容跟着圆角裁。
+        panel.background = Ui.round(Ui.surface(ctx), Ui.RADIUS, ctx, Ui.outline(ctx))
+        panel.clipToOutline = true
+        panel.elevation = Ui.dp(ctx, 10).toFloat()
         panel.addView(content, FrameLayout.LayoutParams(-1, -1))
         canvas.setMode(MODE_PAGE)        // 只读：笔在小窗里只翻页，不落墨
         canvas.setBarHeight(0f)          // 小窗里没有全局顶栏要让
@@ -160,7 +169,10 @@ class RefWindow(private val ctx: Context, private val host: Host) {
         isOpen = true; collapsed = false
         view.visibility = View.VISIBLE
         apply()
-        if (docId.isEmpty()) prefs.getString("doc", "")?.takeIf { it.isNotEmpty() }?.let { load(it) }
+        if (docId.isEmpty()) {
+            val want = prefs.getString("doc", "")?.takeIf { it.isNotEmpty() } ?: host.refDefaultDoc()
+            if (want.isNotEmpty()) load(want)
+        }
     }
 
     fun close() {
@@ -202,26 +214,64 @@ class RefWindow(private val ctx: Context, private val host: Host) {
 
     // ---------- 摆位与改尺寸 ----------
 
-    private fun attachDrag(bar: View) {
-        var dx = 0f; var dy = 0f; var mx = 0; var my = 0
-        bar.setOnTouchListener { _, e ->
+    /**
+     * 标题栏 = 拖动区。🔴 **按下先放给子 View，移动超过 touch slop 才接管**：
+     * 原先只有按钮之间那点空隙能拖，文档名那一大片被它自己的点击监听吃掉了
+     * （用户 2026-08-30 报「可以用来拖动的地方很少，PDF 名处都不能触发移动」）。
+     * 现在点标题 = 选书、按住标题拖 = 移动窗口，与系统标题栏一致。
+     */
+    private inner class DragBar(c: Context) : LinearLayout(c) {
+        private val slop = android.view.ViewConfiguration.get(c).scaledTouchSlop
+        private var downX = 0f
+        private var downY = 0f
+        private var mx0 = 0
+        private var my0 = 0
+        private var dragging = false
+
+        private fun record(e: MotionEvent) {
+            downX = e.rawX; downY = e.rawY
             val lp = panel.layoutParams as FrameLayout.LayoutParams
+            mx0 = lp.rightMargin; my0 = lp.bottomMargin
+            dragging = false
+        }
+
+        private fun past(e: MotionEvent) =
+            kotlin.math.abs(e.rawX - downX) > slop || kotlin.math.abs(e.rawY - downY) > slop
+
+        private fun apply(e: MotionEvent) {
+            val lp = panel.layoutParams as FrameLayout.LayoutParams
+            // 右下角为原点：手往左 = 右边距变大
+            lp.rightMargin = clampMargin(mx0 - (e.rawX - downX).roundToInt(), view.width - lp.width)
+            lp.bottomMargin = clampMargin(my0 - (e.rawY - downY).roundToInt(), view.height - lp.height)
+            panel.layoutParams = lp
+        }
+
+        override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    dx = e.rawX; dy = e.rawY; mx = lp.rightMargin; my = lp.bottomMargin; true
-                }
+                MotionEvent.ACTION_DOWN -> record(e)
+                MotionEvent.ACTION_MOVE -> if (!dragging && past(e)) { dragging = true; return true }
+            }
+            return false
+        }
+
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { record(e); return true }   // 空白处按下也能拖
                 MotionEvent.ACTION_MOVE -> {
-                    // 右下角为原点：手往左 = 右边距变大
-                    lp.rightMargin = clampMargin(mx - (e.rawX - dx).roundToInt(), view.width - lp.width)
-                    lp.bottomMargin = clampMargin(my - (e.rawY - dy).roundToInt(), view.height - lp.height)
-                    panel.layoutParams = lp
-                    true
+                    if (!dragging && past(e)) dragging = true
+                    if (dragging) apply(e)
+                    return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    prefs.edit().putInt("mx", lp.rightMargin).putInt("my", lp.bottomMargin).apply(); true
+                    if (dragging) {
+                        val lp = panel.layoutParams as FrameLayout.LayoutParams
+                        prefs.edit().putInt("mx", lp.rightMargin).putInt("my", lp.bottomMargin).apply()
+                    }
+                    dragging = false
+                    return true
                 }
-                else -> false
             }
+            return super.onTouchEvent(e)
         }
     }
 

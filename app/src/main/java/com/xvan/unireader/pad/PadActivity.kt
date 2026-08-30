@@ -127,6 +127,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                         .action("取消").show()
                 }
 
+                override fun refDefaultDoc(): String =
+                    // Mac 当前开着的那本优先（多半就是正在读的），否则书库第一本
+                    libItems.firstOrNull { it.open }?.id ?: libItems.firstOrNull()?.id ?: ""
+
                 override fun refOpen(id: String, cb: (RefWindow.Info?) -> Unit) {
                     val h = connHost
                     if (h.isEmpty()) { cb(null); return }
