@@ -21,6 +21,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.xvan.unireader.local.FileBrowser
 import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.StorageScan
 import com.xvan.unireader.local.Workspace
@@ -40,11 +41,14 @@ import java.io.File
  *   需要「所有文件访问权限」，这里负责引导；文档列表/阅读/手写是 M1 起的事。
  * - **连 Mac 当输入板**（模式2）：进 [PadActivity]，即已验收的 WS+UDP 链路。
  *
- * 找工作区有三条路（2026-08-03 用户定的口径，见 §9.8）：
+ * 找工作区有三条路（2026-08-03 用户定的口径，见 §9.8），逐级浏览与选文件都走 [FileBrowser]：
  * 1. **最近打开**——开过一次就在这儿；
  * 2. **逐级浏览**——**先列存储卷**（内部存储 / SD 卡 / U 盘），再点进去，
  *    **只有 `.unrd` 结尾的文件夹能选中**，普通文件夹只能点进去继续找；
  * 3. **扫描**——拿到权限后自动扫一遍全部存储卷，之后可手动重扫；也可以在浏览到的某个目录下只扫那一支。
+ *
+ * 找不到就**新建**一个（[onCreateWorkspace]）：选存放位置 → 起名 → 建出 `<名字>.unrd`
+ * 的骨架与空库（`local/store/Schema.kt`），PDF 之后在书库界面里加。
  *
  * 授权状态、选中路径、校验结果**一律打日志**（tag `UniReader/Launcher`、`UniReader/WS`、
  * `UniReader/Scan`）：「授权了但还是打不开」「插了 U 盘却看不见」这类问题不打点就只能靠猜。
@@ -65,12 +69,11 @@ class Launcher : Activity() {
     private lateinit var recentBox: LinearLayout
     private lateinit var scanBox: LinearLayout
     private lateinit var scanBtn: TextView
+    private lateinit var newBtn: TextView
+    private lateinit var permTip: LinearLayout
 
     /** 「正在打开…」。持有它是为了在 [onDestroy] 里收掉，否则校验没回来就退出会 leak window */
     private var busyDlg: AlertDialog? = null
-
-    /** 目录浏览器的当前请求令牌：用户点得比慢卷读得快，回来的旧结果要丢掉 */
-    private var browseToken: Any? = null
 
     /** 扫描是全 App 唯一一份（同时开两个只会互相抢慢卷的 I/O） */
     private var scanning = false
@@ -107,9 +110,11 @@ class Launcher : Activity() {
         // —— 权限：没授权时才是一张显眼的卡，授权了就缩成一行小字 ——
         permText = Ui.body(this, "")
         permBtn = Ui.button(this, "去授权", filled = true) { requestAllFiles() }
+        permTip = Ui.tip(this, "小米 / HyperOS 等国产 ROM 要在系统设置里单独允许")
         permCard = Ui.card(this).apply {
             addView(permText)
-            addView(Ui.spacer(this@Launcher, 12))
+            addView(permTip)
+            addView(Ui.spacer(this@Launcher, 8))
             addView(permBtn)
         }
         col.addView(Ui.spacer(this, 20))
@@ -118,18 +123,18 @@ class Launcher : Activity() {
         // —— 模式1 ——
         recentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scanBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scanBtn = Ui.button(this, "扫描存储查找 .unrd") { startScan(auto = false) }
+        scanBtn = Ui.button(this, "扫描") { startScan(auto = false) }
+        newBtn = Ui.button(this, "新建") { onCreateWorkspace() }
         col.addView(Ui.spacer(this, 16))
         col.addView(
             modeCard(
                 R.drawable.ic_folder,
                 "打开工作区",
-                "本机独立：直接读 .unrd 里的 library.sqlite 与 PDFs/，不需要开着 Mac。" +
-                    "内部存储、SD 卡、OTG U 盘上的工作区都能开。",
+                "不用连 Mac，直接读平板上的 .unrd。",
                 "选择 .unrd 文件夹…",
             ) { onPickWorkspace() }.apply {
                 addView(Ui.spacer(this@Launcher, 8))
-                addView(scanBtn)
+                addView(sideBySide(newBtn, scanBtn))
                 addView(scanBox)
                 addView(recentBox)
             },
@@ -141,7 +146,7 @@ class Launcher : Activity() {
             modeCard(
                 R.drawable.ic_tablet,
                 "连 Mac 当输入板",
-                "平板只管采集笔迹，页面与笔迹的真源在 Mac 上。",
+                "平板只采集笔迹，真源在 Mac 上。",
                 "进入输入板",
             ) {
                 Log.i(TAG, "进入模式2 输入板")
@@ -149,15 +154,17 @@ class Launcher : Activity() {
             },
         )
 
-        // —— 单写者提醒（§9.2：工作区没有任何加锁/同步机制） ——
-        col.addView(Ui.spacer(this, 24))
+        // —— 单写者提醒（§9.2：工作区没有任何加锁/同步机制）——一行说完，细节点开才看 ——
+        col.addView(Ui.spacer(this, 16))
         col.addView(
-            Ui.body(
-                this,
-                "同一个工作区同一时间只能一端打开：平板在用时别在 Mac 上开同一个工作区，" +
-                    "否则两边的写入会互相覆盖。搬运时把整个 .unrd 文件夹一起拷（含 -wal/-shm），" +
-                    "放在云盘同步目录上尤其危险。",
-            ).apply { textSize = 12f },
+            Ui.tip(this, "同一个工作区，同一时间只能一端打开　·　详情") {
+                alert(
+                    "关于工作区",
+                    "平板在用时别在 Mac 上开同一个工作区，两边的写入会互相覆盖；" +
+                        "放在云盘同步目录上尤其危险。\n\n" +
+                        "搬运时把整个 .unrd 文件夹一起拷（含 -wal/-shm 两个小文件）。",
+                )
+            },
         )
 
         val scroll = ScrollView(this).apply {
@@ -201,6 +208,17 @@ class Launcher : Activity() {
         addView(Ui.button(this@Launcher, action, filled = true, onClick = onAction))
     }
 
+    /** 并排两个等宽的次要按钮（「新建」「扫描」）：竖着堆三颗按钮那张卡就成了按钮清单 */
+    private fun sideBySide(left: View, right: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(left, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(
+                right,
+                LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) },
+            )
+        }
+
     private fun hint(s: String) = Ui.body(this, s).apply { setPadding(0, 0, 0, dp(8)) }
 
     private fun versionName(): String = try {
@@ -214,16 +232,17 @@ class Launcher : Activity() {
         Log.i(TAG, "刷新：全盘文件权限=$ok sdk=${Build.VERSION.SDK_INT}")
         permText.text =
             if (ok) "已获得所有文件访问权限"
-            else "尚未获得「所有文件访问权限」——打开工作区需要它（模式2 输入板不需要）。" +
-                "小米/HyperOS 等国产 ROM 需要在系统设置里单独允许。"
+            else "打开工作区需要「所有文件访问权限」（输入板模式不需要）"
         // 授权后这张卡就不该再占一整块：缩成一行小字，别一直提醒一件已经办完的事
         permBtn.visibility = if (ok) View.GONE else View.VISIBLE
+        permTip.visibility = if (ok) View.GONE else View.VISIBLE
         permCard.background = if (ok) null else Ui.round(Ui.container(this), 16, this)
         val p = if (ok) 0 else dp(16)
         permCard.setPadding(p, p, p, p)
         permText.setTextColor(if (ok) Ui.onVariant(this) else Ui.onSurface(this))
         scanBtn.visibility = if (ok) View.VISIBLE else View.GONE
-        scanBtn.text = if (Workspace.scanDone(this)) "重新扫描存储" else "扫描存储查找 .unrd"
+        newBtn.visibility = if (ok) View.VISIBLE else View.GONE
+        scanBtn.text = if (Workspace.scanDone(this)) "重新扫描" else "扫描"
         refreshRecents()
         refreshScan()
         maybeAutoScan(ok)
@@ -358,196 +377,86 @@ class Launcher : Activity() {
         if (hasAllFiles()) return false
         alert(
             "需要所有文件访问权限",
-            "打开工作区要直接读写 .unrd 文件夹里的 SQLite 库，系统的文件选择器给不了真实路径，" +
-                "所以必须先授予「所有文件访问权限」。SD 卡 / U 盘上的工作区同样靠它。",
+            "工作区要直接读写文件夹里的库文件，系统文件选择器给不到真实路径。",
         )
         return true
     }
 
-    // ---------- 选工作区 ----------
+    // ---------- 选 / 建工作区 ----------
 
     private fun onPickWorkspace() {
         if (needPermission()) return
-        browse()
+        FileBrowser(
+            this,
+            FileBrowser.Mode.WORKSPACE,
+            title = "选择工作区",
+            tipText = "只有 .unrd 结尾的文件夹是工作区，点它就是打开",
+            // 在当前位置直接开扫，省得一级级翻。停在卷列表时＝扫全部卷
+            primary = "在这里扫描" to { dir: File?, d: AlertDialog ->
+                d.dismiss()
+                val roots = dir?.let { listOf(it) } ?: emptyList()
+                startScan(auto = false, roots = roots.ifEmpty { null })
+            },
+        ) { openWorkspace(it) }.show()
     }
 
     /**
-     * 极简目录浏览器。为什么不用系统的 `ACTION_OPEN_DOCUMENT_TREE`：它返回 SAF 的 tree Uri，
-     * 而裸 `SQLiteDatabase` 要真实文件路径（`content://` 打不开），把 Uri 反推成路径又是各家 ROM
-     * 各不相同的猜谜游戏。既然已经要了全盘权限，直接用 `File` 列目录最可预期。
+     * 新建工作区 = 选存放位置 → 起名字 → 建出 `<名字>.unrd`（骨架 + 空库）→ 直接进书库。
      *
-     * 两条口径（2026-08-03 用户定）：
-     * - **第一层是存储卷**（[StorageScan.volumes]），不再直接落在内置共享存储里——外部存储上的
-     *   工作区才是常态，靠"一级级往上点"去够 `/storage/XXXX-XXXX` 既不直观、部分 ROM 还够不到；
-     * - **只有 `.unrd` 能选中**：普通目录点进去继续找，原先那颗"选当前目录"按钮已去掉——
-     *   它让人以为随便哪个文件夹都能当工作区，选错了只会换来一句"这里没有 library.sqlite"。
-     *
-     * 列目录走后台（§9.5）：`listFiles` 加上逐个 `isDirectory` 的 stat，在 U 盘/同步盘上是秒级，
-     * 而用户是一级一级点进去的——每一级都卡一下，整个选目录过程就在反复触发 ANR 观察窗。
+     * 分两步而不是一个弹层里塞"位置 + 名字"：位置是要一级级点进去的，跟一个输入框挤在同一屏
+     * 只会把输入框顶到看不见的地方。
      */
-    private fun browse() {
-        var cur: File? = null                                   // null = 停在存储卷这一层
-        var vols: List<StorageScan.Volume> = emptyList()
-        val pathText = Ui.body(this, "").apply { textSize = 12f }
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val sheet = Sheet(this).title("选择工作区（.unrd）")
-        sheet.content(pathText)
-        sheet.content(list)
-        sheet.content(
-            Ui.body(this, "只有以 .unrd 结尾的文件夹才是工作区，点它就是打开；普通文件夹点进去继续找。")
-                .apply {
-                    textSize = 12f
-                    setPadding(0, dp(12), 0, 0)
-                },
+    private fun onCreateWorkspace() {
+        if (needPermission()) return
+        FileBrowser(
+            this,
+            FileBrowser.Mode.FOLDER,
+            title = "新建工作区：选存放位置",
+            tipText = "放在容量大、不会被清理的位置；U 盘/SD 卡也可以",
+            primary = "在这里新建" to { dir: File?, d: AlertDialog ->
+                if (dir == null) {
+                    alert("先选一块存储", "点进要存放的文件夹再新建。")
+                } else {
+                    d.dismiss()
+                    askName(dir)
+                }
+            },
+        ) { }.show()
+    }
+
+    /** 起名字。默认「我的书库」，重名由 [Workspace.create] 挡下并原样把话说给用户 */
+    private fun askName(parent: File) {
+        val edit = PadPanels.inputBox(this, "工作区名").apply { setText("我的书库") }
+        Sheet(this).title("新建工作区")
+            .subtitle(parent.absolutePath)
+            .content(edit)
+            .content(
+                Ui.tip(this, "会建出一个「名字.unrd」文件夹，PDF 加进来时会拷进它里面")
+                    .apply { setPadding(0, dp(10), 0, 0) },
+            )
+            .action("取消")
+            .action("创建", primary = true) { createWorkspace(parent, edit.text.toString()) }
+            .show()
+    }
+
+    private fun createWorkspace(parent: File, rawName: String) {
+        if (busyDlg != null) return
+        busyDlg = busy("正在创建…")
+        runInBackground(
+            what = "新建工作区",
+            work = { Workspace.create(parent, rawName) },
+            ok = { dir ->
+                dismissBusy()
+                Workspace.remember(this, dir.absolutePath)
+                refreshRecents()
+                refreshScan()
+                LibraryActivity.start(this, dir)
+            },
+            fail = {
+                dismissBusy()
+                alert("建不了工作区", it.message ?: "未知错误")
+            },
         )
-        sheet.action("取消")
-        // 在当前位置直接开扫，省得一级级翻。停在卷列表时＝扫全部卷
-        sheet.action("在这里扫描", primary = true) {
-            val roots = cur?.let { listOf(it) } ?: vols.map { it.dir }
-            startScan(auto = false, roots = roots.ifEmpty { null })
-        }
-        val dlg = sheet.show()
-        dlg.setOnDismissListener { browseToken = null }
-
-        fun render() {
-            list.removeAllViews()
-            val dir = cur
-            val token = Any()
-            browseToken = token
-            if (dir == null) {
-                pathText.text = "选择一块存储"
-                val waiting = hint("正在查找存储卷…")
-                list.addView(waiting)
-                runInBackground(
-                    what = "枚举存储卷",
-                    work = { StorageScan.volumes(this) },
-                    ok = { vs ->
-                        if (browseToken !== token || !dlg.isShowing) return@runInBackground
-                        vols = vs
-                        list.removeView(waiting)
-                        if (vs.isEmpty()) {
-                            list.addView(hint("没有找到可读的存储卷——确认已授予「所有文件访问权限」，U 盘是否已挂载"))
-                            return@runInBackground
-                        }
-                        for (v in vs) {
-                            list.addView(
-                                twoLineRow(R.drawable.ic_folder, Ui.onVariant(this), v.label, v.dir.absolutePath) {
-                                    cur = v.dir
-                                    render()
-                                },
-                            )
-                        }
-                    },
-                    fail = {
-                        if (browseToken === token && dlg.isShowing) {
-                            list.removeView(waiting)
-                            list.addView(hint("枚举存储卷失败：${it.message}"))
-                        }
-                    },
-                )
-                return
-            }
-
-            pathText.text = dir.absolutePath
-            val atRoot = vols.any { it.dir.absolutePath == dir.absolutePath }
-            list.addView(
-                PadPanels.iconRow(
-                    this,
-                    R.drawable.ic_chevron_up,
-                    if (atRoot) "存储卷列表" else "上一级",
-                    Ui.onVariant(this),
-                ) {
-                    cur = if (atRoot) null else dir.parentFile
-                    render()
-                },
-            )
-            val waiting = hint("正在读取目录…")
-            list.addView(waiting)
-            runInBackground(
-                what = "列目录 ${dir.name}",
-                // 过滤与排序也在后台：`isDirectory` 是每个条目一次 stat，才是慢的那部分
-                work = {
-                    Listing(
-                        dir.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() },
-                        stray = !Workspace.looksLikeWorkspace(dir) && File(dir, Workspace.DB_REL).isFile,
-                    )
-                },
-                ok = { l ->
-                    // 用户可能已经点进别的目录、或把窗关了——旧结果直接丢
-                    if (browseToken === token && dlg.isShowing) fill(list, waiting, l, dlg) { d ->
-                        cur = d
-                        render()
-                    }
-                },
-                fail = {
-                    if (browseToken === token && dlg.isShowing) {
-                        list.removeView(waiting)
-                        list.addView(hint("读取目录失败：${it.message}"))
-                    }
-                },
-            )
-        }
-
-        render()
-    }
-
-    /**
-     * @param stray 这个目录本身就有 `UniReader/library.sqlite`，但名字不是 `.unrd`——
-     *   用户十有八九是在这儿找他的库，得当场说清为什么点不了。
-     */
-    private class Listing(val dirs: List<File>?, val stray: Boolean)
-
-    /** 把后台列出的子目录填进浏览器（`.unrd` 用 accent 书本图标 + 一个「打开」，点它等于选中） */
-    private fun fill(
-        list: LinearLayout,
-        waiting: View,
-        l: Listing,
-        dlg: AlertDialog,
-        onEnter: (File) -> Unit,
-    ) {
-        list.removeView(waiting)
-        if (l.stray) {
-            list.addView(
-                hint("这个文件夹里有 ${Workspace.DB_REL}，但名字不是 .unrd 结尾——先把它改名成「xxx.unrd」再来打开。"),
-            )
-        }
-        if (l.dirs == null) {
-            list.addView(hint("无法读取此目录（没有权限，或不是真实目录）"))
-            return
-        }
-        if (l.dirs.isEmpty()) list.addView(hint("（没有子文件夹）"))
-        for (d in l.dirs) {
-            val isWs = Workspace.looksLikeWorkspace(d)
-            // 工作区用 accent 色的书本图标挑出来：一屏几十个文件夹，靠 emoji 分辨太费眼
-            list.addView(
-                PadPanels.iconRow(
-                    this,
-                    if (isWs) R.drawable.ic_doc else R.drawable.ic_folder,
-                    d.name,
-                    if (isWs) Ui.accent(this) else Ui.onVariant(this),
-                    trailing = if (isWs) {
-                        Ui.body(this, "打开").apply {
-                            setTextColor(Ui.accent(this@Launcher))
-                            setPadding(dp(8), 0, dp(4), 0)
-                        }
-                    } else {
-                        ImageView(this).apply {
-                            setImageResource(R.drawable.ic_chevron_right)
-                            imageTintList = ColorStateList.valueOf(Ui.outline(this@Launcher))
-                            layoutParams = LinearLayout.LayoutParams(dp(18), dp(18))
-                        }
-                    },
-                ) {
-                    // .unrd 点进去没意义（里面只有 UniReader/ 和 PDFs/），直接当选中处理
-                    if (isWs) {
-                        dlg.dismiss()
-                        openWorkspace(d)
-                    } else {
-                        onEnter(d)
-                    }
-                },
-            )
-        }
     }
 
     // ---------- 扫描 ----------

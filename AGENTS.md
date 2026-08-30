@@ -42,6 +42,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `io.legere:pdfiumandroid` 锁在 **2.0.1**，别随手升：AGP 9.2.0 内置的 Kotlin 编译器是 2.2.0、最多读元数据 2.3.0，
   而 2.0.2+ 是 Kotlin 2.4 编的 → 整个 `compileDebugKotlin` 直接失败（连 `kotlin.Unit` 都报 incompatible）。
 - **数据层的测试只能跑在设备上**：`android.database.sqlite` 在 JVM 单测里是空壳，故 `local/store/` 的用例都在 `androidTest`。
+  跑单个类：`./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=<全限定类名>`
+  （**不能带 `--offline`**，UTP 的插件要联网解析）。同一台机器经 mDNS 注册两次时 Gradle 会当成两台设备、
+  在"第二台"上跑出 0 个用例并以 `Could not load test results` 收场——**看 `app/build/outputs/androidTest-results/`
+  里那份非空的 XML 才是真结果**。
 - 依赖已缓存，日常可 `--offline`；**新增依赖时必须去掉 `--offline`**（要联网解析）。
 - 装包可以做，**手感/观感一律由用户在真机上测**，别自己截图自证；结论攒进 `../ANDROID-STANDALONE-PLAN.md §11.1`。
 
@@ -61,6 +65,14 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   **模式1 的目录只能跳到页顶**：pdfiumandroid 的书签 API 只给页号不给页内位置，故 `TocItem.frac` 恒 0。
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
+  **建表语句只有 `local/store/Schema.kt` 一处**（schema v12，逐字抄 Mac 的 `migrate()`），且只对
+  「文件还不存在」的**全新**库跑一次；`Db.open` 照旧一个字 DDL 都不写、不迁移老库。
+- **模式1 可以本机建库、本机加书**（2026-08-30）：`Workspace.create`（建 `<名字>.unrd` 骨架 + 空库，
+  重名不覆盖、失败连文件夹一起删）+ `local/PdfImport.kt`（探页数 → SHA-256 → 拷进 `PDFs/` → 入库；
+  **内容 hash 是文档身份**，同一份内容入两次只多一条 location）。入口：启动页「新建」/ 书库右上「＋」。
+- `local/FileBrowser.kt` = 唯一的目录浏览器（先列存储卷再逐级点进），按 `Mode` 分三用：
+  `WORKSPACE`（只有 `.unrd` 能选中）/ `FOLDER`（选存放位置）/ `PDF`（挑文件，点一个加一本、不关窗）。
+  **别再各处抄一份**——异步令牌、卷枚举、慢卷上的后台列目录都在里面。
 - 模式1 的阅读界面 = 「一个工作区」的多标签页（`ReaderActivity` + `DocTabsBar` + `TabSet`）：
   一个工作区一份 `LibraryStore`+`StoreQueue` 全部标签页共用，标签页懒装载、LRU 只保活 3 篇。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
@@ -121,6 +133,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   查这类问题先看 `UniReader/PageFetch` 启动那行额度打点，别猜。
 - **单写者约束**：工作区没有任何同步/加锁机制，**同一时间只能有一端打开同一个工作区**。
 - UI **扁平、原生、不拟物**；颜色只走语义名，别硬编码色值。
+- **界面上不许出现大段技术说明**（2026-08-30 用户明确要求）。一件事一句话说完；真要展开的背景
+  知识走 `Ui.tip()`（ⓘ + 一行小字，点开才弹细节）。从前那些三四行的灰色长段落（权限说明、
+  单写者警告、目录浏览器口径、打不开库的四条成因清单）用户扫一眼就跳过 = 白写；
+  要查根因看日志比看弹窗准得多。
 - **别手写图标 XML**。2026-08 之前 28 个图标是手写的，规格靠人肉复制 → 飘成三种线宽
   （1.6/1.8/2.0）、四种视觉尺寸（`ic_nib` 内容只占 6..18，`ic_lock` 撑到 3..22 差点被裁），
   `ic_ruler` 靠 `<group rotation>` 把矩形甩出画布，`ic_nib`（"切换笔"）画的是水滴、

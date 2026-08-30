@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.xvan.unireader.local.store.LibLocation
 import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.local.store.Schema
 import java.io.File
 import org.json.JSONArray
 
@@ -13,7 +14,7 @@ import org.json.JSONArray
  * 工作区布局（macOS 上是包，安卓上就是普通目录，见 ANDROID-STANDALONE-PLAN §6）：
  * ```
  * <名字>.unrd/
- *   UniReader/library.sqlite   # 全部元数据、笔记、笔迹、图层（schema v7）
+ *   UniReader/library.sqlite   # 全部元数据、笔记、笔迹、图层（schema v12）
  *   PDFs/<uuid>.pdf            # 拷进工作区的文件
  * ```
  *
@@ -51,15 +52,15 @@ object Workspace {
     fun check(dir: File): Check {
         val path = dir.absolutePath
         if (!dir.exists()) {
-            return bad(path, "路径不存在：$path\nU 盘/同步盘可能没挂载，或已被移走")
+            return bad(path, "路径不存在，U 盘或同步盘可能没挂载\n$path")
         }
         if (!dir.isDirectory) return bad(path, "不是文件夹：$path")
         if (!dir.canRead()) {
-            return bad(path, "文件夹不可读：$path\n多半是没授予「所有文件访问权限」")
+            return bad(path, "文件夹不可读，多半是没授予「所有文件访问权限」")
         }
         val db = File(dir, DB_REL)
         if (!db.isFile) {
-            return bad(path, "这里没有 $DB_REL\n它不是 UniReader 工作区（工作区文件夹名通常以 .unrd 结尾）")
+            return bad(path, "这不是 UniReader 工作区（缺 $DB_REL）")
         }
         if (!db.canRead()) return bad(path, "库文件不可读：${db.absolutePath}")
         val wal = File(dir, "$DB_REL-wal")
@@ -75,6 +76,52 @@ object Workspace {
     private fun bad(path: String, reason: String): Check.Bad {
         Log.w(TAG, "check FAIL path=$path reason=${reason.replace('\n', ' ')}")
         return Check.Bad(reason)
+    }
+
+    // ---------- 新建 ----------
+
+    /**
+     * 工作区名净化，与 Mac `WorkspaceManager.sanitizedPackageName` 同口径：
+     * 路径分隔符（`/`、`:`）换 `-`，去首尾空白。另外多挡了几个在 FAT32/exFAT 上非法的字符——
+     * 工作区的常态就是躺在 U 盘上（§1），用 `?` 建出来的文件夹在那种卷上直接建不了。
+     */
+    fun sanitizeName(raw: String): String =
+        raw.map { if (it in "/\\:*?\"<>|" || it.code < 0x20) '-' else it }
+            .joinToString("")
+            .trim()
+            .trimEnd('.')          // Windows/exFAT 不接受结尾的点
+
+    /**
+     * 在 [parent] 下新建一个 `<name>.unrd` 工作区：建好 `UniReader/library.sqlite`（schema v12，
+     * 见 [com.xvan.unireader.local.store.Schema]）与空的 `PDFs/`，返回工作区文件夹。
+     *
+     * **不覆盖已存在的同名文件夹**——那有可能是用户真正的库，覆盖等于删数据。重名直接报错，
+     * 让界面把话说清楚（"这里已经有一个叫 xxx 的工作区了"），由用户换个名字。
+     *
+     * 建库失败会连**整个新建的文件夹**一起清掉：留一个只有半个骨架的 `.unrd` 在那儿，
+     * 下次扫描会把它列出来、点开又说"这里没有 library.sqlite"，比没建成难查得多。
+     * 在后台线程调用（建目录 + 建库在慢卷上是秒级，§9.5）。
+     */
+    fun create(parent: File, name: String): File {
+        val clean = sanitizeName(name)
+        require(clean.isNotEmpty()) { "工作区名不能为空" }
+        require(parent.isDirectory) { "存放位置不是文件夹：${parent.absolutePath}" }
+        require(parent.canWrite()) { "这个位置不可写：${parent.absolutePath}" }
+        val dir = File(parent, "$clean.unrd")
+        require(!dir.exists()) { "这里已经有「${dir.name}」了，换个名字" }
+        var created = false
+        try {
+            require(dir.mkdirs()) { "建不了文件夹：${dir.absolutePath}" }
+            created = true
+            require(File(dir, PDFS_DIR).mkdirs()) { "建不了 $PDFS_DIR 目录" }
+            Schema.createLibrary(File(dir, DB_REL), clean)
+            Log.i(TAG, "新建工作区：${dir.absolutePath}")
+            return dir
+        } catch (e: Exception) {
+            if (created) runCatching { dir.deleteRecursively() }
+            Log.e(TAG, "新建工作区失败：${dir.absolutePath}", e)
+            throw e
+        }
     }
 
     /** 目录名以 .unrd 结尾 = 一眼可辨的工作区（不做强校验，真凭据是 library.sqlite） */

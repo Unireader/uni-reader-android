@@ -209,6 +209,40 @@ object Ui {
         setLineSpacing(dpf(c, 4f), 1f)
     }
 
+    /**
+     * 一句话提示：ⓘ + 一行小字。
+     *
+     * 界面上那些「为什么点不了 / 这一步要注意什么」的话**只配一行**——从前它们是三四行灰色
+     * 长段落（权限说明、单写者警告、目录浏览器的口径），用户扫一眼就跳过，等于白写。
+     * 规矩：正文一句话说完；真要展开的背景知识挂在 [onClick] 里，点了才弹。
+     */
+    fun tip(c: Context, text: String, onClick: (() -> Unit)? = null): LinearLayout =
+        LinearLayout(c).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val v = dp(c, 8)
+            setPadding(dp(c, 2), v, dp(c, 2), v)
+            addView(
+                ImageView(c).apply {
+                    setImageResource(R.drawable.ic_info)
+                    imageTintList = ColorStateList.valueOf(onVariant(c))
+                },
+                LinearLayout.LayoutParams(dp(c, 16), dp(c, 16)).apply {
+                    marginEnd = dp(c, 8)
+                    topMargin = dp(c, 1)          // 与首行文字的视觉基线对齐
+                },
+            )
+            addView(
+                body(c, text).apply { textSize = 12f },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            if (onClick != null) {
+                isClickable = true
+                isFocusable = true
+                background = rippleOver(c, null, RADIUS, onSurface(c))
+                setOnClickListener { onClick() }
+            }
+        }
+
     /** 卡片：一块 `surface_container` 圆角，无投影（投影是拟物，明令禁止） */
     fun card(c: Context, radiusDp: Int = 16): LinearLayout = LinearLayout(c).apply {
         orientation = LinearLayout.VERTICAL

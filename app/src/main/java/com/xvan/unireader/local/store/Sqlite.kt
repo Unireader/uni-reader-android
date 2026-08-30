@@ -13,7 +13,8 @@ import java.io.File
  * **为什么不用 Room**：`library.sqlite` 的 schema 是 Mac 端写死的跨平台契约
  * （`Sources/Store/LibraryStore.swift`，schema v7）。Room 要反过来拥有 schema、还会往库里塞
  * 自己的 `room_master_table` 并校验 identity hash——那是往共享库里拉屎，Mac 侧下次打开就多出
- * 一张不认识的表。这里只负责搬字节，DDL 一个字都不写（建库永远是 Mac 的事）。
+ * 一张不认识的表。这里只负责搬字节，DDL 一个字都不写；**新建**工作区时那份建表语句在
+ * [Schema] 里，只对「文件还不存在」的全新库跑一次，永不碰已有的库。
  */
 class Db private constructor(
     private val db: SQLiteDatabase,
@@ -69,13 +70,13 @@ class Db private constructor(
 
         /**
          * 把 `SQLiteException` 那句「unable to open database file」翻成人能处理的话。
-         * 这几种失败（U 盘拔了 / 卷是 FAT32 / 文件损坏）在界面上长得一模一样，
-         * 不把可能的原因摆出来，用户只知道「点了没用」（同 §9.3 对文案的要求）。
+         * 这几种失败（U 盘拔了 / 卷是 FAT32 / 文件损坏）在界面上长得一模一样，得给一句指向。
+         *
+         * **一句话就够**：从前这里是四条带序号的成因清单，弹窗里没人读完；真要查是哪一条，
+         * 日志里那行 `打开库 … readOnly=… wal=…` 与原始错误比清单精确得多。
          */
         private fun explain(file: File, e: SQLiteException): Exception = java.io.IOException(
-            "打不开库文件：${file.absolutePath}\n" +
-                "可能原因：① U 盘/同步盘被拔出或没挂载；② 卷是 FAT32/exFAT，SQLite 的 WAL 在这类卷上" +
-                "建不起来（缺共享内存）；③ 卷只读；④ 库文件损坏或被别的程序占着。\n原始错误：${e.message}",
+            "打不开库文件，可能是存储被拔出、卷只读，或库文件损坏\n${e.message}",
             e,
         )
     }

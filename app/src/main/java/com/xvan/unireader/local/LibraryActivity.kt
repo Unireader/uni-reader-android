@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -13,9 +14,11 @@ import com.xvan.unireader.R
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteKind
+import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.onSystemBarInsets
 import com.xvan.unireader.shared.runInBackground
+import com.xvan.unireader.shared.showAlert
 import java.io.File
 
 /**
@@ -54,6 +57,15 @@ class LibraryActivity : Activity() {
     /** 只认最后一次 reload 的结果：`onResume` 可能在前一次读盘还没回来时又触发一次 */
     private var loadToken: Any? = null
 
+    /**
+     * 「添加 PDF」期间那条**可写**连接（用完即关，见 [startAdd]）。列书单用的是另一条只读连接，
+     * 两者不共用：只读那条连 `wal_checkpoint` 都做不了，写不了库。
+     */
+    private var addQueue: StoreQueue? = null
+
+    /** 这一轮添加里每个文件的状态（路径 → 尾标）：加过的行标出来，别让人重复点同一本 */
+    private val addNotes = HashMap<String, String>()
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,8 +83,7 @@ class LibraryActivity : Activity() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(24))
-            addView(titleView)
-            addView(header)
+            addView(headerRow())
             addView(Ui.spacer(this@LibraryActivity, 12))
             addView(list)
         }
@@ -84,9 +95,29 @@ class LibraryActivity : Activity() {
         scroll.onSystemBarInsets { top, bottom -> scroll.setPadding(0, top, 0, bottom) }
     }
 
+    /** 标题 + 一行统计占左边，右边一颗「添加 PDF」——整屏只有这一个新增入口 */
+    private fun headerRow(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(
+            LinearLayout(this@LibraryActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(titleView)
+                addView(header)
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        addView(Ui.iconButton(this@LibraryActivity, R.drawable.ic_plus, "添加 PDF") { startAdd() })
+    }
+
     override fun onResume() {
         super.onResume()
         reload()
+    }
+
+    override fun onDestroy() {
+        closeAddQueue()
+        super.onDestroy()
     }
 
     private fun reload() {
@@ -145,11 +176,17 @@ class LibraryActivity : Activity() {
         if (snap.rows.isEmpty()) {
             list.addView(
                 Ui.card(this).apply {
+                    addView(Ui.title(this@LibraryActivity, "还没有文档", 17f))
                     addView(
-                        Ui.body(
-                            this@LibraryActivity,
-                            "这个工作区还没有文档。先在 Mac 上导入 PDF 并「拷进工作区」，再把整个 .unrd 搬过来。",
-                        ),
+                        Ui.body(this@LibraryActivity, "从平板上挑几个 PDF 加进来。")
+                            .apply { setPadding(0, dp(6), 0, dp(14)) },
+                    )
+                    addView(
+                        Ui.button(this@LibraryActivity, "添加 PDF", filled = true) { startAdd() },
+                    )
+                    addView(
+                        Ui.tip(this@LibraryActivity, "也可以在 Mac 上导入，再把整个 .unrd 搬过来")
+                            .apply { setPadding(0, dp(8), 0, 0) },
                     )
                 },
             )
@@ -184,12 +221,97 @@ class LibraryActivity : Activity() {
         if (started) col.addView(progressBar(ratio))
         if (!pdfOk) {
             col.addView(
-                Ui.body(this, "PDF 路径失效——文件不在了，或存的是 Mac 本机绝对路径，需要在 Mac 上重新关联")
+                Ui.body(this, "找不到 PDF 文件——重新添加一次，或回 Mac 上重新关联")
                     .apply { setTextColor(Ui.col(this@LibraryActivity, R.color.danger)); textSize = 12f },
             )
         }
         return col
     }
+
+    // ---------- 添加 PDF ----------
+
+    /**
+     * 「添加 PDF」：开一条**可写**连接 → 浏览本机文件挑 PDF → 每挑一本就拷进 `PDFs/` 并入库
+     * （[PdfImport]）→ 关窗时收掉连接、重读列表。
+     *
+     * **窗不关就一直开着那条连接**：一次多半要加好几本，每本重开一次库等于每本都付一遍
+     * 慢卷上的开库 + `wal_checkpoint`（秒级）。作业全排在 [StoreQueue] 的独占线程上，
+     * 串行、有序，主线程一行 I/O 都不做（§9.5）。
+     *
+     * 阅读界面（[ReaderActivity]）可能同时开着同一个工作区的另一条连接——那是**同一个进程内的
+     * 两条 SQLite 连接**，WAL + `busy_timeout=3000` 管得住；跨端的单写者约束（§9.2）说的是
+     * 两台设备，不是这个。
+     */
+    private fun startAdd() {
+        val ws = workspace ?: return
+        if (addQueue != null) return
+        runInBackground(
+            what = "开可写库 ${ws.name}",
+            work = { LibraryStore.open(ws, readOnly = false) },
+            ok = { store ->
+                addQueue = StoreQueue(store)
+                addNotes.clear()
+                browseForPdf(ws)
+            },
+            fail = { alert("加不了 PDF", "打不开工作区的库：${it.message}") },
+            // 界面已经关了：开出来的库必须收掉，否则 WAL 一直挂着（§9.2）
+            discard = { runCatching { it.close() } },
+        )
+    }
+
+    private fun browseForPdf(ws: File) {
+        var browser: FileBrowser? = null
+        browser = FileBrowser(
+            this,
+            FileBrowser.Mode.PDF,
+            title = "添加 PDF",
+            tipText = "点一个就加一本，可以接着加下一本；文件会拷进工作区",
+            fileNote = { f -> addNotes[f.absolutePath] },
+            onDismiss = {
+                closeAddQueue()
+                reload()      // 加进来的书要出现在列表里
+            },
+        ) { f -> ingest(ws, f) { browser?.refresh() } }
+        browser.show()
+    }
+
+    private fun ingest(ws: File, f: File, onChanged: () -> Unit) {
+        val q = addQueue ?: return
+        val key = f.absolutePath
+        addNotes[key] = "添加中…"
+        onChanged()
+        q.submit(
+            "导入 ${f.name}",
+            { store -> runCatching { PdfImport.ingest(this, ws, store, f) } },
+        ) { r ->
+            r.fold(
+                onSuccess = { res ->
+                    addNotes[key] = when (res) {
+                        is PdfImport.Result.Added -> "已添加"
+                        is PdfImport.Result.Duplicate -> "已在库中"
+                    }
+                },
+                onFailure = { e ->
+                    // 失败的行把标记去掉，让用户能原地再点一次（换个文件、或等 U 盘缓过来）
+                    addNotes.remove(key)
+                    Log.e(TAG, "导入 ${f.name} 失败", e)
+                    alert("加不进来：${f.name}", e.message ?: "未知错误")
+                },
+            )
+            onChanged()
+        }
+    }
+
+    /**
+     * 收掉那条可写连接。[StoreQueue.close] 自己就把关库排在队尾（还没跑完的导入会先落盘，
+     * `wal_checkpoint(TRUNCATE)` 在队列线程上做），所以这里直接调用即可，不用再往后台甩一层。
+     */
+    private fun closeAddQueue() {
+        addQueue?.close()
+        addQueue = null
+    }
+
+    private fun alert(title: String, msg: String) = showAlert(title, msg)
 
     /** 3dp 高的读进度条：底槽 outline、进度 accent，纯色无渐变 */
     private fun progressBar(ratio: Float): View {

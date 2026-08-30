@@ -54,6 +54,27 @@ class PdfSource(
         const val MAX_TOC_DEPTH = 16
 
         /**
+         * 只探一下页数（导入时用）：开文档 → 读页数 → 立刻关掉。
+         *
+         * 不复用构造函数是因为那条路会顺带读**整份页尺寸表**和书签（千页文档在慢卷上是秒级），
+         * 而导入只需要一个页数 + 「Pdfium 认不认这个文件」这一条结论。打不开就抛，
+         * 由调用方翻成人话——半个字节的坏文件也别放进库里。后台线程调用。
+         */
+        fun probePageCount(ctx: Context, file: File): Int {
+            val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            return try {
+                val d = PdfiumCore(ctx).newDocument(pfd)
+                try {
+                    d.getPageCount()
+                } finally {
+                    runCatching { d.close() }
+                }
+            } finally {
+                runCatching { pfd.close() }
+            }
+        }
+
+        /**
          * 页的显示尺寸（pt，已含旋转换边），**逐字对齐 Mac 端 `PageBitmap.displaySize`**：
          * CropBox 宽高都 >0 就用 CropBox，否则用 MediaBox；再按页旋转换边。
          *

@@ -1172,7 +1172,7 @@ class ReaderActivity : Activity() {
         var dlg: AlertDialog? = null
         val sheet = Sheet(this).title("打开文档")
         if (docs.isEmpty()) {
-            sheet.subtitle("这个工作区还没有文档。先在 Mac 上导入 PDF 并「拷进工作区」，再把整个 .unrd 搬过来。")
+            sheet.subtitle("这个工作区还没有文档——回书库界面用右上角的「＋」加 PDF。")
         }
         for (d in docs) {
             val opened = tabs.any { it.docId == d.id }

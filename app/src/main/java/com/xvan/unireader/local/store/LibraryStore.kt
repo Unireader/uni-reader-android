@@ -16,9 +16,10 @@ import java.io.File
 import java.util.UUID
 
 /**
- * 一个工作区的持久层，对应 Mac 端 `Sources/Store/LibraryStore.swift`（schema v7）。
+ * 一个工作区的持久层，对应 Mac 端 `Sources/Store/LibraryStore.swift`（schema v12）。
  *
- * 与 Mac 端的**唯一区别**：这里不建表、不迁移（见 [Db.open] 的说明）。SQL 语句逐条照抄 Mac，
+ * 与 Mac 端的**唯一区别**：这里不迁移老库（见 [Db.open] 的说明；从零建新库是 [Schema] 的事）。
+ * SQL 语句逐条照抄 Mac，
  * 包括 `ORDER BY`——列表顺序不一致会让「Mac 上第 3 个文档」和平板上的第 3 个不是同一本。
  *
  * **非线程安全，同一时刻只能有一个线程用它**。所有权的交接是：在后台线程 [open]（开库 +
@@ -34,7 +35,13 @@ class LibraryStore(private val db: Db) : Closeable {
 
     companion object {
         const val TAG = "UniReader/Store"
-        const val SCHEMA_VERSION = 7
+
+        /**
+         * 本端认得的 schema 版本 = 本端**建库**时写的那个版本（[Schema.VERSION]，对齐 Mac）。
+         * 从前这里写死 7，而 Mac 早已是 12，于是每开一个正常的库都要 warn 一次——噪音盖住了
+         * 真正对不上的情况。现在只有版本**真的不一样**才警告。
+         */
+        const val SCHEMA_VERSION = Schema.VERSION
 
         /** 打开工作区里的库。`readOnly` 用于「库文件不可写」的场景（U 盘只读挂载等）。 */
         fun open(workspaceDir: File, readOnly: Boolean = false): LibraryStore {
@@ -65,6 +72,14 @@ class LibraryStore(private val db: Db) : Closeable {
             .firstOrNull()
 
     fun workspaceName(): String = meta("workspace_name") ?: ""
+
+    /**
+     * 一张表的列名集合。给「本机建出来的库结构对不对」那类自检用
+     * （`androidTest/.../WorkspaceCreateTest`）——安卓建的库要能被 Mac 直接打开，
+     * 少一列在 Mac 那边就是一句 SQL 报错，而不是"少显示一个字段"。
+     */
+    fun tableColumns(table: String): Set<String> =
+        db.query("PRAGMA table_info($table)") { it.str("name") }.toSet()
 
     // ---------- document ----------
 
@@ -117,6 +132,68 @@ class LibraryStore(private val db: Db) : Closeable {
         """.trimIndent(),
         arrayOf(documentId),
     ) { location(it) }
+
+    fun variantByHash(hash: String): LibVariant? =
+        db.query("SELECT * FROM variant WHERE content_hash=?", arrayOf(hash)) { variant(it) }.firstOrNull()
+
+    /**
+     * 导入一个 PDF：按 content hash「找到或新建」逻辑文档。SQL 逐条对齐 Mac 的
+     * `findOrCreate(hash:title:pageCount:path:)`（`Sources/Store/LibraryStore.swift`）。
+     *
+     * 与 Mac 的**唯一差别**是这里默认 `inWorkspace=true`：Mac 上先把外部路径入库、再由
+     * 「拷进工作区」补一条工作区内 location；安卓端没有"稳定的绝对路径"可言（换设备、
+     * 换挂载点、拿去 Mac 上开，绝对路径一律作废），所以入库这一步就是拷进 `PDFs/`，
+     * 存的直接是工作区相对路径。
+     *
+     * @param path 工作区相对路径（`PDFs/<uuid>.pdf`），[inWorkspace] 为假时才是别的含义。
+     * @return 该 PDF 对应的逻辑文档；hash 已存在则是**原有的那一篇**（不重复建）。
+     */
+    fun findOrCreate(
+        hash: String,
+        title: String,
+        pageCount: Int,
+        path: String,
+        inWorkspace: Boolean = true,
+    ): LibDocument {
+        require(hash.isNotEmpty()) { "content hash 为空" }
+        val now = nowIso()
+        val existing = variantByHash(hash)
+        if (existing != null) {
+            // 同一份内容再导一次：补一条路径（已有同路径就不动），不新建文档
+            val already = db.query(
+                "SELECT * FROM location WHERE variant_id=? AND path=?",
+                arrayOf(existing.id, path),
+            ) { location(it) }.firstOrNull()
+            if (already == null) {
+                db.exec(
+                    "INSERT INTO location(id,variant_id,path,is_valid,last_validated_at,in_workspace,is_relative) " +
+                        "VALUES(?,?,?,1,?,?,0)",
+                    arrayOf(UUID.randomUUID().toString(), existing.id, path, now, if (inWorkspace) 1 else 0),
+                )
+            }
+            return document(existing.documentId)
+                ?: throw IllegalStateException("variant 指向的 document 缺失：${existing.documentId}")
+        }
+        val docId = UUID.randomUUID().toString()
+        val varId = UUID.randomUUID().toString()
+        db.transaction {
+            db.exec(
+                "INSERT INTO document(id,title,page_count,added_at,last_opened_at,sort_order) VALUES(?,?,?,?,?,0)",
+                arrayOf(docId, title, pageCount, now, now),
+            )
+            db.exec(
+                "INSERT INTO variant(id,document_id,content_hash,page_count,added_at) VALUES(?,?,?,?,?)",
+                arrayOf(varId, docId, hash, pageCount, now),
+            )
+            db.exec(
+                "INSERT INTO location(id,variant_id,path,is_valid,last_validated_at,in_workspace,is_relative) " +
+                    "VALUES(?,?,?,1,?,?,0)",
+                arrayOf(UUID.randomUUID().toString(), varId, path, now, if (inWorkspace) 1 else 0),
+            )
+        }
+        Log.i(TAG, "入库《$title》$pageCount 页 → $path")
+        return document(docId) ?: throw IllegalStateException("刚建的 document 读不回来：$docId")
+    }
 
     // ---------- note ----------
 
