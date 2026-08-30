@@ -16,6 +16,7 @@ UniReader 的安卓端：**一个 App 两种模式**（启动页二选一，`Lau
   - `../PROTOCOL.md` — 二进制线格式**唯一契约**，三端字节级一致，改协议先改它
   - `../ANDROID-STANDALONE-PLAN.md` — 模式1 方案（§9 已踩的坑 / §11.1 待真机清单 / §11.2 模拟器能证明什么）
   - `../ANDROID-MODE2-PLAN.md` — 模式2 方案
+  - `../OFFLINE-MIRROR-PLAN.md` — 工作区离线镜像（整份复制到本机、离线写笔迹、接回硬盘三方合并）
   - `../SCRATCHPAD-ANDROID-HANDOFF.md` — 草稿纸安卓端交接（坐标系 / 存储 / 协议）
   - `../TODO.md`（进行中/待办，第一优先）、`../HISTORY.md`（已完成归档）——安卓条目也在里面
   - `../AGENTS.md` — macOS 端的构建、红线与结构
@@ -92,7 +93,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `shared/NoteBubbleGeom.kt`（文字笔记展开气泡的比例常数与位置规则）↔ Mac `Sources/Views/NoteBubbleView.swift`
   的 `NoteBubble` ↔ web `render.ts` 的 `BUB`（`../REQUIREMENTS.md §1.2`）；
   `shared/CanvasMargin.kt`（画板模式的页边软边界档位：STEP/SLACK/LIMIT 三个常数 + `marginFor`）
-  ↔ Mac `Sources/App/CanvasMargin.swift` ↔ web `shared.ts` 的 `canvasMarginFor`。
+  ↔ Mac `Sources/App/CanvasMargin.swift` ↔ web `shared.ts` 的 `canvasMarginFor`；
+  `local/store/MirrorFp.kt`（离线镜像的行指纹：类型标签 + 分隔符 + 表规格/列顺序）
+  ↔ Mac `Sources/Store/MirrorFingerprint.swift`，向量表 `../spike/mirror-fp-vectors.txt`
+  （由 Mac 的 `spike/mirror-fp-test.swift` 生成，本端 `MirrorFpTest` 逐条比对，**只许在末尾追加**）
+  ——两端差一个 bit，同步时整张表会被误判成「全都改过」。
   改完三端测试一起跑（安卓 `WireCodecTest` 的向量与 Mac/web 的跨端向量同源）。
 - **草稿纸画布坐标系 = 逻辑点（dp），原点＝创建点、可负无界**；橡皮半径按 `eraserRefWidth = 800`
   从页宽归一化折算，**三端必须同一个数**（`../SCRATCHPAD-ANDROID-HANDOFF.md §1`）。
