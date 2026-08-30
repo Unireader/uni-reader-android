@@ -60,6 +60,34 @@ class LibraryStore(private val db: Db) : Closeable {
     /** 打开/关闭各做一次；搬运工作区时只拷 .sqlite 也不会丢最近的写入 */
     fun checkpoint() = db.walCheckpointTruncate()
 
+    /** 库文件路径（建镜像时要按它做兜底的整文件拷贝，见 `MirrorBuilder`） */
+    val dbPath: String get() = db.path
+
+    /**
+     * 把整库一致地拷到 [path]（`VACUUM INTO`）。**成功返回 true，本机 SQLite 太老返回 false**。
+     *
+     * 为什么不是拷那三个文件：`.sqlite`/`-wal`/`-shm` 分三次拷不是原子的，中间还有写入就拿到一份
+     * 撕裂的库；`VACUUM INTO` 在一个读事务里生成，天生一致，还顺带压缩。
+     *
+     * **`VACUUM INTO` 要 SQLite 3.27（Android 11 / API 30）**，而本模块 minSdk 26 —— 老机器上
+     * 只能退回「checkpoint + 整文件拷」。那条路在本模块里同样安全：模式1 的写全部经 [StoreQueue]
+     * 的独占线程，建镜像也排在同一条队列上，拷的时候不会有人在写。返回 false 让调用方走那条。
+     */
+    fun vacuumInto(path: String): Boolean = try {
+        db.exec("VACUUM INTO ?", arrayOf<Any?>(path))
+        true
+    } catch (e: Exception) {
+        Log.w(TAG, "VACUUM INTO 不可用（SQLite < 3.27？），退回整文件拷贝", e)
+        false
+    }
+
+    /**
+     * 整个工作区的笔记条数（笔迹一笔也算一条）。借出记录里存一份纯展示用，
+     * 让用户在源盘那端一眼看出「借走时是 3800 条」。
+     */
+    fun noteCount(): Int =
+        db.query("SELECT COUNT(*) AS n FROM note") { it.int("n") }.firstOrNull() ?: 0
+
     /** 这个卷上 WAL 是否真的启用（false = FAT32/exFAT 之类，界面要提示，见 [Db.walEnabled]） */
     val walEnabled: Boolean get() = db.walEnabled
 
