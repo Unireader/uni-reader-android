@@ -47,6 +47,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （**不能带 `--offline`**，UTP 的插件要联网解析）。同一台机器经 mDNS 注册两次时 Gradle 会当成两台设备、
   在"第二台"上跑出 0 个用例并以 `Could not load test results` 收场——**看 `app/build/outputs/androidTest-results/`
   里那份非空的 XML 才是真结果**。
+- **`LibraryStoreTest`/`ScratchPadStoreTest`/`StoreQueueTest`/`StrokeEchoTest` 依赖真 fixture**：
+  它们开的是 `/sdcard/Download/内覆盖.unrd`（Mac 造的真工作区）并要「所有文件访问权限」，
+  **换台干净模拟器就必然全红 30 条**（`SQLITE_CANTOPEN … Permission denied`）。
+  别把它当成自己改坏了——先 `git stash -u` 跑一遍基线对数，或只跑自己那个类。
+  不依赖 fixture 的（`WorkspaceCreateTest`/`MirrorBuilderTest`）一律在 `cacheDir` 里做，随处能跑。
 - 依赖已缓存，日常可 `--offline`；**新增依赖时必须去掉 `--offline`**（要联网解析）。
 - 装包可以做，**手感/观感一律由用户在真机上测**，别自己截图自证；结论攒进 `../ANDROID-STANDALONE-PLAN.md §11.1`。
 
@@ -74,6 +79,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/FileBrowser.kt` = 唯一的目录浏览器（先列存储卷再逐级点进），按 `Mode` 分三用：
   `WORKSPACE`（只有 `.unrd` 能选中）/ `FOLDER`（选存放位置）/ `PDF`（挑文件，点一个加一本、不关窗）。
   **别再各处抄一份**——异步令牌、卷枚举、慢卷上的后台列目录都在里面。
+- `local/mirror/` = **离线镜像**（`../OFFLINE-MIRROR-PLAN.md`）：`MirrorStore`（`sync_base` 基线表 +
+  血缘 meta + 借出记录编解码）+ `MirrorBuilder`（建镜像：`VACUUM INTO` → 拷 PDF → 内化外部文件 →
+  算基线 → 源库记一笔借出）。**必须跑在 `StoreQueue` 的独占线程上**——慢卷上是分钟级（主线程做必 ANR），
+  且老机器的「整文件拷」兜底路径正是靠「拷的时候进程内没人在写」才安全。
 - 模式1 的阅读界面 = 「一个工作区」的多标签页（`ReaderActivity` + `DocTabsBar` + `TabSet`）：
   一个工作区一份 `LibraryStore`+`StoreQueue` 全部标签页共用，标签页懒装载、LRU 只保活 3 篇。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
