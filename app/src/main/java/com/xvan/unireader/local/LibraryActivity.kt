@@ -12,9 +12,12 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.xvan.unireader.R
 import com.xvan.unireader.local.store.LibDocument
+import com.xvan.unireader.local.mirror.MirrorStore
+import com.xvan.unireader.local.mirror.MirrorUi
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteKind
 import com.xvan.unireader.local.store.StoreQueue
+import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.onSystemBarInsets
 import com.xvan.unireader.shared.runInBackground
@@ -47,7 +50,13 @@ class LibraryActivity : Activity() {
 
     /** 一行要显示的全部东西，全在后台备好（主线程不再碰库） */
     private class Row(val doc: LibDocument, val ink: Int, val pdfOk: Boolean, val opened: Boolean)
-    private class Snapshot(val name: String, val info: String, val rows: List<Row>)
+    private class Snapshot(
+        val name: String,
+        val info: String,
+        val rows: List<Row>,
+        /** 这个工作区是不是离线副本（换角标、换「打不开」的文案、换右上那颗键的动作） */
+        val isMirror: Boolean,
+    )
 
     private lateinit var list: LinearLayout
     private lateinit var titleView: TextView
@@ -56,6 +65,9 @@ class LibraryActivity : Activity() {
 
     /** 只认最后一次 reload 的结果：`onResume` 可能在前一次读盘还没回来时又触发一次 */
     private var loadToken: Any? = null
+
+    /** 当前工作区是不是离线副本（`read()` 里取，决定右上那颗键给哪条动作） */
+    private var isMirror = false
 
     /**
      * 「添加 PDF」期间那条**可写**连接（用完即关，见 [startAdd]）。列书单用的是另一条只读连接，
@@ -108,6 +120,7 @@ class LibraryActivity : Activity() {
             LinearLayout.LayoutParams(0, -2, 1f),
         )
         addView(Ui.iconButton(this@LibraryActivity, R.drawable.ic_plus, "添加 PDF") { startAdd() })
+        addView(Ui.iconButton(this@LibraryActivity, R.drawable.ic_more, "更多") { showMore() })
     }
 
     override fun onResume() {
@@ -150,9 +163,18 @@ class LibraryActivity : Activity() {
             // 这个工作区的标签页组（§13）：阅读界面开着哪几篇，列表上标出来——点已开着的那篇
             // 是切过去而不是重新打开，先说清楚免得以为点错了
             val opened = TabSet.openDocIds(this, ws.absolutePath)
+            val mirror = MirrorUi.isMirror(store)
+            // 借出记录只在源盘那边有；一行足矣（「是信息不是锁」，方案 §5.2）
+            val lent = MirrorStore.decodeCheckouts(store.meta(MirrorStore.META_CHECKOUTS)).size
             Snapshot(
                 name = store.workspaceName().ifEmpty { ws.name },
-                info = "${docs.size} 个文档" + if (opened.isEmpty()) "" else "　${opened.size} 个在标签页里",
+                isMirror = mirror,
+                info = buildString {
+                    append("${docs.size} 个文档")
+                    if (opened.isNotEmpty()) append("　${opened.size} 个在标签页里")
+                    if (mirror) append("　离线副本")
+                    if (lent > 0) append("　借出 $lent 份")
+                },
                 rows = docs.map { d ->
                     Row(
                         doc = d,
@@ -165,13 +187,14 @@ class LibraryActivity : Activity() {
         }
 
     private fun render(ws: File, snap: Snapshot) {
+        isMirror = snap.isMirror
         list.removeAllViews()
         title = ws.name
         titleView.text = snap.name
         header.text = snap.info
         for ((i, r) in snap.rows.withIndex()) {
             if (i > 0) list.addView(Ui.divider(this))
-            list.addView(row(r.doc, r.ink, r.pdfOk, r.opened))
+            list.addView(row(r.doc, r.ink, r.pdfOk, r.opened, snap.isMirror))
         }
         if (snap.rows.isEmpty()) {
             list.addView(
@@ -197,7 +220,7 @@ class LibraryActivity : Activity() {
      * 一条书。整行可点（涟漪铺满行），不是行里塞个按钮——列表项的点按目标就该是整行。
      * 进度做成一条细进度条：数字要读，条一眼就看得到读到哪儿了。
      */
-    private fun row(d: LibDocument, inkCount: Int, pdfOk: Boolean, opened: Boolean): View {
+    private fun row(d: LibDocument, inkCount: Int, pdfOk: Boolean, opened: Boolean, isMirror: Boolean): View {
         val col = Ui.row(this, if (pdfOk) ({ workspace?.let { ReaderActivity.start(this, it, d.id) } }) else null)
         col.addView(
             Ui.title(this, d.title, 17f).apply {
@@ -221,7 +244,9 @@ class LibraryActivity : Activity() {
         if (started) col.addView(progressBar(ratio))
         if (!pdfOk) {
             col.addView(
-                Ui.body(this, "找不到 PDF 文件——重新添加一次，或回 Mac 上重新关联")
+                // 镜像里「没带 PDF」是刻意的（库全量、PDF 选择性，方案 §7），不是出错——
+                // 说成「重新关联」会把用户引到一条根本不该走的路上
+                Ui.body(this, if (isMirror) "没有离线——插回源盘才能看" else "找不到 PDF 文件——重新添加一次，或回 Mac 上重新关联")
                     .apply { setTextColor(Ui.col(this@LibraryActivity, R.color.danger)); textSize = 12f },
             )
         }
@@ -309,6 +334,24 @@ class LibraryActivity : Activity() {
     private fun closeAddQueue() {
         addQueue?.close()
         addQueue = null
+    }
+
+    /**
+     * 右上「更多」：镜像与源盘**互斥**地给一条动作——镜像不能再做镜像（[MirrorBuilder] 也会拦），
+     * 源盘也没有「同步回去」这回事。只出现该出现的那条，不给用户做无效选择的机会。
+     */
+    private fun showMore() {
+        val ws = workspace ?: return
+        val sheet = Sheet(this).title(if (isMirror) "离线副本" else "工作区")
+        if (isMirror) {
+            sheet.subtitle("插上源盘就能预览同步会做什么")
+            sheet.action("同步预览…", primary = true) { MirrorUi.syncPreview(this, ws) }
+        } else {
+            sheet.subtitle("复制一份到内部存储，拔了盘也能看和写")
+            sheet.action("做成离线副本…", primary = true) { MirrorUi.makeMirror(this, ws) { reload() } }
+        }
+        sheet.action("取消")
+        sheet.show()
     }
 
     private fun alert(title: String, msg: String) = showAlert(title, msg)
