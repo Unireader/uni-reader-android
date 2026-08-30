@@ -73,6 +73,29 @@ class LibraryStore(private val db: Db) : Closeable {
 
     fun workspaceName(): String = meta("workspace_name") ?: ""
 
+    fun setMeta(key: String, value: String) {
+        db.exec(
+            "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            arrayOf<Any?>(key, value),
+        )
+    }
+
+    /**
+     * 工作区的**稳定身份**（离线镜像用，见 `../OFFLINE-MIRROR-PLAN.md` §5.1）。没有返回 null。
+     *
+     * 为什么不能拿 `workspace_name` 或路径当身份：名字会被改、路径换台设备/换挂载点必变，
+     * 而镜像要靠它认出「我的源盘是哪一个」——插上任意一块盘都能自动匹配，靠路径就得让用户手指。
+     */
+    fun workspaceId(): String? = meta("workspace_id")?.takeIf { it.isNotEmpty() }
+
+    /**
+     * 取工作区 id，没有就地补一个。**只在真的要用到时调**（建镜像/同步），
+     * 不塞进开库流程：那样每个老库一打开就被写一次，而绝大多数工作区永远不会做镜像。
+     * 库只读（U 盘只读挂载等）时写入会抛 → 调用方据此提示，不静默当成功。
+     */
+    fun ensureWorkspaceId(): String =
+        workspaceId() ?: java.util.UUID.randomUUID().toString().also { setMeta("workspace_id", it) }
+
     /**
      * 一张表的列名集合。给「本机建出来的库结构对不对」那类自检用
      * （`androidTest/.../WorkspaceCreateTest`）——安卓建的库要能被 Mac 直接打开，
