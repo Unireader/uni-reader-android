@@ -38,8 +38,20 @@ object MirrorFp {
 
     data class Column(val name: String, val type: ColType)
 
-    /** 一张参与同步的表：主键列 + 参与指纹的列（**顺序即契约**） */
-    data class TableSpec(val table: String, val key: String, val columns: List<Column>)
+    /**
+     * 一张参与同步的表：主键列 + 参与指纹的列（**顺序即契约**）+ 冲突时按哪一列判新旧。
+     *
+     * [lww]：两端都改了同一行时，按这一列的 ISO-8601 时间戳取新的（方案 §6）。
+     * null = 这张表没有时间戳列，冲突一律**保留源盘那份**并报告。
+     * 放在表规格里而不是另起一张映射表：这一列就在 [columns] 里躺着，分开写迟早出现
+     * 「加了 updated_at 却忘了登记 LWW」。
+     */
+    data class TableSpec(
+        val table: String,
+        val key: String,
+        val columns: List<Column>,
+        val lww: String? = null,
+    )
 
     private fun i(n: String) = Column(n, ColType.INT)
     private fun r(n: String) = Column(n, ColType.REAL)
@@ -77,6 +89,7 @@ object MirrorFp {
                 r("anchor_x"), r("anchor_y"), r("anchor_w"), r("anchor_h"),
                 b("payload"), t("created_at"), t("updated_at"),
             ),
+            lww = "updated_at",
         ),
         TableSpec(
             "ink_layer", "id",
@@ -92,6 +105,7 @@ object MirrorFp {
                 r("anchor_x"), r("anchor_y"), t("bg"), t("pattern"), i("show_page"),
                 t("created_at"), t("updated_at"),
             ),
+            lww = "updated_at",
         ),
         TableSpec("meta", "key", listOf(t("key"), t("value"))),
     )

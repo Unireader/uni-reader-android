@@ -3,6 +3,7 @@ package com.xvan.unireader.local.mirror
 import android.content.Context
 import android.database.Cursor
 import com.xvan.unireader.local.store.Db
+import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.MirrorFp
 import java.util.UUID
 import org.json.JSONArray
@@ -178,6 +179,51 @@ object MirrorStore {
         db.query("SELECT tbl,row_id,fp FROM sync_base") {
             Triple(it.getString(0), it.getString(1), it.getString(2))
         }.forEach { (t, id, fp) -> out.getOrPut(t) { HashMap() }[id] = fp }
+        return out
+    }
+
+    // ---------- 快照与干跑 ----------
+
+    /**
+     * 一个库里**参与同步的全部行**：`表名 → (row_id → 行)`。`meta` 只取白名单键（同 [fingerprints]）。
+     * 三方合并的两个输入（mine / theirs）都由它来取。
+     */
+    fun snapshot(db: Db): MirrorSnapshot {
+        val out = LinkedHashMap<String, Map<String, Map<String, Any?>>>()
+        for (spec in MirrorFp.specs) {
+            var rows = db.query("SELECT * FROM ${spec.table}") { readRow(it) }
+            if (spec.table == "meta") {
+                rows = rows.filter { (it["key"] as? String) in MirrorFp.syncedMetaKeys }
+            }
+            val byId = LinkedHashMap<String, Map<String, Any?>>(rows.size)
+            for (row in rows) {
+                val id = MirrorFp.coerce(row[spec.key], MirrorFp.ColType.TEXT)
+                if (id is MirrorFp.Value.Text) byId[id.v] = row
+            }
+            out[spec.table] = byId
+        }
+        return out
+    }
+
+    /**
+     * **干跑**：算出这次同步会做什么，一个字都不写。
+     *
+     * 源库走调用方传进来的 [LibraryStore] 实例；镜像库是本端自己开的连接。
+     */
+    fun plan(mirror: Db, source: LibraryStore): MirrorDiff.Plan =
+        MirrorDiff.compute(syncBase(mirror), snapshot(mirror), source.mirrorSnapshot())
+
+    /**
+     * 两侧合起来的 `documentId → 书名`，给报告用。
+     * **两侧都要**：源盘新增的书在镜像里还不存在，只查一边就会显示成「（已删除的文档）」。
+     */
+    fun titles(mine: MirrorSnapshot, theirs: MirrorSnapshot): Map<String, String> {
+        val out = HashMap<String, String>()
+        for (snap in listOf(theirs, mine)) {   // mine 后放：同 id 时以镜像那份为准（顺手，无所谓）
+            for ((id, row) in snap["document"].orEmpty()) {
+                (row["title"] as? String)?.let { out[id] = it }
+            }
+        }
         return out
     }
 

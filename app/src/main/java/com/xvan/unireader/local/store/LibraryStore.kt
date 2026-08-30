@@ -82,6 +82,21 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /**
+     * 本库里**参与同步的全部行**（离线镜像三方合并的一个输入，见 `MirrorStore.snapshot`）。
+     * 走这里而不是把 [db] 开放出去：这个类的约定是「所有读写走 DAO」，
+     * 为一个功能破例交出连接，下一个功能就会照着做。
+     */
+    fun mirrorSnapshot(): com.xvan.unireader.local.mirror.MirrorSnapshot =
+        com.xvan.unireader.local.mirror.MirrorStore.snapshot(db)
+
+    /** 镜像基线（`sync_base`）。不是镜像时返回空 —— 那张表只在镜像库里存在 */
+    fun syncBase(): Map<String, Map<String, String>> =
+        com.xvan.unireader.local.mirror.MirrorStore.syncBase(db)
+
+    /** 重算基线（合并完成后要重置成「此刻两端一致」的样子） */
+    fun rebuildSyncBase(): Int = com.xvan.unireader.local.mirror.MirrorStore.rebuildSyncBase(db)
+
+    /**
      * 整个工作区的笔记条数（笔迹一笔也算一条）。借出记录里存一份纯展示用，
      * 让用户在源盘那端一眼看出「借走时是 3800 条」。
      */
