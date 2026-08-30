@@ -72,6 +72,58 @@ object InkEdit {
     }
 
     /**
+     * 点集的归一化包围盒 `[minX, minY, maxX, maxY]`；一个点都没有时返回 null（不参与定界）。
+     * 画板模式下 x 可越出 `0…1`，故**不能按页角起算**——整条笔画都在页外时会被硬撑到页边。
+     * 同 Mac `InkEdit.bounds`。
+     */
+    fun bounds(strokes: List<Stroke>): FloatArray? {
+        var x0 = Float.POSITIVE_INFINITY; var y0 = Float.POSITIVE_INFINITY
+        var x1 = Float.NEGATIVE_INFINITY; var y1 = Float.NEGATIVE_INFINITY
+        for (s in strokes) {
+            for (p in s.pts) {
+                if (p.x < x0) x0 = p.x
+                if (p.y < y0) y0 = p.y
+                if (p.x > x1) x1 = p.x
+                if (p.y > y1) y1 = p.y
+            }
+        }
+        return if (x0 <= x1) floatArrayOf(x0, y0, x1, y1) else null
+    }
+
+    /**
+     * 刚性平移的**位移夹取**：把 `(dx, dy)` 整体夹进「选中集不越界」的范围，调用方随后原样
+     * [translated] 每个点。返回 `[dx, dy]`。同 Mac `InkEdit.fitTranslation`。
+     *
+     * 🔴 框选**整团**移动必须先过这里：[translated] 是逐点 clamp 的，一团笔迹撞上边界时越界的
+     * 那一头会被逐点摁在边界线上 = 笔迹被压扁成一条线（用户 2026-08-30 在平板上报的
+     * 「画板模式下框选移动把笔迹压缩了」）。注意这与 [translated] 自身「逐点 clamp」的三端一致性
+     * 不冲突：那条说的是**单点越界怎么处理**，这里管的是**整团位移先夹到多少**——
+     * 两条权威路径（Mac 的 `commitLassoMove`/`applyLassoMove`、模式1 的 `onLassoMoveCommit`）
+     * 都先夹再平移，形状才在两端一致。
+     *
+     * 笔迹按 `-xMargin … 1+xMargin` 定界、文字注解按页内 `0…1` 定界（注解不出页），两者取交集；
+     * null（无此类选中项）不参与。选中集本身比可写区间还宽这种退化情形不夹（保形优先，逐点 clamp 兜底）。
+     * `bounds` 均为 `[minX, minY, maxX, maxY]`。
+     */
+    fun fitTranslation(
+        dx: Float, dy: Float, inkBounds: FloatArray?, xMargin: Float = 0f, noteBounds: FloatArray? = null,
+    ): FloatArray {
+        var loX = -Float.MAX_VALUE; var hiX = Float.MAX_VALUE
+        var loY = -Float.MAX_VALUE; var hiY = Float.MAX_VALUE
+        fun fit(b: FloatArray?, xLo: Float, xHi: Float) {
+            if (b == null) return
+            loX = kotlin.math.max(loX, xLo - b[0]); hiX = kotlin.math.min(hiX, xHi - b[2])
+            loY = kotlin.math.max(loY, -b[1]); hiY = kotlin.math.min(hiY, 1f - b[3])
+        }
+        fit(inkBounds, -xMargin, 1f + xMargin)
+        fit(noteBounds, 0f, 1f)
+        return floatArrayOf(
+            if (loX <= hiX) dx.coerceIn(loX, hiX) else dx,
+            if (loY <= hiY) dy.coerceIn(loY, hiY) else dy,
+        )
+    }
+
+    /**
      * 平移一个归一化矩形 `[x, y, w, h]`（文字注解的 anchor 与逐行 rects，框选移动用）：
      * **两个角各自 clamp**，贴页边时宽/高跟着收缩——同 Mac `InkEdit.translatedRect`。
      * 整块推回来的话贴边后尺寸不变，两端就会长得不一样（与点集逐点 clamp 是同一条道理）。

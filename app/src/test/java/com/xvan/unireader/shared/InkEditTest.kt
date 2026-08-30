@@ -209,4 +209,54 @@ class InkEditTest {
         assertTrue(!InkEdit.pointInPolygon(0.5f, 0.5f, floatArrayOf(0.5f, 0.5f)))
         assertTrue(!InkEdit.pointInPolygon(0.5f, 0.5f, FloatArray(0)))
     }
+
+    // ---------- bounds / fitTranslation（框选整团平移不变形） ----------
+    //
+    // 🔴 钉的是用户 2026-08-30 在平板上报的「画板模式下框选移动把笔迹压缩了」：逐点 clamp 的
+    // translated 单独用时越界那一头会被摁成一条线；先过 fitTranslation 夹位移就不会。
+    // 断言与 Mac `spike/ink-edit-test.swift` 同一批数字（两条权威路径必须形状一致）。
+
+    private fun st(vararg pts: Pt3) = Stroke(1, pen, pts.toList(), id = "s")
+
+    @Test
+    fun 包围盒按点算不被页角撑大() {
+        assertTrue("空集 → null", InkEdit.bounds(emptyList()) == null)
+        assertTrue("无点的笔画 → null", InkEdit.bounds(listOf(st())) == null)
+        val b = InkEdit.bounds(listOf(st(Pt3(1.2f, 0.3f, 1f), Pt3(1.8f, 0.5f, 1f)), st(Pt3(1.4f, 0.2f, 1f))))!!
+        assertEquals(1.2f, b[0], 1e-6f); assertEquals(0.2f, b[1], 1e-6f)
+        assertEquals(1.8f, b[2], 1e-6f); assertEquals(0.5f, b[3], 1e-6f)
+    }
+
+    @Test
+    fun 整团平移撞边界只停不变形() {
+        val far = InkEdit.bounds(listOf(st(Pt3(1.2f, 0.3f, 1f), Pt3(1.8f, 0.5f, 1f))))
+        // 页边上限 2.0（xMargin=1）时想右移 0.5：位移夹成 0.2，两点间距仍是 0.6
+        val d = InkEdit.fitTranslation(0.5f, 0f, far, xMargin = 1f)
+        assertEquals("撞上界 → 位移夹成 0.2", 0.2f, d[0], 1e-6f)
+        val moved = InkEdit.translated(listOf(Pt3(1.2f, 0.3f, 1f), Pt3(1.8f, 0.5f, 1f)), d[0], d[1], 1f)
+        assertEquals("形状不变", 0.6f, moved[1].x - moved[0].x, 1e-6f)
+        // 反例存档：不夹位移直接平移就是那个 bug（间距 0.6 → 0.3）
+        val squashed = InkEdit.translated(listOf(Pt3(1.2f, 0.3f, 1f), Pt3(1.8f, 0.5f, 1f)), 0.5f, 0f, 1f)
+        assertEquals("反例：被压扁", 0.3f, squashed[1].x - squashed[0].x, 1e-6f)
+        // 区间够宽 → 原样通过
+        assertEquals(0.5f, InkEdit.fitTranslation(0.5f, 0f, far, xMargin = 8f)[0], 1e-6f)
+        // y 恒按页内 0…1 夹（页边只横向延伸）
+        assertEquals(0.5f, InkEdit.fitTranslation(0f, 0.8f, far, xMargin = 8f)[1], 1e-6f)
+        assertEquals(-0.3f, InkEdit.fitTranslation(0f, -0.9f, far, xMargin = 8f)[1], 1e-6f)
+    }
+
+    @Test
+    fun 同选注解时取交集且退化情形不夹() {
+        // 注解不能被拖出页：笔迹还能走很远，但注解 maxX 0.9 只准再走 0.1
+        val ink = InkEdit.bounds(listOf(st(Pt3(0.1f, 0.5f, 1f))))
+        val note = floatArrayOf(0.7f, 0.5f, 0.9f, 0.55f)
+        assertEquals(0.1f, InkEdit.fitTranslation(0.5f, 0f, ink, 8f, note)[0], 1e-6f)
+        // 只选中注解
+        assertEquals(-0.2f, InkEdit.fitTranslation(-0.5f, 0f, null, 8f, floatArrayOf(0.2f, 0.5f, 0.4f, 0.55f))[0], 1e-6f)
+        // 两类都没有 → 原样返回（调用方自己 guard）
+        assertEquals(0.3f, InkEdit.fitTranslation(0.3f, 0.3f, null, 8f)[0], 1e-6f)
+        // 选中集比可写区间还宽 → 不夹（保形优先，逐点 clamp 兜底）
+        val wide = InkEdit.bounds(listOf(st(Pt3(-3f, 0.3f, 1f), Pt3(3f, 0.5f, 1f))))
+        assertEquals(0.5f, InkEdit.fitTranslation(0.5f, 0f, wide, xMargin = 0f)[0], 1e-6f)
+    }
 }

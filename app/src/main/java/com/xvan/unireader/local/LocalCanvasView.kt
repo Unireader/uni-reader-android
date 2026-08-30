@@ -283,7 +283,9 @@ class LocalCanvasView @JvmOverloads constructor(
     override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {
         val q = store ?: return
         if (dx == 0f && dy == 0f) return
-        val xm = cmargin()   // 画板模式下页边笔迹可以在页外平移（队列线程用，先在主线程取好）
+        // 画板模式下页边笔迹可以在页外平移（队列线程用，先在主线程取好）。用**硬上限**而非当前那档
+        // 软边界：理由见 [cmarginMax]（拿旧档位卡着 = 撞边界被逐点 clamp 压扁）。
+        val xm = cmarginMax()
         // 笔迹这半边在主线程按内存里的 `strokes` 定格（`Stroke` 不可变，可以安全递给队列线程）；
         // 注解那半边的权威命中放进作业里读库（理由见上）。
         val hits = strokes.filter { st ->
@@ -298,19 +300,31 @@ class LocalCanvasView @JvmOverloads constructor(
                 }.onFailure { Log.e(TAG, "读注解 anchor 失败，本次只移笔迹", it) }
                     .getOrDefault(emptyList())
                 if (hits.isNotEmpty() || noteHits.isNotEmpty()) {
+                    // 🔴 **刚性平移**：位移先按命中集的包围盒整体夹住，再逐点平移（笔迹按页边区间、
+                    // 注解按页内 0…1，取交集）。直接把原始位移交给逐点 clamp 的 translated，
+                    // 越界的那一头会被摁在边界线上 = 笔迹被压扁（用户 2026-08-30 在平板上报的 bug）。
+                    // 注解的权威 anchor 只有读了库才知道，所以这一夹只能在作业线程里做。
+                    val nb = noteHits.fold(null as FloatArray?) { acc, n ->
+                        val b = floatArrayOf(n.x, n.y, n.x + n.w, n.y + n.h)
+                        if (acc == null) b
+                        else floatArrayOf(minOf(acc[0], b[0]), minOf(acc[1], b[1]),
+                                          maxOf(acc[2], b[2]), maxOf(acc[3], b[3]))
+                    }
+                    val d = InkEdit.fitTranslation(dx, dy, InkEdit.bounds(hits), xm, nb)
+                    val fdx = d[0]; val fdy = d[1]
                     runCatching {
                         // 整批一个事务：半途崩掉会留下「一半笔迹移了、一半没移」的画面（同擦除的理由，§9.3）
                         s.transaction {
                             // xMargin：画板模式下页边笔迹要能在页外平移（同 Mac 的 inkXRange）
                             for (h in hits) {
-                                s.updateStrokePoints(h.id, InkEdit.translated(h.pts, dx, dy, xm))
+                                s.updateStrokePoints(h.id, InkEdit.translated(h.pts, fdx, fdy, xm))
                             }
-                            for (n in noteHits) s.translateTextNote(n.id, dx, dy)
+                            for (n in noteHits) s.translateTextNote(n.id, fdx, fdy)
                         }
                         Log.i(
                             TAG,
                             "框选移动落库：笔迹 ${hits.size} 条，注解 ${noteHits.size} 条 " +
-                                "dx=${"%.4f".format(dx)} dy=${"%.4f".format(dy)}",
+                                "dx=${"%.4f".format(fdx)} dy=${"%.4f".format(fdy)}",
                         )
                     }.onFailure { Log.e(TAG, "框选移动写库失败，回退到库里的状态", it) }
                 }
@@ -340,7 +354,7 @@ class LocalCanvasView @JvmOverloads constructor(
         val hits = strokes.filter { st ->
             st.id.isNotEmpty() && st.page.toInt() == page &&
                 st.pts.any { InkEdit.pointInPolygon(it.x, it.y, poly) }
-        }.map { InkEdit.scaled(it, ax, ay, sx, sy, cmargin()) }
+        }.map { InkEdit.scaled(it, ax, ay, sx, sy, cmarginMax()) }   // 页边上限同移动，见 cmarginMax
         q.submit(
             "框选缩放落库",
             { s ->

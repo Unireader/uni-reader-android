@@ -440,6 +440,14 @@ open class PageCanvasView @JvmOverloads constructor(
 
     /** 每侧页边宽度（页宽的倍数），关着即 0 */
     protected fun cmargin(): Float = if (canvasOn) max(0f, canvasMargin) else 0f
+
+    /**
+     * **框选编辑**（移动/缩放落库）用的页边上限：画板开着就是硬上限 [CanvasMargin.LIMIT]，关着是 0。
+     * 不用 [cmargin]（当前那一档软边界）—— 软边界是「跟着笔迹长出来的」，提交后
+     * `refreshCanvasMargin()` 立刻会跳到够用的档位；提交那一刻还拿旧档位卡着，等于禁止把笔迹
+     * 挪进「还没长出来」的那片页边，撞上去就被逐点 clamp 压扁。同 Mac `lassoEditXRange`。
+     */
+    protected fun cmarginMax(): Float = if (canvasOn) CanvasMargin.LIMIT else 0f
     /** 可滚动内容总宽（页 + 两侧页边） */
     protected fun contentWidth(): Float = pw() * (1f + 2f * cmargin())
     /** 内容左缘视口 x（页边最左，画页边纸用）；窄于视口时整体居中 */
@@ -487,6 +495,23 @@ open class PageCanvasView @JvmOverloads constructor(
     protected fun growCanvas(nx: Float) {
         if (!canvasOn) return
         val want = CanvasMargin.marginFor(CanvasMargin.overflowOf(nx))
+        if (want > canvasMargin) setCanvas(true, want)
+    }
+
+    /**
+     * 真源回推的笔迹越出了当前页边 → 本地先放宽一档（**只增不减**，Mac 随后下发的值仍是权威）。
+     *
+     * 🔴 少了这一步就是「画板模式下框选把笔迹移到页边深处，平板上看到笔迹挤成一条」
+     * （用户 2026-08-30 报，模式2）：**这一侧的渲染是按当前页边 clamp 的**
+     * （`InkRenderer.buildPage` 的 `coerceIn(-xm, 1+xm)`，页外笔迹本来就该按页边裁），
+     * 于是数据即使是对的，只要本端的 `canvasMargin` 还停在旧档位，画出来就是被摁在边界上的一条竖线。
+     * Mac 那边确实会随后广播新的 `canvas` 档位，但那是**另一条独立广播**——到达有先后、
+     * 中间这一拍屏幕上就是错的；而且它一旦没发（例如 Mac 侧那个窗口的阅读区没在跟这条会话），
+     * 本端就永远卡在旧档位。本地自愈一档最省事，与落笔中的 [growCanvas] 是同一条「乐观跳档」惯例。
+     */
+    protected fun growCanvasFor(list: List<Stroke>) {
+        if (!canvasOn) return
+        val want = CanvasMargin.marginFor(CanvasMargin.overflow(list))
         if (want > canvasMargin) setCanvas(true, want)
     }
 
@@ -835,6 +860,7 @@ open class PageCanvasView @JvmOverloads constructor(
         strokes.clear()
         strokes.addAll(list)
         strokes.addAll(keep)   // 追加在末尾 = 画在最上层，本来就是最新的几笔
+        growCanvasFor(strokes)
         if (!activePen) clearCur()   // 正在写的这笔不清，避免闪断
         // 框选移动/缩放已提交、正等这条回来。分层记账（lassoMirrorSplit，模式2）：这条到了 = 笔迹层
         // 改画真源（该层命中下标随新数组作废），notes 层继续乐观预览直到它的镜像也到；两条都到齐才
@@ -1405,14 +1431,20 @@ open class PageCanvasView @JvmOverloads constructor(
      */
     protected fun lassoHitTest(page: Int, poly: FloatArray): LassoSelection? {
         if (poly.size < 6) return null
-        var bx0 = 1f; var by0 = 1f; var bx1 = 0f; var by1 = 0f
+        // 🔴 包围盒的初值必须取 ±∞（而不是页角 1/0）：画板模式下笔迹与框选路径可以整个落在页外
+        //（x 恒 > 1 或恒 < 0），按页角起算的话 `min(1f, 1.2f)` 还是 1 —— 框的那一条边就永远钉在
+        // 页边上，选中框比笔迹大出一整片页边（用户 2026-08-30 报「拖到拓展区域后拖动框变得很大，
+        // 从 pdf 边缘开始算左边框」）。Mac `InkEdit.bounds` 早就是这个口径，这份复刻当时没跟上。
+        var bx0 = Float.POSITIVE_INFINITY; var by0 = Float.POSITIVE_INFINITY
+        var bx1 = Float.NEGATIVE_INFINITY; var by1 = Float.NEGATIVE_INFINITY
         for (i in poly.indices step 2) {
             bx0 = min(bx0, poly[i]); bx1 = max(bx1, poly[i])
             by0 = min(by0, poly[i + 1]); by1 = max(by1, poly[i + 1])
         }
         val sIdx = ArrayList<Int>()
         val nIdx = ArrayList<Int>()
-        var lox = 1f; var loy = 1f; var hix = 0f; var hiy = 0f
+        var lox = Float.POSITIVE_INFINITY; var loy = Float.POSITIVE_INFINITY
+        var hix = Float.NEGATIVE_INFINITY; var hiy = Float.NEGATIVE_INFINITY
         for (i in strokes.indices) {
             val s = strokes[i]
             if (s.page.toInt() != page) continue
@@ -1474,15 +1506,16 @@ open class PageCanvasView @JvmOverloads constructor(
      * （镜像 Mac `lassoGhostPoint` 语义——数据不动，画的时候偏）。无变换返回 false（out 不动）。
      */
     protected fun lassoGhost(nx: Float, ny: Float, out: FloatArray): Boolean {
+        // x 用 [cmarginMax] 而不是当前档位：预览要与提交后的结果对得上（提交那边也是硬上限），
+        // 拿当前档位夹的话，往还没长出来的那片页边拖时预览会被摁在边界上。Mac 的 ghost 干脆不夹。
+        val m = cmarginMax()
         val sc = lassoScale
         if (sc != null && (sc[2] != 1f || sc[3] != 1f)) {
-            val m = cmargin()
             out[0] = (sc[0] + (nx - sc[0]) * sc[2]).coerceIn(-m, 1f + m)
             out[1] = (sc[1] + (ny - sc[1]) * sc[3]).coerceIn(0f, 1f)
             return true
         }
         if (lassoDx == 0f && lassoDy == 0f) return false
-        val m = cmargin()
         out[0] = (nx + lassoDx).coerceIn(-m, 1f + m)
         out[1] = (ny + lassoDy).coerceIn(0f, 1f)
         return true
