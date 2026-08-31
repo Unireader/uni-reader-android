@@ -215,11 +215,13 @@ object MirrorUi {
             },
             ok = { r ->
                 busy.dismiss()
-                val extra = if (r.orphansSkipped > 0) {
-                    // 静默丢行是绝对不行的：哪怕只有一条，也要让用户知道
-                    "\n有 ${r.orphansSkipped} 行被跳过：它们所属的文档已经不在了。"
-                } else {
-                    ""
+                // 静默丢行是绝对不行的：哪怕只有一条，也要让用户知道，还要说清怎么办
+                val extra = buildString {
+                    if (r.orphansSkipped > 0) append("\n有 ${r.orphansSkipped} 行被跳过：它们所属的文档已经不在了。")
+                    if (r.hashClashesSkipped > 0) {
+                        append("\n有 ${r.hashClashesSkipped} 个版本被跳过：对面已经有同一份文件了。")
+                        append("用「关联为同一文档」把它们合并。")
+                    }
                 }
                 a.showAlert(
                     "同步完成",
