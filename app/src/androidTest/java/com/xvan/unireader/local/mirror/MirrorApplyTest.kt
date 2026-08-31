@@ -1,0 +1,205 @@
+package com.xvan.unireader.local.mirror
+
+import androidx.test.platform.app.InstrumentationRegistry
+import com.xvan.unireader.local.Workspace
+import com.xvan.unireader.local.store.LibNote
+import com.xvan.unireader.local.store.LibraryStore
+import com.xvan.unireader.local.store.MirrorFp
+import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * **应用合并**（[MirrorApply]）。对应 Mac `spike/mirror-apply-test.swift`。
+ *
+ * 这是整个功能里唯一会大批量改用户数据的一段，所以重点验四件事：
+ * ① 合并后两端**白名单表逐行一致**（这是"同步成功"的唯一硬定义）；
+ * ② 合并前必须有备份，且备份是**合并前**的样子（删掉的东西救得回来）；
+ * ③ **半途而废能自愈**：只应用一侧，再跑一次 diff 只剩另一侧的活；
+ * ④ 外键孤儿（父文档被删、子行还要写）**不炸整次同步**，只丢那一行并报出来。
+ *
+ * 全程在 `cacheDir` 里做，不要任何存储权限。
+ */
+class MirrorApplyTest {
+
+    private val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+
+    private fun freshRoot(name: String): File =
+        File(ctx.cacheDir, "apply-$name").apply { deleteRecursively(); mkdirs() }
+
+    private fun note(id: String, doc: String, w: Int, updated: String) = LibNote(
+        id = id, documentId = doc, kind = 2, page = 86,
+        anchorX = 0.1, anchorY = 0.2, anchorW = 0.3, anchorH = 0.4,
+        payload = """{"w":$w}""".toByteArray(),
+        createdAt = "2026-08-30T10:00:00.000Z", updatedAt = updated,
+    )
+
+    private class Pair2(
+        val src: File, val store: LibraryStore,
+        val dst: File, val mirror: LibraryStore,
+        val docId: String, val ids: List<String>,
+    )
+
+    /** 造一对「源工作区 + 它的镜像」，源里先放 4 条笔迹 */
+    private fun makePair(root: File, name: String): Pair2 {
+        val ws = Workspace.create(root, name)
+        val rel = "${Workspace.PDFS_DIR}/a.pdf"
+        File(ws, rel).apply { parentFile?.mkdirs() }.writeBytes(ByteArray(512))
+        val store = LibraryStore.open(ws)
+        val docId = store.findOrCreate("h-$name", "高等数学", 100, rel, inWorkspace = true).id
+        val ids = (0 until 4).map { "$name-note-$it" }
+        for ((i, id) in ids.withIndex()) store.upsertNote(note(id, docId, i, "2026-08-30T10:00:00.000Z"))
+        val dst = File(root, "$name-镜像.unrd")
+        MirrorBuilder.create(
+            ws, store, dst, MirrorBuilder.Plan(setOf(docId)), "test-device",
+            { loc -> Workspace.resolvePdf(ws, loc) },
+        )
+        return Pair2(ws, store, dst, LibraryStore.open(dst), docId, ids)
+    }
+
+    private fun planOf(mirror: LibraryStore, source: LibraryStore): MirrorDiff.Plan =
+        MirrorDiff.compute(mirror.syncBase(), mirror.mirrorSnapshot(), source.mirrorSnapshot())
+
+    /** 两端白名单表逐行一致 —— 「同步成功」的唯一硬定义 */
+    private fun difference(a: LibraryStore, b: LibraryStore): String? {
+        val sa = a.mirrorSnapshot()
+        val sb = b.mirrorSnapshot()
+        for (spec in MirrorFp.specs) {
+            val fa = MirrorFp.fingerprints(sa[spec.table].orEmpty().values.toList(), spec)
+            val fb = MirrorFp.fingerprints(sb[spec.table].orEmpty().values.toList(), spec)
+            if (fa != fb) return "${spec.table} 不一致（各自 ${fa.size}/${fb.size} 行）"
+        }
+        return null
+    }
+
+    @Test
+    fun 双向合并后两端逐行一致且干跑归零() {
+        val root = freshRoot("A")
+        val p = makePair(root, "A")
+        val newId = "A-note-new"
+        // 镜像侧：改 n0、删 n2、加一条
+        p.mirror.upsertNote(note(p.ids[0], p.docId, 99, "2026-09-01T10:00:00.000Z"))
+        p.mirror.deleteNote(p.ids[2])
+        p.mirror.upsertNote(note(newId, p.docId, 7, "2026-09-01T10:00:00.000Z"))
+        // 两端都改 n1，源盘较新
+        p.mirror.upsertNote(note(p.ids[1], p.docId, 12, "2026-09-01T08:00:00.000Z"))
+        p.store.upsertNote(note(p.ids[1], p.docId, 11, "2026-09-02T09:00:00.000Z"))
+        // 源盘侧：改 n3
+        p.store.upsertNote(note(p.ids[3], p.docId, 33, "2026-09-01T09:00:00.000Z"))
+
+        val plan = planOf(p.mirror, p.store)
+        assertEquals(5, plan.changes.size)
+        assertEquals(1, plan.conflicts.size)
+
+        val steps = ArrayList<String>()
+        val r = MirrorApply.apply(plan, p.dst, p.mirror, p.src, p.store) { s, _ ->
+            if (steps.lastOrNull() != s) steps.add(s)
+        }
+        assertEquals(2, r.sourceUpserts)
+        assertEquals(1, r.sourceDeletes)
+        assertEquals(2, r.mirrorUpserts)
+        assertEquals(0, r.orphansSkipped)
+        // 🔴 没有备份就动手 = 把最坏情况从回滚变成没得救
+        assertEquals("正在备份硬盘上的资料库…", steps.firstOrNull())
+        assertEquals("完成", steps.lastOrNull())
+
+        assertNull("合并后两端必须逐行一致", difference(p.mirror, p.store))
+        assertTrue("再跑一次干跑应当无事可做", planOf(p.mirror, p.store).isEmpty)
+
+        val sn = p.store.notes(p.docId).associate { it.id to String(it.payload) }
+        val mn = p.mirror.notes(p.docId).associate { it.id to String(it.payload) }
+        assertNull("镜像删掉的那条源盘也没了", sn[p.ids[2]])
+        assertEquals("""{"w":99}""", sn[p.ids[0]])
+        assertNotNull("镜像新增的那条推到了源盘", sn[newId])
+        assertEquals("源盘改的那条拉进了镜像", """{"w":33}""", mn[p.ids[3]])
+        assertEquals("冲突那条两端都是较新的源盘版本", """{"w":11}""", mn[p.ids[1]])
+
+        // 记账
+        assertNotNull(p.mirror.meta(MirrorStore.META_MIRROR_LAST_SYNCED_AT))
+        assertNotNull(
+            MirrorStore.decodeCheckouts(p.store.meta(MirrorStore.META_CHECKOUTS)).first().lastSyncedAt,
+        )
+
+        // 备份是**合并前**的样子：被删那条还在里面
+        val backup = r.backup!!
+        assertTrue(backup.isFile)
+        com.xvan.unireader.local.store.Db.open(backup, readOnly = true).use { b ->
+            val hit = b.query("SELECT id FROM note WHERE id=?", arrayOf(p.ids[2])) { it.getString(0) }
+            assertEquals("被删那条在备份里救得回来", 1, hit.size)
+        }
+        // 只留最近 3 份
+        repeat(4) { MirrorApply.backupSource(p.store, p.src) }
+        val backups = File(p.src, "UniReader/backup").listFiles()?.filter { it.name.endsWith(".sqlite") }
+        assertEquals(3, backups?.size)
+
+        p.store.close(); p.mirror.close()
+    }
+
+    @Test
+    fun 半途而废能自愈() {
+        val root = freshRoot("B")
+        val p = makePair(root, "B")
+        p.mirror.upsertNote(note(p.ids[0], p.docId, 98, "2026-09-01T10:00:00.000Z"))
+        p.store.upsertNote(note(p.ids[1], p.docId, 97, "2026-09-01T10:00:00.000Z"))
+        val plan = planOf(p.mirror, p.store)
+        assertEquals(2, plan.changes.size)
+
+        // 只把源盘那一侧写下去（模拟「写完源盘就被拔盘」，基线**没有**重算）
+        val half = MirrorApply.Result()
+        p.store.withMirrorDb { db ->
+            db.transaction {
+                MirrorApply.write(db, plan.changesTo(MirrorDiff.Side.SOURCE), half, MirrorDiff.Side.SOURCE)
+            }
+        }
+        val after = planOf(p.mirror, p.store)
+        // 🔴 已落到源盘的那条被判成「两端改成一样了」→ 无操作；不需要任何补偿逻辑
+        assertEquals(1, after.changes.size)
+        assertEquals(MirrorDiff.Side.MIRROR, after.changes[0].side)
+        assertEquals(p.ids[1], after.changes[0].rowId)
+
+        MirrorApply.apply(after, p.dst, p.mirror, p.src, p.store)
+        assertNull("补完之后两端仍然一致", difference(p.mirror, p.store))
+        p.store.close(); p.mirror.close()
+    }
+
+    @Test
+    fun 外键孤儿不炸整次同步() {
+        val root = freshRoot("C")
+        val p = makePair(root, "C")
+        // 源盘上把整本书删了；镜像上同时给它写了新笔迹
+        // 安卓端没有 deleteDocument 的 DAO（生产代码里删书走别的路），测试里直接下 SQL——
+        // 外键 ON DELETE CASCADE 会连带删掉它的 variant/note
+        p.store.withMirrorDb { it.exec("DELETE FROM document WHERE id=?", arrayOf<Any?>(p.docId)) }
+        p.mirror.upsertNote(note("C-orphan", p.docId, 1, "2026-09-01T10:00:00.000Z"))
+        val plan = planOf(p.mirror, p.store)
+        assertTrue(plan.changes.any { it.rowId == "C-orphan" && it.side == MirrorDiff.Side.SOURCE })
+
+        val r = MirrorApply.apply(plan, p.dst, p.mirror, p.src, p.store)
+        assertTrue("父文档已不在 → 丢掉那行并计数，而不是让外键把整次同步炸掉", r.orphansSkipped >= 1)
+        assertNull(difference(p.mirror, p.store))
+        p.store.close(); p.mirror.close()
+    }
+
+    @Test
+    fun 文件补齐把镜像新加的书拷回源盘且幂等() {
+        val root = freshRoot("D")
+        val p = makePair(root, "D")
+        val rel = "${Workspace.PDFS_DIR}/new.pdf"
+        File(p.dst, rel).apply { parentFile?.mkdirs() }.writeBytes(ByteArray(777))
+        val newDoc = p.mirror.findOrCreate("h-new", "新加的书", 5, rel, inWorkspace = true).id
+
+        val r = MirrorApply.apply(planOf(p.mirror, p.store), p.dst, p.mirror, p.src, p.store)
+        assertEquals(1, r.filesCopiedToSource)
+        assertTrue(
+            "源盘上那本新书能解析到真实文件",
+            p.store.locations(newDoc).any { it.inWorkspace && File(p.src, it.path).isFile },
+        )
+        assertNull(difference(p.mirror, p.store))
+        // 🔴 补齐是幂等的
+        assertEquals(0, MirrorApply.fillFilesToSource(p.dst, p.mirror, p.src, p.store))
+        p.store.close(); p.mirror.close()
+    }
+}

@@ -138,7 +138,7 @@ object MirrorUi {
                 busy.dismiss()
                 when (p) {
                     is Preview.SourceMissing -> showNotConnected(a, p.hint)
-                    is Preview.Ready -> showReport(a, p.plan, p.titles)
+                    is Preview.Ready -> showReport(a, mirror, p)
                 }
             },
             fail = { e ->
@@ -172,19 +172,67 @@ object MirrorUi {
             .show()
     }
 
-    private fun showReport(a: Activity, plan: MirrorDiff.Plan, titles: Map<String, String>) {
+    private fun showReport(a: Activity, mirror: File, p: Preview.Ready) {
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-        for (line in MirrorReport.summary(plan, titles)) {
+        for (line in MirrorReport.summary(p.plan, p.titles)) {
             box.addView(Ui.sectionTitle(a, line.text))
             for (d in line.detail) box.addView(Ui.body(a, "· $d"))
         }
-        Sheet(a)
+        val sheet = Sheet(a)
             .title("同步预览")
-            .subtitle(MirrorReport.headline(plan))
+            .subtitle(MirrorReport.headline(p.plan))
             .content(box)
             .content(Ui.tip(a, "以上只是预演，什么都没有写入"))
-            .action("知道了", primary = true)
+            .action("知道了")
+        // 这一步会大批量改用户数据 —— 预览页不直接执行，再点一次才算数
+        if (!p.plan.isEmpty) sheet.action("同步…", primary = true) { confirmApply(a, mirror, p) }
+        sheet.show()
+    }
+
+    private fun confirmApply(a: Activity, mirror: File, p: Preview.Ready) {
+        Sheet(a)
+            .title("要应用这次合并吗")
+            .subtitle("会先把硬盘上的资料库整份备份出来，保留最近 3 份")
+            .action("取消")
+            .action("同步", primary = true) { doApply(a, mirror, p) }
             .show()
+    }
+
+    /**
+     * 用的是**干跑给用户看的那一份 Plan**，不重算 —— 重算就意味着「用户看到的」和「实际做的」
+     * 可能不是同一件事，而这一步会大批量改用户数据。
+     */
+    private fun doApply(a: Activity, mirror: File, p: Preview.Ready) {
+        val busy = Sheet(a).busy("正在同步…")
+        a.runInBackground(
+            what = "应用合并 ${mirror.name}",
+            work = {
+                LibraryStore.open(mirror).use { mine ->
+                    LibraryStore.open(p.source).use { src ->
+                        MirrorApply.apply(p.plan, mirror, mine, p.source, src) { s, _ -> Log.i(TAG, s) }
+                    }
+                }
+            },
+            ok = { r ->
+                busy.dismiss()
+                val extra = if (r.orphansSkipped > 0) {
+                    // 静默丢行是绝对不行的：哪怕只有一条，也要让用户知道
+                    "\n有 ${r.orphansSkipped} 行被跳过：它们所属的文档已经不在了。"
+                } else {
+                    ""
+                }
+                a.showAlert(
+                    "同步完成",
+                    "硬盘 +${r.sourceUpserts}/-${r.sourceDeletes}，本机 +${r.mirrorUpserts}/-${r.mirrorDeletes}。" +
+                        "\n备份：${r.backup?.name ?: "—"}$extra",
+                )
+            },
+            fail = { e ->
+                busy.dismiss()
+                Log.e(TAG, "应用合并失败", e)
+                a.showAlert("同步失败", "${e.message ?: e}\n源库已回滚，硬盘上的备份还在。")
+            },
+        )
     }
 
     /**
