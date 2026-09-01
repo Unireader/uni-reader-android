@@ -26,7 +26,8 @@ object MirrorReport {
     }
 
     fun tableName(table: String): String = when (table) {
-        "document" -> "文档信息"
+        // 「文档信息」是表名漏到界面上。这张表存的就是书名、分组、排序这些——说「书的信息」谁都懂
+        "document" -> "书的信息"
         "variant" -> "文档版本"
         "ink_layer" -> "笔迹图层"
         "scratch_pad" -> "草稿纸"
@@ -48,7 +49,10 @@ object MirrorReport {
     fun summary(plan: MirrorDiff.Plan, titles: Map<String, String>): List<Line> {
         val out = ArrayList<Line>()
         for ((side, heading) in listOf(MirrorDiff.Side.SOURCE to "写入硬盘", MirrorDiff.Side.MIRROR to "拉回本机")) {
-            val list = plan.changesTo(side)
+            // 只差阅读进度的那些**不进明细**：底下「阅读进度取最近读的那次」已经把它说完整了，
+            // 再以「修改书的信息 1」的面目出现一次，用户只会问「这是什么意思」。
+            // ⚠️ 只是不报，plan.changes 一条不少 —— MirrorApply 照常要写下去。
+            val list = plan.changesTo(side).filterNot { isProgressOnly(it, plan) }
             if (list.isEmpty()) continue
             // 按「类别 + 增/删/改」聚合。逐条列出来的话，一次正常同步就是几百行，等于没给用户看。
             val buckets = LinkedHashMap<String, Int>()
@@ -59,12 +63,14 @@ object MirrorReport {
             val parts = buckets.entries.sortedBy { it.key }.map { "${it.key} ${it.value}" }
             out.add(Line("$heading：" + parts.joinToString("、"), bookBreakdown(list, titles)))
         }
+        // 「另有」只在**真的还有别的**时候才说得通
+        fun also(s: String) = if (out.isEmpty()) s else "另有$s"
         if (plan.progressMerges.isNotEmpty()) {
-            out.add(Line("另有 ${plan.progressMerges.size} 篇文档两端都读过，阅读进度取最近读的那次"))
+            out.add(Line(also("${plan.progressMerges.size} 篇文档两端都读过，阅读进度取最近读的那次")))
         }
         // 「上次打开」是纯记账（进度那条已经涵盖用户真正关心的），只在没有进度合并时单独说一句
         if (plan.lastOpenedMerges.isNotEmpty() && plan.progressMerges.isEmpty()) {
-            out.add(Line("另有 ${plan.lastOpenedMerges.size} 篇文档的「上次打开」两端取较晚的那个"))
+            out.add(Line(also("${plan.lastOpenedMerges.size} 篇文档的「上次打开」两端取较晚的那个")))
         }
         if (plan.conflicts.isNotEmpty()) {
             out.add(Line("冲突 ${plan.conflicts.size} 条", conflictLines(plan, titles)))
@@ -134,15 +140,22 @@ object MirrorReport {
     fun bookId(c: MirrorDiff.Change): String? =
         c.docId ?: if (c.table == "document") c.rowId else null
 
+    /** 这条改动是不是「只差读到哪儿」。**只影响报告，不影响要不要写** */
+    fun isProgressOnly(c: MirrorDiff.Change, plan: MirrorDiff.Plan): Boolean =
+        c.table == "document" && c.rowId in plan.progressMerges
+
     /** 一行式结论（顶栏/按钮旁用） */
     fun headline(plan: MirrorDiff.Plan): String {
         if (plan.isEmpty) return "两端一致"
-        val toSource = plan.changesTo(MirrorDiff.Side.SOURCE).size
-        val toMirror = plan.changesTo(MirrorDiff.Side.MIRROR).size
+        // 数的口径与明细一致——明细里不显示的，这里也不该计数，
+        // 否则就是「顶上写着 1 条，底下找不到是哪条」
+        val toSource = plan.changesTo(MirrorDiff.Side.SOURCE).count { !isProgressOnly(it, plan) }
+        val toMirror = plan.changesTo(MirrorDiff.Side.MIRROR).count { !isProgressOnly(it, plan) }
         val bits = ArrayList<String>()
         if (toSource > 0) bits.add("写入硬盘 $toSource")
         if (toMirror > 0) bits.add("拉回本机 $toMirror")
         if (plan.conflicts.isNotEmpty()) bits.add("冲突 ${plan.conflicts.size}")
-        return if (bits.isEmpty()) "只更新「上次打开」" else bits.joinToString(" · ")
+        if (bits.isNotEmpty()) return bits.joinToString(" · ")
+        return if (plan.progressMerges.isEmpty()) "只更新「上次打开」" else "只更新阅读进度"
     }
 }

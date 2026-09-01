@@ -173,6 +173,17 @@ class MirrorDiffTest {
             theirs = mapOf("document" to mapOf("D1" to mine)),
         )
         assertEquals("硬盘读得更晚 → 拉回本机", MirrorDiff.Side.MIRROR, back.changes[0].side)
+
+        // 报告：只差进度的那条**不再以「修改书的信息」的面目又数一遍**
+        val lines = MirrorReport.summary(back, mapOf("D1" to "王道 2027 计算机组成原理"))
+        assertEquals("只差进度 → 报告就一行：${lines.map { it.text }}", 1, lines.size)
+        assertEquals("1 篇文档两端都读过，阅读进度取最近读的那次", lines[0].text)
+        assertFalse(
+            "不再出现「拉回本机：修改书的信息 1」这种同一件事数两遍",
+            lines.any { it.text.contains("书的信息") || it.text.contains("拉回本机") },
+        )
+        assertEquals("只更新阅读进度", MirrorReport.headline(back))
+        assertEquals("⚠️ 只是不报，plan 里那条改动一条不少", 1, back.changes.size)
         assertEquals(87L, back.changes[0].row?.get("read_page"))
     }
 
@@ -204,17 +215,17 @@ class MirrorDiffTest {
         )
 
         // 🔴 document 表自己那行**没有 document_id 列** → 从前 docId 是 null，被算进
-        //    「工作区级设置」，冲突行还拼出「的一条文档信息：…」这种断头句
+        //    「工作区级设置」，冲突行还拼出「的一条书的信息：…」这种断头句
         val docPlan = MirrorDiff.compute(
             base = docBase(),
             mine = mapOf("document" to mapOf("D1" to doc("本机改的名", "2026-09-01T08:00:00.000Z"))),
             theirs = mapOf("document" to mapOf("D1" to doc("硬盘改的名"))),
         )
         val docLines = MirrorReport.summary(docPlan, titles)
-        assertEquals("《高等数学》：文档信息 改 1", docLines[0].detail.firstOrNull())
+        assertEquals("《高等数学》：书的信息 改 1", docLines[0].detail.firstOrNull())
         assertFalse("不再被当成工作区级设置", docLines.any { l -> l.detail.any { it.contains("工作区") } })
         val cf = docLines.first { it.text.contains("冲突") }.detail.first()
-        assertTrue("冲突行要带上书名：$cf", cf.startsWith("《高等数学》的一条文档信息："))
+        assertTrue("冲突行要带上书名：$cf", cf.startsWith("《高等数学》的一条书的信息："))
 
         // 既没书名也没页码时（meta 就是这样）不许拼出「的一条…」
         val metaSpec = MirrorFp.spec("meta")!!
