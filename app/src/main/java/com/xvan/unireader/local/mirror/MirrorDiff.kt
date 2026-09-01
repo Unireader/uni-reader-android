@@ -77,6 +77,11 @@ object MirrorDiff {
          * 放在 Plan 里而不是留给 M5 自己记：一条不在主流程里的规则，交代在文档里迟早被漏掉。
          */
         val lastOpenedMerges: Map<String, String>,
+        /**
+         * 「两端都翻过、但**只差读到哪儿**」的文档 id。照常写（按 `last_opened_at` 取最近读过的
+         * 那次），但**不进 [conflicts]** —— 那不是要用户裁决的事，报出去只是噪音。
+         */
+        val progressMerges: Set<String> = emptySet(),
     ) {
         val isEmpty: Boolean get() = changes.isEmpty() && lastOpenedMerges.isEmpty()
 
@@ -107,6 +112,7 @@ object MirrorDiff {
         val changes = ArrayList<Change>()
         val conflicts = ArrayList<Conflict>()
         val lastOpened = HashMap<String, String>()
+        val progressMerges = HashSet<String>()
 
         for (spec in MirrorFp.specs) {
             val t = spec.table
@@ -121,7 +127,7 @@ object MirrorDiff {
                     spec, id,
                     state(baseFps[id], mineFps[id]), state(baseFps[id], theirsFps[id]),
                     mineFps[id], theirsFps[id], mineRows[id], theirsRows[id],
-                    changes, conflicts,
+                    changes, conflicts, progressMerges,
                 )
             }
 
@@ -135,7 +141,7 @@ object MirrorDiff {
                 }
             }
         }
-        return Plan(changes, conflicts, lastOpened)
+        return Plan(changes, conflicts, lastOpened, progressMerges)
     }
 
     private fun apply(
@@ -149,6 +155,7 @@ object MirrorDiff {
         theirsRow: Map<String, Any?>?,
         changes: MutableList<Change>,
         conflicts: MutableList<Conflict>,
+        progressMerges: MutableSet<String>,
     ) {
         val t = spec.table
         // 删除那条没有 row，所以标签信息要在这里、趁两侧的行还在手上时取下来
@@ -202,7 +209,7 @@ object MirrorDiff {
                 if (mineFp == theirsFp) return // 两边改成一样了，无操作
                 val kind =
                     if (m == RowState.ADDED) ConflictKind.BOTH_ADDED else ConflictKind.BOTH_MODIFIED
-                resolveBoth(spec, id, kind, mineRow, theirsRow, ::mk, changes, conflicts)
+                resolveBoth(spec, id, kind, mineRow, theirsRow, ::mk, changes, conflicts, progressMerges)
             }
 
             // 剩下的组合在数学上到不了（一边 ABSENT 意味着 base 里没有，另一边就不可能是
@@ -221,7 +228,29 @@ object MirrorDiff {
         mk: (Op, Side, Reason, Map<String, Any?>?) -> Change,
         changes: MutableList<Change>,
         conflicts: MutableList<Conflict>,
+        progressMerges: MutableSet<String>,
     ) {
+        // 🔴 **只差「读到哪儿」不算冲突**：两端各翻过同一本书就会走到这里，但那是正常使用。
+        // 照常按 lww 选一边写，只是**不报成冲突** —— 报了用户既判断不了也不该判断。
+        if (spec.table == "document" && mineRow != null && theirsRow != null &&
+            MirrorFp.fingerprint(mineRow, spec, MirrorFp.progressColumns) ==
+            MirrorFp.fingerprint(theirsRow, spec, MirrorFp.progressColumns)
+        ) {
+            val stampCol = spec.lww ?: ""
+            val a = mineRow[stampCol] as? String ?: ""
+            val b = theirsRow[stampCol] as? String ?: ""
+            val keepMine = a > b
+            changes.add(
+                mk(
+                    Op.UPSERT,
+                    if (keepMine) Side.SOURCE else Side.MIRROR,
+                    Reason.CONFLICT_NEWER,
+                    if (keepMine) mineRow else theirsRow,
+                ),
+            )
+            progressMerges.add(id)
+            return
+        }
         val col = spec.lww
         if (col != null) {
             // 时间戳是定宽 UTC（`yyyy-MM-ddTHH:mm:ss.SSSZ`，两端同一格式，见 Iso/ISO），

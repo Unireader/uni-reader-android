@@ -28,9 +28,13 @@ class MirrorDiffTest {
         "created_at" to "2026-08-30T10:00:00.000Z", "updated_at" to updated,
     )
 
-    private fun doc(title: String, lastOpened: String = "2026-08-30T10:00:00.000Z"): Map<String, Any?> = mapOf(
+    private fun doc(
+        title: String,
+        lastOpened: String = "2026-08-30T10:00:00.000Z",
+        page: Long = 0L,
+    ): Map<String, Any?> = mapOf(
         "id" to "D1", "title" to title, "page_count" to 10L, "added_at" to "2026-08-30T09:00:00.000Z",
-        "last_opened_at" to lastOpened, "sort_order" to 0L, "read_page" to 0L, "read_frac" to 0.0,
+        "last_opened_at" to lastOpened, "sort_order" to 0L, "read_page" to page, "read_frac" to 0.0,
         "read_zoom" to 1.0, "read_hfrac" to 0.0, "group_name" to "", "canvas_mode" to 0L,
     )
 
@@ -129,18 +133,47 @@ class MirrorDiffTest {
         assertEquals(MirrorDiff.ConflictKind.BOTH_ADDED, cell(null, v3, v2).conflicts[0].kind)
     }
 
+    /** base 恒取「原名 + 第 0 页」那份 */
+    private fun docBase() = mapOf("document" to mapOf("D1" to MirrorFp.fingerprint(doc("原名"), docSpec)))
+
     @Test
-    fun 没有时间戳列的表冲突保留源盘并报告() {
-        val base = doc("原名")
+    fun document两端都改按最后打开时间裁决() {
+        // 🔴 这张表没有 updated_at，原先 lww=null ⇒ 一律「保留硬盘那份」，
+        //    于是**离线副本上的阅读进度被静默丢弃**。改用 last_opened_at。
         val plan = MirrorDiff.compute(
-            base = mapOf("document" to mapOf("D1" to MirrorFp.fingerprint(base, docSpec))),
-            mine = mapOf("document" to mapOf("D1" to doc("本机改的名"))),
-            theirs = mapOf("document" to mapOf("D1" to doc("硬盘改的名"))),
+            base = docBase(),
+            mine = mapOf("document" to mapOf("D1" to doc("本机改的名", "2026-09-01T08:00:00.000Z"))),
+            theirs = mapOf("document" to mapOf("D1" to doc("硬盘改的名", "2026-08-31T20:00:00.000Z"))),
         )
         assertEquals(1, plan.conflicts.size)
-        assertEquals(MirrorDiff.Side.SOURCE, plan.conflicts[0].kept)
-        assertEquals(MirrorDiff.Reason.CONFLICT_KEPT_SOURCE, plan.changes[0].reason)
-        assertTrue("冲突说明要讲清为什么这么选", plan.conflicts[0].note.contains("没有时间戳"))
+        assertEquals(MirrorDiff.Side.MIRROR, plan.conflicts[0].kept)
+        assertEquals(MirrorDiff.Reason.CONFLICT_NEWER, plan.changes[0].reason)
+        assertTrue("冲突说明点名保留了哪一份", plan.conflicts[0].note.contains("2026-09-01T08:00:00.000Z"))
+    }
+
+    @Test
+    fun 只差阅读进度不算冲突() {
+        val mine = doc("原名", "2026-09-01T08:00:00.000Z", page = 87L)
+        val theirs = doc("原名", "2026-08-31T20:00:00.000Z", page = 12L)
+        val plan = MirrorDiff.compute(
+            base = docBase(),
+            mine = mapOf("document" to mapOf("D1" to mine)),
+            theirs = mapOf("document" to mapOf("D1" to theirs)),
+        )
+        // 两端各翻过同一本书是正常使用，报成冲突只是噪音（用户「几乎什么都没动」却收到冲突）
+        assertTrue("只差阅读进度 → 一条冲突都不报", plan.conflicts.isEmpty())
+        assertEquals(setOf("D1"), plan.progressMerges)
+        assertEquals(1, plan.changes.size)
+        assertEquals("本机读得更晚 → 推给硬盘", MirrorDiff.Side.SOURCE, plan.changes[0].side)
+        assertEquals(87L, plan.changes[0].row?.get("read_page"))
+
+        val back = MirrorDiff.compute(
+            base = docBase(),
+            mine = mapOf("document" to mapOf("D1" to theirs)),
+            theirs = mapOf("document" to mapOf("D1" to mine)),
+        )
+        assertEquals("硬盘读得更晚 → 拉回本机", MirrorDiff.Side.MIRROR, back.changes[0].side)
+        assertEquals(87L, back.changes[0].row?.get("read_page"))
     }
 
     @Test
@@ -169,6 +202,33 @@ class MirrorDiffTest {
             "报告里不该出现行 id",
             lines.any { l -> l.text.contains("N") && l.text.contains("-") || l.detail.any { it.contains("\"N\"") } },
         )
+
+        // 🔴 document 表自己那行**没有 document_id 列** → 从前 docId 是 null，被算进
+        //    「工作区级设置」，冲突行还拼出「的一条文档信息：…」这种断头句
+        val docPlan = MirrorDiff.compute(
+            base = docBase(),
+            mine = mapOf("document" to mapOf("D1" to doc("本机改的名", "2026-09-01T08:00:00.000Z"))),
+            theirs = mapOf("document" to mapOf("D1" to doc("硬盘改的名"))),
+        )
+        val docLines = MirrorReport.summary(docPlan, titles)
+        assertEquals("《高等数学》：文档信息 改 1", docLines[0].detail.firstOrNull())
+        assertFalse("不再被当成工作区级设置", docLines.any { l -> l.detail.any { it.contains("工作区") } })
+        val cf = docLines.first { it.text.contains("冲突") }.detail.first()
+        assertTrue("冲突行要带上书名：$cf", cf.startsWith("《高等数学》的一条文档信息："))
+
+        // 既没书名也没页码时（meta 就是这样）不许拼出「的一条…」
+        val metaSpec = MirrorFp.spec("meta")!!
+        fun metaRow(v: String) = mapOf<String, Any?>("key" to "workspace_name", "value" to v)
+        val metaPlan = MirrorDiff.compute(
+            base = mapOf("meta" to mapOf("workspace_name" to MirrorFp.fingerprint(metaRow("原名"), metaSpec))),
+            mine = mapOf("meta" to mapOf("workspace_name" to metaRow("本机改的"))),
+            theirs = mapOf("meta" to mapOf("workspace_name" to metaRow("硬盘改的"))),
+        )
+        val metaLines = MirrorReport.summary(metaPlan, emptyMap())
+        val ml = metaLines.first { it.text.contains("冲突") }.detail.first()
+        assertFalse("查不到书名/页码就别硬拼断头句：$ml", ml.startsWith("的"))
+        assertTrue("直接说是哪张表的事：$ml", ml.startsWith("工作区设置："))
+        assertEquals("工作区设置 1 项", metaLines[0].detail.firstOrNull())
 
         // 删除也要能说出是哪本书的什么（删除那条 row 是 null，靠 Change 上事先取下的 docId/kind）
         val deleted = cell(note(1, "t", page = 86), null, note(1, "t", page = 86))

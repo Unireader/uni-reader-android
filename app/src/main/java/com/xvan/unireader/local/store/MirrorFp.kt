@@ -77,6 +77,11 @@ object MirrorFp {
                 // ⚠️ `last_opened_at` **刻意不在这里**（方案 §4）：进了指纹的话，「在镜像上翻开过这本书」
                 // 就会把整行标记成「改过」，干跑预览里满屏都是无意义条目。合并时无条件取 max 即可。
             ),
+            // 🔴 用 `last_opened_at` 当 LWW 依据（2026-09-01，与 Mac 同改）。这张表**没有**
+            // `updated_at`，原先 lww=null ⇒ 落到「没有时间戳可比，保留硬盘那份」——于是
+            // **在离线副本上读到哪儿会被静默丢弃**。`last_opened_at` 是 NOT NULL 一定有值，
+            // 语义也正好：谁最后打开过这本书，谁那份进度就是更近的那次阅读的结果。
+            lww = "last_opened_at",
         ),
         TableSpec(
             "variant", "id",
@@ -224,6 +229,18 @@ object MirrorFp {
     /** 一行（列名 → 原始值）按 spec 算指纹 */
     fun fingerprint(row: Map<String, Any?>, spec: TableSpec): String =
         fingerprint(spec.columns.map { coerce(row[it.name], it.type) })
+
+    /**
+     * `document` 里纯粹表示「读到哪儿」的列。
+     *
+     * 两端各翻过同一本书这几列就都会变 —— 那是**正常使用**，不是冲突。按 `last_opened_at`
+     * 取最近读过的那次即可，不该弹到用户面前让他裁决。除这几列之外还有差异，才是真冲突。
+     */
+    val progressColumns: Set<String> = setOf("read_page", "read_frac", "read_zoom", "read_hfrac")
+
+    /** 忽略掉某些列之后这一行的指纹，用来判断「两端的差异是不是只在那几列上」 */
+    fun fingerprint(row: Map<String, Any?>, spec: TableSpec, ignoring: Set<String>): String =
+        fingerprint(spec.columns.filter { it.name !in ignoring }.map { coerce(row[it.name], it.type) })
 
     /** 整表：`row_id → fp`。[rows] 用 `SELECT *` 的结果即可（列多了不影响，按 spec 取） */
     fun fingerprints(rows: List<Map<String, Any?>>, spec: TableSpec): Map<String, String> {

@@ -59,7 +59,11 @@ object MirrorReport {
             val parts = buckets.entries.sortedBy { it.key }.map { "${it.key} ${it.value}" }
             out.add(Line("$heading：" + parts.joinToString("、"), bookBreakdown(list, titles)))
         }
-        if (plan.lastOpenedMerges.isNotEmpty()) {
+        if (plan.progressMerges.isNotEmpty()) {
+            out.add(Line("另有 ${plan.progressMerges.size} 篇文档两端都读过，阅读进度取最近读的那次"))
+        }
+        // 「上次打开」是纯记账（进度那条已经涵盖用户真正关心的），只在没有进度合并时单独说一句
+        if (plan.lastOpenedMerges.isNotEmpty() && plan.progressMerges.isEmpty()) {
             out.add(Line("另有 ${plan.lastOpenedMerges.size} 篇文档的「上次打开」两端取较晚的那个"))
         }
         if (plan.conflicts.isNotEmpty()) {
@@ -73,10 +77,13 @@ object MirrorReport {
     fun bookBreakdown(list: List<MirrorDiff.Change>, titles: Map<String, String>): List<String> {
         class Tally { var add = 0; var del = 0; var mod = 0 }
         val byBook = LinkedHashMap<String, LinkedHashMap<String, Tally>>()
-        var loose = 0
+        val loose = LinkedHashMap<String, Int>()
         for (c in list) {
-            val doc = c.docId
-            if (doc == null) { loose++; continue }
+            val doc = bookId(c)
+            if (doc == null) {
+                loose[tableName(c.table)] = (loose[tableName(c.table)] ?: 0) + 1
+                continue
+            }
             val cats = byBook.getOrPut(doc) { LinkedHashMap() }
             val t = cats.getOrPut(categoryName(c)) { Tally() }
             when (verbOf(c.reason)) {
@@ -96,7 +103,8 @@ object MirrorReport {
             }
             "$name：${parts.joinToString("，")}"
         }.sorted().toMutableList()
-        if (loose > 0) out.add("工作区级设置 $loose 项")
+        // 不属于任何一本书的（`meta` 这类）按表名说，别一律扣上「工作区级设置」的帽子
+        out += loose.entries.sortedBy { it.key }.map { (name, n) -> "$name $n 项" }
         return out
     }
 
@@ -107,11 +115,24 @@ object MirrorReport {
         return plan.conflicts.map { k ->
             val c = label["${k.table}/${k.rowId}"]
             val what = c?.let { categoryName(it) } ?: tableName(k.table)
-            val book = c?.docId?.let { titles[it] }?.let { "《$it》" } ?: ""
+            // `document` 行的书名要用它自己的主键去查（同 [bookId]）；查不到就别硬拼
+            // ——原先这里会拼出「的一条文档信息：…」这种断头句。
+            val docId = c?.let { bookId(it) } ?: if (k.table == "document") k.rowId else null
+            val book = docId?.let { titles[it] }?.let { "《$it》" } ?: ""
             val page = c?.page?.let { "第 ${it + 1} 页" } ?: ""
-            "${book}${page}的一条${what}：${k.note}"
+            val where = book + page
+            if (where.isEmpty()) "${what}：${k.note}" else "${where}的一条${what}：${k.note}"
         }.sorted()
     }
+
+    /**
+     * 这条改动属于哪本书。
+     *
+     * 🔴 `document` 表自己那一行**没有 `document_id` 列**，[MirrorDiff.Change.docId] 因此是 null ——
+     * 直接拿它归组会把「改了某本书的信息」算成「工作区级设置」。那一行的主键本身就是文档 id。
+     */
+    fun bookId(c: MirrorDiff.Change): String? =
+        c.docId ?: if (c.table == "document") c.rowId else null
 
     /** 一行式结论（顶栏/按钮旁用） */
     fun headline(plan: MirrorDiff.Plan): String {
