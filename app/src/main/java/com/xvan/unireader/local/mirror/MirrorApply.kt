@@ -59,7 +59,16 @@ object MirrorApply {
      */
     fun backupSource(store: LibraryStore, folder: File, keep: Int = 3): File {
         val dir = File(folder, "UniReader/backup").apply { mkdirs() }
-        val dst = File(dir, "library-${Iso.now().replace(':', '-')}.sqlite")
+        // 🔴 时间戳只到毫秒，连着做两次合并就会撞同一个名字，而 VACUUM INTO 遇到已存在的文件
+        // 是**直接报错**、整文件拷那条兜底也是 overwrite=false ——那会让整次同步中止。
+        // 撞了就加序号：备份这道保险不该反过来成为失败原因。序号排在时间戳之后，prune 的字典序仍是时间序。
+        val stamp = Iso.now().replace(':', '-')
+        var dst = File(dir, "library-$stamp.sqlite")
+        var n = 2
+        while (dst.exists() && n <= 99) {
+            dst = File(dir, "library-$stamp-$n.sqlite")
+            n++
+        }
         store.checkpoint()
         if (!store.vacuumInto(dst.absolutePath)) {
             // 老机器没有 VACUUM INTO：checkpoint 已把 -wal 收回主库，整文件拷即是一致的
