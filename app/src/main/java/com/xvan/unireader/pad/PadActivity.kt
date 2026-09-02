@@ -322,6 +322,16 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         padView = PadView(this).apply {
             listener = this@PadActivity
+            // 手指点页面上的书签缎带 → 改名/删除（只发请求，等 Mac 的 bookmarks 回推）
+            onBookmarkTap = { b ->
+                PadPanels.showBookmarkMenu(
+                    this@PadActivity, b.title, b.page,
+                    onRename = { t ->
+                        client?.send(WireCodec.encodeBookmarkEdit(WireCodec.BM_RENAME, b.id, title = t))
+                    },
+                    onDelete = { client?.send(WireCodec.encodeBookmarkEdit(WireCodec.BM_DELETE, b.id)) },
+                )
+            }
             // 页图源（PageCanvasView 的注入口）：模式2 从 Mac 取整页图。
             // **widthPx 要透传**——从前这里丢掉它、一律吃 Mac 写死的 1600px，于是 Pad 6 横屏
             // （视口 2880）拿到的图要放大 1.8 倍，比模式1 糊一档（见 PageFetcher 的说明）。
@@ -1055,6 +1065,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     override fun onBookmarks(docId: String, list: List<WireCodec.BookmarkEntry>) = runOnUiThread {
         // 线上已按「页 → 页内位置 → 建立时刻」有序，这里原样转一层，别再排
         drawer.setBookmarks(docId, list.map { BookmarkItem(it.id, it.page, it.frac, it.title) })
+        // 页面上的红缎带（贴页右缘）：与 Mac 那面同形同色同尺寸
+        padView.setBookmarkMarks(
+            list.map { PageCanvasView.BookmarkMark(it.id, it.page, it.frac, it.title) },
+        )
     }
 
     override fun onNotes(list: List<TextNote>) = runOnUiThread {

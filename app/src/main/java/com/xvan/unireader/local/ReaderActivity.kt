@@ -830,6 +830,10 @@ class ReaderActivity : Activity() {
         q.submit("读书签（抽屉）", { s -> s.bookmarks(id) }, { list ->
             // 库里已按「页 → 页内位置 → 建立时刻」排好，这里原样转一层
             drawer.setBookmarks(id, list.map { BookmarkItem(it.id, it.page, it.frac, it.title) })
+            // 页面上的红缎带（贴页右缘）：与 Mac / 模式2 同形同色
+            cur()?.setBookmarkMarks(
+                list.map { PageCanvasView.BookmarkMark(it.id, it.page, it.frac, it.title) },
+            )
         })
     }
 
@@ -1073,6 +1077,14 @@ class ReaderActivity : Activity() {
         // 那边编帧发给 Mac，这边直接落 note 表（kind=0）
         onNoteEditor = { id, page, nx, ny, text, isNew, display ->
             editNote(tab, id, page, nx, ny, text, isNew, display)
+        }
+        // 手指点页面上的书签缎带 → 改名/删除（写本机库，写完读回来再喂画布与抽屉）
+        onBookmarkTap = { b ->
+            PadPanels.showBookmarkMenu(
+                this@ReaderActivity, b.title, b.page,
+                onRename = { t -> writeBookmark("书签改名") { s -> s.renameBookmark(b.id, t) } },
+                onDelete = { writeBookmark("删书签") { s -> s.deleteNote(b.id) } },
+            )
         }
         // 草稿纸图钉：手指单击打开对应那张纸（笔点不算——笔是用来写字的，见 PageCanvasView.onFingerTap）
         onPinTap = { padId -> scratch.openById(padId) }

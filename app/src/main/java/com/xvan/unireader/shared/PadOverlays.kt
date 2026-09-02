@@ -180,6 +180,38 @@ class PadOverlays(private val density: Float) {
         c.drawCircle(x, y, r, p)
     }
 
+    // ---------- 书签缎带（`../REQUIREMENTS.md §1.9`） ----------
+
+    /**
+     * 贴页右缘的一面小红旗，右端切一个 V 口（真书里夹出来的那条丝带的样子）。
+     * 扁平纯色 + 0.5 描边，**无渐变/高光/投影**（红线）。(x, y) = 缎带中心。
+     *
+     * 形状与尺寸逐项对齐 Mac 的 `BookmarkRibbon` + `ribbonW/H`——两端看到的是同一面旗；
+     * 形状本身就是「这是书签」的信号，于是与另外两种圆形标记（文字注解 / 草稿纸图钉）
+     * 一眼分得开，不必靠颜色去记（Mac 端首版做成圆图钉，用户根本没注意到）。
+     */
+    fun drawBookmarkRibbon(c: Canvas, x: Float, y: Float) {
+        val w = dp(PadConst.BM.W)
+        val h = dp(PadConst.BM.H)
+        val notch = dp(PadConst.BM.NOTCH)
+        val l = x - w / 2f
+        val t = y - h / 2f
+        path.reset()
+        path.moveTo(l, t)
+        path.lineTo(l + w, t)
+        path.lineTo(l + w - notch, y)
+        path.lineTo(l + w, t + h)
+        path.lineTo(l, t + h)
+        path.close()
+        p.style = Paint.Style.FILL
+        p.color = Color.argb(255, 214, 60, 60)          // 与 Mac 的缎带同色
+        c.drawPath(path, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = dp(0.5f)
+        p.color = Color.argb(46, 0, 0, 0)               // 0.18 黑，压在白页/深色页上都还看得出边
+        c.drawPath(path, p)
+    }
+
     // ---------- 框选（自由路径 / 光晕 / 高亮框 / 缩放手柄） ----------
 
     private val dash = DashPathEffect(floatArrayOf(dp(5f), dp(4f)), 0f)

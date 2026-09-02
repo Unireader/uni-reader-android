@@ -49,6 +49,16 @@ object PadConst {
         const val HUB_DIM = 0.22f
     }
 
+    /**
+     * 页面上的书签缎带（`../REQUIREMENTS.md §1.9`）：贴页右缘的一面小旗，右端切 V 口。
+     * 尺寸与 Mac 的 `PageCellView.ribbonW/H`（26×15 pt）同数——两端看到的是同一面旗。
+     */
+    object BM {
+        const val W = 26f
+        const val H = 15f
+        const val NOTCH = 5f     // 右端 V 口的深度
+    }
+
     /** 长按进度环（环形盘的前置动画）：300ms 起显示、700ms 填满、直径 30dp 线宽 3dp、正上方顺时针 */
     object PR {
         const val D = 30f

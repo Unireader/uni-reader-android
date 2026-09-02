@@ -329,6 +329,40 @@ object PadPanels {
     }
 
     /**
+     * 点页面上那面书签缎带弹的小菜单（`../REQUIREMENTS.md §1.9`）。
+     * 只有改名/删除——书签点开没有内容可展示（跳转从目录去），页面上这一枚的用处是
+     * 「一眼看出这一处标过」+ 就地改名/取消。两模式共用（真源是谁由回调决定）。
+     */
+    fun showBookmarkMenu(
+        a: Activity,
+        title: String,
+        page: Int,
+        onRename: (String) -> Unit,
+        onDelete: () -> Unit,
+    ) {
+        Sheet(a)
+            .title(title)
+            .subtitle("第 ${page + 1} 页")
+            .action("取消")
+            .action("重命名") {
+                val edit = inputBox(a, "书签名字").apply {
+                    setText(title)
+                    setSelection(text.length)
+                }
+                Sheet(a).title("重命名")
+                    .content(edit)
+                    .action("取消")
+                    .action("保存", primary = true) {
+                        val t = edit.text.toString().trim()
+                        if (t.isNotEmpty()) onRename(t)
+                    }
+                    .show()
+            }
+            .action("删除", primary = true) { onDelete() }
+            .show()
+    }
+
+    /**
      * 输入框：框架默认的 `EditText` 是一条下划线（Holo 遗风），换成圆角描边框。
      * 焦点态不另做——系统会用主题的 accent 给光标与选区上色，够了。
      */

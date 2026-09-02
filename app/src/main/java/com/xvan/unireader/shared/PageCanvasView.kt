@@ -108,6 +108,58 @@ open class PageCanvasView @JvmOverloads constructor(
         display: Int = NOTE_TAP,
     ) {}
 
+    // —— 书签缎带（`../REQUIREMENTS.md §1.9`）：贴页右缘、纵向落在书签自己的页内位置上 ——
+    //
+    // 两模式共用这一份：书签的身份两边都是 UUID 串（草稿纸图钉那边模式2 用列表下标、模式1 用
+    // 库 id，所以那个只能各写各的）。**只认手指不认笔**——笔是用来写字的，让笔点标记必然会在
+    // 标记上落笔时误触发（同草稿纸图钉与 web `endTouch` 的决策）。
+
+    /** 页面上的一枚书签标记 */
+    class BookmarkMark(val id: String, val page: Int, val frac: Float, val title: String)
+
+    private var bookmarkMarks = listOf<BookmarkMark>()
+
+    /** 手指点了页面上某枚书签缎带（宿主弹改名/删除） */
+    var onBookmarkTap: (BookmarkMark) -> Unit = {}
+
+    fun setBookmarkMarks(list: List<BookmarkMark>) {
+        bookmarkMarks = list
+        invalidate()
+    }
+
+    /** 缎带中心的视口坐标（贴页右缘，纵向按 frac 钳在页内）。页号越界返回 false。 */
+    private fun ribbonAt(b: BookmarkMark, out: FloatArray): Boolean {
+        if (b.page < 0 || b.page >= pageCount) return false
+        val h = dispH[b.page]
+        val half = dp(PadConst.BM.H) / 2f
+        out[0] = viewX(b.page, 1f) - dp(PadConst.BM.W) / 2f
+        out[1] = barH + offY[b.page] + (b.frac * h).coerceIn(half, (h - half).coerceAtLeast(half)) - scrollY
+        return true
+    }
+
+    private fun drawBookmarkRibbons(canvas: Canvas) {
+        if (bookmarkMarks.isEmpty()) return
+        val margin = dp(PadConst.BM.H)
+        for (b in bookmarkMarks) {
+            if (!ribbonAt(b, tmpRibbon)) continue
+            if (tmpRibbon[1] < barH - margin || tmpRibbon[1] > height + margin) continue   // 不在视口里就别画
+            overlays.drawBookmarkRibbon(canvas, tmpRibbon[0], tmpRibbon[1])
+        }
+    }
+
+    /** 手指轻点是否命中某枚缎带（热区比缎带本身放宽一圈——手指不比笔尖准） */
+    private fun bookmarkHit(x: Float, y: Float): BookmarkMark? {
+        val padX = dp(PadConst.BM.W) / 2f + dp(6f)
+        val padY = dp(PadConst.BM.H) / 2f + dp(6f)
+        for (b in bookmarkMarks) {
+            if (!ribbonAt(b, tmpRibbon)) continue
+            if (abs(x - tmpRibbon[0]) <= padX && abs(y - tmpRibbon[1]) <= padY) return b
+        }
+        return null
+    }
+
+    private val tmpRibbon = FloatArray(2)
+
     /**
      * 单指**轻点**（全程没越过平移死区、也没变过双指捏合）。模式1 用它点草稿纸图钉。
      * 只认手指、不认笔——平板上笔是用来写字的，让笔点图钉必然会在图钉上落笔时误触发
@@ -1129,6 +1181,7 @@ open class PageCanvasView @JvmOverloads constructor(
         val noteSel = if (lassoCommitted && !lassoSyncNotes) lassoSelection else null
         drawNoteMarkers(canvas, noteSel)
         drawNoteBubbles(canvas, noteSel)   // 气泡压在标记之上
+        drawBookmarkRibbons(canvas)
 
         // 橡皮尺寸圆环（擦除模式 + 开关开 + 有笔尖位置）
         val ringAt = eraserRingAt
@@ -2110,8 +2163,10 @@ open class PageCanvasView @JvmOverloads constructor(
                         wasPinDrag ->
                             if (e.actionMasked == MotionEvent.ACTION_UP) onPinDragEnd(ux, uy)
                             else onPinDragCancel()
-                        // 草稿纸图钉优先（与 web `endTouch` 同序），没命中再判文字笔记标记/气泡铅笔
-                        tap -> if (!onFingerTap(tx, ty)) tapNote(tx, ty)
+                        // 书签缎带 → 草稿纸图钉 → 文字笔记标记/气泡铅笔（缎带贴在页右缘，
+                        // 与另两者不会撞位；放最前是因为它的热区最小、被别人先吃掉就点不着了）
+                        tap -> bookmarkHit(tx, ty)?.let { onBookmarkTap(it) }
+                            ?: run { if (!onFingerTap(tx, ty)) tapNote(tx, ty) }
                     }
                 }
             }
