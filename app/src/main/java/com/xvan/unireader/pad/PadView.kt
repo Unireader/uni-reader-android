@@ -93,6 +93,16 @@ class PadView @JvmOverloads constructor(
         )
     }
 
+    /** 撤销/重做：只发意图，栈在 Mac（`../PROTOCOL.md §4.1`） */
+    override fun onUndoRequested(redo: Boolean) {
+        listener?.sendCtl(WireCodec.encodeUndo(redo))
+    }
+
+    /** 剪贴板：剪贴板本身在 Mac 的系统剪贴板上，线上不传数据 */
+    override fun onClipCommit(op: Int, page: Int, nx: Float, ny: Float, poly: FloatArray?) {
+        listener?.sendCtl(WireCodec.encodeClip(op, page.toLong(), nx, ny, poly))
+    }
+
     override fun onLassoScaleCommit(
         page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
     ) {

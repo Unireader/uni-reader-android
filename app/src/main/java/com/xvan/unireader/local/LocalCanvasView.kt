@@ -11,6 +11,8 @@ import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteAnchor
 import com.xvan.unireader.local.store.StoreQueue
+import com.xvan.unireader.shared.CLIP_CUT
+import com.xvan.unireader.shared.CLIP_PASTE
 import com.xvan.unireader.shared.CanvasMargin
 import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.PageCanvasView
@@ -37,6 +39,9 @@ import kotlin.math.max
  * 结果回到主线程再 `apply*`。因此回推**必然晚于本次手势**——与模式2 等 Mac 广播回来是同一种时序，
  * 中间那段时间画面靠基类的乐观预览撑着。
  */
+/** 撤销栈深度（每步一份可见笔迹快照，只是一串引用，不是点集拷贝） */
+private const val UNDO_DEPTH = 40
+
 class LocalCanvasView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -150,6 +155,7 @@ class LocalCanvasView @JvmOverloads constructor(
         // 此前指望「cur 先留着，等 setStrokes 回推再清」撑住这半笔——但连续快速落笔时，下一笔
         // penDown() 会无条件清空活体层，若那时这一笔的回读还没跑完，它就会在活体层与 strokes
         // 之间出现一段两头都没有的空窗，肉眼看到「上一笔闪一下」（用户报的 bug）。
+        pushUndo()   // 撤销栈：这一笔**加进去之前**的整份（见 pushUndo 的注释）
         strokes.add(Stroke(page.toLong(), pen, pts, id, layer))
         clearCur()
         invalidate()
@@ -185,6 +191,9 @@ class LocalCanvasView @JvmOverloads constructor(
      * 写失败（事务回滚）也照样重读：本地已经擦掉了、库里没删成，以库为准把笔迹恢复出来，
      * 总比两边不一致强。
      */
+    /** 一次擦除拖动动手之前留一份快照 —— 擦除是就地改 `strokes` 的，到 onEraseEnd 现场早没了 */
+    override fun onEraseBegin() = pushUndo()
+
     override fun onEraseEnd() {
         val q = store ?: return
         val local = strokes.filter { it.id.isNotEmpty() }.groupBy { it.id }
@@ -243,6 +252,117 @@ class LocalCanvasView @JvmOverloads constructor(
         onInkChanged?.invoke()
     }
 
+    // ---------- 撤销 / 重做 + 剪贴板（模式1 本机就是真源，栈与剪贴板都在本进程）----------
+    //
+    // 与 Mac 那份（增量 `InkPatch`）不同，这里存的是**整份可见笔迹的快照**：
+    //  · `Stroke` 是不可变 data class，一份快照只是一串引用（几千条也就几十 KB），比在 Kotlin 这边
+    //    再实现一套 id 级增量便宜得多；
+    //  · 恢复直接走既有的 `reconcileStrokes`——它本来就是「把库对齐到这份期望状态」的（擦除在用），
+    //    连带「隐藏图层一条都不碰」的规矩也一起继承了（快照取的正是画布上可见那些）。
+    // **只管笔迹**：文字注解的增删改不进这条栈（模式1 的注解走另一套读改写路径），
+    // 与 Mac 端「注解也可撤」有差距，记在 `../TODO.md`。
+
+    /** 每步**之前**的可见笔迹整份。深度够用即可——再深也只是让很久以前那一步可撤。 */
+    private val undoStack = ArrayDeque<List<Stroke>>()
+    private val redoStack = ArrayDeque<List<Stroke>>()
+
+    /**
+     * 编辑**动手之前**叫一次：把现状压进撤销栈并作废重做链（标准语义）。
+     * 落笔/擦除/框选移动/框选缩放/剪切/粘贴六处调用，一次拖动只压一次（擦除靠 [onEraseBegin]）。
+     */
+    private fun pushUndo() {
+        undoStack.addLast(ArrayList(strokes))
+        while (undoStack.size > UNDO_DEPTH) undoStack.removeFirst()
+        redoStack.clear()
+    }
+
+    /**
+     * 撤销/重做一步：把快照当作**期望状态**交给库对齐（同擦除那条路），再按库里的结果回推。
+     * 不做乐观预览——一步要么整个成立要么不动，抢先改了再被真源纠正是最难看的一种闪烁。
+     */
+    override fun onUndoRequested(redo: Boolean) {
+        val q = store ?: return
+        val from = if (redo) redoStack else undoStack
+        val target = from.removeLastOrNull() ?: run {
+            Log.i(TAG, if (redo) "无可重做" else "无可撤销")
+            return
+        }
+        (if (redo) undoStack else redoStack).addLast(ArrayList(strokes))
+        val expect = target.filter { it.id.isNotEmpty() }.groupBy { it.id }
+        // 快照里可能有「粘贴出来还没落库」的空 id 笔迹（插入作业排在队列里）——它们不进对账，
+        // 由那条插入作业自己收尾；这里只对齐已经有身份的那些。
+        Log.i(TAG, "${if (redo) "重做" else "撤销"}：目标 ${target.size} 条")
+        q.submit(
+            "撤销落库",
+            { s ->
+                runCatching { s.reconcileStrokes(documentId, expect) }
+                    .onFailure { Log.e(TAG, "撤销写库失败，回退到库里的状态", it) }
+                inkSnapshot(s)
+            },
+            { snap -> applyStrokes(snap.all, snap.hidden) },
+        )
+    }
+
+    /**
+     * 剪贴板：复制/剪切当前框选选中集、粘贴到落点。剪贴板是**进程级**的（[InkClipLocal]），
+     * 于是跨标签页、跨文档都能粘。命中判定与框选移动同一套（多边形，只认可见笔迹）。
+     */
+    override fun onClipCommit(op: Int, page: Int, nx: Float, ny: Float, poly: FloatArray?) {
+        val q = store ?: return
+        if (op == CLIP_PASTE) {
+            val pasted = InkClipLocal.take(
+                page, nx, ny, pageAspect(page), cmarginMax(), activeLayerId,
+            )
+            if (pasted.isEmpty()) { Log.i(TAG, "粘贴：剪贴板空"); return }
+            pushUndo()
+            // 乐观落地 + 逐条插库（同 onInkEnd 的分工：id 在主线程先生成，作业只管写）
+            val withIds = pasted.map { it.copy(id = UUID.randomUUID().toString()) }
+            strokes.addAll(withIds)
+            refreshCanvasMargin()
+            invalidate()
+            Log.i(TAG, "粘贴 ${withIds.size} 条到 page=$page")
+            q.submit(
+                "粘贴落库",
+                { s ->
+                    val ok = runCatching {
+                        s.transaction {
+                            for (st in withIds) {
+                                s.insertStroke(documentId, st.page.toInt(), st.pen, st.pts, st.layerId, st.id)
+                            }
+                        }
+                    }.onFailure { Log.e(TAG, "粘贴写库失败（这些笔迹会丢）", it) }.isSuccess
+                    if (ok) null else inkSnapshot(s)
+                },
+                { snap -> snap?.let { applyStrokes(it.all, it.hidden) } },
+            )
+            return
+        }
+        if (poly == null) return
+        val hits = strokes.filter { st ->
+            st.id.isNotEmpty() && st.page.toInt() == page &&
+                st.pts.any { InkEdit.pointInPolygon(it.x, it.y, poly) }
+        }
+        if (hits.isEmpty()) { Log.i(TAG, "复制/剪切：零命中"); return }
+        InkClipLocal.put(hits, pageAspect(page))
+        Log.i(TAG, "${if (op == CLIP_CUT) "剪切" else "复制"} ${hits.size} 条")
+        if (op != CLIP_CUT) return
+        pushUndo()
+        val gone = hits.mapTo(HashSet()) { it.id }
+        strokes.removeAll { it.id in gone }
+        refreshCanvasMargin()
+        invalidate()
+        val expect = strokes.filter { it.id.isNotEmpty() }.groupBy { it.id }
+        q.submit(
+            "剪切落库",
+            { s ->
+                runCatching { s.reconcileStrokes(documentId, expect) }
+                    .onFailure { Log.e(TAG, "剪切写库失败，回退到库里的状态", it) }
+                inkSnapshot(s)
+            },
+            { snap -> applyStrokes(snap.all, snap.hidden) },
+        )
+    }
+
     // ---------- 画板模式（逐文档，库里的 canvas_mode；模式1 本机就是真源）----------
 
     /** 打开文档时按库里的开关 + 已有笔迹的越界量定页边宽度（须排在 [applyStrokes] 之后） */
@@ -283,6 +403,7 @@ class LocalCanvasView @JvmOverloads constructor(
     override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {
         val q = store ?: return
         if (dx == 0f && dy == 0f) return
+        pushUndo()
         // 画板模式下页边笔迹可以在页外平移（队列线程用，先在主线程取好）。用**硬上限**而非当前那档
         // 软边界：理由见 [cmarginMax]（拿旧档位卡着 = 撞边界被逐点 clamp 压扁）。
         val xm = cmarginMax()
@@ -349,6 +470,7 @@ class LocalCanvasView @JvmOverloads constructor(
         page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
     ) {
         val q = store ?: return
+        pushUndo()
         if (sx <= 0f || sy <= 0f || (sx == 1f && sy == 1f)) return
         // 缩放后的新点集/新笔宽在主线程一次算好再定格（同移动的理由：`Stroke` 不可变可跨线程）
         val hits = strokes.filter { st ->

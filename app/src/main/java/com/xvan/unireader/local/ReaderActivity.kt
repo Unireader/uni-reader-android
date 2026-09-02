@@ -397,6 +397,16 @@ class ReaderActivity : Activity() {
             icon("pen", R.drawable.ic_pen, "切换笔") { cur()?.cyclePen(); refreshHud() }
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
             icon("ruler", R.drawable.ic_ruler, "尺子") { cur()?.toggleRuler(); refreshHud() }
+            // 撤销/重做：模式1 本机就是真源，栈在 `LocalCanvasView`（**只管笔迹**，见那里的注释）
+            icon("undo", R.drawable.ic_undo, "撤销") { cur()?.requestUndo(redo = false) }
+            icon("redo", R.drawable.ic_redo, "重做") { cur()?.requestUndo(redo = true) }
+            // 剪贴板三件：只在框选模式下出现（对象就是选中集，见 refreshHud）。剪贴板是**进程级**的
+            // （`InkClipLocal`），于是跨标签页、跨文档都能粘。
+            icon("clipCut", R.drawable.ic_cut, "剪切选中笔迹") { cur()?.requestClipCopy(cut = true) }
+            icon("clipCopy", R.drawable.ic_copy, "复制选中笔迹") { cur()?.requestClipCopy(cut = false) }
+            icon("clipPaste", R.drawable.ic_paste, "粘贴到视口中央") { cur()?.requestClipPaste() }
+            // 初始先收起来：`setVisible` 的默认是「可见」，而开局一定不在框选模式
+            for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) setVisible(k, false)
             // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
             // 点下去界面毫无变化，用户无法预期笔落下会变成「开编辑器」
             // 草稿纸：盖在 PDF 之上的无限白板（列表 + 「在当前位置新建」，见 ScratchController）
@@ -1088,6 +1098,8 @@ class ReaderActivity : Activity() {
         }
         // 草稿纸图钉：手指单击打开对应那张纸（笔点不算——笔是用来写字的，见 PageCanvasView.onFingerTap）
         onPinTap = { padId -> scratch.openById(padId) }
+        // 框选选中集有无变化 → 顶栏那两颗剪切/复制跟着灰掉或亮起（背景标签页不刷，同 onHud）
+        onLassoSelChanged = { if (curTab() === tab) refreshHud() }
         // 图钉拖动松手：只挪锚点（页不变），落库由 ScratchController 走 StoreQueue
         onPinMove = { padId, nx, ny -> scratch.movePadAnchor(padId, nx, ny) }
         // 环形盘新扇区：盘心即锚点（等价「在当前位置新建」，只是位置用长按那一处）
@@ -1288,6 +1300,11 @@ class ReaderActivity : Activity() {
         bar.setActive("canvas", canvas.canvasModeOn())
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（与模式2 同一套表达）
         bar.setVisible("pen", canvas.mode == MODE_NOTE)
+        // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮——剪贴板空时点了是空操作）
+        val lasso = canvas.mode == MODE_LASSO
+        for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, lasso)
+        bar.setEnabled("clipCut", canvas.hasLassoSelection())
+        bar.setEnabled("clipCopy", canvas.hasLassoSelection())
         bar.setTint("pen", canvas.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = canvas.twoFingerScroll

@@ -80,7 +80,17 @@ object WireCodec {
     const val BM_ADD = 0
     const val BM_RENAME = 1
     const val BM_DELETE = 2
+    const val OP_UNDO = 0x4F
     const val OP_NACK = 0x50
+    const val OP_CLIP = 0x51
+
+    /**
+     * 剪贴板动作：`0=copy 1=cut 2=paste`（只许尾部追加，与 Mac `WireCodec.clipOps` 同序）。
+     * 真身在 `shared/Ink.kt`——两模式的画布都要用它，而 `shared/` 不许认识本文件（红线）。
+     */
+    const val CLIP_COPY = com.xvan.unireader.shared.CLIP_COPY
+    const val CLIP_CUT = com.xvan.unireader.shared.CLIP_CUT
+    const val CLIP_PASTE = com.xvan.unireader.shared.CLIP_PASTE
 
     // phase / dir（§2）
     const val PH_BEGIN = 0
@@ -489,6 +499,23 @@ object WireCodec {
         f32(ax); f32(ay); f32(sx); f32(sy)
         polyTail(poly)
     }.bytes()
+
+    /**
+     * 撤销 / 重做（0x4F）。**撤销栈只有 Mac 一份**（`../PROTOCOL.md §4.1`）：本端只发意图，
+     * 不做乐观预览——撤销要么整步成立要么不动，没有中间态可预览，而抢先撤了再被真源纠正
+     * 是最难看的一种闪烁。结果照常由 `strokes`/`notes`/`scratchStrokes` 全量镜像回来。
+     */
+    fun encodeUndo(redo: Boolean): ByteArray =
+        Writer().apply { u8(OP_UNDO); u8(if (redo) 1 else 0) }.bytes()
+
+    /**
+     * 剪切 / 复制 / 粘贴（0x51）。剪贴板是 **Mac 的系统剪贴板**，线上不传数据——于是平板复制的
+     * 东西能在 Mac 上粘、也能粘进另一篇文档。
+     * copy/cut 带**选区多边形**（语义与 lassoMove 逐字相同，Mac 用真源复判命中），`nx/ny` 编 0；
+     * paste 带落点 `nx/ny`（页内归一化，内容包围盒中心对齐到它），无多边形尾部。
+     */
+    fun encodeClip(op: Int, page: Long, nx: Float, ny: Float, poly: FloatArray? = null): ByteArray =
+        Writer().apply { u8(OP_CLIP); u8(op); u32(page); f32(nx); f32(ny); polyTail(poly) }.bytes()
 
     /** 打开/关闭草稿纸（index = scratchpads 列表下标；-1 = 关闭，线上 0xFFFF） */
     fun encodeScratchOpen(index: Int): ByteArray =

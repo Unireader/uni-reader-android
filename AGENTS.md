@@ -69,6 +69,15 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   两模式的差异只由开关表达，不分叉代码：`DocTabsBar.canClose`（模式2 = false，「开着哪几篇」
   真源在 Mac，关窗要在 Mac 上做）、`chipTrailingIcon`（模式1 `⌄` 切工作区 / 模式2 📖 开书库）。
   **模式1 的目录只能跳到页顶**：pdfiumandroid 的书签 API 只给页号不给页内位置，故 `TocItem.frac` 恒 0。
+- **撤销/重做 + 剪贴板（2026-09-02）**：入口在 `shared/PageCanvasView`（`requestUndo` /
+  `requestClipCopy` / `requestClipPaste`），实现由两模式各自注入（`onUndoRequested` / `onClipCommit`）。
+  **模式2 只发帧**（`undo` 0x4F / `clip` 0x51，栈与剪贴板都在 Mac）；**模式1 本机就是真源**：
+  `LocalCanvasView` 自带一条撤销栈 + 进程级剪贴板 `local/InkClipLocal.kt`。
+  模式1 的栈存**整份可见笔迹的快照**而不是 id 级增量——`Stroke` 不可变，一份快照只是一串引用；
+  恢复直接走既有的 `reconcileStrokes`（擦除在用的那条），「隐藏图层一条都不碰」的规矩一并继承。
+  **模式1 只管笔迹**：注解的增删改不进栈（与 Mac 端有差距，记在 `../TODO.md`）。
+  选中集有无变化经 `onLassoSelChanged` 回调给顶栏（灰掉/亮起剪切与复制）——它写在
+  `lassoSelection` 的 setter 里，那个字段有七八处赋值点，逐个补调用迟早漏一处。
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表语句只有 `local/store/Schema.kt` 一处**（schema v12，逐字抄 Mac 的 `migrate()`），且只对
@@ -161,6 +170,13 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   知识走 `Ui.tip()`（ⓘ + 一行小字，点开才弹细节）。从前那些三四行的灰色长段落（权限说明、
   单写者警告、目录浏览器口径、打不开库的四条成因清单）用户扫一眼就跳过 = 白写；
   要查根因看日志比看弹窗准得多。
+- **图标按钮的尺寸只在 `Ui.kt` 改**（`TOUCH`/`ICON`，2026-09-02 用户要求整体收 15% → 41/19，
+  条高 `TopBar.BAR_H` 56→48）。这两个数一改**全 App 的图标按钮一起变**（顶栏、草稿纸浮条、
+  参考窗、抽屉都走 `Ui.iconButton`）——这正是"整体缩小"的意思，别在某一处单独调。
+  40dp 以下就别再往下调了（开始点不准）；`TopBar.reflow` 的排布按 `Ui.TOUCH` 现算，自动跟随。
+- **镜像一个带圆弧的图标时，sweep 标志必须跟着翻**（`gen.py` 的 `MIRROR_X`，`undo`/`redo` 那对）：
+  镜像把绕行方向也翻了过来，照抄 sweep 会让弧朝反方向鼓出画布（`--check` 会当场报"超出活动区"，
+  但报的是结果不是原因，第一次撞上容易去调坐标）。
 - **别手写图标 XML**。2026-08 之前 28 个图标是手写的，规格靠人肉复制 → 飘成三种线宽
   （1.6/1.8/2.0）、四种视觉尺寸（`ic_nib` 内容只占 6..18，`ic_lock` 撑到 3..22 差点被裁），
   `ic_ruler` 靠 `<group rotation>` 把矩形甩出画布，`ic_nib`（"切换笔"）画的是水滴、

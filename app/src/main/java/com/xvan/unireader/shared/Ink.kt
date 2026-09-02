@@ -20,6 +20,15 @@ const val MODE_ERASE = 1
 const val MODE_PAGE = 2
 const val MODE_LASSO = 3
 
+// ---------- 剪贴板动作（值 = 线格式 clip.op，PROTOCOL.md §4.1；只许尾部追加） ----------
+//
+// 定义在 shared 而不是 `pad/WireCodec`：`shared/` 一行都不许认识 WireCodec（本目录红线），
+// 而两种模式的画布都要用这几个值当自己的动作码。WireCodec 那边是别名，见其 `CLIP_*`。
+
+const val CLIP_COPY = 0
+const val CLIP_CUT = 1
+const val CLIP_PASTE = 2
+
 // ---------- 环形选笔盘的扇区 kind（值 = 线格式 radial.kind，PROTOCOL.md §4.2） ----------
 
 const val RK_PEN = 0

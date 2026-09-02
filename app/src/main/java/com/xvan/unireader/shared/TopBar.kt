@@ -42,6 +42,12 @@ class TopBar(private val a: Activity) {
         const val TAG = "UniReader/TopBar"
 
         /**
+         * 一条栏的高度。跟着 [Ui.TOUCH] 一起收（2026-09-02 用户要求整体缩 15%：56→48）——
+         * 按钮 41dp + 上下各 3.5dp 的气口，比按钮自己高一点点，密排时才不显得挤。
+         */
+        const val BAR_H = 48
+
+        /**
          * 模式 → 图标（`MODE_NOTE/ERASE/PAGE/LASSO`，顺序与 `PadConst.MODE_LABELS` 一致）。
          * 笔记模式用**铅笔**而不是 `ic_pen` 那支马克笔：笔模式下这颗键与「切换笔」是邻居，
          * 同一支笔出现两次没人分得清谁是谁（`tools/icons/gen.py` 里 `mode_pen` 的注释同此）。
@@ -122,7 +128,7 @@ class TopBar(private val a: Activity) {
     private val contentRow = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        addView(iconScroll, LinearLayout.LayoutParams(0, Ui.dp(a, 56), 1f))
+        addView(iconScroll, LinearLayout.LayoutParams(0, Ui.dp(a, BAR_H), 1f))
         addView(tail, LinearLayout.LayoutParams(-2, -1).apply { gravity = Gravity.CENTER_VERTICAL })
     }
 
@@ -176,8 +182,9 @@ class TopBar(private val a: Activity) {
      * 宽度不够就把键收进 ⋯（竖屏 411dp 下六个 48dp 触摸目标 + 页码 + ⋯ 正好排不下，
      * 实测「文字笔记」会被裁成 42px 宽——按得到一半，比收起来更糟）。
      *
-     * 触摸目标不缩：48dp 是系统无障碍下限，为了多塞一个键把它压小是拿手指准头换排版。
-     * 收谁由 [icon] 的 `spillFirst` 定。被 [setVisible] 藏掉的键不参与宽度计算、也不进 ⋯。
+     * 触摸目标本身不因排版而缩——按钮多大是 [Ui.TOUCH] 一处定的（2026-09-02 已整体收到 41dp），
+     * 排不下就往 ⋯ 里收，而不是把键越压越小。收谁由 [icon] 的 `spillFirst` 定；
+     * 被 [setVisible] 藏掉的键不参与宽度计算、也不进 ⋯。
      */
     private fun reflow() {
         if (items.isEmpty()) return
@@ -276,11 +283,11 @@ class TopBar(private val a: Activity) {
      */
     fun applyTopInset(top: Int): Int {
         view.setPadding(Ui.dp(a, 4), top, Ui.dp(a, 4), 0)
-        return Ui.dp(a, 56) + 1 + top
+        return Ui.dp(a, BAR_H) + 1 + top
     }
 
     /** 没有 insets 时（模式2 沉浸全屏）的高度 */
-    fun height(): Int = Ui.dp(a, 56) + 1
+    fun height(): Int = Ui.dp(a, BAR_H) + 1
 }
 
 /** 顶栏之外的浮层（状态胶囊等）要贴着它底下时用；两模式共用同一个数值 */

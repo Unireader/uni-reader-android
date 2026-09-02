@@ -322,6 +322,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
         padView = PadView(this).apply {
             listener = this@PadActivity
+            // 框选选中集有无变化 → 顶栏那两颗剪切/复制跟着灰掉或亮起
+            onLassoSelChanged = { refresh() }
             // 手指点页面上的书签缎带 → 改名/删除（只发请求，等 Mac 的 bookmarks 回推）
             onBookmarkTap = { b ->
                 PadPanels.showBookmarkMenu(
@@ -403,6 +405,17 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 「切换笔」只在笔模式下出现且染当前笔色（refresh() 维护），其余模式占位纯属误导
             icon("pen", R.drawable.ic_pen, "切换笔") { padView.cyclePen() }
             icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
+            // 撤销/重做：栈在 Mac（`../PROTOCOL.md §4.1`），这里只发意图。常亮——本端不知道
+            // Mac 那边还有没有得撤，为此再加一条 S→C 广播不值当，点了没得撤就是个空操作。
+            icon("undo", R.drawable.ic_undo, "撤销") { padView.requestUndo(redo = false) }
+            icon("redo", R.drawable.ic_redo, "重做") { padView.requestUndo(redo = true) }
+            // 剪贴板三件：只在框选模式下出现（对象就是选中集，见 refreshHud 的 setVisible）。
+            // 剪贴板本身是 Mac 的系统剪贴板 → 平板复制的东西能在 Mac 上粘、也能粘进另一篇文档。
+            icon("clipCut", R.drawable.ic_cut, "剪切选中笔迹") { padView.requestClipCopy(cut = true) }
+            icon("clipCopy", R.drawable.ic_copy, "复制选中笔迹") { padView.requestClipCopy(cut = false) }
+            icon("clipPaste", R.drawable.ic_paste, "粘贴到视口中央") { padView.requestClipPaste() }
+            // 初始先收起来：`setVisible` 的默认是「可见」，而开局一定不在框选模式
+            for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) setVisible(k, false)
             // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
             // 点下去界面毫无变化，用户无法预期笔落下会变成「开编辑器」
             // 草稿纸：盖在 PDF 之上的无限白板（列表 + 「在当前位置新建」，见 PadScratch）
@@ -897,6 +910,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("canvas", padView.canvasModeOn())
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（其余模式它不出现，见 buildUi 的注释）
         bar.setVisible("pen", padView.mode == MODE_NOTE)
+        // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮，见 buildUi 的注释）
+        val lasso = padView.mode == MODE_LASSO
+        for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, lasso)
+        bar.setEnabled("clipCut", padView.hasLassoSelection())
+        bar.setEnabled("clipCopy", padView.hasLassoSelection())
         bar.setTint("pen", padView.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = padView.twoFingerScroll

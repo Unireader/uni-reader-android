@@ -152,6 +152,16 @@ class WireCodecTest {
             88 to WireCodec.encodeBookmarkEdit(WireCodec.BM_ADD, "B3", 7, 0.25f, "定理 3.2"),
             89 to WireCodec.encodeBookmarkEdit(WireCodec.BM_RENAME, "B3", title = "改了名"),
             90 to WireCodec.encodeBookmarkEdit(WireCodec.BM_DELETE, "B3"),
+            // #91~#92 undo：撤销 / 重做
+            91 to WireCodec.encodeUndo(false),
+            92 to WireCodec.encodeUndo(true),
+            // #93~#95 clip：copy（带选区多边形，nx/ny 编 0）/ cut / paste（带落点，无多边形）
+            93 to WireCodec.encodeClip(
+                WireCodec.CLIP_COPY, 3, 0f, 0f,
+                floatArrayOf(0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f),
+            ),
+            94 to WireCodec.encodeClip(WireCodec.CLIP_CUT, 0, 0f, 0f),
+            95 to WireCodec.encodeClip(WireCodec.CLIP_PASTE, 41, 0.25f, 0.75f),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -463,7 +473,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(90, VECTORS.size)
+        assertEquals(95, VECTORS.size)
     }
 
     @Test
@@ -575,6 +585,13 @@ class WireCodecTest {
             "4e0002004233070000000000803e0a00e5ae9ae7908620332e32",
             "4e010200423300000000000000000900e694b9e4ba86e5908d",
             "4e020200423300000000000000000000",
+            // #91~#92 undo（0x4F）：撤销 / 重做（栈在 Mac，本端只发意图）
+            "4f00",
+            "4f01",
+            // #93~#95 clip（0x51）：copy 带选区多边形 / cut / paste 带落点
+            "51000300000000000000000000000300cdcccc3dcdcc4c3e9a99993ecdcccc3e0000003f9a99193f",
+            "5101000000000000000000000000",
+            "5102290000000000803e0000403f",
         )
     }
 }

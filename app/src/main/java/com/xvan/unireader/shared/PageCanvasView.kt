@@ -54,7 +54,13 @@ open class PageCanvasView @JvmOverloads constructor(
     protected open fun onInkMove(pts: List<Pt3>) {}
     protected open fun onInkEnd() {}
     protected open fun onErase(page: Int, pts: List<Pt2>) {}
+
+    /** 一次擦除拖动**动手之前**（模式1 的撤销栈在这里留快照；模式2 用不上） */
+    protected open fun onEraseBegin() {}
     protected open fun onEraseEnd() {}
+
+    /** 一次擦除拖动是否正在进行（[eraseHit] 置、抬笔清；只为 [onEraseBegin] 的「一次一叫」） */
+    private var erasingGesture = false
 
     /**
      * 本端**已发出的最后一个 REL 序号**（模式2 接到 `UdpSender.sentRel`；模式1 恒 0 = 不适用）。
@@ -77,6 +83,26 @@ open class PageCanvasView @JvmOverloads constructor(
     protected open fun onLassoScaleCommit(
         page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
     ) {}
+    /** 选中集有无变化的对外回调（顶栏据此灰掉/亮起剪切与复制）。两模式都是设一个 lambda 就够。 */
+    var onLassoSelChanged: ((Boolean) -> Unit)? = null
+
+    /** 选中集有无发生变化（顶栏剪贴板按钮的可用性；只在 0↔非 0 的翻转时叫一次） */
+    protected open fun onLassoSelectionChanged(has: Boolean) {
+        onLassoSelChanged?.invoke(has)
+    }
+
+    /**
+     * 撤销 / 重做。**模式2 只发意图**（栈在 Mac，见 `../PROTOCOL.md §4.1`），
+     * **模式1 本机就是真源**（自己一份栈）。两边都不做乐观预览：撤销要么整步成立要么不动。
+     */
+    protected open fun onUndoRequested(redo: Boolean) {}
+
+    /**
+     * 剪切 / 复制 / 粘贴。`op` 用 `CLIP_*`；copy/cut 带选区多边形（真源侧复判命中，不信本地下标），
+     * paste 带落点 `(nx, ny)`（页内归一化，内容包围盒中心对齐到它）。
+     */
+    protected open fun onClipCommit(op: Int, page: Int, nx: Float, ny: Float, poly: FloatArray?) {}
+
     protected open fun onNoteUpsert(
         id: String, page: Int, nx: Float, ny: Float, text: String, display: Int = NOTE_TAP,
     ) {}
@@ -1399,6 +1425,11 @@ open class PageCanvasView @JvmOverloads constructor(
      */
     protected fun eraseHit(x: Float, y: Float) {
         val loc = locate(x, y, wide = true) ?: return   // 页边的笔迹也要能擦到（画板模式）
+        // 一次拖动只叫一次 [onEraseBegin]：模式1 的撤销栈要在**动手之前**留一份快照，
+        // 而擦除是就地改 `strokes` 的（乐观预览），到了 onEraseEnd 现场早就没了。
+        // 放在这里而不是各个 pointerDown 分支：擦除有好几个入口（橡皮模式 / 笔的侧键 / 橡皮头），
+        // 它们最后都汇到这一处。
+        if (!erasingGesture) { erasingGesture = true; onEraseBegin() }
         val r2 = eraserSize * eraserSize
         if (eraserMode == 0) {
             var changed = false
@@ -1443,7 +1474,16 @@ open class PageCanvasView @JvmOverloads constructor(
         val bounds: FloatArray,       // x,y,w,h：命中内容的联合包围盒（画高亮框/手柄用）
     )
 
+    /**
+     * 当前框选选中集。**赋值即通知**（[onLassoSelectionChanged]）——顶栏那几个剪贴板按钮要据此
+     * 灰掉/亮起，而这个字段在本类里有七八处赋值点，逐个补调用迟早漏一处。
+     */
     protected var lassoSelection: LassoSelection? = null
+        set(v) {
+            val had = field != null
+            field = v
+            if (had != (v != null)) onLassoSelectionChanged(v != null)
+        }
     protected var lassoDragMode = 0                 // 0=无手势 1=框选 2=移动 3=缩放
     protected var lassoAnchorPage = -1
     protected var lassoAnchorNx = 0f
@@ -1497,6 +1537,28 @@ open class PageCanvasView @JvmOverloads constructor(
         lassoSyncNotes = false
         lassoDx = 0f; lassoDy = 0f
         invalidate()
+    }
+
+    /** 有没有选中集（顶栏剪贴板按钮的可用性；[onLassoSelectionChanged] 之外的直接查询口） */
+    fun hasLassoSelection(): Boolean = lassoSelection != null
+
+    /** 顶栏「撤销 / 重做」。 */
+    fun requestUndo(redo: Boolean) = onUndoRequested(redo)
+
+    /**
+     * 顶栏「剪切 / 复制」：把选中集的**多边形**交出去让真源复判（同框选移动的分工）。
+     * 剪切后本地立刻放弃选中——被剪掉的笔迹等真源回推才真的消失（几十毫秒，同擦除的观感）。
+     */
+    fun requestClipCopy(cut: Boolean) {
+        val sel = lassoSelection ?: return
+        onClipCommit(if (cut) CLIP_CUT else CLIP_COPY, sel.page, 0f, 0f, sel.poly)
+        if (cut) clearLasso()
+    }
+
+    /** 顶栏「粘贴」：落点 = **视口正中**那一页那一处（平板没有鼠标指针可用，同 web 端口径）。 */
+    fun requestClipPaste() {
+        val loc = locate(width / 2f, height / 2f, wide = true) ?: return
+        onClipCommit(CLIP_PASTE, loc.page, loc.nx, loc.ny, null)
     }
 
     /**
@@ -2523,6 +2585,7 @@ open class PageCanvasView @JvmOverloads constructor(
             }
             MODE_ERASE -> {
                 if (radialActive) { inkBatch.clear(); eraseBatch.clear() } else flushBatch()
+                erasingGesture = false
                 onEraseEnd()
                 lastEraseRel = sentRelSeq()
             }
