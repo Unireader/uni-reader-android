@@ -22,6 +22,15 @@ package com.xvan.unireader.shared
 data class TocItem(val depth: Int, val page: Int, val frac: Float, val label: String)
 
 /**
+ * 一枚**书签**（`../REQUIREMENTS.md §1.9`）：用户自己加的、带名字的定位记录。
+ * 与 PDF 自带目录是两回事，但显示时与目录**合并成同一棵树**（规则见 [TocMerge]）。
+ *
+ * 来源同样按模式分：模式2 从 Mac 的 `bookmarks` 广播解出来，模式1 从工作区 SQLite 的
+ * `note` 表（kind=5）读。列表恒按「页 → 页内位置 → 建立时刻」有序，**两端都别再自己排**。
+ */
+data class BookmarkItem(val id: String, val page: Int, val frac: Float, val title: String)
+
+/**
  * 书库一项。[id] 的含义**由各模式自定**，[ReaderDrawer] 只负责原样回传给 `onOpenDoc`：
  * 模式2 是**库文档 id**（`library`/`openDoc` 那个 id 空间，见 `../PROTOCOL.md §4.1` 的警告块），
  * 模式1 是本机 `library.sqlite` 的 `document.id`。[open] = 已经开着（模式2 = Mac 某个窗口里开着，

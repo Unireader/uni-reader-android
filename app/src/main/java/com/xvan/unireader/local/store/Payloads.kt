@@ -167,6 +167,29 @@ fun boundsOf(pts: List<Pt3>): DoubleArray {
  * 首版只**渲染**已有的文字注解与高亮（新建高亮要先有文字选择，属下一版），但仍要能无损回写：
  * `quote`/`rects`/`color`/`type_id` 一个都不能在安卓这边丢（红线同上）。
  */
+/**
+ * 书签 payload（note kind=5，`../REQUIREMENTS.md §1.9`）：页/页内位置走 note 的列，
+ * 这里只剩名字。键名与 Mac 端 `BookmarkPayload` 一致（`title`）。
+ */
+class BookmarkPayload(val raw: JSONObject) {
+
+    val title: String get() = raw.optString("title")
+
+    fun bytes(): ByteArray = raw.toString().toByteArray(StandardCharsets.UTF_8)
+
+    companion object {
+        fun parse(bytes: ByteArray): BookmarkPayload? = try {
+            BookmarkPayload(JSONObject(String(bytes, StandardCharsets.UTF_8)))
+        } catch (e: Exception) {
+            Log.w(InkPayload.TAG, "书签 payload 解析失败（${bytes.size}B），跳过该条", e)
+            null
+        }
+
+        fun of(title: String): BookmarkPayload =
+            BookmarkPayload(JSONObject().put("title", title))
+    }
+}
+
 class TextNotePayload(val raw: JSONObject) {
 
     val quote: String get() = raw.optString("quote")

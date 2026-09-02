@@ -30,6 +30,7 @@ import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.ScratchPad
 import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.local.store.toUiLayers
+import com.xvan.unireader.shared.BookmarkItem
 import com.xvan.unireader.shared.CanvasMargin
 import com.xvan.unireader.shared.Bg
 import com.xvan.unireader.shared.DocTabsBar
@@ -447,6 +448,18 @@ class ReaderActivity : Activity() {
                 refreshHud()
             }
             onOpenDoc = { id -> openDoc(id) }
+            // 书签（`../REQUIREMENTS.md §1.9`）：模式1 的真源就是本机库，写完读回来再喂抽屉
+            // （模式2 那边是 Mac 落库后广播回推——两模式都是「不乐观改本地表」）。
+            // 落点 = 当前视口顶那一页那一处，与 Mac 的 ⌘D 同口径。
+            onAddBookmark = { title ->
+                val c = cur()
+                val t = curTab()
+                if (c != null && t != null) {
+                    writeBookmark("加书签") { s -> s.insertBookmark(t.docId, c.topVisiblePage(), c.topFrac(), title) }
+                }
+            }
+            onRenameBookmark = { id, title -> writeBookmark("书签改名") { s -> s.renameBookmark(id, title) } }
+            onDeleteBookmark = { id -> writeBookmark("删书签") { s -> s.deleteNote(id) } }
         }
         // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）。
         // 面板改完即时生效（基类自己管），这里只负责把结果存下来——模式2 那两个回调是上行给 Mac 的，
@@ -804,6 +817,26 @@ class ReaderActivity : Activity() {
         drawer.setDocV(id)                        // 与 setToc 的 docId 对上才敢渲染（同模式2 的核对）
         drawer.setToc(id, toc ?: emptyList())
         drawerTocId = if (toc != null) id else ""
+        pushDrawerBookmarks()
+    }
+
+    /**
+     * 去库里读一次书签喂抽屉（异步，同 [refreshDrawerLibrary] 的套路）。
+     * 模式2 那边这一步是 Mac 的 `bookmarks` 广播；模式1 的真源就在本机库里。
+     */
+    private fun pushDrawerBookmarks() {
+        val id = curTab()?.docId ?: run { drawer.setBookmarks("", emptyList()); return }
+        val q = queue ?: return
+        q.submit("读书签（抽屉）", { s -> s.bookmarks(id) }, { list ->
+            // 库里已按「页 → 页内位置 → 建立时刻」排好，这里原样转一层
+            drawer.setBookmarks(id, list.map { BookmarkItem(it.id, it.page, it.frac, it.title) })
+        })
+    }
+
+    /** 书签的三种写（加/改名/删）：写库 → 读回来 → 喂抽屉。本地表一个字不改（同模式2 的纪律）。 */
+    private fun writeBookmark(what: String, body: (LibraryStore) -> Unit) {
+        val q = queue ?: return
+        q.submit(what, { s -> body(s) }, { pushDrawerBookmarks() })
     }
 
     /** 去库里读一次书库列表喂抽屉（异步；模式2 那边是 Mac 主动广播 `library`） */

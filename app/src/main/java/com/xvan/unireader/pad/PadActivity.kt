@@ -25,6 +25,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.zxing.integration.android.IntentIntegrator
 import com.xvan.unireader.R
+import com.xvan.unireader.shared.BookmarkItem
 import com.xvan.unireader.shared.Layer
 import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
@@ -478,6 +479,22 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 refresh()
             }
             onOpenDoc = { id -> client?.send(WireCodec.encodeOpenDoc(id)) }
+            // 书签：三个都只发**请求**，Mac 是唯一真源（落库后以 bookmarks 全量回推，
+            // 本端不做乐观更新——同 scratchDelete/scratchRename 的惯例）。
+            // 落点 = 当前视口顶那一页那一处，与 Mac 的 ⌘D 同口径。
+            onAddBookmark = { title ->
+                val p = padView.topVisiblePage()
+                client?.send(WireCodec.encodeBookmarkEdit(
+                    WireCodec.BM_ADD, java.util.UUID.randomUUID().toString(),
+                    p.toLong(), padView.topFrac(), title,
+                ))
+            }
+            onRenameBookmark = { id, title ->
+                client?.send(WireCodec.encodeBookmarkEdit(WireCodec.BM_RENAME, id, title = title))
+            }
+            onDeleteBookmark = { id ->
+                client?.send(WireCodec.encodeBookmarkEdit(WireCodec.BM_DELETE, id))
+            }
         }
 
         // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释）。工作区名来自 `library` 广播，
@@ -1033,6 +1050,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onToc(docId: String, list: List<WireCodec.TocEntry>) = runOnUiThread {
         drawer.setToc(docId, list.map { TocItem(it.depth, it.page, it.frac, it.label) })
+    }
+
+    override fun onBookmarks(docId: String, list: List<WireCodec.BookmarkEntry>) = runOnUiThread {
+        // 线上已按「页 → 页内位置 → 建立时刻」有序，这里原样转一层，别再排
+        drawer.setBookmarks(docId, list.map { BookmarkItem(it.id, it.page, it.frac, it.title) })
     }
 
     override fun onNotes(list: List<TextNote>) = runOnUiThread {

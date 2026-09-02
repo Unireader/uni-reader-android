@@ -71,6 +71,15 @@ object WireCodec {
 
     /** 与 [OP_STROKES] 逐字节相同，语义是「追加」（`../PROTOCOL.md §4.2`） */
     const val OP_STROKES_APPEND = 0x4C
+
+    /** 书签（`../REQUIREMENTS.md §1.9`）：S→C 全量镜像 / C→S 增删改请求 */
+    const val OP_BOOKMARKS = 0x4D
+    const val OP_BOOKMARK_EDIT = 0x4E
+
+    // bookmarkEdit 的 op
+    const val BM_ADD = 0
+    const val BM_RENAME = 1
+    const val BM_DELETE = 2
     const val OP_NACK = 0x50
 
     // phase / dir（§2）
@@ -112,6 +121,13 @@ object WireCodec {
 
     /** PDF 目录一项（toc 消息元素，先序拍平）。[page] = -1 是坏书签：跳不过去，渲染成灰行。 */
     data class TocEntry(val depth: Int, val page: Int, val frac: Float, val label: String)
+
+    /**
+     * 一枚书签（bookmarks 消息元素）。用户自己加的定位记录，与 PDF 自带目录是两回事，
+     * 但显示时要与目录**合并成同一棵树**（规则见 `shared/TocMerge.kt`）。
+     * 线上列表恒按「页 → 页内位置 → 建立时刻」有序，**别再自己排**。
+     */
+    data class BookmarkEntry(val id: String, val page: Int, val frac: Float, val title: String)
 
     /**
      * 草稿纸一项（scratchpads 消息元素；纯线格式概念——模式1 的草稿纸来自 SQLite，不走这里）。
@@ -187,6 +203,8 @@ object WireCodec {
         data class Library(val ws: String, val list: List<LibEntry>) : Msg()
         /** 当前文档的 PDF 目录。[docId] = 内容哈希，与 [Layout] 的 docId/v 同口径，渲染前必须核对 */
         data class Toc(val docId: String, val list: List<TocEntry>) : Msg()
+        /** 当前文档的书签全量镜像（Mac 唯一真源）。[docId] 口径同 [Toc]，渲染前必须核对 */
+        data class Bookmarks(val docId: String, val list: List<BookmarkEntry>) : Msg()
         /** 草稿纸列表全量镜像（Mac 唯一真源）。[open] = 当前打开 list 里第几张，-1 = 没开（线上 0xFFFF） */
         data class ScratchPads(val open: Int, val list: List<ScratchPadEntry>) : Msg()
         /** Mac 通知「在该页的页内点开文字笔记编辑器（新建态）」（环形盘 textNote 扇区提交的结果） */
@@ -403,6 +421,21 @@ object WireCodec {
         u8(OP_TEXT_NOTE); str(id); u8(op); u32(page); f32(nx); f32(ny); str(text); u8(display)
     }.bytes()
 
+    /**
+     * 书签增删改**请求**（Mac 是唯一真源，落库后以 bookmarks 全量回推为准，别乐观改本地表）。
+     * add 的 [id] 由本端生成 UUID 串（同 textNote 先例）；rename 只认 id+title、delete 只认 id，
+     * 其余字段填 0 即可（`../PROTOCOL.md §4.1`）。
+     */
+    fun encodeBookmarkEdit(
+        op: Int,
+        id: String,
+        page: Long = 0,
+        frac: Float = 0f,
+        title: String = "",
+    ): ByteArray = Writer().apply {
+        u8(OP_BOOKMARK_EDIT); u8(op); str(id); u32(page); f32(frac); str(title)
+    }.bytes()
+
     /** 改笔宽后整表上行（Mac 按下标对齐写回；数目不符 Mac 整包丢弃） */
     fun encodePenset(active: Int, list: List<Pen>): ByteArray =
         Writer().apply { u8(OP_PENSET); u16(active); u16(list.size); for (p in list) pen(p) }.bytes()
@@ -561,6 +594,21 @@ object WireCodec {
                         i++
                     }
                     Msg.Toc(docId, list)
+                }
+                OP_BOOKMARKS -> {
+                    val docId = r.str()
+                    val n = r.u16()
+                    val list = ArrayList<BookmarkEntry>(n)
+                    var i = 0
+                    // 单条最短 12 字节（两条空 str 各 2 + u32 + f32）
+                    while (i < n && r.remaining >= 12) {
+                        val id = r.str()
+                        val page = r.u32().toInt()
+                        val frac = r.f32()
+                        list.add(BookmarkEntry(id, page, frac, r.str()))
+                        i++
+                    }
+                    Msg.Bookmarks(docId, list)
                 }
                 OP_SCRATCH_PADS -> {
                     val openRaw = r.u16()

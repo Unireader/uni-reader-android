@@ -387,6 +387,54 @@ class LibraryStore(private val db: Db) : Closeable {
         )
     }
 
+    // ---------- 书签（note kind=5，`../REQUIREMENTS.md §1.9`） ----------
+
+    /**
+     * 读出一篇文档的全部书签，**按「页 → 页内位置 → 建立时刻」排好**——与 Mac 的
+     * `Bookmark.before` 同一口径。合并算法（[com.xvan.unireader.shared.TocMerge]）与三端显示
+     * 都指望这个有序不变量；排序口径不一致，「第 2 个书签」在两端就不是同一个。
+     * 坏 payload 单条跳过（同 [strokes]/[textNotes] 的口径）。
+     */
+    fun bookmarks(documentId: String): List<LibBookmark> {
+        val out = ArrayList<LibBookmark>()
+        var bad = 0
+        for (n in notes(documentId)) {
+            if (n.kind != NoteKind.BOOKMARK) continue
+            val title = BookmarkPayload.parse(n.payload)?.title
+            if (title == null) { bad++; continue }
+            out.add(LibBookmark(n.id, n.page, n.anchorY.toFloat(), title, n.createdAt))
+        }
+        if (bad > 0) Log.w(TAG, "$documentId：$bad 枚书签 payload 坏掉已跳过")
+        return out.sortedWith(
+            compareBy({ it.page }, { it.frac }, { it.createdAt }),
+        )
+    }
+
+    /** 加一枚书签。名字空白不落库（「名字必填」是产品规格，两模式都在落库这一层守一遍）。 */
+    fun insertBookmark(documentId: String, page: Int, frac: Float, title: String): String? {
+        val t = title.trim()
+        if (t.isEmpty()) return null
+        val id = java.util.UUID.randomUUID().toString()
+        val now = nowIso()
+        upsertNote(
+            LibNote(
+                id = id, documentId = documentId, kind = NoteKind.BOOKMARK, page = page,
+                anchorX = 0.0, anchorY = frac.toDouble(), anchorW = 0.0, anchorH = 0.0,
+                payload = BookmarkPayload.of(t).bytes(), createdAt = now, updatedAt = now,
+            ),
+        )
+        return id
+    }
+
+    /** 改名。找不到那一条 / 不是书签 / 名字空白 → 什么都不做。 */
+    fun renameBookmark(id: String, title: String) {
+        val t = title.trim()
+        if (t.isEmpty()) return
+        val old = db.query("SELECT * FROM note WHERE id=?", arrayOf(id)) { note(it) }.firstOrNull() ?: return
+        if (old.kind != NoteKind.BOOKMARK) return
+        upsertNote(old.copy(payload = BookmarkPayload.of(t).bytes(), updatedAt = nowIso()))
+    }
+
     /** 全部文字注解的锚定框（框选移动的命中判定用，见 [NoteAnchor]） */
     fun noteAnchors(documentId: String): List<NoteAnchor> = db.query(
         "SELECT id,page,anchor_x,anchor_y,anchor_w,anchor_h FROM note WHERE document_id=? AND kind=?",

@@ -107,6 +107,18 @@ data class InkDiff(val deleted: Int, val updated: Int, val inserted: Int) {
 }
 
 /** `note.kind`（Mac 端 `LibNote.kind` 的取值） */
+/**
+ * 一枚书签（note kind=5 读出来的形态，`../REQUIREMENTS.md §1.9`）。
+ * [createdAt] 只用来排序（页/页内位置并列时的稳定序），界面上不显示。
+ */
+data class LibBookmark(
+    val id: String,
+    val page: Int,
+    val frac: Float,
+    val title: String,
+    val createdAt: String,
+)
+
 object NoteKind {
     const val TEXT = 0
     const val CHAT = 1
@@ -114,6 +126,13 @@ object NoteKind {
     const val HIGHLIGHT = 3
     /** 草稿纸上的笔迹（v8）。与页内笔迹（kind=2）分开，读取时一个 `kind ==` 就筛干净 */
     const val SCRATCH_INK = 4
+
+    /**
+     * 书签（`../REQUIREMENTS.md §1.9`）：挂在「某页某处」的带名字定位记录。
+     * page → note.page，页内比例 → anchor_y（点锚，x/w/h 恒 0），payload = `{"title":"…"}`。
+     * **表结构一个字没改**，故不升 schema 版本——只是多一个 kind 值。
+     */
+    const val BOOKMARK = 5
 }
 
 /**

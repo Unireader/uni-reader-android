@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 85 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 90 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -148,6 +148,10 @@ class WireCodecTest {
             // #79 textNote 带展开方式：{id:"n3", upsert, page:1, (0.25,0.5), "悬浮", display=悬浮}
             // display=点击(0) 的老形态由 #38/#39 覆盖（它们的字节各多了一个 00 尾字节）
             79 to WireCodec.encodeTextNote("n3", WireCodec.NOTE_UPSERT, 1, 0.25f, 0.5f, "悬浮", NOTE_HOVER),
+            // #88~#90 bookmarkEdit 三态：add / rename / delete（rename 与 delete 的 page/frac 填 0）
+            88 to WireCodec.encodeBookmarkEdit(WireCodec.BM_ADD, "B3", 7, 0.25f, "定理 3.2"),
+            89 to WireCodec.encodeBookmarkEdit(WireCodec.BM_RENAME, "B3", title = "改了名"),
+            90 to WireCodec.encodeBookmarkEdit(WireCodec.BM_DELETE, "B3"),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -242,6 +246,20 @@ class WireCodecTest {
         assertTrue("strokesAppend(0x4C) 是追加", m85.append)
         assertEquals(305419896L, m85.ackRel)
         assertEquals(m52.list, m85.list)
+
+        // #86/#87 bookmarks（0x4D）：空表 / 两条。docId 与 toc 同口径，渲染前要核对
+        val m86 = WireCodec.decode(unhex(VECTORS[85])) as WireCodec.Msg.Bookmarks
+        assertEquals("H1", m86.docId)
+        assertTrue("没有书签时是空表，不是 null", m86.list.isEmpty())
+        val m87 = WireCodec.decode(unhex(VECTORS[86])) as WireCodec.Msg.Bookmarks
+        assertEquals("H1", m87.docId)
+        assertEquals(
+            listOf(
+                WireCodec.BookmarkEntry("B1", 0, 0f, "开头"),
+                WireCodec.BookmarkEntry("B2", 41, 0.5f, "证明这一步"),
+            ),
+            m87.list,
+        )
 
         // #54 library{ws:"阅读", list:[{A1,…,open}, {B2,SICP,未开}]}
         val m54 = WireCodec.decode(unhex(VECTORS[53])) as WireCodec.Msg.Library
@@ -445,7 +463,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(85, VECTORS.size)
+        assertEquals(90, VECTORS.size)
     }
 
     @Test
@@ -458,7 +476,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 84 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 90 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -549,6 +567,14 @@ class WireCodecTest {
             // #85 strokesAppend（0x4C）：与 #52 的 strokes 除首字节外**逐字节相同**
             "4c7856341201000000010000001414140000803f000020410302000000003f0000803e" +
                 "0000003f0000403f0000003e0000803f",
+            // #86~#90 书签（`../REQUIREMENTS.md §1.9`）：bookmarks(0x4D) 空表 / 两条；
+            // bookmarkEdit(0x4E) add / rename / delete
+            "4d020048310000",
+            "4d0200483102000200423100000000000000000600e5bc80e5a4b402004232290000000000003f" +
+                "0f00e8af81e6988ee8bf99e4b880e6ada5",
+            "4e0002004233070000000000803e0a00e5ae9ae7908620332e32",
+            "4e010200423300000000000000000900e694b9e4ba86e5908d",
+            "4e020200423300000000000000000000",
         )
     }
 }

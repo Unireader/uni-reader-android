@@ -24,6 +24,9 @@
 
     <color name="danger">#FFF85149</color>
 
+    <!-- 书签缎带：深色底上提亮一档，否则暗红压在 #0D1117 上几乎看不见 -->
+    <color name="bookmark">#FFF07A7A</color>
+
     <color name="bar_scrim">#E6161B22</color>
     <color name="bar_on">#FFE6EDF3</color>
     <color name="bar_on_variant">#FF8B949E</color>

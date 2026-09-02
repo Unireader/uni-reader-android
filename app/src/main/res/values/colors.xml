@@ -29,6 +29,10 @@
 
     <color name="danger">#FFB3261E</color>
 
+    <!-- 书签缎带（../REQUIREMENTS.md §1.9）：与 Mac 页面上那面红缎带同色，三端一眼认得出是同一样东西。
+         它与 danger 刻意分开——书签不是警告，只是恰好也用红。 -->
+    <color name="bookmark">#FFD63C3C</color>
+
     <!-- 阅读区/输入板浮在页面之上的条与面板：半透明，页面从底下透出来 -->
     <color name="bar_scrim">#F2FFFFFF</color>
     <color name="bar_on">#FF14181D</color>

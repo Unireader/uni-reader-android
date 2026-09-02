@@ -103,6 +103,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   的 `NoteBubble` ↔ web `render.ts` 的 `BUB`（`../REQUIREMENTS.md §1.2`）；
   `shared/CanvasMargin.kt`（画板模式的页边软边界档位：STEP/SLACK/LIMIT 三个常数 + `marginFor`）
   ↔ Mac `Sources/App/CanvasMargin.swift` ↔ web `shared.ts` 的 `canvasMarginFor`；
+  `shared/TocMerge.kt`（目录 + 书签的合并规则：一级组区间、组内插位、树顶平铺）
+  ↔ Mac `Sources/App/TOCMerge.swift`（**参照实现**，`../spike/toc-merge-test.swift` 19 项）
+  ↔ web `web/src/lib/tocMerge.ts`，本端 `TocMergeTest` 7 项与 Mac 那份逐条对应；
   `local/store/MirrorFp.kt`（离线镜像的行指纹：类型标签 + 分隔符 + 表规格/列顺序）
   ↔ Mac `Sources/Store/MirrorFingerprint.swift`，向量表 `../spike/mirror-fp-vectors.txt`
   （由 Mac 的 `spike/mirror-fp-test.swift` 生成，本端 `MirrorFpTest` 逐条比对，**只许在末尾追加**）

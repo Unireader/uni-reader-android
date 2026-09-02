@@ -51,12 +51,21 @@ class ReaderDrawer(private val a: Activity) {
     private var wsName = ""
     private var curPage = 0
     private val expanded = HashSet<Int>()
+    private var bookmarks: List<BookmarkItem> = emptyList()
+    private var bmDocId = ""
 
     /** 点目录条目：0-based 页 + 页内纵向比例 */
     var onJump: (Int, Float) -> Unit = { _, _ -> }
 
     /** 点书库条目：库文档 id */
     var onOpenDoc: (String) -> Unit = {}
+
+    // —— 书签（`../REQUIREMENTS.md §1.9`）。三个都只是**请求**：模式2 发给 Mac、模式1 落本机库，
+    // 两边都由各自的真源回推后再 [setBookmarks]，本类不改自己的表。
+    /** 加一枚：参数 = 名字（落点由调用方定，两模式都取「当前视口顶」，与 Mac ⌘D 同口径） */
+    var onAddBookmark: (String) -> Unit = {}
+    var onRenameBookmark: (String, String) -> Unit = { _, _ -> }
+    var onDeleteBookmark: (String) -> Unit = {}
 
     private val tocTab = tabButton("目录", R.drawable.ic_list) { switchTo(TAB_TOC) }
     private val libTab = tabButton("书库", R.drawable.ic_book) { switchTo(TAB_LIB) }
@@ -140,6 +149,17 @@ class ReaderDrawer(private val a: Activity) {
         if (isOpen && tab == TAB_TOC) rebuild()
     }
 
+    /**
+     * 书签到货（模式2 = Mac 的 `bookmarks` 广播；模式1 = 本机库读出来后调）。
+     * 与 [setToc] 同一条纪律：**不在这里核对 [docId]**，留到渲染时（[bmReady]）。
+     */
+    fun setBookmarks(docId: String, list: List<BookmarkItem>) {
+        bmDocId = docId
+        bookmarks = list
+        Log.i(TAG, "收到书签 ${list.size} 枚 docId=$docId（当前显示 docV=$docV）")
+        if (isOpen && tab == TAB_TOC) rebuild()
+    }
+
     fun setLibrary(ws: String, list: List<LibItem>) {
         wsName = ws
         lib = list
@@ -162,7 +182,9 @@ class ReaderDrawer(private val a: Activity) {
     }
 
     private val tocReady: Boolean get() = toc.isNotEmpty() && tocDocId == docV
+    private val bmReady: Boolean get() = bookmarks.isNotEmpty() && bmDocId == docV
 
+    /** 一行：目录项（[bm] = null）或书签。[i] 只对目录行有意义（折叠态按它记）。 */
     private class Row(
         val i: Int,
         val depth: Int,
@@ -171,9 +193,12 @@ class ReaderDrawer(private val a: Activity) {
         val label: String,
         val kids: Boolean,
         val parents: List<Int>,
+        val bm: BookmarkItem? = null,
     )
 
-    private fun rows(): List<Row> {
+    /** 纯目录的先序拍平（合并书签之前的那一份）。 */
+    private fun tocRows(): List<Row> {
+        if (!tocReady) return emptyList()
         val out = ArrayList<Row>(toc.size)
         val stack = ArrayList<Int>()          // stack[d] = 深度 d 的最近一项下标
         for (i in toc.indices) {
@@ -192,6 +217,29 @@ class ReaderDrawer(private val a: Activity) {
         return out
     }
 
+    /** 目录 + 书签合并（规则在 [TocMerge]，与 Mac `TOCMerge.swift` / web `tocMerge.ts` 同源）。 */
+    private fun rows(): List<Row> {
+        val base = tocRows()
+        val bms = if (bmReady) bookmarks else emptyList()
+        if (bms.isEmpty()) return base
+        val slots = TocMerge.place(base.map { TocMerge.Row(it.depth, it.page) }, bms.map { it.page })
+        val ins = HashMap<Int, MutableList<Row>>()
+        for ((k, b) in bms.withIndex()) {
+            val s = slots[k]
+            val owner = if (s.owner >= 0) base[s.owner] else null
+            val parents = if (owner != null) owner.parents + owner.i else emptyList()
+            ins.getOrPut(s.insertBefore) { ArrayList() }
+                .add(Row(-1, s.depth, b.page, b.frac, b.title, kids = false, parents = parents, bm = b))
+        }
+        val out = ArrayList<Row>(base.size + bms.size)
+        for (i in base.indices) {
+            ins[i]?.let { out.addAll(it) }
+            out.add(base[i])
+        }
+        ins[base.size]?.let { out.addAll(it) }
+        return out
+    }
+
     /**
      * 当前章节：起点不晚于当前页的项里页码最大的那个，并列取先序靠后（更深一层）的。
      *
@@ -203,7 +251,8 @@ class ReaderDrawer(private val a: Activity) {
         var best = -1
         var bestPage = -1
         for (r in rs) {
-            if (r.page < 0 || r.page > curPage) continue
+            // 只认目录行：追踪回答的是「我在第几章」，跳到书签行上没有意义（同 Mac / web）
+            if (r.bm != null || r.page < 0 || r.page > curPage) continue
             if (r.page >= bestPage) { bestPage = r.page; best = r.i }
         }
         return best
@@ -219,20 +268,22 @@ class ReaderDrawer(private val a: Activity) {
     }
 
     private fun buildToc() {
-        if (!tocReady) {
+        // 「添加书签」常驻在最上面：没目录的书也得能加（落点 = 当前视口顶，与 Mac ⌘D 同口径）
+        bodyBox.addView(addBookmarkRow(), LinearLayout.LayoutParams(-1, -2))
+        if (!tocReady && !bmReady) {
             bodyBox.addView(Ui.body(a, "本文档没有目录"))
             return
         }
         val rs = rows()
         val cur = currentIndex(rs)
         // 自动追踪：展开当前章节的祖先链（只增展开，不动用户手动折叠的其它分支）
-        if (cur >= 0) expanded.addAll(rs[cur].parents)
+        if (cur >= 0) rs.firstOrNull { it.bm == null && it.i == cur }?.let { expanded.addAll(it.parents) }
         var curView: View? = null
         for (r in rs) {
             if (!r.parents.all { expanded.contains(it) }) continue
-            val row = tocRow(r, r.i == cur)
+            val row = if (r.bm != null) bookmarkRow(r, r.bm) else tocRow(r, r.i == cur)
             bodyBox.addView(row, LinearLayout.LayoutParams(-1, -2))
-            if (r.i == cur) curView = row
+            if (r.bm == null && r.i == cur) curView = row
         }
         // 展开后把当前章节滚到视野中间
         val target = curView ?: return
@@ -286,6 +337,90 @@ class ReaderDrawer(private val a: Activity) {
             }
         }
         addView(hit, LinearLayout.LayoutParams(0, -2, 1f))
+    }
+
+    // ---------- 书签（`../REQUIREMENTS.md §1.9`） ----------
+
+    /** 顶上那条「添加书签」。名字必填 → 先弹输入框，输完才发请求。 */
+    private fun addBookmarkRow(): View = PadPanels.iconRow(a, R.drawable.ic_bookmark, "添加书签",
+        tint = Ui.onSurface(a)) {
+        val edit = PadPanels.inputBox(a, "书签名字")
+        Sheet(a).title("添加书签")
+            .content(edit)
+            .action("取消")
+            .action("添加", primary = true) {
+                val t = edit.text.toString().trim()
+                if (t.isNotEmpty()) onAddBookmark(t)   // 名字必填：本端也守一遍
+            }
+            .show()
+    }
+
+    /**
+     * 一行书签：缎带图标 + 名字 + 页码，行尾两枚键（改名 / 删除）。
+     * 缩进与目录行同一套（挂在一级组下时 depth=1），于是它读起来就是那一组里的一项。
+     */
+    private fun bookmarkRow(r: Row, b: BookmarkItem): LinearLayout = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(r.depth * a.dp(14), 0, 0, 0)
+        // 纯标记，不可点（可点的是右边两枚键与整行）
+        addView(
+            ImageView(a).apply {
+                setImageResource(R.drawable.ic_bookmark)
+                imageTintList = ColorStateList.valueOf(Ui.col(a, R.color.bookmark))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                val p = a.dp(8)
+                setPadding(p, p, p, p)
+            },
+            LinearLayout.LayoutParams(a.dp(30), a.dp(30)),
+        )
+        val label = TextView(a).apply {
+            text = b.title
+            textSize = 15f
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setTextColor(Ui.onSurface(a))
+        }
+        val pageNo = TextView(a).apply {
+            text = "${b.page + 1}"
+            textSize = 12f
+            setTextColor(Ui.onVariant(a))
+        }
+        val hit = LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(a.dp(6), a.dp(9), a.dp(8), a.dp(9))
+            isClickable = true
+            background = Ui.rippleOver(a, null, Ui.RADIUS, Ui.onSurface(a))
+            addView(label, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(pageNo, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
+            setOnClickListener { onJump(b.page, b.frac); close() }
+        }
+        addView(hit, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(
+            // 改名用 ic_text（草稿纸的「改名…」也是它，别为这一处新造图标）
+            Ui.iconButton(a, R.drawable.ic_text, "重命名", Ui.onVariant(a)) { showRenameBookmark(b) },
+            LinearLayout.LayoutParams(a.dp(30), a.dp(30)),
+        )
+        addView(
+            Ui.iconButton(a, R.drawable.ic_close, "删除", Ui.onVariant(a)) { onDeleteBookmark(b.id) },
+            LinearLayout.LayoutParams(a.dp(30), a.dp(30)),
+        )
+    }
+
+    private fun showRenameBookmark(b: BookmarkItem) {
+        val edit = PadPanels.inputBox(a, "书签名字").apply {
+            setText(b.title)
+            setSelection(text.length)
+        }
+        Sheet(a).title("重命名")
+            .content(edit)
+            .action("取消")
+            .action("保存", primary = true) {
+                val t = edit.text.toString().trim()
+                if (t.isNotEmpty()) onRenameBookmark(b.id, t)
+            }
+            .show()
     }
 
     private fun buildLib() {
