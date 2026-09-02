@@ -53,6 +53,8 @@ class ReaderDrawer(private val a: Activity) {
     private val expanded = HashSet<Int>()
     private var bookmarks: List<BookmarkItem> = emptyList()
     private var bmDocId = ""
+    /** 已经为哪一份书签集自动展开过（`docId#条数`）；见 [buildToc] 里那段 */
+    private var bmExpandedKey = ""
 
     /** 点目录条目：0-based 页 + 页内纵向比例 */
     var onJump: (Int, Float) -> Unit = { _, _ -> }
@@ -278,6 +280,15 @@ class ReaderDrawer(private val a: Activity) {
         val cur = currentIndex(rs)
         // 自动追踪：展开当前章节的祖先链（只增展开，不动用户手动折叠的其它分支）
         if (cur >= 0) rs.firstOrNull { it.bm == null && it.i == cur }?.let { expanded.addAll(it.parents) }
+        // 🔴 **带书签的那些组也要自动展开一次**：书签是按页号挂进一级组的，而一级组默认收着——
+        // 不展开的话「加完书签在目录里找不到」（2026-09-02 用户实测：485 条目录的书，加了一枚
+        // 死活看不见，日志里 `收到书签 1 枚` 且 docId 对得上，就是被折叠挡住了）。
+        // 只在**书签集变了**时展一次（键带条数），之后用户手动折叠仍然收得住。
+        val key = "$bmDocId#${bookmarks.size}"
+        if (bmReady && key != bmExpandedKey) {
+            bmExpandedKey = key
+            for (r in rs) if (r.bm != null) expanded.addAll(r.parents)
+        }
         var curView: View? = null
         for (r in rs) {
             if (!r.parents.all { expanded.contains(it) }) continue
