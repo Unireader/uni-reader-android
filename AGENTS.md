@@ -122,6 +122,13 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   只看「离落笔点的总位移」挡不住小字：写一个小字全程都在 14dp 半径里打转，停满 1s 盘就凭空弹出来。
   加了滑动窗口内的平均速度（写字必然在动、长按必然不动）。常量在 `PadConst.LP`，
   **与 Mac `AppModel` 的 `holdSpeed*` 是同一套的两份实现**（模式2 的判定跑在 Mac），改一边同步另一边。
+  另两条同族的规矩（2026-09-02 修，`../TODO.md` 已知 Bug 有完整成因）：
+  · **探针坐标锚在落笔那一刻的坐标系里**（`beginProbe` 冻结落点与页宽页高，`probeAt` 把屏幕位移
+  折成归一化量，**刻意不 clamp**）。翻页模式下笔拖着页面一起走，按当前页面算的话笔相对页面
+  几乎没动 → 判定方把「拖着翻页」当成长按。擦除模式页面不动，两种算法逐值相等。
+  · **迟到的 `pressRing on=true` / `radial open=true` 一律丢弃**（`overlayAllowed`，笔不在纸上就不画）。
+  这两样只在手势进行中才有意义；它们与 `strokes` 全量镜像共用一条有序 WS 通道，大帧一在飞就会迟到，
+  补画出来就是「环凭空冒出来、还不在笔尖」。`false`（撤环/收盘）永远照收——那是清理。
 - **笔迹回推有两种，别只处理一种**（2026-08-28，`../PROTOCOL.md §4.2`）：`strokes`(0x36) 是**整表替换**，
   `strokesAppend`(0x4C) 是**追加**（payload 逐字节相同，只差 opcode）。Mac 只在收笔那一处发追加帧
   ——全量镜像每收一笔就重发整篇是 O(n²)。对应 `PageCanvasView.setStrokes` / `appendStrokes` 两个入口，

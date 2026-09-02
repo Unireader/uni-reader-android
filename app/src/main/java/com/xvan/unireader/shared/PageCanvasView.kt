@@ -965,7 +965,27 @@ open class PageCanvasView @JvmOverloads constructor(
     protected var pressRing: PressRingState? = null
     protected var pressT0 = 0L
 
+    /**
+     * 🔴 **笔不在纸上就不许开盘/起环**（2026-09-02 用户报「环动不动凭空冒出来、还不在笔尖，
+     * 正常长按反而唤不出盘」的那道硬闸）。
+     *
+     * 模式2 里盘与环都是 Mac 判定后**下发**的，而它们与 `strokes` 全量镜像走同一条有序 WS 通道
+     * ——大帧一旦在飞，这些几十字节的控制帧就被压在后面（`LANServer` 合帧那段注释里的老账）。
+     * 等它到的时候手势往往已经结束：`on=true` 落在抬笔之后，环就按**上一笔的落笔点**凭空画出来
+     * （所以「不在笔尖」——笔根本不在纸上），而真正想要的那次长按，`radial` 又迟到被 `endPen`
+     * 收掉，于是「唤不出」。三个症状同一个成因。
+     *
+     * 迟到帧一律丢弃：这两样东西**只在手势进行中才有意义**，补画出来没有任何用处。
+     * `false`（撤环/收盘）永远照单接收——那是清理，迟到也得执行。
+     */
+    private fun overlayAllowed(open: Boolean, what: String): Boolean {
+        if (!open || activePen) return true
+        Log.i(TAG, "丢弃迟到的 $what：笔已不在纸上（控制帧被大帧压在后面了）")
+        return false
+    }
+
     fun setRadial(open: Boolean, page: Int, cx: Float, cy: Float, highlight: Int, items: List<RadialItem>) {
+        if (!overlayAllowed(open, "radial")) return
         // 空扇区表按「没开盘」处理（同网页 drawRadial 的 `!items.length` 分支），否则会出现
         // 盘既不画、进度环也被盘挡着不画的空窗
         radial = if (open && items.isNotEmpty()) RadialState(page, cx, cy, highlight, items) else null
@@ -973,6 +993,7 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     fun setPressRing(on: Boolean, page: Int, nx: Float, ny: Float) {
+        if (!overlayAllowed(on, "pressRing")) return
         // 不带时间戳：置 on 就用本机时钟起计（模式2 里 LAN RTT 的几毫秒偏差不可察觉）
         pressRing = if (on) PressRingState(page, nx, ny) else null
         if (on) {
@@ -2246,6 +2267,10 @@ open class PageCanvasView @JvmOverloads constructor(
         activePen = true
         penId = e.getPointerId(idx)
         radialActive = false
+        // 上一笔的盘/环一律不带进这一笔：`endPen` 已经收过一次，但那之后仍可能有迟到的
+        // `on=true` 落进来（见 overlayAllowed）。这里再收一次，代价为零。
+        radial = null
+        pressRing = null
         endHover()
 
         // 笔当橡皮用（笔尾橡皮头 / 按住侧键）：**只让这一笔走擦除**，不动全局 mode——松开笔就回到
@@ -2258,7 +2283,7 @@ open class PageCanvasView @JvmOverloads constructor(
                 eraseHit(x, y)
                 eraseBatch.add(ErasePt(eloc.nx, eloc.ny, eloc.page))
                 if (eraserRing) { eraserRingAt = floatArrayOf(x, y); invalidate() }
-                beginProbe(eloc.page, eloc.nx, eloc.ny)
+                beginProbe(eloc.page, eloc.nx, eloc.ny, x, y)
                 Log.i(TAG, "笔当橡皮用（侧键/橡皮头）→ 这一笔走擦除")
                 return
             }
@@ -2270,7 +2295,7 @@ open class PageCanvasView @JvmOverloads constructor(
             penX = x; penY = y
             vx = 0f; vy = 0f; lastMoveT = e.eventTime
             val ploc = locate(x, y)
-            if (ploc != null) beginProbe(ploc.page, ploc.nx, ploc.ny)
+            if (ploc != null) beginProbe(ploc.page, ploc.nx, ploc.ny, x, y)
             return
         }
 
@@ -2299,7 +2324,7 @@ open class PageCanvasView @JvmOverloads constructor(
                 eraseHit(x, y)
                 eraseBatch.add(ErasePt(loc.nx, loc.ny, loc.page))
                 if (eraserRing) { eraserRingAt = floatArrayOf(x, y); invalidate() }
-                beginProbe(loc.page, loc.nx, loc.ny)
+                beginProbe(loc.page, loc.nx, loc.ny, x, y)
             }
             MODE_LASSO -> {
                 // 落笔点记下来即可：拖动形态（框选/移动/缩放）在越过死区那一刻才判定
@@ -2314,10 +2339,41 @@ open class PageCanvasView @JvmOverloads constructor(
         }
     }
 
-    protected fun beginProbe(page: Int, nx: Float, ny: Float) {
+    /**
+     * 起探针流（擦除/翻页模式下与手势并行的那条流，唯一用途是驱动长按判定）。
+     *
+     * 🔴 **坐标锚在落笔那一刻的坐标系里**（[probeAt]），不是当前页面位置。
+     * 翻页模式下笔拖着页面一起走 —— 页面跟着笔跑，笔相对**页面**几乎没动，于是判定方
+     * （模式2 是 Mac、模式1 是 `RadialController`）看到的是一支「停着不动的笔」，
+     * 拖着页面滚了半天照样满 1s 呼出盘。用户报的「动不动突然冒出进度条」就有这一份。
+     */
+    protected fun beginProbe(page: Int, nx: Float, ny: Float, x: Float, y: Float) {
         probing = true
         probePage = page
+        probeX0 = x; probeY0 = y
+        probeNx0 = nx; probeNy0 = ny
+        probePw0 = max(1f, pw())
+        probeH0 = max(1f, if (page in 0 until pageCount) dispH[page] else pw())
         onProbeBegin(page, nx, ny)
+    }
+
+    // 探针的冻结坐标系（落笔那一刻的页宽/页高与落点），见 [beginProbe]
+    private var probeX0 = 0f
+    private var probeY0 = 0f
+    private var probeNx0 = 0f
+    private var probeNy0 = 0f
+    private var probePw0 = 1f
+    private var probeH0 = 1f
+
+    /**
+     * 探针坐标：把**屏幕位移**折成落笔那一刻尺度下的页内归一化量，写进 [out]。
+     *
+     * 刻意**不 clamp**：判定方只拿它做差（离落笔点多远、朝哪个方向），越界值反而是对的——
+     * clamp 回 0…1 等于把「拖出页面」这种最明显的移动抹平，长按闸就又瞎了。
+     */
+    protected fun probeAt(x: Float, y: Float, out: FloatArray) {
+        out[0] = probeNx0 + (x - probeX0) / probePw0
+        out[1] = probeNy0 + (y - probeY0) / probeH0
     }
 
     /** 写/擦出页边界时把坐标 clamp 在起笔页内（capture 同款） */
@@ -2342,9 +2398,10 @@ open class PageCanvasView @JvmOverloads constructor(
         val loc = locate(x, y, wide = true)   // 页边也能写/擦（画板模式）
 
         if (penMode == MODE_PAGE) {
-            // 环形盘开着时只发探针不平移
+            // 环形盘开着时只发探针不平移。探针用**冻结坐标系**（见 beginProbe）：这里页面正跟着
+            // 笔一起走，按当前页面算的话笔相对页面根本没动，判定方会把「拖着翻页」当成长按。
             if (probing) {
-                clampToPage(x, y, loc, probePage, tmp2)
+                probeAt(x, y, tmp2)
                 probeBatch.add(Pt2(tmp2[0], tmp2[1]))
             }
             if (radialActive) return
@@ -2394,7 +2451,7 @@ open class PageCanvasView @JvmOverloads constructor(
             if (eraserRing) { eraserRingAt = floatArrayOf(x, y); invalidate() }
         }
         if (probing) {
-            clampToPage(x, y, loc, probePage, tmp2)
+            probeAt(x, y, tmp2)
             probeBatch.add(Pt2(tmp2[0], tmp2[1]))
         }
     }
