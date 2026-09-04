@@ -7,6 +7,7 @@ import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.TextRun
 import com.xvan.unireader.shared.brushCode
 import com.xvan.unireader.shared.brushName
 import java.nio.charset.StandardCharsets
@@ -279,6 +280,49 @@ class TextNotePayload(val raw: JSONObject) {
             NOTE_ALWAYS -> "always"
             else -> "tap"
         }
+    }
+}
+
+/**
+ * `ocr_page.payload` 的 JSON 形态（跨平台契约，Mac `OCRPagePayload`）：
+ * `{ w, h, runs:[{text, x, y, w, h, chars?}] }`，框是**页内归一化 0~1、左上原点**。
+ *
+ * 安卓**只读不写**：本机不跑 OCR，这张表里的东西一律是 Mac 写的（随离线镜像同步过来）。
+ * 解析失败一律当作"这页没有文本层"——划字划不动比划出一堆乱码强。
+ */
+object OcrPagePayload {
+
+    /** 解析一页；坏 payload 返回空表并记一笔（别让一页坏数据把整本的划字功能拖没） */
+    fun parse(bytes: ByteArray): List<TextRun> = try {
+        val o = JSONObject(String(bytes, StandardCharsets.UTF_8))
+        val arr = o.optJSONArray("runs") ?: JSONArray()
+        val out = ArrayList<TextRun>(arr.length())
+        for (i in 0 until arr.length()) {
+            val r = arr.optJSONObject(i) ?: continue
+            val text = r.optString("text")
+            if (text.isEmpty()) continue
+            out.add(
+                TextRun(
+                    text = text,
+                    x = r.optDouble("x", 0.0).toFloat(),
+                    y = r.optDouble("y", 0.0).toFloat(),
+                    w = r.optDouble("w", 0.0).toFloat(),
+                    h = r.optDouble("h", 0.0).toFloat(),
+                    chars = chars(r),
+                ),
+            )
+        }
+        out
+    } catch (e: Exception) {
+        Log.w(InkPayload.TAG, "OCR payload 解析失败（${bytes.size}B），这页当作没有文本层", e)
+        emptyList()
+    }
+
+    /** 行内单字边界（可选键；缺了就是没有实测字位，选择回落权重近似） */
+    private fun chars(r: JSONObject): List<Float>? {
+        val a = r.optJSONArray("chars") ?: return null
+        if (a.length() == 0) return null
+        return (0 until a.length()).map { a.optDouble(it, 0.0).toFloat() }
     }
 }
 

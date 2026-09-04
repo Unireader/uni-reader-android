@@ -6,7 +6,9 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.drawable.Drawable
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -41,22 +43,68 @@ class PadOverlays(private val density: Float) {
     // ---------- 文字笔记标记 ----------
 
     /**
-     * 圆形底片 + 首字符（形制呼应环形盘图标）。配色日间/夜间通用——夜间只反转页图，
-     * 蓝底白边在深浅页面上都可读。
+     * 文字笔记图钉：**扁平圆底 + 图标 + 0.5 描边**，逐项对齐 Mac `PageCellView.notePin`
+     * （2026-09-04 用户要求「和 macOS 端对齐」）。
+     *
+     * 从前这里是「蓝底圆 + 正文首字」，跟 Mac 的「通用暖黄 / 类型色 + `note.text` 图标」
+     * 完全不是一个东西；尺寸也从 `页宽×0.02` 改成固定 dp（见 [PadConst.PIN]）。
+     *
+     * [rgb] = 底色（通用暖黄或笔记类型色，调用方按 `type_id` 查好）；
+     * [icon] = 画在圆里的图标，null = 通用（对应 Mac 的 SF Symbol `note.text`）。
+     * **无渐变/高光/投影**（红线：不拟物）。
      */
-    fun drawNoteMarker(c: Canvas, x: Float, y: Float, r: Float, text: String) {
+    fun drawNoteMarker(c: Canvas, x: Float, y: Float, r: Float, rgb: IntArray, icon: Drawable? = null) {
         p.style = Paint.Style.FILL
-        p.color = Color.argb(235, 31, 111, 235)
+        p.color = Color.rgb(rgb[0], rgb[1], rgb[2])
         c.drawCircle(x, y, r, p)
         p.style = Paint.Style.STROKE
-        p.strokeWidth = dp(1.5f)
-        p.color = Color.argb(217, 255, 255, 255)
+        p.strokeWidth = dp(0.5f)
+        p.color = Color.argb(38, 0, 0, 0)      // Mac：黑 0.15
         c.drawCircle(x, y, r, p)
-        textPaint.color = Color.WHITE
-        textPaint.textSize = r * 0.9f
-        textPaint.isFakeBoldText = true
-        c.drawText(text.ifEmpty { "T" }.substring(0, 1), x, y + centerBaseline(), textPaint)
-        textPaint.isFakeBoldText = false
+        val s = r * 2f * PadConst.PIN.ICON
+        if (icon != null) {
+            // Mac 的图标是黑 0.75 —— 底色是浅的暖黄/类型色，深色图标才读得出
+            icon.setTint(Color.argb(191, 0, 0, 0))
+            icon.setBounds((x - s / 2f).toInt(), (y - s / 2f).toInt(), (x + s / 2f).toInt(), (y + s / 2f).toInt())
+            icon.draw(c)
+        } else {
+            drawNoteGlyph(c, x - s / 2f, y - s / 2f, s)
+        }
+    }
+
+    /**
+     * 通用笔记图标（对应 Mac 的 SF Symbol `note.text`）：一张纸 + 三条横线。
+     * **画出来的**，同 [drawEditIcon] 的理由——字符/emoji 的字形随系统字体走，各机器长得都不一样。
+     * 坐标是 24 网格，与 `tools/icons/gen.py` 的口径一致（描边 1.8 round）。
+     */
+    private fun drawNoteGlyph(c: Canvas, x: Float, y: Float, s: Float) {
+        val u = s / 24f
+        fun px(v: Float) = x + v * u
+        fun py(v: Float) = y + v * u
+        p.style = Paint.Style.STROKE
+        p.color = Color.argb(191, 0, 0, 0)
+        p.strokeWidth = max(dp(0.6f), 1.8f * u)
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeJoin = Paint.Join.ROUND
+        rect.set(px(4f), py(3f), px(20f), py(21f))
+        c.drawRoundRect(rect, 2.5f * u, 2.5f * u, p)
+        c.drawLine(px(8f), py(8f), px(16f), py(8f), p)
+        c.drawLine(px(8f), py(12f), px(16f), py(12f), p)
+        c.drawLine(px(8f), py(16f), px(13f), py(16f), p)
+        p.strokeCap = Paint.Cap.BUTT
+        p.strokeJoin = Paint.Join.MITER
+    }
+
+    /**
+     * 划字选区的铺色（选字模式拖动中/选好后）：系统选择蓝的半透明块，圆角同文字铺色。
+     * 画在页图之上、墨迹之下 —— 盖在墨迹上就会挡住自己写的字（同 [drawTextFill] 的层序理由）。
+     */
+    fun drawTextSelection(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
+        rect.set(min(x0, x1), min(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
+        p.style = Paint.Style.FILL
+        p.color = Color.argb(PadConst.TEXT_SEL_A, 31, 111, 235)
+        val r = dp(2f)
+        c.drawRoundRect(rect, r, r, p)
     }
 
     // ---------- 文字笔记展开气泡 ----------

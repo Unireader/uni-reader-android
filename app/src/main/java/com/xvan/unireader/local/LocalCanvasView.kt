@@ -15,6 +15,8 @@ import com.xvan.unireader.shared.CLIP_CUT
 import com.xvan.unireader.shared.CLIP_PASTE
 import com.xvan.unireader.shared.CanvasMargin
 import com.xvan.unireader.shared.InkEdit
+import com.xvan.unireader.shared.OcrWatermark
+import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt2
@@ -76,6 +78,12 @@ class LocalCanvasView @JvmOverloads constructor(
 
     /** 环形盘「新建文字笔记」扇区的出口（ReaderActivity 接到文字注解新建路径） */
     var onRadialTextNote: ((page: Int, nx: Float, ny: Float) -> Unit)? = null
+
+    /**
+     * 模式1 比线上多一档「选字」（划字高亮 / 划字笔记，[MODE_TEXT]）。
+     * 模式2 用基类那份四档表——线格式里没有第五档，见 `PadConst.MODE_LABELS`。
+     */
+    override val modeLabels: List<String> get() = PadConst.LOCAL_MODE_LABELS
 
     init {
         radialCtl.onScratchAdd = { p, x, y -> onRadialScratchAdd?.invoke(p, x, y) }
@@ -559,6 +567,117 @@ class LocalCanvasView @JvmOverloads constructor(
                 runCatching { s.deleteNote(id) }
                     .onSuccess { Log.i(TAG, "文字注解删除 page=$page id=${id.take(8)}") }
                     .onFailure { Log.e(TAG, "文字注解删除失败", it) }
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
+    }
+
+    // ---------- 划字（选字模式）：文本层装载 + 高亮/选区注解落库 ----------
+
+    /**
+     * 装载这份内容的 OCR 文本层。**在 StoreQueue 线程上跑**（整本的 JSON 解析是几十毫秒级），
+     * 结果回主线程注入画布。
+     *
+     * 文本来自 `ocr_page`——Mac 跑的 OCR，随离线镜像双向同步过来（`../OFFLINE-MIRROR-PLAN.md §4.1`）；
+     * **本机不跑 OCR**，所以没同步过来的书在平板上就是划不动，这是设计如此。
+     *
+     * 水印一律在这里滤掉：跨页统计要整本的样本，逐页懒读攒不出来（同 Mac `rebuildWatermarkProfile`）。
+     */
+    fun loadTextLayer(contentHash: String) {
+        val q = store ?: return
+        if (contentHash.isEmpty()) { setTextRuns(emptyMap()); return }
+        q.submit(
+            "装载 OCR 文本层",
+            { s ->
+                val provider = s.ocrProvider(contentHash)
+                if (provider == null) {
+                    emptyMap()
+                } else {
+                    val raw = s.ocrRuns(contentHash, provider)
+                    val profile = OcrWatermark.buildProfile(raw)
+                    raw.mapValues { (_, runs) -> OcrWatermark.visible(runs, profile) }
+                        .filterValues { it.isNotEmpty() }
+                }
+            },
+            { setTextRuns(it) },
+        )
+    }
+
+    /**
+     * 把当前选区落成一条**高亮**（kind=3）。跨页选区**逐页各落一条**（每页自己的行框），
+     * 与 Mac `addHighlight` 完全同构。
+     */
+    fun commitHighlight(rgb: IntArray) {
+        val sel = textSelection ?: return
+        val q = store ?: return
+        val doc = documentId
+        val items = sel.pages.mapNotNull { page ->
+            val rects = sel.rects[page]?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val box = sel.bbox(page) ?: return@mapNotNull null
+            Triple(page, box, rects)
+        }
+        if (items.isEmpty()) return
+        val quote = sel.text
+        clearTextSelection()
+        q.submit(
+            "高亮落库 ${items.size} 页",
+            { s ->
+                s.transaction {
+                    for ((page, box, rects) in items) {
+                        s.insertHighlight(doc, UUID.randomUUID().toString(), page, box, quote, rects, rgb)
+                    }
+                }
+                Log.i(TAG, "高亮落库 ${items.size} 页，引文 ${quote.length} 字")
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
+    }
+
+    /** 一条待写的选区注解（编辑器保存时才真落库，见 [beginSelectionNote]） */
+    class PendingNote(
+        val page: Int,
+        val anchor: FloatArray,
+        val quote: String,
+        val rects: List<FloatArray>,
+    )
+
+    /** 点了「批注」：把选区交给宿主开编辑器。**这一步一个字都不写库**（同 Mac 的 `beginAddNote`） */
+    var onSelectionNote: ((PendingNote) -> Unit)? = null
+
+    /**
+     * 点「批注」：把当前选区打包交给宿主开编辑器。
+     *
+     * **两段式，与 Mac `beginAddNote` → `commitNote` 同构**：这一步不写库，用户在编辑器里
+     * 按了保存才走 [saveSelectionNote]。一段式（先落库再开编辑器）的话，点一下「批注」再返回
+     * 就会在页面上留一条空注解，用户得再去删——比"没写完就没了"糟。
+     *
+     * 只取**锚点那一页**：一条注解只能挂一页，跨页选区取第一页（引文仍是完整的）。
+     */
+    fun beginSelectionNote() {
+        val sel = textSelection ?: return
+        val page = sel.pages.firstOrNull() ?: return
+        val rects = sel.rects[page]?.takeIf { it.isNotEmpty() } ?: return
+        val box = sel.bbox(page) ?: return
+        val pending = PendingNote(page, box, sel.text, rects)
+        clearTextSelection()
+        onSelectionNote?.invoke(pending)
+    }
+
+    /** 编辑器保存：把那条选区注解真的落进 `note`（kind=0，带 quote/rects） */
+    fun saveSelectionNote(p: PendingNote, text: String, display: Int) {
+        val q = store ?: return
+        val doc = documentId
+        val id = UUID.randomUUID().toString()
+        q.submit(
+            "选区注解落库 page=${p.page}",
+            { s ->
+                runCatching {
+                    s.insertSelectionNote(doc, id, p.page, p.anchor, p.quote, p.rects, text, display = display)
+                }
+                    .onSuccess { Log.i(TAG, "选区注解落库 page=${p.page} 引文=${p.quote.length}字 正文=${text.length}字") }
+                    .onFailure { Log.e(TAG, "选区注解写库失败", it) }
                 noteSnapshot(s)
             },
             { applyNotes(it.notes, it.fills) },

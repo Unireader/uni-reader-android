@@ -56,6 +56,7 @@ class TopBar(private val a: Activity) {
             MODE_ERASE -> R.drawable.ic_mode_eraser
             MODE_PAGE -> R.drawable.ic_mode_pan
             MODE_LASSO -> R.drawable.ic_mode_lasso
+            MODE_TEXT -> R.drawable.ic_mode_text   // 模式1 专属（选字），模式2 循环不到这一档
             else -> R.drawable.ic_mode_pen
         }
     }

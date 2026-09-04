@@ -39,6 +39,7 @@ import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.MODE_PAGE
+import com.xvan.unireader.shared.MODE_TEXT
 import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
@@ -157,6 +158,11 @@ class ReaderActivity : Activity() {
         val notes: List<TextNote>,
         val fills: List<TextFill>,
         val pads: List<ScratchPad>,
+        /** 这一篇的内容 hash（划字要按它查 `ocr_page`）；没有可打开的版本时空串 */
+        val contentHash: String = "",
+        /** 笔记类型的图钉配色与图标名（`meta.note_types`），key = 大写 type_id */
+        val typeRgb: Map<String, IntArray> = emptyMap(),
+        val typeIcons: Map<String, String> = emptyMap(),
         val reason: String?,
     )
 
@@ -176,6 +182,14 @@ class ReaderActivity : Activity() {
 
     /** 草稿纸（模式1 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板 + 库读写 */
     private lateinit var scratch: ScratchController
+
+    /** 划字之后那条「四色高亮 / 批注 / 复制」的浮条（选字模式，见 [TextSelectBar]） */
+    private val selectBar by lazy {
+        TextSelectBar(this).apply {
+            onHighlight = { rgb -> cur()?.commitHighlight(rgb); hide() }
+            onAnnotate = { cur()?.beginSelectionNote(); hide() }
+        }
+    }
 
     /** 当前工作区。切工作区时整个换掉 */
     private var workspace: File? = null
@@ -392,7 +406,11 @@ class ReaderActivity : Activity() {
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { cur()?.turn(prev = false) }
             gap()
             // 模式键：图标随当前模式变，点一下轮换（环形盘/侧键/Mac 远程仍各自有效，这只是多一条路）
-            icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") { cur()?.cycleMode(); refreshHud() }
+            icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") {
+                cur()?.cycleMode()
+                refreshHud()
+                warnIfNoTextLayer()
+            }
             // 「切换笔」只在笔模式下出现且染当前笔色（refreshHud() 维护），其余模式占位纯属误导
             icon("pen", R.drawable.ic_pen, "切换笔") { cur()?.cyclePen(); refreshHud() }
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
@@ -540,6 +558,8 @@ class ReaderActivity : Activity() {
                 scratch.barView,
                 FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
             )
+            // 划字动作条：贴屏幕底部居中，只在有选区时显形（见 TextSelectBar）
+            addView(selectBar.view, selectBar.layoutParams())
             // 抽屉加在最后 = 盖在最上层（含 chrome 与全部浮层）：开着时下面一律不响应（同模式2）
             addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
@@ -928,8 +948,9 @@ class ReaderActivity : Activity() {
     private fun deactivate(t: Tab) {
         saveProgress(t)
         scratch.close()   // 草稿纸属于「当前这篇」：切走即关（视口不落库，重开回中，三端契约）
+        selectBar.hide()  // 划字浮条同理：它指着的是刚切走那一篇的选区
         t.canvas?.let { c ->
-            c.clearTransient()   // 环形盘/压感环留在背景标签页上没有意义
+            c.clearTransient()   // 环形盘/压感环/划字选区留在背景标签页上没有意义
             c.visibility = View.GONE
             c.trimImages()
         }
@@ -952,11 +973,14 @@ class ReaderActivity : Activity() {
                 val doc = s.document(t.docId)
                 val file = if (doc == null) null else Workspace.firstOpenablePdf(ws, s, t.docId)
                 if (doc == null) {
-                    DocData(null, null, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(), "库里没有这个文档：${t.docId}")
+                    DocData(
+                        null, null, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
+                        reason = "库里没有这个文档：${t.docId}",
+                    )
                 } else if (file == null) {
                     DocData(
                         doc, null, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
-                        "《${doc.title}》没有能打开的 PDF——需要在 Mac 上把文件拷进工作区",
+                        reason = "《${doc.title}》没有能打开的 PDF——需要在 Mac 上把文件拷进工作区",
                     )
                 } else {
                     // 落库上下文 + 当前作画图层（老文档可能没有图层行，补一条默认层，同 Mac 的行为）
@@ -966,7 +990,11 @@ class ReaderActivity : Activity() {
                         doc, file,
                         s.inkLayers(t.docId), s.strokes(t.docId), s.textNotes(t.docId), s.textFills(t.docId),
                         s.scratchPads(t.docId),   // v7 老库没有这张表 → 空列表，不炸（handoff §2.3①）
-                        null,
+                        // 划字要按内容 hash 查 `ocr_page`；一篇有多个版本时取第一个（同 variants 的顺序）
+                        contentHash = s.variants(t.docId).firstOrNull()?.contentHash.orEmpty(),
+                        typeRgb = s.noteTypeColors(),
+                        typeIcons = s.noteTypeIcons(),
+                        reason = null,
                     )
                 }
             },
@@ -1060,7 +1088,11 @@ class ReaderActivity : Activity() {
         c.documentId = t.docId
         c.activeLayerId = d.layers.firstOrNull()?.id ?: LibInkLayer.DEFAULT_ID
         c.applyStrokes(d.strokes, hiddenLayerIds(t))
+        // 图钉的底色/图标按笔记类型走（同 Mac）；SF Symbol 名 → 本端 ic_* 的映射见 NoteTypeIcons
+        c.setNoteTypes(d.typeRgb, NoteTypeIcons.resolve(this, d.typeIcons))
         c.applyNotes(d.notes, d.fills)
+        // 划字用的文本层（`ocr_page`，Mac 跑的 OCR 同步过来的）——整本一次读好，划字时零 I/O
+        c.loadTextLayer(d.contentHash)
         scratch.bind(queue, t.docId, t.pads, src, pageAspectOf(t))   // 装载完成：纸列表到位，图钉上页
         hideOpening()
         refreshHud()
@@ -1100,6 +1132,16 @@ class ReaderActivity : Activity() {
         onPinTap = { padId -> scratch.openById(padId) }
         // 框选选中集有无变化 → 顶栏那两颗剪切/复制跟着灰掉或亮起（背景标签页不刷，同 onHud）
         onLassoSelChanged = { if (curTab() === tab) refreshHud() }
+        // 划字：选区一变就更新那条「四色高亮 / 批注 / 复制」的浮条（背景标签页不刷，同 onHud）
+        onTextSelectionChanged = { sel -> if (curTab() === tab) selectBar.show(sel) }
+        // 划字「批注」：编辑器与点注解共用同一份（shared/PadPanels），保存了才真落库（同 Mac 两段式）
+        onSelectionNote = { pending ->
+            PadPanels.showNoteEditor(
+                this@ReaderActivity, "", true, NOTE_TAP,
+                onSave = { s, d -> if (s.isNotEmpty()) tab.canvas?.saveSelectionNote(pending, s, d) },
+                onDelete = {},
+            )
+        }
         // 图钉拖动松手：只挪锚点（页不变），落库由 ScratchController 走 StoreQueue
         onPinMove = { padId, nx, ny -> scratch.movePadAnchor(padId, nx, ny) }
         // 环形盘新扇区：盘心即锚点（等价「在当前位置新建」，只是位置用长按那一处）
@@ -1418,6 +1460,18 @@ class ReaderActivity : Activity() {
             },
             onDelete = { t.canvas?.deleteNote(id, page, nx, ny) },
         )
+    }
+
+    /**
+     * 切进「选字」但这本书没有文本层 → 说一句人话。
+     *
+     * 不说的话表现就是「划了没反应」，而原因（这本书还没在 Mac 上跑过 OCR）在平板上
+     * 无论如何猜不到。一句话说完，不摆技术说明（红线：界面上不许出现大段技术说明）。
+     */
+    private fun warnIfNoTextLayer() {
+        val c = cur() ?: return
+        if (c.mode != MODE_TEXT || c.hasTextLayer()) return
+        Toast.makeText(this, "这本书还没识别过文字，先在 Mac 上跑一次 OCR", Toast.LENGTH_LONG).show()
     }
 
     private fun showGotoPage() {

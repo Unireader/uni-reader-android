@@ -27,8 +27,20 @@ object PadConst {
     const val DEAD = 8f         // 单指平移死区（dp）
     const val LASSO_DEAD = 2f   // 框选手势最小拖动距离（dp），同 Mac `DragGesture(minimumDistance: 2)`
 
-    /** 工具模式标签，下标 = MODE_*（0 笔记 / 1 擦除 / 2 翻页 / 3 框选） */
+    /**
+     * 工具模式标签，下标 = MODE_*（0 笔记 / 1 擦除 / 2 翻页 / 3 框选）。
+     *
+     * 🔴 **这张表就是线上契约**（`../PROTOCOL.md §4.1` 的 `mode` u8）。**不许往这里加**——
+     * 加一档，模式2 的模式键就会循环到一个 Mac 不认识的值发过去。模式1 本机多出来的档
+     * 放 [LOCAL_MODE_LABELS]。
+     */
     val MODE_LABELS = listOf("笔记", "擦除", "翻页", "框选")
+
+    /**
+     * 模式1（独立版）的模式表：线上那四档 + 本机专属的「选字」（划字高亮/划字笔记，[MODE_TEXT]）。
+     * 模式2 用 [MODE_LABELS]，循环时碰不到第五档。
+     */
+    val LOCAL_MODE_LABELS = MODE_LABELS + "选字"
 
     val BRUSH_LABELS = mapOf(
         "ballpoint" to "圆珠笔",
@@ -110,6 +122,45 @@ object PadConst {
 
     /** 文字笔记标记的命中半径（页内归一化，同 capture 的 0.03） */
     const val NOTE_HIT = 0.03f
+
+    /**
+     * 文字笔记图钉（`PadOverlays.drawNoteMarker`）——**逐项对齐 Mac `PageCellView`**。
+     *
+     * 🔴 [R] 是**固定 dp、不跟页缩放**：Mac 那边就是固定 9pt 的外圆（11pt 图标 + 3pt 内边距），
+     * 缩放页面时图钉大小不变。本端从前按 `页宽×0.02` 夹在 12~22dp 算，放大后能长到 44dp 直径，
+     * 跟 Mac 完全不是一个东西（用户 2026-09-04 报「和 macOS 端对齐」）。
+     * 手指点得着靠的是**热区**（见 `noteMarkerHit` 的 `hot`），不是把图钉画大。
+     *
+     * [SEL_DX]/[SEL_DY] = 选区注解的图钉相对选区包围盒右上角的偏移（Mac `markerPos` 的 +9/+7）；
+     * [EDGE_X]/[EDGE_Y] = 钳进页内的边距（Mac 的 12/10）。
+     */
+    object PIN {
+        const val R = 9f
+        const val SEL_DX = 9f
+        const val SEL_DY = 7f
+        const val EDGE_X = 12f
+        const val EDGE_Y = 10f
+        /** 图标画多大 ÷ 外圆直径（Mac：11pt 图标 ÷ 18pt 外圆） */
+        const val ICON = 11f / 18f
+    }
+
+    /**
+     * 划字选区的铺色（`PadOverlays.drawTextSelection`）：系统选择蓝 rgba(31,111,235,0.28)。
+     * 与框选那套同一支蓝（`lassoBlue`），只是透明度按"压在正文上仍读得清"调。
+     */
+    const val TEXT_SEL_A = 71   // 0.28 × 255
+
+    /**
+     * 荧光笔预设色。**逐项对齐 Mac `Highlight.palette`**（存基色 a=1，渲染统一按
+     * [FILL.HIGHLIGHT_A] 降透明）——两端选「黄」得是同一个黄，否则同一本书上的高亮会有两种颜色。
+     * 第一项是默认色。
+     */
+    val HIGHLIGHT_PALETTE = listOf(
+        "黄" to intArrayOf(255, 214, 40),
+        "绿" to intArrayOf(150, 220, 120),
+        "蓝" to intArrayOf(120, 190, 255),
+        "粉" to intArrayOf(255, 150, 190),
+    )
 
     // ---- 笔触类型：跟 Mac 端 PenBrushType.strokeWidth/opacityMultiplier 同一套公式 ----
 

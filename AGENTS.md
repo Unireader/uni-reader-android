@@ -92,6 +92,13 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   血缘 meta + 借出记录编解码）+ `MirrorBuilder`（建镜像：`VACUUM INTO` → 拷 PDF → 内化外部文件 →
   算基线 → 源库记一笔借出）。**必须跑在 `StoreQueue` 的独占线程上**——慢卷上是分钟级（主线程做必 ANR），
   且老机器的「整文件拷」兜底路径正是靠「拷的时候进程内没人在写」才安全。
+- **划字（模式1 专属，2026-09-04）** = 顶栏模式键的**第五档「选字」**（`MODE_TEXT`）+
+  `shared/OcrText.kt`（`TextRun`/`OcrTextSelect`/`OcrFlow`/`OcrWatermark`）+ `shared/TextSelect.kt`
+  （选区装配）+ `local/TextSelectBar.kt`（划完浮出来的「四色高亮 / 批注 / 复制」）。
+  文本层来自工作区库的 `ocr_page`——**Mac 跑的 OCR，本机一行都不跑**（随离线镜像同步过来，
+  见 `../OFFLINE-MIRROR-PLAN.md §4.1`）；没同步过来的书在平板上就是划不动，切进选字模式会有一句提示。
+  🔴 **`MODE_TEXT=4` 不进 `PadConst.MODE_LABELS`**：那张表是线上契约（`../PROTOCOL.md §4.1` 的
+  `mode` u8 只有 0..3），模式1 用 `LOCAL_MODE_LABELS`，模式2 循环碰不到第五档。
 - 模式1 的阅读界面 = 「一个工作区」的多标签页（`ReaderActivity` + `DocTabsBar` + `TabSet`）：
   一个工作区一份 `LibraryStore`+`StoreQueue` 全部标签页共用，标签页懒装载、LRU 只保活 3 篇。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
@@ -118,7 +125,13 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `local/store/MirrorFp.kt`（离线镜像的行指纹：类型标签 + 分隔符 + 表规格/列顺序）
   ↔ Mac `Sources/Store/MirrorFingerprint.swift`，向量表 `../spike/mirror-fp-vectors.txt`
   （由 Mac 的 `spike/mirror-fp-test.swift` 生成，本端 `MirrorFpTest` 逐条比对，**只许在末尾追加**）
-  ——两端差一个 bit，同步时整张表会被误判成「全都改过」。
+  ——两端差一个 bit，同步时整张表会被误判成「全都改过」；
+  `shared/OcrText.kt` + `shared/TextSelect.kt`（**划字**：行内字符定位 `OcrTextSelect` ↔ Mac
+  `Sources/App/OCRTextSelect.swift`；列块分组 `OcrFlow` ↔ `OCRFlow.swift`；平铺水印剔除
+  `OcrWatermark` ↔ `OCRWatermark.swift`；选区装配 `TextSelect` ↔ `ReaderSurface+Selection.swift`
+  的 `ocrLineHit`/`ocrGroupSelection`/`ocrLinearSelection`），本端 `TextSelectTest` 14 项
+  ↔ Mac `spike/ocr-char-select-test.swift`/`ocr-watermark-test.swift`
+  ——判定不一致 = 同一本书两端划出来的字不一样，而那段文字会当 `quote` 落库。
   改完三端测试一起跑（安卓 `WireCodecTest` 的向量与 Mac/web 的跨端向量同源）。
 - **草稿纸画布坐标系 = 逻辑点（dp），原点＝创建点、可负无界**；橡皮半径按 `eraserRefWidth = 800`
   从页宽归一化折算，**三端必须同一个数**（`../SCRATCHPAD-ANDROID-HANDOFF.md §1`）。

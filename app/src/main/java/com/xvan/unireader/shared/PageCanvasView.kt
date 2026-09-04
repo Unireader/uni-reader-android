@@ -8,6 +8,7 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -215,6 +216,10 @@ open class PageCanvasView @JvmOverloads constructor(
     protected var pinDragActive = false
     private var pinDragCandidate = false   // 落点命中图钉、还没过死区
 
+    // 划字（选字模式）：与拖图钉共用单指平移那套死区判定，故状态位也放在一起
+    private var textSelCandidate = false   // 选字模式 + 落点有文本层、还没过死区
+    private var textSelDragging = false    // 已过死区，这一次手势是在划字（不平移、不甩惯性）
+
     /** 页码/缩放/工具状态变化 → 宿主刷新顶栏。两种模式的顶栏不同，故用回调 */
     var onHud: (() -> Unit)? = null
     protected open fun onHudChanged() { onHud?.invoke() }
@@ -233,6 +238,12 @@ open class PageCanvasView @JvmOverloads constructor(
 
         /** 乐观笔迹等真源的兜底时限：超了就撤，别把真源里根本没有的笔迹永远挂在屏幕上 */
         const val OPT_INK_TIMEOUT_MS = 3000L
+
+        /** 选字模式下「双击选整行」的两击间隔上限（系统 ViewConfiguration 默认也是 300ms） */
+        const val DOUBLE_TAP_MS = 300L
+
+        /** 通用笔记图钉的底色 = Mac `PageCellView.noteMarker`（1, 0.80, 0.15）换算成 0~255 */
+        val GENERAL_PIN_RGB = intArrayOf(255, 204, 38)
 
         /** 绘制耗时打点的窗口（帧）：够算出稳定均值，又不至于把日志刷满 */
         const val DRAW_STAT_FRAMES = 120
@@ -313,7 +324,16 @@ open class PageCanvasView @JvmOverloads constructor(
 
     fun penList(): List<Pen> = pens
     fun curPenOrNull(): Pen? = pens.getOrNull(penIndex)
-    fun modeLabel(): String = PadConst.MODE_LABELS.getOrElse(mode) { "笔记" }
+    /**
+     * 本端的模式表。基类（= 模式2）用**线上契约那四档**；模式1 覆写成
+     * [PadConst.LOCAL_MODE_LABELS]（多一档本机专属的「选字」，见 [MODE_TEXT]）。
+     *
+     * 🔴 别把第五档写进 [PadConst.MODE_LABELS]：模式2 的模式键会循环到它、
+     * 然后把一个 Mac 不认识的 `mode=4` 发过去。
+     */
+    protected open val modeLabels: List<String> get() = PadConst.MODE_LABELS
+
+    fun modeLabel(): String = modeLabels.getOrElse(mode) { "笔记" }
     fun penLabel(): String = PadConst.brushLabel(brushName(pens[penIndex].brush))
 
     protected fun curPenPreset() = pens[penIndex]
@@ -322,9 +342,11 @@ open class PageCanvasView @JvmOverloads constructor(
     fun cycleMode() {
         if (activePen) endPen()   // 切换前正常收笔
         val leavingLasso = mode == MODE_LASSO
-        mode = (mode + 1) % PadConst.MODE_LABELS.size
+        val leavingText = mode == MODE_TEXT
+        mode = (mode + 1) % modeLabels.size
         eraserRingAt = null
         if (leavingLasso) clearLasso()
+        if (leavingText) clearTextSelection()   // 切走选字：残留的蓝块会误导（同框选那条）
         endHover()
         onModeChanged(mode)
         invalidate()
@@ -339,6 +361,7 @@ open class PageCanvasView @JvmOverloads constructor(
         if (activePen) endPen()
         if (mode == MODE_NOTE) penIndex = (penIndex + 1) % pens.size
         if (mode == MODE_LASSO) clearLasso()
+        if (mode == MODE_TEXT) clearTextSelection()   // 切走选字：残留的蓝块会误导（同框选那条）
         mode = MODE_NOTE
         onPenSelected(penIndex)
         onModeChanged(mode)
@@ -348,9 +371,10 @@ open class PageCanvasView @JvmOverloads constructor(
 
     /** 键盘直切模式（n/v/l 键）：本地切 → 同步 Mac；切走框选即放弃选中。与 cycleMode 同收尾，只是目标指定。 */
     fun setModeLocal(m: Int) {
-        if (m !in PadConst.MODE_LABELS.indices || m == mode) return
+        if (m !in modeLabels.indices || m == mode) return
         if (activePen) endPen()
         if (mode == MODE_LASSO) clearLasso()
+        if (mode == MODE_TEXT) clearTextSelection()   // 切走选字：残留的蓝块会误导（同框选那条）
         mode = m
         eraserRingAt = null
         endHover()
@@ -368,6 +392,7 @@ open class PageCanvasView @JvmOverloads constructor(
         if (activePen) endPen()
         penIndex = i
         if (mode == MODE_LASSO) clearLasso()
+        if (mode == MODE_TEXT) clearTextSelection()   // 切走选字：残留的蓝块会误导（同框选那条）
         mode = MODE_NOTE
         onPenSelected(penIndex)
         onModeChanged(mode)
@@ -447,10 +472,14 @@ open class PageCanvasView @JvmOverloads constructor(
         }
     }
 
-    /** 收 mode：Mac 侧切模式回推（悬浮工具条/环形盘选笔后回 note） */
+    /**
+     * 收 mode：Mac 侧切模式回推（悬浮工具条/环形盘选笔后回 note）。
+     * 判据用**线上那张表**（不是 [modeLabels]）——Mac 只会发 0..3，发别的一律不认。
+     */
     fun setMode(m: Int) {
         if (m in PadConst.MODE_LABELS.indices && m != mode) {
             if (mode == MODE_LASSO) clearLasso()   // 被 Mac 切走框选工具：同本地切模式
+            if (mode == MODE_TEXT) clearTextSelection()
             mode = m
             eraserRingAt = null
             invalidate()
@@ -1017,11 +1046,126 @@ open class PageCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    // —— 划字（选字模式 MODE_TEXT）——
+    //
+    // 文本层来自工作区库里的 `ocr_page`（Mac 跑的 OCR，随离线镜像同步过来）；**本机不跑 OCR**。
+    // 模式2 这一层恒空：那边划字在 Mac 上做，平板只是块画布。
+    // 判定全在 `TextSelect`（纯函数，与 Mac `ReaderSurface+Selection` 同一套），这里只管手势与画。
+
+    /** 页 → 该页**可见**行（已滤水印）。由宿主注入，见 `LocalCanvasView.applyTextLayer` */
+    private var textRuns: Map<Int, List<TextRun>> = emptyMap()
+
+    /** 页 → 列/块分组（`OcrFlow.columnGroups`），懒算带缓存：分组只随文本层变，一页算一次就够 */
+    private val textGroupCache = HashMap<Int, IntArray>()
+
+    /** 这本书有没有文本层——没有的话选字模式该给用户一句话，而不是"划了没反应" */
+    fun hasTextLayer(): Boolean = textRuns.isNotEmpty()
+
+    fun setTextRuns(map: Map<Int, List<TextRun>>) {
+        textRuns = map
+        textGroupCache.clear()
+        clearTextSelection()
+        Log.i(TAG, "文本层注入 ${map.size} 页，共 ${map.values.sumOf { it.size }} 行")
+        invalidate()
+    }
+
+    private val textProvider = object : TextSelect.Provider {
+        override fun runs(page: Int): List<TextRun>? = textRuns[page]
+        override fun groups(page: Int): IntArray =
+            textGroupCache.getOrPut(page) { OcrFlow.columnGroups(textRuns[page].orEmpty()) }
+    }
+
+    /** 当前选区（null = 没选）。**瞬态**：不落库、不上行，就是"此刻选中了哪几个字" */
+    var textSelection: TextSelection? = null
+        private set
+
+    /** 选区变化（含清空）：宿主据此显示/收起那条「高亮 / 批注 / 复制」动作条 */
+    var onTextSelectionChanged: (TextSelection?) -> Unit = {}
+
+    private var textSelAnchor: TextSelect.Point? = null
+    private var textSelActive = false
+
+    /** 双击选整行：记上一次轻点的时间与位置 */
+    private var lastTextTapT = 0L
+    private var lastTextTapX = 0f
+    private var lastTextTapY = 0f
+
+    fun clearTextSelection() {
+        if (textSelection == null) return
+        textSelection = null
+        onTextSelectionChanged(null)
+        invalidate()
+    }
+
+    private fun setTextSelection(s: TextSelection?) {
+        textSelection = s
+        onTextSelectionChanged(s)
+        invalidate()
+    }
+
+    /** 落点起选：记锚点。返回 false = 这里没有文本层，别把这一下当划字（照旧平移） */
+    private fun beginTextSelect(x: Float, y: Float): Boolean {
+        val loc = locate(x, y) ?: return false
+        if (textRuns[loc.page].isNullOrEmpty()) return false
+        textSelAnchor = TextSelect.Point(loc.page, loc.nx, loc.ny)
+        textSelActive = false
+        return true
+    }
+
+    /** 拖动中：锚点 → 当前点重算选区 */
+    private fun moveTextSelect(x: Float, y: Float) {
+        val a = textSelAnchor ?: return
+        val loc = locate(x, y) ?: return
+        textSelActive = true
+        setTextSelection(TextSelect.select(textProvider, a, TextSelect.Point(loc.page, loc.nx, loc.ny)))
+    }
+
+    private fun endTextSelect() {
+        textSelAnchor = null
+        textSelActive = false
+    }
+
+    /**
+     * 选字模式下的轻点（没越过死区）：**双击选整行，单击收起选区**。
+     * 与 Mac 的「双击选词/行、单击取消」同语义（`selectWord` 的 OCR 分支就是选整行）。
+     */
+    private fun tapTextSelect(x: Float, y: Float) {
+        val now = SystemClock.uptimeMillis()
+        val isDouble = now - lastTextTapT <= DOUBLE_TAP_MS &&
+            hypot(x - lastTextTapX, y - lastTextTapY) <= dp(24f)
+        lastTextTapT = now
+        lastTextTapX = x
+        lastTextTapY = y
+        if (!isDouble) { clearTextSelection(); return }
+        val loc = locate(x, y) ?: return
+        setTextSelection(TextSelect.selectLine(textProvider, loc.page, loc.nx, loc.ny))
+    }
+
+    /** 选区铺色：页图之上、墨迹之下（同 Mac 的层序——盖在墨迹上会挡住自己写的字） */
+    private fun drawTextSelection(canvas: Canvas) {
+        val sel = textSelection ?: return
+        for ((page, rects) in sel.rects) {
+            if (page !in 0 until pageCount) continue
+            val p = pw()
+            val h = dispH[page]
+            val top = barH + offY[page] - scrollY
+            if (top > height || top + h < barH) continue
+            for (r in rects) {
+                val x0 = contentLeft() + r[0] * p
+                val y0 = top + r[1] * h
+                overlays.drawTextSelection(canvas, x0, y0, x0 + r[2] * p, y0 + r[3] * h)
+            }
+        }
+    }
+
     /** 编辑器保存：乐观更新本地列表并上行（Mac 随后回传 notes 全量镜像） */
     fun upsertNote(id: String, page: Int, nx: Float, ny: Float, text: String, display: Int = NOTE_TAP) {
         onNoteUpsert(id, page, nx, ny, text, display)
-        val rec = TextNote(id, page.toLong(), nx, ny, text, display)
         val i = notes.indexOfFirst { it.id == id }
+        // 改一条已有的注解：**anchor 宽与类型原样留着**。落库那边也只改正文与展开方式
+        // （`upsertTextNote` 的约定），这里丢掉的话图钉会先跳回选区起点、等回推才跳回行末。
+        val old = notes.getOrNull(i)
+        val rec = TextNote(id, page.toLong(), nx, ny, text, display, old?.aw ?: 0f, old?.typeId)
         if (i >= 0) notes[i] = rec else notes.add(rec)
         invalidate()
     }
@@ -1087,6 +1231,7 @@ open class PageCanvasView @JvmOverloads constructor(
         radialActive = false
         radial = null
         pressRing = null
+        clearTextSelection()   // 选区也是瞬态的：切走这个标签页再回来，不该还挂着一段蓝
         invalidate()
     }
 
@@ -1170,6 +1315,7 @@ open class PageCanvasView @JvmOverloads constructor(
         }
 
         drawTextFills(canvas)
+        drawTextSelection(canvas)   // 划字选区压在已有铺色之上（正在选的那块要看得见）
 
         // 静态笔迹层（框选提交待回传期间：命中项按位移/缩放乐观渲染）。
         // ⚠️ 性能红线：`strokes` 是**全文档**笔迹（模式2 的 `broadcastStrokes` 就是整篇发过来的），
@@ -1295,22 +1441,38 @@ open class PageCanvasView @JvmOverloads constructor(
 
     protected fun drawNoteMarkers(canvas: Canvas, sel: LassoSelection?) {
         if (notes.isEmpty()) return
-        val r = (pw() * 0.02f).coerceIn(dp(12f), dp(22f))
+        val r = noteMarkerRadius()
+        val pos = FloatArray(2)
         for (i in notes.indices) {
-            val n = notes[i]
-            var nnx = n.nx
-            var nny = n.ny
-            if (sel != null && sel.page == n.page.toInt() && sel.noteIdx.contains(i)) {
-                if (lassoGhost(nnx, nny, tmp2)) { nnx = tmp2[0]; nny = tmp2[1] }
-            }
-            val page = n.page.toInt()
-            if (page !in 0 until pageCount) continue
-            val x = viewX(page, nnx)
-            val y = viewY(page, nny)
+            if (!noteViewPos(i, sel, pos)) continue
+            val x = pos[0]
+            val y = pos[1]
             if (y < barH - r || y > height + r || x < -r || x > width + r) continue
-            overlays.drawNoteMarker(canvas, x, y, r, n.text)
+            val n = notes[i]
+            overlays.drawNoteMarker(canvas, x, y, r, noteTypeRgb(n.typeId), noteTypeIcon(n.typeId))
         }
     }
+
+    // —— 笔记类型（图钉的底色与图标；`meta.note_types` 由宿主读好注入）——
+
+    private var noteTypeRgbMap: Map<String, IntArray> = emptyMap()
+    private var noteTypeIconMap: Map<String, Drawable> = emptyMap()
+
+    /**
+     * 注入笔记类型的配色与图标（模式1 从 `meta.note_types` 读；模式2 不注入 = 一律通用）。
+     * key 一律**大写**的 type_id（同库层 `noteTypeColors` 的口径，Mac 写的是大写 UUID）。
+     */
+    fun setNoteTypes(rgb: Map<String, IntArray>, icons: Map<String, Drawable>) {
+        noteTypeRgbMap = rgb
+        noteTypeIconMap = icons
+        invalidate()
+    }
+
+    /** 通用暖黄 = Mac `PageCellView.noteMarker`（1, 0.80, 0.15）换算成 0~255 */
+    private fun noteTypeRgb(typeId: String?): IntArray =
+        noteTypeRgbMap[typeId?.uppercase()] ?: GENERAL_PIN_RGB
+
+    private fun noteTypeIcon(typeId: String?): Drawable? = noteTypeIconMap[typeId?.uppercase()]
 
     // —— 文字笔记展开气泡（每条自己的 display：0=点击 1=悬停 2=始终）——
     // 几何全在 [NoteBubbleGeom]（三端同一套比例常数），这里只做「哪几条展开着 + 画在哪一页」。
@@ -1321,10 +1483,23 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 笔正悬停在哪条笔记的标记上（`hover` 模式的展开条件）；手指没有悬停，走点击降级 */
     protected var noteHoverId: String? = null
 
-    /** 笔记标记半径（视口 px）：与 [drawNoteMarkers] 同一口径，命中判定/气泡避让共用 */
-    protected fun noteMarkerRadius(): Float = (pw() * 0.02f).coerceIn(dp(12f), dp(22f))
+    /**
+     * 笔记标记半径（视口 px）：与 [drawNoteMarkers] 同一口径，命中判定/气泡避让共用。
+     *
+     * 🔴 **固定 dp，不跟页缩放**——Mac 那边就是固定 9pt（见 [PadConst.PIN]）。
+     * 从前按 `页宽×0.02` 夹在 12~22dp 算，放大后图钉直径能到 44dp，跟 Mac 完全两样。
+     */
+    protected fun noteMarkerRadius(): Float = dp(PadConst.PIN.R)
 
-    /** 一条笔记标记此刻的视口坐标（含框选乐观变换），画标记/布气泡/命中判定共用 */
+    /**
+     * 一条笔记标记此刻的视口坐标（含框选乐观变换），画标记/布气泡/命中判定共用。
+     *
+     * 落位规则**逐项对齐 Mac `PageCellView.markerPos`**：
+     * · **选区注解**（[TextNote.aw] > 0）落在选区**行末右侧**（`anchor.maxX + 9dp`、
+     *   `anchor.minY + 7dp`）——压在选区起点上会遮住被批注的原文；
+     * · **点注解**落在锚点本身；
+     * · 两者最后都钳进页内（12/10dp 边距），否则贴边的笔记图钉会有一半在页外。
+     */
     private fun noteViewPos(i: Int, sel: LassoSelection?, out: FloatArray): Boolean {
         val n = notes[i]
         val page = n.page.toInt()
@@ -1334,8 +1509,20 @@ open class PageCanvasView @JvmOverloads constructor(
         if (sel != null && sel.page == page && sel.noteIdx.contains(i)) {
             if (lassoGhost(nnx, nny, tmp2)) { nnx = tmp2[0]; nny = tmp2[1] }
         }
-        out[0] = viewX(page, nnx)
-        out[1] = viewY(page, nny)
+        val selNote = n.aw > 0f
+        var x = viewX(page, if (selNote) nnx + n.aw else nnx) + if (selNote) dp(PadConst.PIN.SEL_DX) else 0f
+        var y = viewY(page, nny) + if (selNote) dp(PadConst.PIN.SEL_DY) else 0f
+        // 钳进页内（页左右缘 = 内容左缘 + 页宽；纵向 = 该页的显示高）
+        val left = contentLeft()
+        val right = left + pw()
+        val top = barH + offY[page] - scrollY
+        val bottom = top + dispH[page]
+        val ex = dp(PadConst.PIN.EDGE_X)
+        val ey = dp(PadConst.PIN.EDGE_Y)
+        x = x.coerceIn(left + ex, max(left + ex, right - ex))
+        y = y.coerceIn(top + ey, max(top + ey, bottom - ey))
+        out[0] = x
+        out[1] = y
         return true
     }
 
@@ -2210,9 +2397,10 @@ open class PageCanvasView @JvmOverloads constructor(
                 } else {
                     val wasPanning = panStarted
                     val wasPinDrag = pinDragActive
-                    // 单指轻点（没越过死区、没捏合过、也没拖过图钉、确实是这根手指落下的那次手势）
-                    val tap = !wasPanning && !wasPinDrag && !gesturePinched && !gestureBlocked &&
-                        panId >= 0 && e.actionMasked == MotionEvent.ACTION_UP
+                    val wasTextSel = textSelDragging
+                    // 单指轻点（没越过死区、没捏合过、也没拖过图钉/划过字、确实是这根手指落下的那次手势）
+                    val tap = !wasPanning && !wasPinDrag && !wasTextSel && !gesturePinched &&
+                        !gestureBlocked && panId >= 0 && e.actionMasked == MotionEvent.ACTION_UP
                     val tx = panDownX; val ty = panDownY
                     // 松手位置用于提交图钉拖动（比最后一帧 move 更准）
                     val pi = e.findPointerIndex(panId)
@@ -2220,15 +2408,25 @@ open class PageCanvasView @JvmOverloads constructor(
                     val uy = if (pi >= 0) e.getY(pi) else ty
                     touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
                     pinDragCandidate = false; pinDragActive = false
+                    textSelCandidate = false; textSelDragging = false
+                    endTextSelect()
                     when {
+                        wasTextSel -> Unit              // 划字松手：选区已经在拖动里算好了，动作条自己会弹
                         wasPanning -> startMomentum()   // 松手甩动 → 惯性
                         wasPinDrag ->
                             if (e.actionMasked == MotionEvent.ACTION_UP) onPinDragEnd(ux, uy)
                             else onPinDragCancel()
                         // 书签缎带 → 草稿纸图钉 → 文字笔记标记/气泡铅笔（缎带贴在页右缘，
                         // 与另两者不会撞位；放最前是因为它的热区最小、被别人先吃掉就点不着了）
+                        // 页面上的东西优先（缎带 → 草稿纸图钉 → 笔记标记/气泡铅笔），
+                        // 都没命中且在选字模式下才当划字的轻点：双击选整行、单击收起选区
+                        // （与 Mac 同语义）。**次序不能反**——反了在选字模式下就点不开图钉了。
                         tap -> bookmarkHit(tx, ty)?.let { onBookmarkTap(it) }
-                            ?: run { if (!onFingerTap(tx, ty)) tapNote(tx, ty) }
+                            ?: run {
+                                if (!onFingerTap(tx, ty) && !tapNote(tx, ty) && mode == MODE_TEXT) {
+                                    tapTextSelect(tx, ty)
+                                }
+                            }
                     }
                 }
             }
@@ -2249,6 +2447,9 @@ open class PageCanvasView @JvmOverloads constructor(
             lastPanX = x; lastPanY = y; panDownX = x; panDownY = y
             panStarted = false
             pinDragCandidate = fingerPinHit(x, y)   // 落在图钉上：过死区前都还有可能是单击
+            // 选字模式：这一下**可能**是划字。过死区才真开始（没过就是轻点，走双击选行/收起选区），
+            // 与图钉拖动共用同一套死区判定；这里落在没有文本层的地方则一切照旧＝平移。
+            textSelCandidate = mode == MODE_TEXT && !pinDragCandidate && beginTextSelect(x, y)
             vx = 0f; vy = 0f; lastMoveT = eventTime
         }
     }
@@ -2267,11 +2468,13 @@ open class PageCanvasView @JvmOverloads constructor(
                 lastPanX = t.x; lastPanY = t.y; panDownX = t.x; panDownY = t.y
                 panStarted = false
                 pinDragCandidate = false
+                textSelCandidate = false; textSelDragging = false; endTextSelect()
             }
             touchOrder.isEmpty() -> {
                 if (panStarted) startMomentum()
                 panId = -1; panStarted = false
                 pinDragCandidate = false
+                textSelCandidate = false; textSelDragging = false; endTextSelect()
             }
             else -> beginPinch()
         }
@@ -2283,6 +2486,9 @@ open class PageCanvasView @JvmOverloads constructor(
         gesturePinched = true
         if (pinDragActive) { pinDragActive = false; onPinDragCancel() }   // 变双指：拖图钉作废
         pinDragCandidate = false
+        // 变双指 = 想缩放/挪画面，不是想划字。已经划出来的选区留着（用户多半是想放大看清再动作）
+        textSelCandidate = false; textSelDragging = false
+        endTextSelect()
         val mx = (a.x + b.x) / 2f
         val my = (a.y + b.y) / 2f
         val p = pw()
@@ -2326,7 +2532,11 @@ open class PageCanvasView @JvmOverloads constructor(
         val y = e.getY(pi)
         if (!panStarted && !pinDragActive) {
             if (hypot(x - panDownX, y - panDownY) < deadPx) return
-            if (pinDragCandidate) {
+            if (textSelCandidate) {
+                // 划字拖过死区 = 选字（不进平移：不算速度、松手不甩惯性，同拖图钉那条）
+                textSelCandidate = false
+                textSelDragging = true
+            } else if (pinDragCandidate) {
                 // 按住图钉拖过死区 = 拖图钉（不进平移：不算速度、松手不甩惯性）
                 pinDragCandidate = false
                 pinDragActive = true
@@ -2337,6 +2547,10 @@ open class PageCanvasView @JvmOverloads constructor(
                 lastPanX = x; lastPanY = y; lastMoveT = e.eventTime
                 return
             }
+        }
+        if (textSelDragging) {
+            moveTextSelect(x, y)
+            return
         }
         if (pinDragActive) {
             onPinDragMove(x, y)
@@ -2413,6 +2627,17 @@ open class PageCanvasView @JvmOverloads constructor(
             vx = 0f; vy = 0f; lastMoveT = e.eventTime
             val ploc = locate(x, y)
             if (ploc != null) beginProbe(ploc.page, ploc.nx, ploc.ny, x, y)
+            return
+        }
+
+        if (mode == MODE_TEXT) {
+            // 选字模式：笔也是用来划字的（这个模式下没有可写的东西）。与翻页模式同构——
+            // 照旧起探针流，长按仍能呼出环形选笔盘换回写字，不必先切模式。
+            penMode = MODE_TEXT
+            penX = x; penY = y
+            beginTextSelect(x, y)
+            val tloc = locate(x, y)
+            if (tloc != null) beginProbe(tloc.page, tloc.nx, tloc.ny, x, y)
             return
         }
 
@@ -2532,6 +2757,17 @@ open class PageCanvasView @JvmOverloads constructor(
             return
         }
 
+        if (penMode == MODE_TEXT) {
+            // 与翻页模式同构：盘开着时只发探针不划字（那一串点是在选扇区）
+            if (probing) {
+                probeAt(x, y, tmp2)
+                probeBatch.add(Pt2(tmp2[0], tmp2[1]))
+            }
+            if (radialActive) return
+            moveTextSelect(x, y)
+            return
+        }
+
         if (penMode == MODE_NOTE) {
             clampToPage(x, y, loc, drawPage, tmp2)
             growCanvas(tmp2[0])   // 写到离页边不足 slack 就本地先跳一档（模式2 的 Mac 值随后覆盖）
@@ -2591,6 +2827,11 @@ open class PageCanvasView @JvmOverloads constructor(
             }
             MODE_PAGE -> if (!radialActive) startMomentum()   // 环形盘选择不甩动
             MODE_LASSO -> finishLasso()
+            MODE_TEXT -> {
+                // 笔抬起：选区已在 penMove 里算好；盘开着说明这一下是去选笔的，把它撤掉
+                if (radialActive) clearTextSelection()
+                endTextSelect()
+            }
         }
         if (probing) {   // 收尾探针流，Mac 据此提交/取消环形盘
             if (probeBatch.isNotEmpty()) {

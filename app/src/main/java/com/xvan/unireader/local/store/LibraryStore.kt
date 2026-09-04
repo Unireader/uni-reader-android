@@ -11,9 +11,13 @@ import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
+import com.xvan.unireader.shared.TextRun
 import java.io.Closeable
 import java.io.File
+import java.nio.charset.StandardCharsets
 import java.util.UUID
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * 一个工作区的持久层，对应 Mac 端 `Sources/Store/LibraryStore.swift`（schema v12）。
@@ -349,6 +353,8 @@ class LibraryStore(private val db: Db) : Closeable {
             out.add(
                 TextNote(
                     n.id, n.page.toLong(), n.anchorX.toFloat(), n.anchorY.toFloat(), p.text, p.display,
+                    // anchor 宽 > 0 = 选区注解：图钉要挪到行末右侧（同 Mac `markerPos`）
+                    aw = n.anchorW.toFloat(), typeId = p.typeId,
                 ),
             )
         }
@@ -552,10 +558,116 @@ class LibraryStore(private val db: Db) : Closeable {
      * 那样所有注解按通用暖黄铺色，而不是整篇不画。
      * 键统一大写：Swift 的 `UUID.uuidString` 是大写，手写进库的可能不是。
      */
+    // ---------- OCR 文本层（ocr_page，只读） ----------
+
+    /**
+     * 这份内容有 OCR 缓存的话，用哪个 `provider`（行数最多的那个）。没有返回 null。
+     *
+     * **刻意不硬编码 provider 常量**：Mac 那边换算法就会 bump 它（2026-09-03
+     * `paddle-ppocrv6` → `paddle-ppocrv6-w`，老行原地作废留在表里），安卓抄一份常量的话，
+     * 每次 Mac 一 bump 平板就静默"没有文本层"了，还查不出为什么。按行数挑是自愈的。
+     */
+    fun ocrProvider(contentHash: String): String? =
+        db.query(
+            "SELECT provider, COUNT(*) AS n FROM ocr_page WHERE content_hash=? " +
+                "GROUP BY provider ORDER BY n DESC LIMIT 1",
+            arrayOf(contentHash),
+        ) { it.getString(0) }.firstOrNull()
+
+    /**
+     * 一份内容**全部**已缓存页的 OCR 行：页 → 原始行（未滤水印）。
+     *
+     * 一次全读而不是逐页懒读：水印判定要的是**跨页**统计（`OcrWatermark.buildProfile`），
+     * 逐页读攒不出样本；而一本书的 OCR JSON 是几 MB 级、解析一次就够，之后划字零 I/O
+     * （同 Mac `allOCRPayloads` 的理由）。**在 StoreQueue 线程上调用。**
+     */
+    fun ocrRuns(contentHash: String, provider: String): Map<Int, List<TextRun>> {
+        val out = HashMap<Int, List<TextRun>>()
+        db.query(
+            "SELECT page,payload FROM ocr_page WHERE content_hash=? AND provider=?",
+            arrayOf(contentHash, provider),
+        ) { it.getInt(0) to it.getBlob(1) }.forEach { (page, payload) ->
+            val runs = OcrPagePayload.parse(payload)
+            if (runs.isNotEmpty()) out[page] = runs
+        }
+        return out
+    }
+
+    // ---------- 划字产物（选区注解 kind=0 / 高亮 kind=3） ----------
+
+    /**
+     * 落一条**选区注解**（kind=0，带 quote/rects）。语义对齐 Mac `commitNote(draft:)`：
+     * anchor = 该页选区包围盒，payload 带上原文与逐行框（铺色 + Inspector 列表都要）。
+     *
+     * 与 [upsertTextNote] 分开：那条是「点注解」的读改写门面，**刻意不碰 anchor/quote/rects**
+     * （见它的注释）——用它建选区注解会退化成点注解。
+     */
+    fun insertSelectionNote(
+        documentId: String,
+        id: String,
+        page: Int,
+        anchor: FloatArray,
+        quote: String,
+        rects: List<FloatArray>,
+        text: String,
+        typeId: String? = null,
+        display: Int = NOTE_TAP,
+    ) {
+        val now = nowIso()
+        val p = TextNotePayload.ofPointNote(text, typeId, display)
+        p.raw.put("quote", quote)
+        p.withRects(rects.map { doubleArrayOf(it[0].toDouble(), it[1].toDouble(), it[2].toDouble(), it[3].toDouble()) })
+        upsertNote(
+            LibNote(
+                id = id, documentId = documentId, kind = NoteKind.TEXT, page = page,
+                anchorX = anchor[0].toDouble(), anchorY = anchor[1].toDouble(),
+                anchorW = anchor[2].toDouble(), anchorH = anchor[3].toDouble(),
+                payload = p.bytes(), createdAt = now, updatedAt = now,
+            ),
+        )
+    }
+
+    /**
+     * 落一条**高亮**（kind=3）。无正文、无图钉，只给选中文字铺一层荧光色。
+     * 字段口径逐条对齐 Mac `Highlight.toNote`（payload = `{quote, rects, color}`）。
+     */
+    fun insertHighlight(
+        documentId: String,
+        id: String,
+        page: Int,
+        anchor: FloatArray,
+        quote: String,
+        rects: List<FloatArray>,
+        rgb: IntArray,
+    ) {
+        val now = nowIso()
+        val o = JSONObject()
+        o.put("quote", quote)
+        val arr = JSONArray()
+        for (r in rects) {
+            arr.put(
+                JSONArray().put(r[0].toDouble()).put(r[1].toDouble())
+                    .put(r[2].toDouble()).put(r[3].toDouble()),
+            )
+        }
+        o.put("rects", arr)
+        // 存**基色**（a=1），渲染时统一降透明——与 Mac `Highlight.fillOpacity` 同一口径
+        o.put("color", JSONObject().put("r", rgb[0]).put("g", rgb[1]).put("b", rgb[2]).put("a", 1.0))
+        upsertNote(
+            LibNote(
+                id = id, documentId = documentId, kind = NoteKind.HIGHLIGHT, page = page,
+                anchorX = anchor[0].toDouble(), anchorY = anchor[1].toDouble(),
+                anchorW = anchor[2].toDouble(), anchorH = anchor[3].toDouble(),
+                payload = o.toString().toByteArray(StandardCharsets.UTF_8),
+                createdAt = now, updatedAt = now,
+            ),
+        )
+    }
+
     fun noteTypeColors(): Map<String, IntArray> {
         val raw = meta("note_types") ?: return emptyMap()
         return try {
-            val arr = org.json.JSONArray(raw)
+            val arr = JSONArray(raw)
             val out = HashMap<String, IntArray>(arr.length())
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
@@ -565,6 +677,28 @@ class LibraryStore(private val db: Db) : Closeable {
             out
         } catch (e: Exception) {
             Log.w(TAG, "meta.note_types 解析失败，注解一律按通用色渲染", e)
+            emptyMap()
+        }
+    }
+
+    /**
+     * 笔记类型 → 图标名（Mac 的 SF Symbol 名，见 `NoteType.iconCandidates`）。
+     * 图钉画哪个图标要用它；本端把这些名字映射成自己的 `ic_*`（见 `NoteTypeIcons`）。
+     */
+    fun noteTypeIcons(): Map<String, String> {
+        val raw = meta("note_types") ?: return emptyMap()
+        return try {
+            val arr = JSONArray(raw)
+            val out = HashMap<String, String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").ifEmpty { continue }
+                val icon = o.optString("icon_name").ifEmpty { continue }
+                out[id.uppercase()] = icon
+            }
+            out
+        } catch (e: Exception) {
+            Log.w(TAG, "meta.note_types 解析失败，图钉一律用通用图标", e)
             emptyMap()
         }
     }
