@@ -99,6 +99,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   见 `../OFFLINE-MIRROR-PLAN.md §4.1`）；没同步过来的书在平板上就是划不动，切进选字模式会有一句提示。
   🔴 **`MODE_TEXT=4` 不进 `PadConst.MODE_LABELS`**：那张表是线上契约（`../PROTOCOL.md §4.1` 的
   `mode` u8 只有 0..3），模式1 用 `LOCAL_MODE_LABELS`，模式2 循环碰不到第五档。
+  **模式2 的划字刻意没做，方案已备**——要做先读 `../ANDROID-MODE2-PLAN.md §9`
+  （选定「平板本地判定、Mac 只执行动作」，预留 `0x52 textLayer`/`0x53 textAct`，
+  顺带给 `notes` 补 `aw`/类型色）。
 - 模式1 的阅读界面 = 「一个工作区」的多标签页（`ReaderActivity` + `DocTabsBar` + `TabSet`）：
   一个工作区一份 `LibraryStore`+`StoreQueue` 全部标签页共用，标签页懒装载、LRU 只保活 3 篇。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
