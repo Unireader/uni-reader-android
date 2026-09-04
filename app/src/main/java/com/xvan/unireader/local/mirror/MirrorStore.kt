@@ -211,7 +211,41 @@ object MirrorStore {
      * 源库走调用方传进来的 [LibraryStore] 实例；镜像库是本端自己开的连接。
      */
     fun plan(mirror: Db, source: LibraryStore): MirrorDiff.Plan =
-        MirrorDiff.compute(syncBase(mirror), snapshot(mirror), source.mirrorSnapshot())
+        MirrorDiff.compute(
+            syncBase(mirror), snapshot(mirror), source.mirrorSnapshot(),
+            ocrKeys(mirror), source.mirrorOcrKeys(),
+        )
+
+    /**
+     * 一个库里 `ocr_page` 的**全部键**（不含 payload）。
+     *
+     * 这张表不在 [MirrorFp.specs] 里、也不进 `sync_base` —— 它是纯 additive 的派生缓存
+     * （方案 §4），合并规则只有一条「对面缺哪页就补哪页」，用不上基线也用不上指纹。
+     * 只取键不取 payload：整库的 OCR JSON 是几百 MB 级的，而干跑只需要知道差了哪些页。
+     */
+    fun ocrKeys(db: Db): Set<MirrorDiff.OcrKey> =
+        db.query("SELECT content_hash,page,provider FROM ocr_page") {
+            MirrorDiff.OcrKey(it.getString(0), it.getInt(1), it.getString(2))
+        }.toSet()
+
+    /**
+     * 两侧合起来的 `content_hash → 书名`，给 OCR 补齐那条明细用。
+     *
+     * `ocr_page` 按**内容 hash** 缓存（随文件走、换机复用），所以它不知道自己属于哪篇文档；
+     * 要说人话就得经 `variant.content_hash → document_id → title` 绕一圈。
+     */
+    fun ocrTitles(mine: MirrorSnapshot, theirs: MirrorSnapshot): Map<String, String> {
+        val names = titles(mine, theirs)
+        val out = HashMap<String, String>()
+        for (snap in listOf(theirs, mine)) {
+            for ((_, row) in snap["variant"].orEmpty()) {
+                val hash = row["content_hash"] as? String ?: continue
+                val doc = row["document_id"] as? String ?: continue
+                names[doc]?.let { out[hash] = it }
+            }
+        }
+        return out
+    }
 
     /**
      * 两侧合起来的 `documentId → 书名`，给报告用。

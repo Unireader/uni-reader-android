@@ -257,4 +257,36 @@ class MirrorDiffTest {
         assertTrue(cl[0], cl[0].contains("《高等数学》") && cl[0].contains("保留了较新的那份"))
         assertNull(null)
     }
+
+    /**
+     * OCR 缓存（`ocr_page`）走的是另一条通道：纯 additive、只补对面缺的、不判改删（方案 §4）。
+     * 与 Mac `spike/mirror-apply-test.swift` ⑦ 段同一套判定。
+     */
+    @Test
+    fun ocrCacheIsAdditiveBothWays() {
+        fun key(page: Int) = MirrorDiff.OcrKey("h1", page, "paddle-http")
+        val plan = MirrorDiff.compute(
+            base = emptyMap(), mine = emptyMap(), theirs = emptyMap(),
+            mineOCR = setOf(key(0), key(1), key(2)),      // 副本上识别过 0/1/2
+            theirsOCR = setOf(key(0), key(3)),            // 硬盘上识别过 0/3
+        )
+        assertEquals(listOf(key(1), key(2)), plan.ocrToSource)
+        assertEquals(listOf(key(3)), plan.ocrToMirror)
+        assertTrue("OCR 缓存不进 Change 那条通道（不进指纹、不进基线）", plan.changes.isEmpty())
+        assertFalse("只差 OCR 也算「有东西要同步」", plan.isEmpty)
+        assertEquals("识别结果 3 页", MirrorReport.headline(plan))
+
+        val line = MirrorReport.summary(plan, emptyMap(), mapOf("h1" to "高等数学"))
+            .first { it.text.contains("补齐文字识别结果") }
+        assertTrue(line.text, line.text.contains("写入硬盘 2 页") && line.text.contains("拉回本机 1 页"))
+        assertEquals("《高等数学》：写入硬盘 2 页，拉回本机 1 页", line.detail.firstOrNull())
+
+        // 一边清空缓存 → **不是「让对面也删」**，而是从对面补回来（缓存是派生数据，重跑要花钱）
+        val cleared = MirrorDiff.compute(
+            base = emptyMap(), mine = emptyMap(), theirs = emptyMap(),
+            mineOCR = emptySet(), theirsOCR = setOf(key(0), key(1)),
+        )
+        assertTrue(cleared.ocrToSource.isEmpty())
+        assertEquals(2, cleared.ocrToMirror.size)
+    }
 }

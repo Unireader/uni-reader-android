@@ -7,6 +7,7 @@ import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.MirrorFp
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -61,7 +62,24 @@ class MirrorApplyTest {
     }
 
     private fun planOf(mirror: LibraryStore, source: LibraryStore): MirrorDiff.Plan =
-        MirrorDiff.compute(mirror.syncBase(), mirror.mirrorSnapshot(), source.mirrorSnapshot())
+        MirrorDiff.compute(
+            mirror.syncBase(), mirror.mirrorSnapshot(), source.mirrorSnapshot(),
+            mirror.mirrorOcrKeys(), source.mirrorOcrKeys(),
+        )
+
+    /** 直接往 `ocr_page` 写一页（安卓端不跑 OCR，没有这张表的 DAO，测试里自己写） */
+    private fun putOcr(store: LibraryStore, hash: String, page: Int, text: String) {
+        store.withMirrorDb { db ->
+            db.exec(
+                "INSERT OR REPLACE INTO ocr_page(content_hash,page,provider,payload,lang,created_at) " +
+                    "VALUES(?,?,?,?,?,?)",
+                arrayOf<Any?>(
+                    hash, page, "paddle-http", """{"t":"$text"}""".toByteArray(),
+                    "ch", "2026-09-04T10:00:00.000Z",
+                ),
+            )
+        }
+    }
 
     /** 两端白名单表逐行一致 —— 「同步成功」的唯一硬定义 */
     private fun difference(a: LibraryStore, b: LibraryStore): String? {
@@ -200,6 +218,44 @@ class MirrorApplyTest {
         assertNull(difference(p.mirror, p.store))
         // 🔴 补齐是幂等的
         assertEquals(0, MirrorApply.fillFilesToSource(p.dst, p.mirror, p.src, p.store))
+        p.store.close(); p.mirror.close()
+    }
+
+    /** OCR 缓存双向补齐（方案 §4：纯 additive，只补不删不覆盖）。对应 Mac `spike/mirror-apply-test.swift` ⑦ */
+    @Test
+    fun OCR缓存双向补齐且不覆盖对面已有的那份() {
+        val root = freshRoot("E")
+        val p = makePair(root, "E")
+        val hash = "h-E"
+        // 离线期间：副本上识别了 1、2 页；硬盘上识别了 3 页
+        putOcr(p.mirror, hash, 1, "副本上识别的")
+        putOcr(p.mirror, hash, 2, "副本上识别的")
+        putOcr(p.store, hash, 3, "硬盘上识别的")
+
+        val plan = planOf(p.mirror, p.store)
+        assertEquals(2, plan.ocrToSource.size)
+        assertEquals(1, plan.ocrToMirror.size)
+        assertTrue("OCR 缓存不走 Change 那条通道", plan.changes.isEmpty())
+        assertFalse("只差 OCR 也算「有东西要同步」", plan.isEmpty)
+
+        val r = MirrorApply.apply(plan, p.dst, p.mirror, p.src, p.store)
+        assertEquals(2, r.ocrFilledToSource)
+        assertEquals(1, r.ocrFilledToMirror)
+        assertEquals(p.store.mirrorOcrKeys(), p.mirror.mirrorOcrKeys())
+        assertTrue("再跑一次干跑没有剩活", planOf(p.mirror, p.store).isEmpty)
+
+        // **不覆盖**：两边同一页各自识别过（内容不同）→ 硬写一次也一个字都不许动
+        putOcr(p.store, hash, 9, "硬盘版")
+        putOcr(p.mirror, hash, 9, "副本版")
+        assertTrue("同一个键两边都有 → 不产生任何补齐动作", planOf(p.mirror, p.store).ocrToSource.isEmpty())
+        MirrorApply.fillOcr(p.mirror, p.store, listOf(MirrorDiff.OcrKey(hash, 9, "paddle-http")))
+        val kept = p.store.withMirrorDb { db ->
+            db.query(
+                "SELECT payload FROM ocr_page WHERE content_hash=? AND page=9 AND provider=?",
+                arrayOf<Any?>(hash, "paddle-http"),
+            ) { String(it.getBlob(0)) }.first()
+        }
+        assertTrue("🔴 INSERT OR IGNORE：覆盖不掉对面已有的那份（$kept）", kept.contains("硬盘版"))
         p.store.close(); p.mirror.close()
     }
 }

@@ -67,6 +67,19 @@ object MirrorDiff {
         val note: String,
     )
 
+    /**
+     * `ocr_page` 的一行的键。**这张表不走上面那套 [Change]**：它是三列复合主键
+     * （`content_hash,page,provider`）、没有 `document_id`，而 Change/`sync_base` 那套
+     * 从头到尾假设「单列 TEXT 主键」。方案 §4 给它定的是另一条通道：纯 additive、
+     * 双向 `INSERT OR IGNORE`、不进基线。
+     *
+     * 🔴 跨端契约：与 Mac `Sources/Store/MirrorDiff.swift` 的 `OCRKey` 是同一个东西。
+     */
+    data class OcrKey(val contentHash: String, val page: Int, val provider: String) : Comparable<OcrKey> {
+        override fun compareTo(other: OcrKey): Int =
+            compareValuesBy(this, other, { it.contentHash }, { it.page }, { it.provider })
+    }
+
     data class Plan(
         val changes: List<Change>,
         val conflicts: List<Conflict>,
@@ -82,8 +95,19 @@ object MirrorDiff {
          * 那次），但**不进 [conflicts]** —— 那不是要用户裁决的事，报出去只是噪音。
          */
         val progressMerges: Set<String> = emptySet(),
+        /**
+         * OCR 缓存里**对面缺的那些页**（方案 §4：纯 additive，只补不删、不覆盖）。
+         *
+         * 只带键不带 payload：干跑要在「一个字都不写」的前提下跑完，而整库的 OCR JSON 是
+         * 几百 MB 级的——把它们读进内存只为数个数，预览本身就成了卡顿源。payload 到
+         * [MirrorApply.fillOcr] 那一步再按键逐页取。
+         */
+        val ocrToSource: List<OcrKey> = emptyList(),
+        val ocrToMirror: List<OcrKey> = emptyList(),
     ) {
-        val isEmpty: Boolean get() = changes.isEmpty() && lastOpenedMerges.isEmpty()
+        val isEmpty: Boolean
+            get() = changes.isEmpty() && lastOpenedMerges.isEmpty() &&
+                ocrToSource.isEmpty() && ocrToMirror.isEmpty()
 
         fun changesTo(side: Side): List<Change> = changes.filter { it.side == side }
 
@@ -107,8 +131,15 @@ object MirrorDiff {
      * @param base 建镜像那一刻的指纹（镜像库的 `sync_base`）
      * @param mine 镜像库现在的全部行
      * @param theirs 源库现在的全部行
+     * @param mineOCR / [theirsOCR] 两侧 `ocr_page` 的键集合（不含 payload，见 [Plan.ocrToSource]）
      */
-    fun compute(base: MirrorBase, mine: MirrorSnapshot, theirs: MirrorSnapshot): Plan {
+    fun compute(
+        base: MirrorBase,
+        mine: MirrorSnapshot,
+        theirs: MirrorSnapshot,
+        mineOCR: Set<OcrKey> = emptySet(),
+        theirsOCR: Set<OcrKey> = emptySet(),
+    ): Plan {
         val changes = ArrayList<Change>()
         val conflicts = ArrayList<Conflict>()
         val lastOpened = HashMap<String, String>()
@@ -141,7 +172,14 @@ object MirrorDiff {
                 }
             }
         }
-        return Plan(changes, conflicts, lastOpened, progressMerges)
+        // OCR 缓存：**只补对面缺的、不判改删**（方案 §4）。
+        // 「一边清了缓存」于是会被另一边补回来 —— 这是刻意的：这张表是派生数据，
+        // 删它的语义是"腾空间/想重跑"，不是"这份内容作废了"，而重跑一次要真花 API 的钱。
+        return Plan(
+            changes, conflicts, lastOpened, progressMerges,
+            ocrToSource = (mineOCR - theirsOCR).sorted(),
+            ocrToMirror = (theirsOCR - mineOCR).sorted(),
+        )
     }
 
     private fun apply(

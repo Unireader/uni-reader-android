@@ -122,6 +122,8 @@ object MirrorUi {
             val source: File,
             val plan: MirrorDiff.Plan,
             val titles: Map<String, String>,
+            /** `content_hash → 书名`，只有 OCR 那条明细用得上（见 `MirrorStore.ocrTitles`） */
+            val hashTitles: Map<String, String> = emptyMap(),
         ) : Preview()
     }
 
@@ -159,8 +161,15 @@ object MirrorUi {
                 val mineSnap = mine.mirrorSnapshot()
                 val theirs = MirrorStore.snapshot(srcDb)
                 // 基线走镜像自己那条连接：sync_base 只在镜像库里
-                Preview.Ready(src, MirrorDiff.compute(mine.syncBase(), mineSnap, theirs),
-                    MirrorStore.titles(mineSnap, theirs))
+                Preview.Ready(
+                    src,
+                    MirrorDiff.compute(
+                        mine.syncBase(), mineSnap, theirs,
+                        mine.mirrorOcrKeys(), MirrorStore.ocrKeys(srcDb),
+                    ),
+                    MirrorStore.titles(mineSnap, theirs),
+                    MirrorStore.ocrTitles(mineSnap, theirs),
+                )
             }
         }
 
@@ -174,7 +183,7 @@ object MirrorUi {
 
     private fun showReport(a: Activity, mirror: File, p: Preview.Ready) {
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-        for (line in MirrorReport.summary(p.plan, p.titles)) {
+        for (line in MirrorReport.summary(p.plan, p.titles, p.hashTitles)) {
             box.addView(Ui.sectionTitle(a, line.text))
             for (d in line.detail) box.addView(Ui.body(a, "· $d"))
         }

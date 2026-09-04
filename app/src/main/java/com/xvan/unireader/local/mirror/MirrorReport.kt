@@ -46,7 +46,11 @@ object MirrorReport {
     }
 
     /** 干跑摘要。[titles] = `documentId → 书名`（**两侧合并后的**，源盘新增的书也要能查到名字） */
-    fun summary(plan: MirrorDiff.Plan, titles: Map<String, String>): List<Line> {
+    fun summary(
+        plan: MirrorDiff.Plan,
+        titles: Map<String, String>,
+        hashTitles: Map<String, String> = emptyMap(),
+    ): List<Line> {
         val out = ArrayList<Line>()
         for ((side, heading) in listOf(MirrorDiff.Side.SOURCE to "写入硬盘", MirrorDiff.Side.MIRROR to "拉回本机")) {
             // 只差阅读进度的那些**不进明细**：底下「阅读进度取最近读的那次」已经把它说完整了，
@@ -72,11 +76,38 @@ object MirrorReport {
         if (plan.lastOpenedMerges.isNotEmpty() && plan.progressMerges.isEmpty()) {
             out.add(Line(also("${plan.lastOpenedMerges.size} 篇文档的「上次打开」两端取较晚的那个")))
         }
+        // OCR 缓存：只补不删，两个方向分开说 —— 用户关心的是"这次同步之后哪边不用再花钱重跑"
+        if (plan.ocrToSource.isNotEmpty() || plan.ocrToMirror.isNotEmpty()) {
+            val bits = ArrayList<String>()
+            if (plan.ocrToSource.isNotEmpty()) bits.add("写入硬盘 ${plan.ocrToSource.size} 页")
+            if (plan.ocrToMirror.isNotEmpty()) bits.add("拉回本机 ${plan.ocrToMirror.size} 页")
+            out.add(Line(also("补齐文字识别结果：" + bits.joinToString("、")), ocrBreakdown(plan, hashTitles)))
+        }
         if (plan.conflicts.isNotEmpty()) {
             out.add(Line("冲突 ${plan.conflicts.size} 条", conflictLines(plan, titles)))
         }
         if (out.isEmpty()) out.add(Line("两端一致，没有要同步的东西"))
         return out
+    }
+
+    /**
+     * OCR 补齐的按书明细：「《高等数学》：写入硬盘 132 页」。
+     *
+     * 查不到书名的照样要出现（只是显示成内容指纹的前 8 位）：这批页多半是"两边各自加过、
+     * 但那本书还没同步过来"的情况，静默不提等于让用户对着一个总数猜。
+     */
+    fun ocrBreakdown(plan: MirrorDiff.Plan, hashTitles: Map<String, String>): List<String> {
+        class Tally { var toSource = 0; var toMirror = 0 }
+        val byHash = LinkedHashMap<String, Tally>()
+        for (k in plan.ocrToSource) byHash.getOrPut(k.contentHash) { Tally() }.toSource++
+        for (k in plan.ocrToMirror) byHash.getOrPut(k.contentHash) { Tally() }.toMirror++
+        return byHash.map { (hash, n) ->
+            val name = hashTitles[hash]?.let { "《$it》" } ?: "（${hash.take(8)}…）"
+            val bits = ArrayList<String>()
+            if (n.toSource > 0) bits.add("写入硬盘 ${n.toSource} 页")
+            if (n.toMirror > 0) bits.add("拉回本机 ${n.toMirror} 页")
+            "$name：" + bits.joinToString("，")
+        }.sorted()
     }
 
     /** 按书分组的明细：「《高等数学》：笔迹 +132 −8」。用户是按书来记事的，不是按表 */
@@ -155,6 +186,8 @@ object MirrorReport {
         if (toSource > 0) bits.add("写入硬盘 $toSource")
         if (toMirror > 0) bits.add("拉回本机 $toMirror")
         if (plan.conflicts.isNotEmpty()) bits.add("冲突 ${plan.conflicts.size}")
+        val ocr = plan.ocrToSource.size + plan.ocrToMirror.size
+        if (ocr > 0) bits.add("识别结果 $ocr 页")
         if (bits.isNotEmpty()) return bits.joinToString(" · ")
         return if (plan.progressMerges.isEmpty()) "只更新「上次打开」" else "只更新阅读进度"
     }

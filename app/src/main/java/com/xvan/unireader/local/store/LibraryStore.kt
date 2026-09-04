@@ -89,6 +89,10 @@ class LibraryStore(private val db: Db) : Closeable {
     fun mirrorSnapshot(): com.xvan.unireader.local.mirror.MirrorSnapshot =
         com.xvan.unireader.local.mirror.MirrorStore.snapshot(db)
 
+    /** 本库 `ocr_page` 的全部键（纯 additive 表，不进基线，见 `MirrorStore.ocrKeys`） */
+    fun mirrorOcrKeys(): Set<com.xvan.unireader.local.mirror.MirrorDiff.OcrKey> =
+        com.xvan.unireader.local.mirror.MirrorStore.ocrKeys(db)
+
     /** 镜像基线（`sync_base`）。不是镜像时返回空 —— 那张表只在镜像库里存在 */
     fun syncBase(): Map<String, Map<String, String>> =
         com.xvan.unireader.local.mirror.MirrorStore.syncBase(db)

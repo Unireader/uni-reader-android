@@ -46,6 +46,9 @@ object MirrorApply {
         var hashClashesSkipped: Int = 0,
         var lastOpenedTouched: Int = 0,
         var filesCopiedToSource: Int = 0,
+        /** 双向补齐的 OCR 缓存页数（见 [fillOcr]） */
+        var ocrFilledToSource: Int = 0,
+        var ocrFilledToMirror: Int = 0,
         var backup: File? = null,
     )
 
@@ -220,6 +223,43 @@ object MirrorApply {
         return copied
     }
 
+    // ---------- OCR 缓存补齐 ----------
+
+    /**
+     * 把 [keys] 这些页的 OCR 结果从 [from] 补到 [to]（方案 §4：纯 additive，`INSERT OR IGNORE`）。
+     *
+     * **刻意放在事务外**，和文件补齐一个道理：
+     * - 它只增不改不删，跑一半再来一次结果完全一样（下一轮干跑会重新算出还差哪些页）；
+     * - 一本扫描书就是几百页 JSON，塞进那个"会大批量改用户数据"的事务只会拉长它被中断的窗口，
+     *   而这批数据丢了最多是**下次重跑一遍 OCR**，跟丢笔迹不是一个量级的事。
+     *
+     * 逐页取而不是一把捞：整库 OCR JSON 是几百 MB 级的，攒在内存里只为写出去没有意义。
+     *
+     * 🔴 与 Mac `MirrorApply.fillOCR` 同一套语义（`INSERT OR IGNORE` = 对面已有就一个字不动）。
+     */
+    fun fillOcr(from: LibraryStore, to: LibraryStore, keys: List<MirrorDiff.OcrKey>): Int {
+        var n = 0
+        for (k in keys) {
+            val row = from.withMirrorDb { db ->
+                db.query(
+                    "SELECT payload,lang,created_at FROM ocr_page " +
+                        "WHERE content_hash=? AND page=? AND provider=?",
+                    arrayOf<Any?>(k.contentHash, k.page, k.provider),
+                ) { c -> Triple(c.getBlob(0), if (c.isNull(1)) null else c.getString(1), c.getString(2)) }
+                    .firstOrNull()
+            } ?: continue
+            to.withMirrorDb { db ->
+                db.exec(
+                    "INSERT OR IGNORE INTO ocr_page(content_hash,page,provider,payload,lang,created_at) " +
+                        "VALUES(?,?,?,?,?,?)",
+                    arrayOf<Any?>(k.contentHash, k.page, k.provider, row.first, row.second, row.third),
+                )
+            }
+            n++
+        }
+        return n
+    }
+
     // ---------- 主流程 ----------
 
     /**
@@ -264,6 +304,11 @@ object MirrorApply {
         progress?.invoke("正在补齐文件…", 0.75f)
         r.filesCopiedToSource = fillFilesToSource(mirrorFolder, mirrorStore, sourceFolder, sourceStore)
 
+        // ④.5 OCR 缓存双向补齐（同样在事务外、幂等可重入，见 [fillOcr]）
+        progress?.invoke("正在补齐识别结果…", 0.85f)
+        r.ocrFilledToSource = fillOcr(mirrorStore, sourceStore, plan.ocrToSource)
+        r.ocrFilledToMirror = fillOcr(sourceStore, mirrorStore, plan.ocrToMirror)
+
         // ⑤ 两侧都成功了才重算基线 —— 这一步之前任何失败都靠"下次再跑一遍"自愈（见类型注释）
         progress?.invoke("正在重置基线…", 0.9f)
         mirrorStore.rebuildSyncBase()
@@ -287,7 +332,8 @@ object MirrorApply {
             TAG,
             "合并完成：硬盘 +${r.sourceUpserts}/-${r.sourceDeletes}，" +
                 "本机 +${r.mirrorUpserts}/-${r.mirrorDeletes}，" +
-                "孤儿 ${r.orphansSkipped}，重复内容 ${r.hashClashesSkipped}，补齐文件 ${r.filesCopiedToSource}",
+                "孤儿 ${r.orphansSkipped}，重复内容 ${r.hashClashesSkipped}，补齐文件 ${r.filesCopiedToSource}，" +
+                "补齐识别 +${r.ocrFilledToSource}/+${r.ocrFilledToMirror}",
         )
         return r
     }
