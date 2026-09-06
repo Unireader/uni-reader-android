@@ -302,12 +302,14 @@ class ScratchCanvas @JvmOverloads constructor(
     private var livePen: Pen? = null
     private val livePts = ArrayList<Pt3>()
     private var liveLine = false   // 尺子：整笔替换为「首点 → 45° 吸附终点」（落笔时锁定）
+    private var linePress = 0f     // 尺子笔这一笔的峰值压感（两点直线恒宽，见 stylusMove 的尺子分支）
     private val snapOut = FloatArray(2)
 
     private fun clearLive() {
         livePen = null
         livePts.clear()
         liveLine = false
+        linePress = 0f
     }
 
     // ---------- 输入 ----------
@@ -511,6 +513,7 @@ class ScratchCanvas @JvmOverloads constructor(
                 liveLine = t.rulerOn   // 尺子按落笔那一刻锁进这一笔（同 PageCanvasView）
                 livePts.clear()
                 livePts.add(Pt3(c[0], c[1], e.getPressure(idx)))
+                linePress = livePts[0].p   // 尺子笔的峰值压感起点，见 stylusMove 的尺子分支
                 onStrokeBegin?.invoke(t.pen, livePts[0], liveLine)
             }
             else -> penKind = 3   // 平移
@@ -536,12 +539,15 @@ class ScratchCanvas @JvmOverloads constructor(
             1 -> {
                 val c = toCanvas(x, y)
                 if (liveLine && livePts.isNotEmpty()) {
-                    // 尺子：画布是等比坐标系 → aspect=1（页内那套传页纵横比是两轴尺度不同）
+                    // 尺子：画布是等比坐标系 → aspect=1（页内那套传页纵横比是两轴尺度不同）。
+                    // 压感取这一笔的峰值、两端同值（理由见 PageCanvasView 的同款分支：终点每帧
+                    // 被替换，抬笔前最后一个采样几乎没压力，整条线会缩成头发丝）。
                     val a0 = livePts[0]
                     PadConst.rulerSnap(a0.x, a0.y, c[0], c[1], 1f, snapOut)
-                    val pt = Pt3(snapOut[0], snapOut[1], p)
+                    if (p > linePress) linePress = p
+                    val pt = Pt3(snapOut[0], snapOut[1], linePress)
                     livePts.clear()
-                    livePts.add(a0)
+                    livePts.add(Pt3(a0.x, a0.y, linePress))
                     livePts.add(pt)
                     onStrokeMove?.invoke(listOf(pt))   // 替换语义：只给最新终点（同页内尺子分支）
                 } else {

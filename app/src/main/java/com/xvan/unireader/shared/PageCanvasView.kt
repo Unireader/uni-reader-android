@@ -2280,6 +2280,7 @@ open class PageCanvasView @JvmOverloads constructor(
     protected var penY = 0f
     protected var drawPage = 0
     protected var lineStroke = false      // 落笔那一刻锁进这一笔的尺子状态
+    protected var linePress = 0f          // 尺子笔这一笔的峰值压感（两点直线恒宽，见 penMove 的尺子分支）
     protected var probing = false         // 探针流（擦除/翻页模式）：平行上报笔位置给 Mac 判长按
     protected var probePage = 0
     protected val snapOut = FloatArray(2)
@@ -2656,6 +2657,7 @@ open class PageCanvasView @JvmOverloads constructor(
                 // Mac 据此把后续 move 当「替换终点」而不是追加点，两端才都是同一条两点直线。
                 lineStroke = rulerOn
                 val pt = Pt3(loc.nx, loc.ny, e.getPressure(idx))
+                linePress = pt.p   // 尺子笔的峰值压感起点，见 penMove 的尺子分支
                 curPts.clear()
                 curPts.add(pt)
                 curActive = true
@@ -2777,14 +2779,19 @@ open class PageCanvasView @JvmOverloads constructor(
                 // 尺子模式：以首点为锚做 45°（**视觉**角度，故传页纵横比）吸附，本地笔迹替换为
                 // [首点, 吸附终点]。上行也只发这个终点——批里**只留最新一个**，否则 Mac 收到的是
                 // 一串移动中的终点、追加成一条歪笔迹（begin 的 line 标记让 Mac 改为替换终点）。
+                // 压感取**这一笔的峰值**而不是当前点：两点直线的线宽只由终点压感决定，而终点每帧
+                // 被整个替换掉——抬笔前最后一个采样几乎没压力，整条线于是在抬笔那一刻缩成头发丝
+                // （落笔起手压感还没上来，快划一条同样细）。直线本就恒宽，峰值 =「按多重画多粗」。
+                // 首点一并抬到同值，两端才一致（Mac `AppModel.inkLineTo` / web 尺子分支同规则）。
                 val a = curPts[0]
                 PadConst.rulerSnap(a.x, a.y, nx, ny, pageAspect(drawPage), snapOut)
                 nx = snapOut[0]; ny = snapOut[1]
+                if (p > linePress) linePress = p
                 curPts.clear()
-                curPts.add(a)
-                curPts.add(Pt3(nx, ny, p))
+                curPts.add(Pt3(a.x, a.y, linePress))
+                curPts.add(Pt3(nx, ny, linePress))
                 inkBatch.clear()
-                inkBatch.add(Pt3(nx, ny, p))
+                inkBatch.add(Pt3(nx, ny, linePress))
                 invalidate()
                 return
             }

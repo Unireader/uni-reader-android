@@ -132,8 +132,14 @@ class LocalCanvasView @JvmOverloads constructor(
         if (pendingLine) {
             // 尺子笔：基类每帧只发**最新终点**（替换语义，见其 penMove 的 lineStroke 分支），
             // 这里跟着替换而不是追加，否则会攒成一串移动中的终点、连成一条歪笔迹。
+            // 终点带的是这一笔的峰值压感（基类已锁），首点也抬到同值——落库那份与活体层
+            // 才是同一条恒宽直线（首点还留着落笔那一刻的近 0 压感就是两端不一致）。
             while (pending.size > 1) pending.removeAt(pending.size - 1)
-            pts.lastOrNull()?.let { pending.add(it) }
+            pts.lastOrNull()?.let {
+                val a = pending.firstOrNull()
+                if (a != null && it.p > a.p) pending[0] = Pt3(a.x, a.y, it.p)
+                pending.add(it)
+            }
         } else {
             pending.addAll(pts)
         }
