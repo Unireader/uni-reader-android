@@ -174,6 +174,25 @@ object PadConst {
     fun opacityMultFor(t: String): Float = if (t == "pencil") 0.85f else 1f
 
     /**
+     * 钢笔起收笔锥度（0~1 乘线宽）：`i/(n-1)` 为点在笔画中的归一化位置，两端渐细、中段为 1；
+     * 非钢笔恒 1。与 Mac `PenBrushType.fountainTaper` / web `shared.ts fountainTaper` **逐字同式**。
+     *
+     * `n <= 2` 不锥：两点笔画 = 尺子直线或擦除切出的碎段，按 index 算的话整条都落在「两端」、
+     * 会整体细成 0.18 倍。
+     *
+     * 2026-09-07 补：此前本端与 web **一行都没有**，只有 Mac 有——同一支钢笔在 Mac 上两头尖、
+     * 在平板上齐头齐尾。是 `spike/ink-cross/`（三端绘制对比工具）的 `fountain-taper` 向量
+     * 照出来的，改完记得再跑一次那个工具。
+     */
+    fun fountainTaper(t: String, i: Int, n: Int): Float {
+        if (t != "fountain" || n <= 2) return 1f
+        val p = i.toFloat() / (n - 1).toFloat()
+        val edge = 0.16f
+        val a = minOf(p, 1f - p) / edge
+        return if (a >= 1f) 1f else (a * a * (3f - 2f * a)) * 0.82f + 0.18f
+    }
+
+    /**
      * 尺子吸附（Mac `InkEdit.rulerSnap` / JS `rulerSnap` 的同款实现）：
      * (ax,ay)→(x,y) 的角度距最近的 45° 倍数 ≤ thresholdDeg 时贴合到该倍数（保长度），否则原样。
      * `aspect` = 页高/页宽（显示比例）：归一化空间里 x/y 尺度不同，先把 y 折算成与 x 同尺度再量角、

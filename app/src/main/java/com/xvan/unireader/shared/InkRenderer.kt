@@ -226,14 +226,18 @@ class InkRenderer(private val density: Float) {
         val t = brushName(pen.brush)
         val path = Path()
 
-        fun width(p: Float) = PadConst.strokeWidthFor(t, p, pen.w) * wScale
+        // 🔴 `fountainTaper` 是 2026-09-07 补的（此前本端一行都没有，只有 Mac 有）：所以线宽
+        // 除了压感还要吃**点在笔画中的位置**，`width` 因此多一个 index 参数。
+        val n = pts.size
+        fun width(p: Float, i: Int) =
+            PadConst.strokeWidthFor(t, p, pen.w) * PadConst.fountainTaper(t, i, n) * wScale
 
         var lpx = px(pts[0])
         var lpy = py(pts[0])
 
         // 单点 = 一个圆点（同 Mac 单点分支）
         if (pts.size == 1) {
-            path.addCircle(lpx, lpy, width(pts[0].p) / 2f, Path.Direction.CW)
+            path.addCircle(lpx, lpy, width(pts[0].p, 0) / 2f, Path.Direction.CW)
             return Geom(keyW, keyH, path, 0f)
         }
 
@@ -264,7 +268,7 @@ class InkRenderer(private val density: Float) {
             seg.reset()
             seg.moveTo(lmx, lmy)
             seg.quadTo(lpx, lpy, mx, my)
-            outliner.strokeWidth = width(pts[i].p)
+            outliner.strokeWidth = width(pts[i].p, i)
             outliner.getFillPath(seg, segFill)
             path.addPath(segFill)
             lmx = mx; lmy = my; lpx = x; lpy = y
@@ -274,7 +278,7 @@ class InkRenderer(private val density: Float) {
         seg.reset()
         seg.moveTo(lmx, lmy)
         seg.lineTo(lpx, lpy)
-        outliner.strokeWidth = width(pts.last().p)
+        outliner.strokeWidth = width(pts.last().p, n - 1)
         outliner.getFillPath(seg, segFill)
         path.addPath(segFill)
         return Geom(keyW, keyH, path, 0f)
