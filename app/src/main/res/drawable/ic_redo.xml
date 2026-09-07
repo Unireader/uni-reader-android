@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
-  重做：顺时针回转箭头（undo 的逐点镜像）
+  重做：↪ 弯钩箭头（undo 的逐点镜像）
   规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
   颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
 -->
@@ -11,7 +11,7 @@
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:pathData="M16.5,7.34 A7,7 0 1 1 7.5,7.34 M19.1,6.9 L16.5,7.34 L15.7,4.4"
+        android:pathData="M19.2,9.1 L9.4,9.1 A4.6,4.6 0 0 0 9.4,18.3 L14.4,18.3 M15.8,5.7 L19.2,9.1 L15.8,12.5"
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
         android:strokeWidth="1.8"

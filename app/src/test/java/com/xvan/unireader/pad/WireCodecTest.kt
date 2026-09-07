@@ -298,11 +298,15 @@ class WireCodecTest {
         val m31 = WireCodec.decode(unhex(VECTORS[30])) as WireCodec.Msg.Nack
         assertEquals(listOf(1L, 2L, 3000000000L), m31.seqs)
 
-        // #16 docs{list:[{a,T1},{b,标题}], selected:"a", following:false}
+        // #16 docs{list:[{a,T1,W1},{b,标题,内覆盖}], selected:"a", following:false}
+        // 两项刻意在不同工作区：`docs` 是跨工作区混排，标签页栏按 ws 分组（PROTOCOL §4.2）
         val m16 = WireCodec.decode(unhex(VECTORS[15])) as WireCodec.Msg.Docs
         assertEquals(false, m16.following)
         assertEquals("a", m16.selected)
-        assertEquals(listOf(WireCodec.DocEntry("a", "T1"), WireCodec.DocEntry("b", "标题")), m16.list)
+        assertEquals(
+            listOf(WireCodec.DocEntry("a", "T1", "W1"), WireCodec.DocEntry("b", "标题", "内覆盖")),
+            m16.list,
+        )
 
         // #32 radial{open:false}
         val m32 = WireCodec.decode(unhex(VECTORS[31])) as WireCodec.Msg.Radial
@@ -503,7 +507,7 @@ class WireCodecTest {
             "3101004801004802000000000019440000464400c0144400805244",
             "32030000000000003f0700000000",
             "32030000000000803e0000000001",
-            "33000100610200010061020054310100620600e6a087e9a298",
+            "3300010061020001006102005431020057310100620600e6a087e9a2980900e58685e8a686e79b96",
             "3401000200185ad20000003f0000004100ffd6280000803e0000b04102",
             "35",
             "360000000001000000010000001414140000803f000020410302000000003f0000803e0000003f0000403f0000003e0000803f",

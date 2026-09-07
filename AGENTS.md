@@ -67,7 +67,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （`TocItem`/`LibItem`）：模式2 从 Mac 的 `toc`/`library`/`docs` 广播转一层，模式1 从
   `PdfSource.toc`（Pdfium 书签）与工作区 SQLite 读。**`shared/` 一行都不许认识 `WireCodec`。**
   两模式的差异只由开关表达，不分叉代码：`DocTabsBar.canClose`（模式2 = false，「开着哪几篇」
-  真源在 Mac，关窗要在 Mac 上做）、`chipTrailingIcon`（模式1 `⌄` 切工作区 / 模式2 📖 开书库）。
+  真源在 Mac，关窗要在 Mac 上做）。**工作区芯片两模式同义**（`⌄` 切工作区，2026-09-06 起；
+  此前模式2 点它是开书库）：模式1 切本机的 `.unrd`，模式2 在 **Mac 已开着的工作区**之间切
+  ——`docs` 广播每项带 `ws`（`../PROTOCOL.md §4.2`），标签页栏**只列当前工作区那几篇**、
+  芯片下拉按 `ws` 分组，点一行就对那个工作区里上次待过的那篇发 `selectDoc`。
+  🔴 当前工作区取 **`docs` 里 selected 那项的 `ws`**，不取 `library` 广播的 wsName：
+  两条广播的先后没有保证（同 `layout`/`toc` 那个坑），拿另一条的字段分组会在切档瞬间错位一拍。
   **模式1 的目录只能跳到页顶**：pdfiumandroid 的书签 API 只给页号不给页内位置，故 `TocItem.frac` 恒 0。
 - **撤销/重做 + 剪贴板（2026-09-02）**：入口在 `shared/PageCanvasView`（`requestUndo` /
   `requestClipCopy` / `requestClipPaste`），实现由两模式各自注入（`onUndoRequested` / `onClipCommit`）。

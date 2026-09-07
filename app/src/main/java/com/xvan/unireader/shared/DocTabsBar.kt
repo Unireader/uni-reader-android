@@ -20,12 +20,14 @@ import com.xvan.unireader.R
  * 「模式2 也对齐模式1 的 tab」——**但真源仍在 Mac**：模式2 的这条栏是 Mac 已打开窗口
  * （`docs` 广播）的**只读镜像**，点标签 = `selectDoc` 切过去，`+` = 从书库 `openDoc` 让 Mac 新开一个，
  * **不给 ×**（关窗口仍在 Mac 上做，线协议里没有「关」这条，用户 2026-08-28 拍板）。
- * 差异全靠 [canClose]/[chipTrailingIcon] 两个开关表达，其余一行代码都不分模式。
+ * 差异只由 [canClose] 一个开关表达，其余一行代码都不分模式。
  *
  * 形态与顶栏（[TopBar]）同源：扁平、圆角、语义色、系统涟漪，深浅色跟随 `values-night`。
  * 三块从左到右固定语义——
- * - **工作区芯片**（最左，不随标签横滑）：当前工作区名 + 尾标。模式1 点它切工作区（`⌄`），
- *   模式2 点它开书库（📖，工作区由 Mac 定、平板换不了）。它**必须常驻可见**，不能跟着标签一起滑走。
+ * - **工作区芯片**（最左，不随标签横滑）：当前工作区名 + `⌄`，**两模式都是点它切工作区**
+ *   （2026-09-06 起；此前模式2 点它是开书库）。可切的范围按模式分：模式1 = 本机最近打开与扫到的
+ *   `.unrd`，模式2 = **Mac 上已经开着的那几个**（`docs` 广播按 `ws` 分组，见 `../PROTOCOL.md §4.2`）。
+ *   它**必须常驻可见**，不能跟着标签一起滑走。
  * - **标签区**（中间，可横滑）：一篇一个芯片，当前那篇是 accent 底 + accent 字；模式1 每个芯片右侧一个 ×。
  * - **加号**（最右，不随标签横滑）：在本工作区里再开一篇。
  *
@@ -67,14 +69,6 @@ class DocTabsBar(private val a: Activity) {
      * （线协议没有「关」，见类注释）。**必须在第一次 [setTabs] 之前设好**。
      */
     var canClose = true
-
-    /** 工作区芯片的尾标：模式1 `⌄`（点它切工作区）／模式2 📖（点它开书库，工作区换不了） */
-    var chipTrailingIcon = R.drawable.ic_chevron_down
-        set(v) {
-            if (field == v) return
-            field = v
-            wsChip.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_folder, 0, v, 0)
-        }
 
     private var wsName = ""
 

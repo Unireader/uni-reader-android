@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -21,6 +22,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.zxing.integration.android.IntentIntegrator
@@ -174,7 +176,20 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private var connToken = ""
 
     // —— Mac 下发的列表状态（面板消费） ——
+    /** `docs` 广播的全量，**跨工作区**（Mac 的工作区是窗口级、多个能同时开着，见 `DocEntry.ws`） */
     private var docs = listOf<WireCodec.DocEntry>()
+
+    /** [docs] 里属于当前工作区的那几篇 = 标签页栏的内容（栏上的下标就是这个表的下标） */
+    private var visDocs = listOf<WireCodec.DocEntry>()
+
+    /** Mac 当前跟随的那个窗口会话 id（`docs` 广播的 `selected`） */
+    private var selectedDoc = ""
+
+    /** `library` 广播的工作区名。只在 `docs` 里那份为空（Mac 的窗口快照还没注入）时兜底显示 */
+    private var libWs = ""
+
+    /** 每个工作区上次待在哪一篇：切回去时回到它，而不是永远落在第一篇 */
+    private val lastDocInWs = HashMap<String, String>()
     private var layers = listOf<Layer>()
     private var layerIdx = 0
 
@@ -520,14 +535,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             }
         }
 
-        // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释）。工作区名来自 `library` 广播，
-        // 点它开书库——模式1 那里是「切工作区」，模式2 的工作区由 Mac 定、平板换不了。
+        // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释），只列**当前工作区**那几篇。
+        // 工作区芯片与模式1 同义——点它切工作区（Mac 上开着的那几个，2026-09-06 起）；
+        // 书库还有两个入口（芯片右边的 `+`、抽屉的「书库」页），不必再让芯片兼这一职。
         tabsBar = DocTabsBar(this).apply {
             canClose = false
-            chipTrailingIcon = R.drawable.ic_book
-            setWorkspace("书库")   // 占位：`library` 广播一到就换成 Mac 那边的工作区名
-            onSwitchWorkspace = { drawer.open(ReaderDrawer.TAB_LIB) }
-            onSelect = { i -> docs.getOrNull(i)?.let { client?.send(WireCodec.encodeSelectDoc(it.id)) } }
+            setWorkspace("书库")   // 占位：`docs`/`library` 广播一到就换成 Mac 那边的工作区名
+            onSwitchWorkspace = { showWorkspaceSwitcher() }
+            onSelect = { i -> visDocs.getOrNull(i)?.let { client?.send(WireCodec.encodeSelectDoc(it.id)) } }
             onAdd = { drawer.open(ReaderDrawer.TAB_LIB) }
         }
         topbar.addView(tabsBar.view, LinearLayout.LayoutParams(-1, -2))
@@ -1066,14 +1081,95 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
      */
     override fun onDocs(following: Boolean, selected: String, list: List<WireCodec.DocEntry>) = runOnUiThread {
         docs = list
-        tabsBar.setTabs(list.map { it.title }, list.indexOfFirst { it.id == selected })
+        selectedDoc = selected
+        rebuildTabs()
+    }
+
+    /**
+     * 标签页栏 = 「**当前工作区**那几篇」。`docs` 是跨工作区的全量，不过滤的话几个工作区的文档
+     * 会混成一排、点过去工作区凭空换掉（2026-09-06 之前就是这样）。
+     *
+     * 当前工作区取 **`selected` 那一项的 `ws`**，不取 `library` 广播的 wsName：两条广播的先后
+     * 没有保证（同 `layout`/`toc` 那个坑），拿另一条的字段来分组会在切档瞬间错位一拍。
+     */
+    private fun rebuildTabs() {
+        val sel = docs.firstOrNull { it.id == selectedDoc }
+        val ws = sel?.ws ?: docs.firstOrNull()?.ws.orEmpty()
+        if (sel != null && ws.isNotEmpty()) lastDocInWs[ws] = sel.id
+        visDocs = docs.filter { it.ws == ws }
+        tabsBar.setWorkspace(ws.ifEmpty { libWs.ifEmpty { "书库" } })
+        tabsBar.setTabs(visDocs.map { it.title }, visDocs.indexOfFirst { it.id == selectedDoc })
+    }
+
+    /**
+     * 切工作区：Mac 上开着的每个工作区一行——`docs` 按 `ws` 一分组就是它，不必再加一条协议。
+     * 点一行 = 对那个工作区里**上次待过的那一篇**发 `selectDoc`（没待过就第一篇），Mac 跟着切
+     * 激活窗口，`library`/`toc`/`layout` 随后自己回推。
+     *
+     * 平板**不能新开工作区**（那是 Mac 的窗口级概念），这里只在已经开着的之间切——所以没有
+     * 模式1 那个「打开其它 .unrd…」。
+     */
+    private fun showWorkspaceSwitcher() {
+        val curWs = docs.firstOrNull { it.id == selectedDoc }?.ws.orEmpty()
+        val groups = docs.filter { it.ws.isNotEmpty() }.groupBy { it.ws }   // groupBy 保出现顺序
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        var dlg: AlertDialog? = null
+        val sheet = Sheet(this).title("切换工作区")
+        for ((ws, items) in groups) {
+            val isCur = ws == curWs
+            list.addView(
+                PadPanels.iconRow(
+                    this,
+                    R.drawable.ic_folder,
+                    ws,
+                    if (isCur) Ui.accent(this) else Ui.onVariant(this),
+                    trailing = wsRowTrailing(items.size, isCur),
+                ) {
+                    dlg?.dismiss()
+                    if (!isCur) {
+                        val want = lastDocInWs[ws]?.takeIf { id -> items.any { it.id == id } } ?: items.first().id
+                        client?.send(WireCodec.encodeSelectDoc(want))
+                    }
+                },
+            )
+        }
+        when {
+            groups.isEmpty() -> sheet.subtitle("还没收到 Mac 那边的工作区。")
+            groups.size == 1 -> sheet.subtitle("Mac 上只开着这一个工作区。")
+        }
+        sheet.content(list)
+        sheet.action("好")
+        dlg = sheet.show()
+    }
+
+    /** 工作区那一行的右侧：开着几篇 +（当前那个）一个勾 */
+    private fun wsRowTrailing(count: Int, current: Boolean): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(
+            TextView(this@PadActivity).apply {
+                text = "$count 篇"
+                textSize = 13f
+                setTextColor(Ui.onVariant(this@PadActivity))
+            },
+        )
+        if (current) {
+            addView(
+                ImageView(this@PadActivity).apply {
+                    setImageResource(R.drawable.ic_check)
+                    imageTintList = ColorStateList.valueOf(Ui.accent(this@PadActivity))
+                },
+                LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginStart = dp(8) },
+            )
+        }
     }
 
     override fun onLibrary(ws: String, list: List<WireCodec.LibEntry>) = runOnUiThread {
         // 线格式类型 → 中立模型：`shared/` 那边不许认识 WireCodec（依赖方向单向）
         libItems = list.map { LibItem(it.id, it.title, it.open) }
         drawer.setLibrary(ws, libItems)
-        tabsBar.setWorkspace(ws)
+        libWs = ws
+        rebuildTabs()   // 芯片上的名字优先用 `docs` 里那份，这条只是兜底（见 rebuildTabs 注释）
     }
 
     override fun onToc(docId: String, list: List<WireCodec.TocEntry>) = runOnUiThread {

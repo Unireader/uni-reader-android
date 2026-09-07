@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
-  撤销：逆时针回转箭头（缺口在上方，箭头在左端）
+  撤销：↩ 弯钩箭头（横杆向右、右端回转向下、箭头在左端指左）
   规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
   颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
 -->
@@ -11,7 +11,7 @@
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:pathData="M7.5,7.34 A7,7 0 1 0 16.5,7.34 M4.9,6.9 L7.5,7.34 L8.3,4.4"
+        android:pathData="M4.8,9.1 L14.6,9.1 A4.6,4.6 0 0 1 14.6,18.3 L9.6,18.3 M8.2,5.7 L4.8,9.1 L8.2,12.5"
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
         android:strokeWidth="1.8"

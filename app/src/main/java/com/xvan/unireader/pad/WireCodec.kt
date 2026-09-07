@@ -120,8 +120,13 @@ object WireCodec {
     // 本文件只管**字节布局**（§2/§4）：pen = u8 r,g,b + f32 a + f32 w + u8 brush 共 12 字节，
     // pt3 = f32 x,y,pressure，pt2 = f32 x,y。
 
-    /** 文档列表项（docs 消息元素；纯线格式概念——模式1 的文档列表来自 SQLite，不走这里） */
-    data class DocEntry(val id: String, val title: String)
+    /**
+     * 文档列表项（docs 消息元素；纯线格式概念——模式1 的文档列表来自 SQLite，不走这里）。
+     *
+     * [ws] = 那个窗口**所属工作区的名字**。Mac 的工作区是窗口级、多个可以同时开着，
+     * 所以这份列表天生跨工作区混排，客户端必须拿 [ws] 分组（`../PROTOCOL.md §4.2`）。
+     */
+    data class DocEntry(val id: String, val title: String, val ws: String)
 
     /**
      * 工作区书库一项（library 消息元素）。[id] 是**库文档 id**，与 [DocEntry] 的窗口会话 id
@@ -595,7 +600,7 @@ object WireCodec {
                     val n = r.u16()
                     val list = ArrayList<DocEntry>(n)
                     var i = 0
-                    while (i < n && r.remaining >= 4) { list.add(DocEntry(r.str(), r.str())); i++ }
+                    while (i < n && r.remaining >= 6) { list.add(DocEntry(r.str(), r.str(), r.str())); i++ }
                     Msg.Docs(following, selected, list)
                 }
                 OP_LIBRARY -> {
