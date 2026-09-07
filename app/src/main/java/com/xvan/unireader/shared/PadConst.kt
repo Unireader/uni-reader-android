@@ -192,6 +192,38 @@ object PadConst {
         return if (a >= 1f) 1f else (a * a * (3f - 2f * a)) * 0.82f + 0.18f
     }
 
+    // ---- 铅笔「多道微波动叠加」：与 Mac `PenBrushType.pencilPasses` / web `shared.ts PENCIL_*` 同一套 ----
+    //
+    // 2026-09-07 补：此前本端与 web 的铅笔是**一条光溜的粗实线**，只有 Mac 有石墨纹理，
+    // 墨量差 65%（`../spike/ink-cross/` 的 pencil-texture 向量照出来的）。
+
+    /** 每道 (垂向波幅×线宽, 该道 alpha, 线宽比例, 相位)。首道波幅 0 作居中核心，其余低频垂向波动。 */
+    class PencilPass(val amp: Float, val alpha: Float, val wScale: Float, val phase: Float)
+
+    val PENCIL_PASSES = listOf(
+        PencilPass(0.0f, 0.34f, 0.55f, 0.0f),
+        PencilPass(0.34f, 0.16f, 0.45f, 2.3f),
+        PencilPass(0.34f, 0.16f, 0.45f, 4.6f),
+    )
+
+    /** 波幅公式里线宽项的上限：不封顶的话调粗画笔时波幅线性变大，显成锯齿尖刺而不是石墨纹理。 */
+    const val PENCIL_WOBBLE_REF_W = 9.0f
+
+    /** 波动相位推进速率（弧度/像素，按累计弧长走**不按点序号**）。觉得纹理太碎/太稀就改这一个数。 */
+    const val PENCIL_WOBBLE_FREQ = 0.025f
+
+    /**
+     * GLSL 风 hash → [-1,1]，种子用**归一化**坐标（缩放无关；铅笔纹理重绘不抖）。
+     * 与 Mac `InkRender.jitter` / web `inkJitter` 同式。
+     *
+     * 🔴 中间量用 **Double**：`sin(x*12.9898+y*78.233)*43758.5453` 会放大到 1e4 量级，
+     * Float 只有 24 位尾数，取小数部分时低位全丢 → 与另两端出的"随机数"对不上，纹理就不一样了。
+     */
+    fun inkJitter(x: Float, y: Float): Float {
+        val v = kotlin.math.sin(x.toDouble() * 12.9898 + y.toDouble() * 78.233) * 43758.5453
+        return ((v - kotlin.math.floor(v)) * 2.0 - 1.0).toFloat()
+    }
+
     /**
      * 尺子吸附（Mac `InkEdit.rulerSnap` / JS `rulerSnap` 的同款实现）：
      * (ax,ay)→(x,y) 的角度距最近的 45° 倍数 ≤ thresholdDeg 时贴合到该倍数（保长度），否则原样。

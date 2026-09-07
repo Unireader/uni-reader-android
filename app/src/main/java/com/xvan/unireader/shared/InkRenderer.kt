@@ -96,7 +96,15 @@ class InkRenderer(private val density: Float) {
      * `strokeW > 0` 表示这份几何是**描边中心线**（marker：恒宽，整条一次成 path 才不会在接缝出圆斑），
      * 否则是**填充轮廓**（压感变宽的三种笔）。
      */
-    private class Geom(val pw: Float, val ph: Float, val path: Path, val strokeW: Float)
+    /**
+     * 一「道」：几何 + 它相对 `pen.a` 的 alpha 倍率。
+     *
+     * 除铅笔外都只有一道（倍率 = [PadConst.opacityMultFor]）。**铅笔是三道**，各 0.34/0.16/0.16，
+     * 叠出来等效 ≈0.53 —— 它因此不能与其余笔型共用「整条一个 alpha」的老结构（2026-09-07 改）。
+     */
+    private class Layer(val path: Path, val alphaMult: Float)
+
+    private class Geom(val pw: Float, val ph: Float, val layers: List<Layer>, val strokeW: Float)
 
     /**
      * 内容 → 几何。**LRU 有上限**：擦除切段、框选移动都会造出新内容的 Stroke，旧条目没人再问，
@@ -235,10 +243,12 @@ class InkRenderer(private val density: Float) {
         var lpx = px(pts[0])
         var lpy = py(pts[0])
 
+        val mult = PadConst.opacityMultFor(t)
+
         // 单点 = 一个圆点（同 Mac 单点分支）
         if (pts.size == 1) {
             path.addCircle(lpx, lpy, width(pts[0].p, 0) / 2f, Path.Direction.CW)
-            return Geom(keyW, keyH, path, 0f)
+            return Geom(keyW, keyH, listOf(Layer(path, mult)), 0f)
         }
 
         if (t == "marker") {
@@ -250,10 +260,12 @@ class InkRenderer(private val density: Float) {
             }
             path.lineTo(lpx, lpy)   // 补末段（同下方分支：中点平滑链止于倒数两点的中点）
             // 下限护住「strokeW > 0 即描边中心线」这条判别式：w 万一是 0，几何会被当成填充轮廓画歪
-            return Geom(keyW, keyH, path, (pen.w * wScale).coerceAtLeast(0.1f))
+            return Geom(keyW, keyH, listOf(Layer(path, mult)), (pen.w * wScale).coerceAtLeast(0.1f))
         }
 
-        // 压感变宽的三种笔：逐段描边转轮廓攒进同一条 path，收尾一次 FILL（见类注释）。
+        if (t == "pencil") return Geom(keyW, keyH, pencilLayers(pen, pts, px, py, wScale), 0f)
+
+        // 压感变宽的两种笔：逐段描边转轮廓攒进同一条 path，收尾一次 FILL（见类注释）。
         //
         // 这里曾额外画一个「起笔圆点」，攒轮廓之后**不能再留**：填充按 WINDING 规则算，圆点的绕向
         // （`Path.Direction`）与 stroker 生成的轮廓绕向不一定同号，反号的重叠区 winding 会抵消成 0，
@@ -281,32 +293,108 @@ class InkRenderer(private val density: Float) {
         outliner.strokeWidth = width(pts.last().p, n - 1)
         outliner.getFillPath(seg, segFill)
         path.addPath(segFill)
-        return Geom(keyW, keyH, path, 0f)
+        return Geom(keyW, keyH, listOf(Layer(path, mult)), 0f)
+    }
+
+    /**
+     * 铅笔：**三道半透明微波动叠加**，与 Mac `inkDrawStroke` 的 `.pencil` 分支同算法（2026-09-07 补齐）。
+     *
+     * 三条要点，抄的时候一个都不能少（少哪个哪个位置就跟 Mac 分叉）：
+     * ① **波动相位按累计弧长推进，不按点序号**。运笔几乎都是收笔前减速，同一采样率下减速处点更密；
+     *    按点序号走，稠密处波形在屏幕上被压成快速抖动的锯齿，笔画尾部全炸开。
+     * ② **抖动种子用归一化坐标**（`inkJitter(原始点.x, 原始点.y + 相位)`），不是屏幕坐标——
+     *    否则一缩放整条笔迹的颗粒就重新洗一遍，滚动时纹理会「爬」。
+     * ③ **波幅里的线宽项要封顶**（[PadConst.PENCIL_WOBBLE_REF_W]），不封顶的话粗笔的摆动会显成锯齿尖刺。
+     *
+     * 每道逐段转填充轮廓攒进自己那条 Path、上色时一次 FILL——与本类其余笔型同一条路数，
+     * 相邻段共享的端点因此不会重复合成。
+     *
+     * 🔴 **铅笔不吃 [PadConst.opacityMultFor]**：整体透明感由三道各自的 alpha 叠出来
+     * （1−∏(1−aᵢ) ≈ 0.53），再乘 0.85 就是叠两遍。
+     *
+     * 成本是其余笔型的三倍，但几何进 [cache]（按 [Stroke] 内容 key），静态层只在缩放时重建；
+     * 每帧三倍的只有活体层那一笔。
+     */
+    private fun pencilLayers(
+        pen: Pen,
+        pts: List<Pt3>,
+        px: (Pt3) -> Float,
+        py: (Pt3) -> Float,
+        wScale: Float,
+    ): List<Layer> {
+        val n = pts.size
+        val sx = FloatArray(n) { px(pts[it]) }
+        val sy = FloatArray(n) { py(pts[it]) }
+        // 累计弧长（屏幕坐标）——相位按它推进，见要点 ①
+        val dist = FloatArray(n)
+        for (i in 1 until n) {
+            val dx = sx[i] - sx[i - 1]
+            val dy = sy[i] - sy[i - 1]
+            dist[i] = dist[i - 1] + kotlin.math.sqrt(dx * dx + dy * dy)
+        }
+
+        val out = ArrayList<Layer>(PadConst.PENCIL_PASSES.size)
+        for (pass in PadConst.PENCIL_PASSES) {
+            val path = Path()
+            var lastX = 0f
+            var lastY = 0f
+            for (i in 0 until n) {
+                val lw = PadConst.strokeWidthFor("pencil", pts[i].p, pen.w)
+                // 垂线：用前后邻点估切线（同 Mac `InkRender.perp`）
+                val a = if (i > 0) i - 1 else 0
+                val b = if (i < n - 1) i + 1 else n - 1
+                val tx = sx[b] - sx[a]
+                val ty = sy[b] - sy[a]
+                val len = maxOf(0.0001f, kotlin.math.sqrt(tx * tx + ty * ty))
+                val nx = -ty / len
+                val ny = tx / len
+                val rnd = PadConst.inkJitter(pts[i].x, pts[i].y + pass.phase)
+                val wobW = minOf(lw, PadConst.PENCIL_WOBBLE_REF_W)
+                val wob = (kotlin.math.sin(dist[i] * PadConst.PENCIL_WOBBLE_FREQ + pass.phase) * pass.amp +
+                    rnd * pass.amp * 0.7f) * wobW * wScale
+                val cx = sx[i] + nx * wob
+                val cy = sy[i] + ny * wob
+                if (i > 0) {
+                    seg.reset()
+                    seg.moveTo(lastX, lastY)
+                    seg.lineTo(cx, cy)
+                    outliner.strokeWidth = maxOf(0.7f, lw * pass.wScale) * wScale
+                    outliner.getFillPath(seg, segFill)
+                    path.addPath(segFill)
+                }
+                lastX = cx
+                lastY = cy
+            }
+            out.add(Layer(path, pass.alpha))
+        }
+        return out
     }
 
     // ---------- 上色 ----------
 
     private fun render(c: Canvas, g: Geom, pen: Pen, left: Float, top: Float, pw: Float, ph: Float) {
-        val t = brushName(pen.brush)
-        val alpha = (pen.a * 255f * PadConst.opacityMultFor(t)).roundToInt().coerceIn(0, 255)
         // 缩放中（deferRebuild）几何还是旧尺寸的，用 canvas 缩放顶一拍；平时恒为 1
         val sx = pw / g.pw
         val sy = ph / g.ph
         c.save()
         c.translate(left, top)
         if (sx != 1f || sy != 1f) c.scale(sx, sy)
-        paint.color = Color.argb(alpha, pen.r, pen.g, pen.b)
-        if (g.strokeW > 0f) {
-            multiply(true)
-            paint.style = Paint.Style.STROKE
-            paint.strokeCap = Paint.Cap.SQUARE   // 平头：圆头会在起收笔处鼓出来
-            paint.strokeWidth = g.strokeW / sx   // 线宽不随缩放变，所以要把 canvas 的缩放除回去
-            c.drawPath(g.path, paint)
-            multiply(false)
-            paint.strokeCap = Paint.Cap.ROUND
-        } else {
-            paint.style = Paint.Style.FILL
-            c.drawPath(g.path, paint)
+        // 逐道上色：alpha 倍率在 [build] 里就定好了（普通笔一道 = opacityMultFor，铅笔三道各自的 alpha）
+        for (layer in g.layers) {
+            val alpha = (pen.a * layer.alphaMult * 255f).roundToInt().coerceIn(0, 255)
+            paint.color = Color.argb(alpha, pen.r, pen.g, pen.b)
+            if (g.strokeW > 0f) {
+                multiply(true)
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.SQUARE   // 平头：圆头会在起收笔处鼓出来
+                paint.strokeWidth = g.strokeW / sx   // 线宽不随缩放变，所以要把 canvas 的缩放除回去
+                c.drawPath(layer.path, paint)
+                multiply(false)
+                paint.strokeCap = Paint.Cap.ROUND
+            } else {
+                paint.style = Paint.Style.FILL
+                c.drawPath(layer.path, paint)
+            }
         }
         c.restore()
     }
