@@ -12,11 +12,13 @@ import kotlin.math.max
  * 折行各端用各自的排版引擎（TextKit / measureText / Paint.measureText），行末断点允许细微差异。
  */
 object NoteBubbleGeom {
+    // 2026-09-13 调小过一轮（字号 0.022→0.017、行高 1.35→1.25、内边距 0.55→0.30、圆角 0.5→0.4），三端同步。
+    // Mac 端这套比例只在「笔记气泡跟随页面缩放」打开时用（默认是固定尺寸），网页/安卓恒跟页缩放。
     const val WIDTH = 0.30f     // 气泡宽 ÷ 页宽
-    const val FONT = 0.022f     // 正文字号 ÷ 页宽
-    const val LINE_H = 1.35f    // 行高 ÷ 字号
-    const val PAD = 0.55f       // 内边距 ÷ 字号
-    const val RADIUS = 0.5f     // 圆角 ÷ 字号
+    const val FONT = 0.017f     // 正文字号 ÷ 页宽
+    const val LINE_H = 1.25f    // 行高 ÷ 字号
+    const val PAD = 0.30f       // 内边距 ÷ 字号
+    const val RADIUS = 0.4f     // 圆角 ÷ 字号
     const val GAP = 0.25f       // 图钉与气泡的间隙 ÷ 字号
     const val EDIT = 1.7f       // 右上角「编辑」按钮的边长（= 热区）÷ 字号
     const val ICON = 0.78f      // 图标画多大 ÷ 按钮边长（热区比图标大一圈，好点）
