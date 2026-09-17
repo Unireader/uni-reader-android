@@ -4,12 +4,16 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.RectF
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.util.LruCache
+import com.xvan.unireader.shared.PageAlign
 import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.PageWidths
+import com.xvan.unireader.shared.ScanAlignTable
 import com.xvan.unireader.shared.TocItem
 import io.legere.pdfiumandroid.PdfiumCore
 import io.legere.pdfiumandroid.api.Bookmark
@@ -26,12 +30,20 @@ import kotlin.math.roundToInt
  *
  * 选 Pdfium 而非内置 `PdfRenderer` 的理由见 `ANDROID-STANDALONE-PLAN.md §4`：后者只能出图，
  * 没有文字层也没有书签，下一版的搜索/选择/目录会全部卡死。
+ *
+ * **扫描页对齐**（`../SCAN-ALIGN-PLAN.md`）：传了 [align] 且页数对得上，这份文档的「页面」就是对齐后的那张——
+ * [pageSizes] 报 `(W, sh)`、[request] 出的是转正平移过的图。几何层、草稿纸垫页、参考窗全都只经
+ * [pageSizes] + [request] 认识页面，所以一处换掉处处一致；库里的批注坐标本来就是 Mac 按对齐页面写的，一个不换算。
  */
 class PdfSource(
     ctx: Context,
     private val file: File,
     /** 位图缓存上限（字节）。默认按**设备总内存**算（见 [PageWidths.cacheBytes]，两模式同一口径） */
     cacheBytes: Int = PageWidths.cacheBytes(ctx),
+    /** 这个文件的内容 hash（页图缓存键的显示身份要用它，见 [displayKey]）。不知道就空串 */
+    contentHash: String = "",
+    /** 库里**开着**的对齐参数表（[com.xvan.unireader.local.store.LibraryStore.activePageAlign]）；没开 = null */
+    align: ScanAlignTable? = null,
 ) : PageImageSource, Closeable {
 
     companion object {
@@ -105,8 +117,40 @@ class PdfSource(
     // 注意是函数不是属性：pdfiumandroid 里声明的是 `fun getPageCount()`，openPage 也返回可空
     val pageCount: Int = synchronized(docLock) { doc.getPageCount() }
 
-    /** 逐页显示尺寸（pt）。打开时一次性取全（同 §7：塞进同一个 pagesWH） */
-    val pageSizes: List<FloatArray> = readAllPageSizes()
+    /** 逐页**原始**显示尺寸（pt，[displaySize] 口径）。出图时 Pdfium 按它画原页，对外不露 */
+    private val rawSizes: List<FloatArray> = readAllPageSizes()
+
+    /**
+     * 生效的扫描页对齐表：传进来的表页数与**本 PDF** 对不上就不用（同 Mac `scanAlign(contentHash:pageCount:)`
+     * 的 `row.pageCount == pdf.pageCount` 那道闸——读表时 Pdfium 还没开，这道闸只能在这里补）。
+     */
+    val scanAlign: ScanAlignTable? = align?.takeIf { it.pageCount == pageCount }.also {
+        if (align != null && it == null) {
+            Log.w(TAG, "${file.name} 对齐参数 ${align.pageCount} 页 ≠ PDF $pageCount 页，按没开处理")
+        }
+    }
+
+    /** 显示身份（`../SCAN-ALIGN-PLAN.md §3.1`）：没开 = 内容 hash；开着 = `hash~a戳`。页图缓存键带它 */
+    val displayKey: String = ScanAlignTable.displayKey(contentHash, scanAlign)
+
+    /**
+     * 逐页显示尺寸（pt）——**对外的「页面」**。打开时一次性取全（同 §7：塞进同一个 pagesWH）。
+     * 开着对齐时是 `(W, sh)`（取表里的值，与 Mac `PageAlign.alignedSize` 同源），否则就是 [rawSizes]。
+     */
+    val pageSizes: List<FloatArray> = scanAlign?.let { t ->
+        List(pageCount) { i -> floatArrayOf(t.width.toFloat(), t.pages[i].sh.toFloat()) }
+    } ?: rawSizes
+
+    init {
+        scanAlign?.let { t ->
+            // 表里的原始页尺寸应当与本端按 box 算的逐页相等（都是 CropBox/MediaBox + 旋转换边）；
+            // 对不上说明两端取 box 的口径又分叉了（§9.1 那类），先留痕，出图仍照表里的变换走
+            val off = t.pages.indices.count { i ->
+                abs(t.pages[i].sw - rawSizes[i][0]) > 0.5 || abs(t.pages[i].sh - rawSizes[i][1]) > 0.5
+            }
+            Log.i(TAG, "${file.name} 扫描页对齐已开：W=${t.width} 戳=${t.stamp}，原始页尺寸与表不符 $off 页")
+        }
+    }
 
     /**
      * PDF 书签 → [TocItem] 先序拍平表（与 Mac `toc` 广播、与 [ReaderDrawer] 吃的是同一形状）。
@@ -224,7 +268,12 @@ class PdfSource(
         Log.i(TAG, "关闭 ${file.name}")
     }
 
-    private fun key(page: Int, widthPx: Int) = "$page@$widthPx"
+    /**
+     * 键里带 [displayKey]：一个实例的对齐表开档后不再变，按理只用页号+档位就够；带上是守住
+     * 「这份内容画出来长什么样的缓存一律按显示身份记」这条三端规矩（方案 §3.1），将来缓存
+     * 跨实例共享（或落盘）时不会把对齐前后的两张图当成一张。
+     */
+    private fun key(page: Int, widthPx: Int) = "$displayKey/$page@$widthPx"
 
     private fun workLoop() {
         while (true) {
@@ -258,19 +307,76 @@ class PdfSource(
     }
 
     private fun render(page: Int, widthPx: Int): Bitmap? {
+        scanAlign?.page(page)?.let { return renderAligned(page, widthPx, it) }
         val h = pixelHeight(page, widthPx)
         if (h <= 0) return null
-        val bmp = Bitmap.createBitmap(widthPx, h, Bitmap.Config.ARGB_8888)
+        return renderRaw(page, widthPx, h)
+    }
+
+    /** 原页铺满 `w×h` 像素（白底）。没开对齐时就是成品；开着时是 [renderAligned] 的中间图 */
+    private fun renderRaw(page: Int, w: Int, h: Int): Bitmap? {
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         // PDF 页面本身是透明底，白底要自己铺——不铺的话夜间反色与叠墨迹都会出鬼影
         Canvas(bmp).drawColor(Color.WHITE)
         synchronized(docLock) {
             val p = doc.openPage(page) ?: run {
                 Log.w(TAG, "openPage($page) 返回 null")
+                bmp.recycle()
                 return null
             }
-            p.use { it.renderPageBitmap(bmp, 0, 0, widthPx, h, true, false) }
+            p.use { it.renderPageBitmap(bmp, 0, 0, w, h, true, false) }
         }
         return bmp
+    }
+
+    /**
+     * 扫描页对齐出图（`../SCAN-ALIGN-PLAN.md §2.2`）：成品 `widthPx × round(widthPx·sh/W)`，先铺白底，
+     * 再把**原页**按「像素/pt = widthPx / W」画成中间图，用 §2.2 的 `Matrix` 画进来——转出页外的角被裁掉、
+     * 页内空出来的角是白的（同 Mac `PageBitmap.draw` 的 `cgTransform`）。
+     *
+     * **为什么不用 pdfiumandroid 2.0.1 的带矩阵出图**（`renderPageBitmap(bitmap, Matrix, RectF)`，按理可以
+     * 直接矢量出图、省一张中间图）：它的 `matrixToFloatArray` 把 `MSKEW_X`/`MSKEW_Y` 原样塞进 PDFium
+     * `FS_MATRIX` 的 `b`/`c`（看过 2.0.1 的 Kotlin 与 JNI 源码），而 PDFium 的 `b` 是 y′ 里 x 的系数、
+     * `Matrix.MSKEW_X` 是 x′ 里 y 的系数——两个斜切项互换，旋转方向整个反过来；再加上它底下那份 PDFium
+     * 把页面折成「pt 空间」时是否取整随版本而变，都只有真机才验得出来。这里走的两段
+     * （`renderRaw` = 本来就在真机上对过尺寸的那条路 + `Canvas` 的 `Matrix` 语义）都是确定的。
+     * 代价：多一张与成品差不多大的中间图（单工作线程，同一时刻只有一张，画完即回收），外加一次双线性重采样。
+     */
+    private fun renderAligned(page: Int, widthPx: Int, a: PageAlign): Bitmap? {
+        val raw = rawSizes.getOrNull(page) ?: return null
+        if (a.w <= 0 || raw[0] <= 0f || raw[1] <= 0f) return null
+        val outH = pixelHeight(page, widthPx)
+        if (outH <= 0) return null
+        val k = widthPx / a.w                                   // 像素 / pt（对齐页宽铺满 widthPx）
+        val rawW = (raw[0] * k).roundToInt().coerceAtLeast(1)
+        val rawH = (raw[1] * k).roundToInt().coerceAtLeast(1)
+        val src = renderRaw(page, rawW, rawH) ?: return null
+        val out = try {
+            Bitmap.createBitmap(widthPx, outH, Bitmap.Config.ARGB_8888)
+        } catch (e: Throwable) {
+            src.recycle()
+            throw e
+        }
+        val v = a.matrixValues()
+        val m = Matrix().apply {
+            // 原始 pt → 对齐 pt（§2.2 那组系数）→ ×k 成像素
+            setValues(
+                floatArrayOf(
+                    v[0].toFloat(), v[1].toFloat(), v[2].toFloat(),
+                    v[3].toFloat(), v[4].toFloat(), v[5].toFloat(),
+                    0f, 0f, 1f,
+                ),
+            )
+            // 中间图像素 → 原始 pt（取整后的宽高与 pt 尺寸的精确比例，别直接用 1/k）
+            preScale(raw[0] / rawW, raw[1] / rawH)
+            postScale(k.toFloat(), k.toFloat())
+        }
+        Canvas(out).apply {
+            drawColor(Color.WHITE)
+            drawBitmap(src, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+        }
+        src.recycle()
+        return out
     }
 
     private fun readAllPageSizes(): List<FloatArray> = synchronized(docLock) {
@@ -294,8 +400,10 @@ class PdfSource(
     /**
      * 逐页打印 `宽×高 / 宽高比`，用来和 Mac 端比对（§9.1 的硬验收项）。
      * Mac 侧对照脚本：`tools/dump-page-sizes.swift`。
+     * 打的是**对外的** [pageSizes]：开着扫描页对齐时就是对齐后的 `(W, sh)`，与 Mac 端开着对齐时的页面口径一致。
      */
     fun logPageSizes(tag: String = TAG) {
+        if (scanAlign != null) Log.i(tag, "PAGESIZE（扫描页对齐已开，下面是对齐后的页面，displayKey=$displayKey）")
         for ((i, s) in pageSizes.withIndex()) {
             val ratio = if (s[0] > 0f) s[1] / s[0] else 0f
             Log.i(tag, "PAGESIZE $i ${"%.4f".format(s[0])} ${"%.4f".format(s[1])} ${"%.6f".format(ratio)}")

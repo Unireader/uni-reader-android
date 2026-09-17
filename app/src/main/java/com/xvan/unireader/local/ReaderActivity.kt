@@ -46,6 +46,7 @@ import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.ReaderDrawer
 import com.xvan.unireader.shared.RefWindow
+import com.xvan.unireader.shared.ScanAlignTable
 import com.xvan.unireader.shared.ScratchCanvas
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Stroke
@@ -158,13 +159,21 @@ class ReaderActivity : Activity() {
         val notes: List<TextNote>,
         val fills: List<TextFill>,
         val pads: List<ScratchPad>,
-        /** 这一篇的内容 hash（划字要按它查 `ocr_page`）；没有可打开的版本时空串 */
+        /**
+         * **打开的那个文件**的内容 hash（划字按它查 `ocr_page`、扫描页对齐按它查 `page_align`）；
+         * 没有可打开的版本时空串
+         */
         val contentHash: String = "",
+        /** 这份内容开着的扫描页对齐参数（`../SCAN-ALIGN-PLAN.md`）；没开 / 解不开 = null */
+        val align: ScanAlignTable? = null,
         /** 笔记类型的图钉配色与图标名（`meta.note_types`），key = 大写 type_id */
         val typeRgb: Map<String, IntArray> = emptyMap(),
         val typeIcons: Map<String, String> = emptyMap(),
         val reason: String?,
     )
+
+    /** 参考窗在库队列上读齐的那一份：文档行 + 能打开的文件 + 它的内容 hash + 开着的对齐参数 */
+    private class RefDoc(val doc: LibDocument, val file: File, val hash: String, val align: ScanAlignTable?)
 
     /** 后台一趟开好的工作区库（顺带把书库列表读出来：标签页栏要标题，"+"要文档列表） */
     private class WsOpened(val store: LibraryStore, val name: String, val docs: List<LibDocument>)
@@ -237,13 +246,21 @@ class ReaderActivity : Activity() {
                     // 读页尺寸表那步甩给 Bg。
                     q.submit(
                         "参考窗读文档 ${id.take(8)}",
-                        { s -> s.document(id)?.let { d -> Workspace.firstOpenablePdf(ws, s, id)?.let { d to it } } },
-                        { pair ->
-                            if (pair == null) { cb(null); return@submit }
-                            val (doc, file) = pair
+                        { s ->
+                            s.document(id)?.let { d ->
+                                Workspace.firstOpenablePdfWithHash(ws, s, id)?.let { (f, hash) ->
+                                    // 参考窗的页图 / 页尺寸同样按对齐后的页面来（同 Mac `RefDocInfo.align`）
+                                    RefDoc(d, f, hash, s.activePageAlign(hash))
+                                }
+                            }
+                        },
+                        { rd ->
+                            if (rd == null) { cb(null); return@submit }
+                            val doc = rd.doc
+                            val file = rd.file
                             runInBackground(
                                 what = "参考窗开 PDF ${file.name}",
-                                work = { PdfSource(applicationContext, file) },
+                                work = { PdfSource(applicationContext, file, contentHash = rd.hash, align = rd.align) },
                                 ok = { src ->
                                     refSource?.close()   // 换书 = 当场放掉上一本（它吊着一个文件）
                                     refSource = src
@@ -971,7 +988,8 @@ class ReaderActivity : Activity() {
             "读文档 ${t.docId.take(8)}",
             { s ->
                 val doc = s.document(t.docId)
-                val file = if (doc == null) null else Workspace.firstOpenablePdf(ws, s, t.docId)
+                val opened = if (doc == null) null else Workspace.firstOpenablePdfWithHash(ws, s, t.docId)
+                val file = opened?.first
                 if (doc == null) {
                     DocData(
                         null, null, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
@@ -986,12 +1004,17 @@ class ReaderActivity : Activity() {
                     // 落库上下文 + 当前作画图层（老文档可能没有图层行，补一条默认层，同 Mac 的行为）
                     s.ensureDefaultLayer(t.docId)
                     s.updateLastOpened(t.docId)
+                    // 内容 hash 取**真正打开的那个文件**所属的版本（同 Mac `openTarget`）：文本层的行框与对齐参数
+                    // 都是「这个文件画出来的页面」上的坐标，一篇有多个版本时拿错一个就整页错位。
+                    // 从前划字取的是「第一个版本」，单版本的书（绝大多数）两种取法是同一个
+                    val hash = opened?.second.orEmpty().ifEmpty { s.variants(t.docId).firstOrNull()?.contentHash.orEmpty() }
                     DocData(
                         doc, file,
                         s.inkLayers(t.docId), s.strokes(t.docId), s.textNotes(t.docId), s.textFills(t.docId),
                         s.scratchPads(t.docId),   // v7 老库没有这张表 → 空列表，不炸（handoff §2.3①）
-                        // 划字要按内容 hash 查 `ocr_page`；一篇有多个版本时取第一个（同 variants 的顺序）
-                        contentHash = s.variants(t.docId).firstOrNull()?.contentHash.orEmpty(),
+                        contentHash = hash,
+                        // 扫描页对齐（只读 Mac 写的；老库没这张表 → null）。页数那道闸在 PdfSource 里补
+                        align = s.activePageAlign(hash),
                         typeRgb = s.noteTypeColors(),
                         typeIcons = s.noteTypeIcons(),
                         reason = null,
@@ -1017,7 +1040,7 @@ class ReaderActivity : Activity() {
         runInBackground(
             what = "开 PDF ${file.name}",
             work = {
-                PdfSource(applicationContext, file).also {
+                PdfSource(applicationContext, file, contentHash = d.contentHash, align = d.align).also {
                     it.logPageSizes()   // §9.1 的比对凭据：与 tools/dump-page-sizes.swift 的输出逐行 diff
                 }
             },

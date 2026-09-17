@@ -83,6 +83,14 @@ object MirrorReport {
             if (plan.ocrToMirror.isNotEmpty()) bits.add("拉回本机 ${plan.ocrToMirror.size} 页")
             out.add(Line(also("补齐文字识别结果：" + bits.joinToString("、")), ocrBreakdown(plan, hashTitles)))
         }
+        // 扫描页对齐：开关 / 参数整行按较新的那边覆盖（`../SCAN-ALIGN-PLAN.md §5`），措辞同 Mac
+        if (plan.alignToSource.isNotEmpty() || plan.alignToMirror.isNotEmpty()) {
+            val bits = ArrayList<String>()
+            if (plan.alignToSource.isNotEmpty()) bits.add("写入硬盘 ${plan.alignToSource.size} 本")
+            if (plan.alignToMirror.isNotEmpty()) bits.add("拉回本机 ${plan.alignToMirror.size} 本")
+            val names = (plan.alignToSource + plan.alignToMirror).map { hashTitles[it] ?: "（未知文档）" }
+            out.add(Line(also("扫描页对齐设置：" + bits.joinToString("、")), names))
+        }
         if (plan.conflicts.isNotEmpty()) {
             out.add(Line("冲突 ${plan.conflicts.size} 条", conflictLines(plan, titles)))
         }
@@ -188,6 +196,8 @@ object MirrorReport {
         if (plan.conflicts.isNotEmpty()) bits.add("冲突 ${plan.conflicts.size}")
         val ocr = plan.ocrToSource.size + plan.ocrToMirror.size
         if (ocr > 0) bits.add("识别结果 $ocr 页")
+        val aligns = plan.alignToSource.size + plan.alignToMirror.size
+        if (aligns > 0) bits.add("扫描页对齐 $aligns 本")
         if (bits.isNotEmpty()) return bits.joinToString(" · ")
         return if (plan.progressMerges.isEmpty()) "只更新「上次打开」" else "只更新阅读进度"
     }

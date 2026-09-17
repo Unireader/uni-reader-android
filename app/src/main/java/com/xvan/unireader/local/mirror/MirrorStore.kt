@@ -214,7 +214,31 @@ object MirrorStore {
         MirrorDiff.compute(
             syncBase(mirror), snapshot(mirror), source.mirrorSnapshot(),
             ocrKeys(mirror), source.mirrorOcrKeys(),
+            alignStamps(mirror), source.mirrorAlignStamps(),
         )
+
+    /**
+     * 一个库里 `page_align` 的「内容 hash → updated_at」（`../SCAN-ALIGN-PLAN.md §5`，不带 payload）。
+     *
+     * **表不存在就当空**：本端早于 v14 建的库、没被新版 Mac 打开过的老库都没有这张表，
+     * 查不到表就抛错的话整次同步都会失败。同 Mac `MirrorStore.alignStamps`（两列不是文本的行跳过，
+     * 同 Swift 的 `as? String`）。
+     */
+    fun alignStamps(db: Db): Map<String, String> {
+        val has = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='page_align'") {
+            it.getString(0)
+        }
+        if (has.isEmpty()) return emptyMap()
+        val out = HashMap<String, String>()
+        db.query("SELECT content_hash, updated_at FROM page_align") { c ->
+            if (c.getType(0) == Cursor.FIELD_TYPE_STRING && c.getType(1) == Cursor.FIELD_TYPE_STRING) {
+                c.getString(0) to c.getString(1)
+            } else {
+                null
+            }
+        }.forEach { if (it != null) out[it.first] = it.second }
+        return out
+    }
 
     /**
      * 一个库里 `ocr_page` 的**全部键**（不含 payload）。

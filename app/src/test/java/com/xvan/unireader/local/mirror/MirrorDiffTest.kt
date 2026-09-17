@@ -289,4 +289,95 @@ class MirrorDiffTest {
         assertTrue(cleared.ocrToSource.isEmpty())
         assertEquals(2, cleared.ocrToMirror.size)
     }
+
+    /**
+     * 扫描页对齐（`page_align`）那条通道：按 `updated_at` 取新、一侧缺就补（`../SCAN-ALIGN-PLAN.md §5`）。
+     * 与 Mac `spike/mirror-align-test.swift` ①② 段逐条对应。
+     */
+    @Test
+    fun 扫描页对齐_alignPlan() {
+        val p = MirrorDiff.alignPlan(
+            mine = mapOf(
+                "a" to "2026-09-17T10:00:00.000Z",
+                "b" to "2026-09-17T10:00:00.000Z",
+                "c" to "2026-09-17T12:00:00.000Z",
+            ),
+            theirs = mapOf(
+                "b" to "2026-09-17T11:00:00.000Z",
+                "c" to "2026-09-17T12:00:00.000Z",
+                "d" to "2026-09-01T00:00:00.000Z",
+            ),
+        )
+        assertEquals("副本独有 → 写入硬盘", listOf("a"), p.first)
+        assertEquals("硬盘较新 / 硬盘独有 → 拉回本机", listOf("b", "d"), p.second)
+
+        val q = MirrorDiff.alignPlan(
+            mine = mapOf("x" to "2026-09-17T13:00:00.000Z"),
+            theirs = mapOf("x" to "2026-09-17T12:59:59.999Z"),
+        )
+        assertEquals("副本较新 → 写入硬盘", listOf("x"), q.first)
+        assertTrue(q.second.isEmpty())
+
+        // 两个方向都按 hash 排好序（与 Mac `.sorted()` 一致，报告明细的顺序因此两端相同）
+        val r = MirrorDiff.alignPlan(mine = mapOf("z" to "1", "m" to "1"), theirs = mapOf("y" to "1", "b" to "1"))
+        assertEquals(listOf("m", "z"), r.first)
+        assertEquals(listOf("b", "y"), r.second)
+
+        // compute 把它原样放进 Plan
+        val plan = MirrorDiff.compute(
+            base = emptyMap(), mine = emptyMap(), theirs = emptyMap(),
+            mineAlign = mapOf("a" to "2026-09-17T10:00:00.000Z"),
+            theirsAlign = mapOf("d" to "2026-09-01T00:00:00.000Z"),
+        )
+        assertEquals(listOf("a"), plan.alignToSource)
+        assertEquals(listOf("d"), plan.alignToMirror)
+        assertTrue("对齐参数不进 Change 那条通道（不进指纹、不进基线）", plan.changes.isEmpty())
+    }
+
+    @Test
+    fun 扫描页对齐_Plan标志() {
+        val empty = MirrorDiff.Plan(emptyList(), emptyList(), emptyMap())
+        assertTrue(empty.isEmpty)
+        assertFalse("什么都没有 → 谈不上推送", empty.isCleanPushToMirror)
+
+        val pull = empty.copy(alignToMirror = listOf("h1"))
+        assertFalse(pull.isEmpty)
+        assertTrue("只有拉回本机：可自动推送", pull.isCleanPushToMirror)
+        assertEquals(0, pull.pendingToSource)
+
+        val both = pull.copy(alignToSource = listOf("h2"))
+        assertFalse("有写入硬盘：挡自动推送", both.isCleanPushToMirror)
+        assertEquals("计入待确认", 1, both.pendingToSource)
+
+        val push = empty.copy(alignToSource = listOf("h3"))
+        assertFalse("只有对齐改动也不算「两端一致」", push.isEmpty)
+        assertFalse(push.isCleanPushToMirror)
+        assertEquals(1, push.pendingToSource)
+
+        // 普通改动的口径不变：写入硬盘的 change 计入待确认
+        val added = cell(null, v1, null)
+        assertEquals(1, added.pendingToSource)
+        assertFalse(added.isCleanPushToMirror)
+        assertTrue("硬盘新增 → 拉回本机：可自动推送", cell(null, null, v1).isCleanPushToMirror)
+    }
+
+    @Test
+    fun 扫描页对齐_报告() {
+        val plan = MirrorDiff.Plan(
+            emptyList(), emptyList(), emptyMap(),
+            alignToSource = listOf("h1"),
+            alignToMirror = listOf("h2", "h3"),
+        )
+        assertEquals("扫描页对齐 3 本", MirrorReport.headline(plan))
+        val lines = MirrorReport.summary(plan, emptyMap(), mapOf("h1" to "软件工程", "h2" to "高等数学"))
+        assertEquals(1, lines.size)
+        assertEquals("扫描页对齐设置：写入硬盘 1 本、拉回本机 2 本", lines[0].text)
+        assertEquals(listOf("软件工程", "高等数学", "（未知文档）"), lines[0].detail)
+
+        // 有别的改动时前缀「另有」（同 OCR 那条）
+        val mixed = cell(null, v1, null).copy(alignToMirror = listOf("h2"))
+        val ml = MirrorReport.summary(mixed, mapOf("D1" to "高等数学"), mapOf("h2" to "高等数学"))
+        assertTrue(ml.map { it.text }.toString(), ml.any { it.text == "另有扫描页对齐设置：拉回本机 1 本" })
+        assertEquals("写入硬盘 1 · 扫描页对齐 1 本", MirrorReport.headline(mixed))
+    }
 }

@@ -20,7 +20,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 一个工作区的持久层，对应 Mac 端 `Sources/Store/LibraryStore.swift`（schema v12）。
+ * 一个工作区的持久层，对应 Mac 端 `Sources/Store/LibraryStore.swift`（schema v14）。
  *
  * 与 Mac 端的**唯一区别**：这里不迁移老库（见 [Db.open] 的说明；从零建新库是 [Schema] 的事）。
  * SQL 语句逐条照抄 Mac，
@@ -96,6 +96,10 @@ class LibraryStore(private val db: Db) : Closeable {
     /** 本库 `ocr_page` 的全部键（纯 additive 表，不进基线，见 `MirrorStore.ocrKeys`） */
     fun mirrorOcrKeys(): Set<com.xvan.unireader.local.mirror.MirrorDiff.OcrKey> =
         com.xvan.unireader.local.mirror.MirrorStore.ocrKeys(db)
+
+    /** 本库 `page_align` 的「内容 hash → updated_at」（扫描页对齐那条通道，见 `MirrorStore.alignStamps`） */
+    fun mirrorAlignStamps(): Map<String, String> =
+        com.xvan.unireader.local.mirror.MirrorStore.alignStamps(db)
 
     /** 镜像基线（`sync_base`）。不是镜像时返回空 —— 那张表只在镜像库里存在 */
     fun syncBase(): Map<String, Map<String, String>> =
@@ -592,6 +596,66 @@ class LibraryStore(private val db: Db) : Closeable {
         }
         return out
     }
+
+    // ---------- 扫描页对齐（page_align，v14，只读，`../SCAN-ALIGN-PLAN.md §3`） ----------
+
+    /**
+     * 某份内容**正在生效**的对齐参数表：有行、`enabled=1`、payload 解得开且页数与 `page_count` 列对得上，
+     * 否则 null（一律按没开处理）。同 Mac `WorkspaceManager.activeTable`。
+     *
+     * 「与这份 PDF 的页数对得上」那道闸**在 [com.xvan.unireader.local.PdfSource] 里**：读这张表时（开文档的
+     * 第一跳，库队列上）Pdfium 还没开，不知道真实页数。
+     *
+     * **表不存在不抛**：本端早于 v14 建的库、没被新版 Mac 打开过的老库都没有这张表，
+     * 为一个显示增强把整篇文档打不开是本末倒置。**在 StoreQueue 线程上调用。**
+     */
+    fun activePageAlign(contentHash: String): com.xvan.unireader.shared.ScanAlignTable? {
+        if (contentHash.isEmpty() || !hasTable("page_align")) return null
+        return db.query(
+            "SELECT enabled,page_count,payload FROM page_align WHERE content_hash=?",
+            arrayOf(contentHash),
+        ) { c -> Triple(c.getLong(0) != 0L, c.getInt(1), c.getBlob(2)) }
+            .firstOrNull()
+            ?.takeIf { it.first }
+            ?.let { (_, n, payload) ->
+                com.xvan.unireader.shared.ScanAlignTable.decode(payload, n).also {
+                    if (it == null) Log.w(TAG, "page_align ${contentHash.take(8)} 开着但解不开（格式版本/页数/数值），按没开处理")
+                }
+            }
+    }
+
+    /**
+     * 离线镜像合并：把这一行**原样**（时间戳字符串逐字，不经解析往返）
+     * 写到 [other]，覆盖对面同键那一行。同 Mac `copyPageAlign(contentHash:to:)`。
+     *
+     * 逐字搬是为了下一轮干跑两侧 `updated_at` 相等、不再判出差异。
+     * 对面**可能没有这张表**（本端早于 v14 建的库）→ 先按 [Schema.PAGE_ALIGN_DDL] 补建。
+     * 没有这一行（或本库根本没有这张表）→ false。
+     */
+    fun copyPageAlign(contentHash: String, other: LibraryStore): Boolean {
+        if (!hasTable("page_align")) return false
+        val r = db.query("SELECT * FROM page_align WHERE content_hash=?", arrayOf(contentHash)) {
+            com.xvan.unireader.local.mirror.MirrorStore.readRow(it)
+        }.firstOrNull() ?: return false
+        other.db.exec(Schema.PAGE_ALIGN_DDL.trimIndent())
+        other.db.exec(
+            "INSERT INTO page_align(content_hash,enabled,page_count,payload,created_at,updated_at) " +
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(content_hash) DO UPDATE SET enabled=excluded.enabled, " +
+                "page_count=excluded.page_count, payload=excluded.payload, " +
+                "created_at=excluded.created_at, updated_at=excluded.updated_at",
+            // 取值兜底逐条照 Mac（`as? Int64 ?? 0` / `as? Data ?? Data()` / `as? String ?? ""`）
+            arrayOf<Any?>(
+                contentHash, r["enabled"] as? Long ?: 0L, r["page_count"] as? Long ?: 0L,
+                r["payload"] as? ByteArray ?: ByteArray(0),
+                r["created_at"] as? String ?: "", r["updated_at"] as? String ?: "",
+            ),
+        )
+        return true
+    }
+
+    private fun hasTable(name: String): Boolean =
+        db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name)) { it.getString(0) }
+            .isNotEmpty()
 
     // ---------- 划字产物（选区注解 kind=0 / 高亮 kind=3） ----------
 

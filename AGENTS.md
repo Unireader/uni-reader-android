@@ -85,8 +85,16 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `lassoSelection` 的 setter 里，那个字段有七八处赋值点，逐个补调用迟早漏一处。
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
-  **建表语句只有 `local/store/Schema.kt` 一处**（schema v12，逐字抄 Mac 的 `migrate()`），且只对
-  「文件还不存在」的**全新**库跑一次；`Db.open` 照旧一个字 DDL 都不写、不迁移老库。
+  **建表语句只有 `local/store/Schema.kt` 一处**（schema v14，逐字抄 Mac 的 `migrate()`；v13 `image` 表本端只建不用），
+  且只对「文件还不存在」的**全新**库跑一次；`Db.open` 照旧一个字 DDL 都不写、不迁移老库。
+  唯一例外是离线镜像合并往没有 `page_align` 表的库里补这张表（`Schema.PAGE_ALIGN_DDL`，与 Mac 逐字相同）。
+- **扫描页对齐（模式1 只读，2026-09-17，`../SCAN-ALIGN-PLAN.md`）**：开关与测量只在 Mac；本端按**打开的那个文件**的
+  内容 hash 读 `page_align`（`LibraryStore.activePageAlign`，老库没表 → 按没开），交给 `PdfSource`。开着时
+  `PdfSource.pageSizes` 报对齐后的 `(W, sh)`、`request` 出转正平移过的图——几何层 / 草稿纸垫页 / 参考窗都只经这两处
+  认识页面，所以不必各改；库里的批注坐标本来就是按对齐页面写的，**一个不换算**。页图缓存键带 `displayKey`（`hash~a戳`）。
+  出图**没用** pdfiumandroid 2.0.1 的带矩阵 `renderPageBitmap`：它把 `Matrix` 的两个斜切项互换着传给 PDFium，旋转会反向
+  （原因写在 `PdfSource.renderAligned`）；现在是「原页出中间图 + `Canvas.drawBitmap(Matrix)`」。
+  离线镜像另有一条 `page_align` 通道（`MirrorDiff.alignPlan` / `MirrorApply.fillAlign`，按 `updated_at` 取新、不进基线）。
 - **模式1 可以本机建库、本机加书**（2026-08-30）：`Workspace.create`（建 `<名字>.unrd` 骨架 + 空库，
   重名不覆盖、失败连文件夹一起删）+ `local/PdfImport.kt`（探页数 → SHA-256 → 拷进 `PDFs/` → 入库；
   **内容 hash 是文档身份**，同一份内容入两次只多一条 location）。入口：启动页「新建」/ 书库右上「＋」。
@@ -139,7 +147,13 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `OcrWatermark` ↔ `OCRWatermark.swift`；选区装配 `TextSelect` ↔ `ReaderSurface+Selection.swift`
   的 `ocrLineHit`/`ocrGroupSelection`/`ocrLinearSelection`），本端 `TextSelectTest` 14 项
   ↔ Mac `spike/ocr-char-select-test.swift`/`ocr-watermark-test.swift`
-  ——判定不一致 = 同一本书两端划出来的字不一样，而那段文字会当 `quote` 落库。
+  ——判定不一致 = 同一本书两端划出来的字不一样，而那段文字会当 `quote` 落库；
+  `shared/ScanAlign.kt`（**扫描页对齐**：每页变换 `PageAlign` + 参数表解码 `ScanAlignTable` + 戳 / `displayKey`）
+  ↔ Mac `Sources/App/ScanAlign.swift`（契约 `../SCAN-ALIGN-PLAN.md` §2/§3），本端 `ScanAlignTest` ↔ Mac
+  `spike/scan-align-test.swift` ①②⑤，**戳的跨端向量**（样例 payload → `7438e8a2`）两端各算一遍抄进测试；
+  `local/mirror/MirrorDiff.alignPlan` 与 `Plan.isCleanPushToMirror`/`pendingToSource` ↔ Mac `MirrorDiff.swift`
+  （`MirrorDiffTest` 的对齐三条 ↔ `spike/mirror-align-test.swift` ①②）
+  ——变换差一个符号，Mac 上写的笔迹在平板上就落在「整页微微转了一点」的位置。
   改完三端测试一起跑（安卓 `WireCodecTest` 的向量与 Mac/web 的跨端向量同源）。
 - **草稿纸画布坐标系 = 逻辑点（dp），原点＝创建点、可负无界**；橡皮半径按 `eraserRefWidth = 800`
   从页宽归一化折算，**三端必须同一个数**（`../SCRATCHPAD-ANDROID-HANDOFF.md §1`）。

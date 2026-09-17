@@ -13,17 +13,39 @@ import java.io.File
  * 建出来的就得是 Mac 认识的那一份。
  *
  * 所以下面这段 DDL 是从 Mac `Sources/Store/LibraryStore.swift` 的 `migrate()` **逐字抄来**的
- * （schema v12），只做了一处形式上的改动：`SQLiteDatabase.execSQL` 一次只吃一条语句，
+ * （schema v14），只做了一处形式上的改动：`SQLiteDatabase.execSQL` 一次只吃一条语句，
  * 故拆成了列表。**改表结构永远先改 Mac + `REQUIREMENTS.md §8`，再同步这里。**
  *
- * 新建的库直接就是 v12（不走任何迁移分支），因此没有「补列」那一节——那是给老库用的。
+ * 新建的库直接就是 v14（不走任何迁移分支），因此没有「补列」那一节——那是给老库用的。
+ * 刻意**没抄**的两条：`idx_note_document_kind_page` 索引与 `page_geom` 表——Mac 注释里写明了
+ * 它们不是数据契约、不占 schema 版本（Mac 打开时自己补）。
  */
 object Schema {
 
     const val TAG = "UniReader/Schema"
 
-    /** 建库时写进 `meta.schema_version` 的版本，与 Mac `LibraryStore.schemaVersion` 同步 */
-    const val VERSION = 12
+    /**
+     * 建库时写进 `meta.schema_version` 的版本，与 Mac `LibraryStore.schemaVersion` 同步。
+     * v13 = `image` 表（图片笔记，本端还不读写它，只建空表）；v14 = `page_align` 表（扫描页对齐，本端只读）。
+     * 两张表都建上，写进去的版本号才不撒谎。
+     */
+    const val VERSION = 14
+
+    /**
+     * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
+     * 要往**可能没有这张表**的库里整行覆盖（本端早于 v14 建的库、没被新版 Mac 打开过的老库），
+     * 那边要先 `CREATE TABLE IF NOT EXISTS`——语句仍只在这一处（见 `MirrorApply.fillAlign`）。
+     */
+    const val PAGE_ALIGN_DDL = """
+        CREATE TABLE IF NOT EXISTS page_align (
+          content_hash TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          page_count INTEGER NOT NULL,
+          payload BLOB NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
 
     /** 与 Mac `migrate()` 里那段 `CREATE TABLE IF NOT EXISTS …` 逐字一致，只是拆成了单条语句 */
     private val DDL = listOf(
@@ -95,6 +117,16 @@ object Schema {
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_scratch_pad_document ON scratch_pad(document_id)",
+        """
+        CREATE TABLE IF NOT EXISTS image (
+          sha256 TEXT PRIMARY KEY,
+          ext TEXT NOT NULL,
+          width INTEGER NOT NULL, height INTEGER NOT NULL, bytes INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          orphaned_at TEXT
+        )
+        """,
+        PAGE_ALIGN_DDL,
     )
 
     /**

@@ -65,7 +65,22 @@ class MirrorApplyTest {
         MirrorDiff.compute(
             mirror.syncBase(), mirror.mirrorSnapshot(), source.mirrorSnapshot(),
             mirror.mirrorOcrKeys(), source.mirrorOcrKeys(),
+            mirror.mirrorAlignStamps(), source.mirrorAlignStamps(),
         )
+
+    /** 直接往 `page_align` 写一行（只有 Mac 写这张表，本端没有写的 DAO，测试里自己写） */
+    private fun putAlign(store: LibraryStore, hash: String, enabled: Boolean, pageCount: Int, payload: String, updated: String) {
+        store.withMirrorDb { db ->
+            db.exec(
+                "INSERT OR REPLACE INTO page_align(content_hash,enabled,page_count,payload,created_at,updated_at) " +
+                    "VALUES(?,?,?,?,?,?)",
+                arrayOf<Any?>(
+                    hash, if (enabled) 1L else 0L, pageCount.toLong(), payload.toByteArray(),
+                    "2026-09-17T07:00:00Z", updated,
+                ),
+            )
+        }
+    }
 
     /** 直接往 `ocr_page` 写一页（安卓端不跑 OCR，没有这张表的 DAO，测试里自己写） */
     private fun putOcr(store: LibraryStore, hash: String, page: Int, text: String) {
@@ -256,6 +271,60 @@ class MirrorApplyTest {
             ) { String(it.getBlob(0)) }.first()
         }
         assertTrue("🔴 INSERT OR IGNORE：覆盖不掉对面已有的那份（$kept）", kept.contains("硬盘版"))
+        p.store.close(); p.mirror.close()
+    }
+
+    /**
+     * 扫描页对齐参数（`../SCAN-ALIGN-PLAN.md §5`）：整行按 `updated_at` 取新、逐字搬、对面没表也能补、幂等。
+     * 对应 Mac `spike/mirror-align-test.swift` ③④⑤。
+     */
+    @Test
+    fun 扫描页对齐双向覆盖且对面没表也能补() {
+        val root = freshRoot("F")
+        val p = makePair(root, "F")
+        val payload = """{"v":1,"w":497.5,"pages":[[0.01,-3,0,500,700]]}"""
+        // 副本库当成「本端早于 v14 建的库」：没有 page_align 表
+        p.mirror.withMirrorDb { it.exec("DROP TABLE IF EXISTS page_align") }
+        assertTrue("表不存在 → 空、不抛", p.mirror.mirrorAlignStamps().isEmpty())
+        assertNull("表不存在 → 按没开对齐、不抛", p.mirror.activePageAlign("h-F"))
+
+        // 硬盘上（Mac 写的）：一本开着、一本关着；时间戳故意用别的端的格式，验证逐字搬
+        putAlign(p.store, "h-F", true, 1, payload, "2026-09-17T08:00:00Z")
+        putAlign(p.store, "h-off", false, 1, payload, "2026-09-17T08:00:00Z")
+        putAlign(p.store, "h-bad", true, 2, payload, "2026-09-17T08:00:00Z")   // 页数列与 payload 对不上
+        assertNotNull(p.store.activePageAlign("h-F"))
+        assertNull("关着 → null", p.store.activePageAlign("h-off"))
+        assertNull("page_count 与 payload 页数对不上 → null", p.store.activePageAlign("h-bad"))
+        assertNull("没测过 → null", p.store.activePageAlign("nope"))
+
+        val plan = planOf(p.mirror, p.store)
+        assertEquals(listOf("h-F", "h-bad", "h-off").sorted(), plan.alignToMirror)
+        assertTrue(plan.alignToSource.isEmpty())
+        assertTrue("只有拉回本机：可自动推送", plan.isCleanPushToMirror)
+
+        val r = MirrorApply.apply(plan, p.dst, p.mirror, p.src, p.store)
+        assertEquals(3, r.alignToMirror)
+        assertEquals(0, r.alignToSource)
+        assertEquals(p.store.mirrorAlignStamps(), p.mirror.mirrorAlignStamps())
+        assertEquals("时间戳字符串逐字搬过去", "2026-09-17T08:00:00Z", p.mirror.mirrorAlignStamps()["h-F"])
+        val t = p.mirror.activePageAlign("h-F")
+        assertNotNull("副本上补建了表、行也到了", t)
+        assertEquals("payload 逐字节相同（戳按原字节算）", com.xvan.unireader.shared.ScanAlignTable.stamp(payload.toByteArray()), t!!.stamp)
+        assertTrue("再跑一次干跑没有剩活", planOf(p.mirror, p.store).isEmpty)
+
+        // 副本上（设想未来本端能切开关）关掉，且更新 → 写入硬盘，要人工确认
+        p.mirror.withMirrorDb {
+            it.exec("UPDATE page_align SET enabled=0, updated_at='2026-09-17T09:00:00Z' WHERE content_hash='h-F'")
+        }
+        val plan2 = planOf(p.mirror, p.store)
+        assertEquals(listOf("h-F"), plan2.alignToSource)
+        assertEquals(1, plan2.pendingToSource)
+        assertFalse("写入硬盘方向挡自动推送", plan2.isCleanPushToMirror)
+        assertEquals(1, MirrorApply.fillAlign(p.mirror, p.store, plan2.alignToSource))
+        assertNull("硬盘上 h-F 的开关被副本那份覆盖", p.store.activePageAlign("h-F"))
+        assertEquals("幂等：再搬一次结果一样", 1, MirrorApply.fillAlign(p.mirror, p.store, plan2.alignToSource))
+        assertTrue(planOf(p.mirror, p.store).isEmpty)
+        assertFalse("没有这一行 → false", p.store.copyPageAlign("missing", p.mirror))
         p.store.close(); p.mirror.close()
     }
 }

@@ -122,7 +122,7 @@ object MirrorUi {
             val source: File,
             val plan: MirrorDiff.Plan,
             val titles: Map<String, String>,
-            /** `content_hash → 书名`，只有 OCR 那条明细用得上（见 `MirrorStore.ocrTitles`） */
+            /** `content_hash → 书名`，OCR 与扫描页对齐两条明细用得上（见 `MirrorStore.ocrTitles`） */
             val hashTitles: Map<String, String> = emptyMap(),
         ) : Preview()
     }
@@ -166,8 +166,10 @@ object MirrorUi {
                     MirrorDiff.compute(
                         mine.syncBase(), mineSnap, theirs,
                         mine.mirrorOcrKeys(), MirrorStore.ocrKeys(srcDb),
+                        mine.mirrorAlignStamps(), MirrorStore.alignStamps(srcDb),
                     ),
                     MirrorStore.titles(mineSnap, theirs),
+                    // OCR 与扫描页对齐两条明细都按内容 hash 报书名（见 `MirrorStore.ocrTitles`）
                     MirrorStore.ocrTitles(mineSnap, theirs),
                 )
             }

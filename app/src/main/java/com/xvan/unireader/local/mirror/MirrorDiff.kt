@@ -104,10 +104,34 @@ object MirrorDiff {
          */
         val ocrToSource: List<OcrKey> = emptyList(),
         val ocrToMirror: List<OcrKey> = emptyList(),
+        /**
+         * 扫描页对齐参数（`page_align`，`../SCAN-ALIGN-PLAN.md §5`）要整行覆盖到对面的那些（content_hash）：
+         * 按内容 hash 对，一侧缺 → 补；两侧 `updated_at` 不同 → 较新的覆盖较旧的。不进基线、删除不传播。
+         * ⚠️ 与 OCR 不同，它**改的是用户设置**（开关）而且决定页面坐标，所以写入硬盘那个方向
+         * 与普通改动一样**要人工确认**（计入 [pendingToSource]、挡 [isCleanPushToMirror]）。
+         */
+        val alignToSource: List<String> = emptyList(),
+        val alignToMirror: List<String> = emptyList(),
     ) {
         val isEmpty: Boolean
             get() = changes.isEmpty() && lastOpenedMerges.isEmpty() &&
-                ocrToSource.isEmpty() && ocrToMirror.isEmpty()
+                ocrToSource.isEmpty() && ocrToMirror.isEmpty() &&
+                alignToSource.isEmpty() && alignToMirror.isEmpty()
+
+        /**
+         * 这份 plan 能不能**自动静默地**从源盘推给副本（Mac 2026-09-01 拍板的方向不对称：拉回本机可以
+         * 自动做，写入硬盘必须人工确认）。**逐式同 Mac `Plan.isCleanPushToMirror`**（Mac 那边还多一对
+         * 图片通道，本端没有图片笔记，故缺那两项）。
+         *
+         * 安卓端目前没有自动推送入口，同步一律走预览 → 确认；先把判据与 Mac 对齐，接的时候直接用。
+         */
+        val isCleanPushToMirror: Boolean
+            get() = !(changes.isEmpty() && ocrToSource.isEmpty() && ocrToMirror.isEmpty() && alignToMirror.isEmpty()) &&
+                conflicts.isEmpty() && changes.all { it.side == Side.MIRROR } && alignToSource.isEmpty()
+
+        /** 待人工确认的条数（副本 → 源盘那个方向），同 Mac `Plan.pendingToSource` */
+        val pendingToSource: Int
+            get() = changes.count { it.side == Side.SOURCE } + alignToSource.size
 
         fun changesTo(side: Side): List<Change> = changes.filter { it.side == side }
 
@@ -116,6 +140,30 @@ object MirrorDiff {
 
     /** 一侧的某一行相对基线处于什么状态 */
     enum class RowState { ADDED, DELETED, UNCHANGED, MODIFIED, ABSENT }
+
+    /**
+     * `page_align` 那条通道（`../SCAN-ALIGN-PLAN.md §5`）：纯函数，两侧 `content_hash → updated_at`，
+     * 返回（写入硬盘的，拉回本机的），各自按 hash 排好序。
+     *
+     * `updated_at` **直接比字符串**（同 [resolveBoth] 的口径：两端同一 ISO 格式，字典序即时间序）。
+     * 🔴 跨端契约：逐条同 Mac `MirrorDiff.alignPlan(mine:theirs:)`。
+     */
+    fun alignPlan(mine: Map<String, String>, theirs: Map<String, String>): Pair<List<String>, List<String>> {
+        val toSource = ArrayList<String>()
+        val toMirror = ArrayList<String>()
+        for ((hash, m) in mine) {
+            val t = theirs[hash]
+            if (t == null) {
+                toSource.add(hash)
+            } else if (m > t) {
+                toSource.add(hash)
+            } else if (t > m) {
+                toMirror.add(hash)
+            }
+        }
+        for (hash in theirs.keys) if (hash !in mine) toMirror.add(hash)
+        return toSource.sorted() to toMirror.sorted()
+    }
 
     fun state(base: String?, now: String?): RowState = when {
         base == null && now == null -> RowState.ABSENT
@@ -132,6 +180,7 @@ object MirrorDiff {
      * @param mine 镜像库现在的全部行
      * @param theirs 源库现在的全部行
      * @param mineOCR / [theirsOCR] 两侧 `ocr_page` 的键集合（不含 payload，见 [Plan.ocrToSource]）
+     * @param mineAlign / [theirsAlign] 两侧 `page_align` 的 `content_hash → updated_at`（见 [Plan.alignToSource]）
      */
     fun compute(
         base: MirrorBase,
@@ -139,6 +188,8 @@ object MirrorDiff {
         theirs: MirrorSnapshot,
         mineOCR: Set<OcrKey> = emptySet(),
         theirsOCR: Set<OcrKey> = emptySet(),
+        mineAlign: Map<String, String> = emptyMap(),
+        theirsAlign: Map<String, String> = emptyMap(),
     ): Plan {
         val changes = ArrayList<Change>()
         val conflicts = ArrayList<Conflict>()
@@ -175,10 +226,14 @@ object MirrorDiff {
         // OCR 缓存：**只补对面缺的、不判改删**（方案 §4）。
         // 「一边清了缓存」于是会被另一边补回来 —— 这是刻意的：这张表是派生数据，
         // 删它的语义是"腾空间/想重跑"，不是"这份内容作废了"，而重跑一次要真花 API 的钱。
+        // 扫描页对齐：按 updated_at 取新，一侧没有就补过去（见 [alignPlan]）
+        val aligns = alignPlan(mineAlign, theirsAlign)
         return Plan(
             changes, conflicts, lastOpened, progressMerges,
             ocrToSource = (mineOCR - theirsOCR).sorted(),
             ocrToMirror = (theirsOCR - mineOCR).sorted(),
+            alignToSource = aligns.first,
+            alignToMirror = aligns.second,
         )
     }
 

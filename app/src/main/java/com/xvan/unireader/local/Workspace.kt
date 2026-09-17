@@ -14,7 +14,7 @@ import org.json.JSONArray
  * 工作区布局（macOS 上是包，安卓上就是普通目录，见 ANDROID-STANDALONE-PLAN §6）：
  * ```
  * <名字>.unrd/
- *   UniReader/library.sqlite   # 全部元数据、笔记、笔迹、图层（schema v12）
+ *   UniReader/library.sqlite   # 全部元数据、笔记、笔迹、图层（schema v14）
  *   PDFs/<uuid>.pdf            # 拷进工作区的文件
  * ```
  *
@@ -92,7 +92,7 @@ object Workspace {
             .trimEnd('.')          // Windows/exFAT 不接受结尾的点
 
     /**
-     * 在 [parent] 下新建一个 `<name>.unrd` 工作区：建好 `UniReader/library.sqlite`（schema v12，
+     * 在 [parent] 下新建一个 `<name>.unrd` 工作区：建好 `UniReader/library.sqlite`（schema v14，
      * 见 [com.xvan.unireader.local.store.Schema]）与空的 `PDFs/`，返回工作区文件夹。
      *
      * **不覆盖已存在的同名文件夹**——那有可能是用户真正的库，覆盖等于删数据。重名直接报错，
@@ -156,6 +156,21 @@ object Workspace {
         store.locations(documentId).asSequence()
             .mapNotNull { resolvePdf(workspaceDir, it) }
             .firstOrNull()
+
+    /**
+     * 同 [firstOpenablePdf]，顺带给出**这个文件**所属版本的内容 hash（同 Mac `openTarget` 返回的 `hash`）。
+     *
+     * 扫描页对齐参数、OCR 文本层都按内容 hash 记，而一篇文档可以有多个版本：必须拿**真正打开的那个文件**
+     * 的 hash 去查，否则会把 A 版本的参数套在 B 版本的页面上。**在 StoreQueue 线程上调用。**
+     */
+    fun firstOpenablePdfWithHash(workspaceDir: File, store: LibraryStore, documentId: String): Pair<File, String>? {
+        for (loc in store.locations(documentId)) {
+            val f = resolvePdf(workspaceDir, loc) ?: continue
+            val hash = store.variants(documentId).firstOrNull { it.id == loc.variantId }?.contentHash.orEmpty()
+            return f to hash
+        }
+        return null
+    }
 
     // ---------- 最近工作区（只存路径；能不能开每次现场校验） ----------
 

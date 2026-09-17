@@ -49,6 +49,9 @@ object MirrorApply {
         /** 双向补齐的 OCR 缓存页数（见 [fillOcr]） */
         var ocrFilledToSource: Int = 0,
         var ocrFilledToMirror: Int = 0,
+        /** 双向覆盖的扫描页对齐参数行数（见 [fillAlign]） */
+        var alignToSource: Int = 0,
+        var alignToMirror: Int = 0,
         var backup: File? = null,
     )
 
@@ -260,6 +263,21 @@ object MirrorApply {
         return n
     }
 
+    // ---------- 扫描页对齐参数 ----------
+
+    /**
+     * 把 [keys] 这些内容的 `page_align` 行从 [from] 整行覆盖到 [to]（`../SCAN-ALIGN-PLAN.md §5`，
+     * 谁新谁赢已在 plan 里算好）。事务外、幂等：再跑一次两侧 `updated_at` 已相等，plan 里就不会再有它。
+     *
+     * [to] 可能没有这张表（本端早于 v14 建的库）——`copyPageAlign` 会先补建。
+     * 🔴 与 Mac `MirrorApply.fillAlign` 同一套语义。
+     */
+    fun fillAlign(from: LibraryStore, to: LibraryStore, keys: List<String>): Int {
+        var n = 0
+        for (hash in keys) if (from.copyPageAlign(hash, to)) n++
+        return n
+    }
+
     // ---------- 主流程 ----------
 
     /**
@@ -309,6 +327,10 @@ object MirrorApply {
         r.ocrFilledToSource = fillOcr(mirrorStore, sourceStore, plan.ocrToSource)
         r.ocrFilledToMirror = fillOcr(sourceStore, mirrorStore, plan.ocrToMirror)
 
+        // ④.7 扫描页对齐参数（整行按 updated_at 取新，同样事务外、幂等；编号同 Mac，本端没有 ④.6 图片那步）
+        r.alignToSource = fillAlign(mirrorStore, sourceStore, plan.alignToSource)
+        r.alignToMirror = fillAlign(sourceStore, mirrorStore, plan.alignToMirror)
+
         // ⑤ 两侧都成功了才重算基线 —— 这一步之前任何失败都靠"下次再跑一遍"自愈（见类型注释）
         progress?.invoke("正在重置基线…", 0.9f)
         mirrorStore.rebuildSyncBase()
@@ -333,7 +355,8 @@ object MirrorApply {
             "合并完成：硬盘 +${r.sourceUpserts}/-${r.sourceDeletes}，" +
                 "本机 +${r.mirrorUpserts}/-${r.mirrorDeletes}，" +
                 "孤儿 ${r.orphansSkipped}，重复内容 ${r.hashClashesSkipped}，补齐文件 ${r.filesCopiedToSource}，" +
-                "补齐识别 +${r.ocrFilledToSource}/+${r.ocrFilledToMirror}",
+                "补齐识别 +${r.ocrFilledToSource}/+${r.ocrFilledToMirror}，" +
+                "扫描页对齐 ${r.alignToSource}/${r.alignToMirror}",
         )
         return r
     }
