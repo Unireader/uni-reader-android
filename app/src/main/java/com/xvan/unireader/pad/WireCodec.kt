@@ -93,6 +93,14 @@ object WireCodec {
     const val OP_BOARD_ADD = 0x54
     const val OP_BOARD_IMAGES = 0x55
 
+    /**
+     * 分页画板（v17，`../PROTOCOL.md §4.8` 末尾、`../BOARD-NOTE-PLAN.md §9.5`）：boardPages 是 S→C 全量镜像
+     * （n=0 = 不是分页画板）；boardPageAdd / boardPageTemplate 是 C→S 请求。boardAdd 另有可选尾部。
+     */
+    const val OP_BOARD_PAGES = 0x56
+    const val OP_BOARD_PAGE_ADD = 0x57
+    const val OP_BOARD_PAGE_TEMPLATE = 0x58
+
     /** `boards.kind`：被跟随会话是什么（0 = PDF 或空标签，1 = Markdown 笔记，2 = 画板笔记） */
     const val BOARD_KIND_PDF = 0
     const val BOARD_KIND_MARKDOWN = 1
@@ -269,7 +277,16 @@ object WireCodec {
 
         /** 当前画板上的图（不是画板会话时是空表）；叠放序 = 列表顺序（先画的在下） */
         data class BoardImages(val list: List<BoardImageEntry>) : Msg()
+
+        /**
+         * 被跟随画板的页（全量镜像；`list` 空 = 不是分页画板）。[w]×[h] = 页面尺寸（画布点，整本统一），
+         * 每页一个背景模板 u8（`shared/BoardPaging` 的 T_*）。布局契约：第 i 页 = `(-w/2, i×(h+24), w, h)`。
+         */
+        data class BoardPages(val w: Float, val h: Float, val list: List<BoardPageEntry>) : Msg()
     }
+
+    /** 分页画板的一页（boardPages 消息元素）：页 id + 背景模板（未知值按空白画） */
+    data class BoardPageEntry(val id: String, val template: Int)
 
     // ---------- Writer ----------
     private class Writer {
@@ -599,6 +616,23 @@ object WireCodec {
     fun encodeBoardAdd(): ByteArray =
         Writer().apply { u8(OP_BOARD_ADD) }.bytes()
 
+    /**
+     * 请 Mac 新建一篇**分页**画板笔记并打开（boardAdd 的可选尾部，v17）：`u8 mode=1 · f32 w · f32 h ·
+     * u8 template · u16 count`。页面大小 [w]×[h] 画布点，初始页数 [count]（1~100）。无限画布走 [encodeBoardAdd]。
+     */
+    fun encodeBoardAddPaged(w: Float, h: Float, template: Int, count: Int): ByteArray =
+        Writer().apply {
+            u8(OP_BOARD_ADD); u8(1); f32(w); f32(h); u8(template.coerceIn(0, 255)); u16(count)
+        }.bytes()
+
+    /** 在末尾加 [count] 页（沿用末页背景）——「到底上拉加页」发这条 */
+    fun encodeBoardPageAdd(count: Int): ByteArray =
+        Writer().apply { u8(OP_BOARD_PAGE_ADD); u16(count) }.bytes()
+
+    /** 改第 [index] 页的背景（index 越界 Mac 整帧丢弃）——平板只改当前页 */
+    fun encodeBoardPageTemplate(index: Int, template: Int): ByteArray =
+        Writer().apply { u8(OP_BOARD_PAGE_TEMPLATE); u16(index); u8(template.coerceIn(0, 255)) }.bytes()
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -736,6 +770,16 @@ object WireCodec {
                         i++
                     }
                     Msg.BoardImages(list)
+                }
+                OP_BOARD_PAGES -> {
+                    val w = r.f32()
+                    val h = r.f32()
+                    val n = r.u16()
+                    val list = ArrayList<BoardPageEntry>(n)
+                    var i = 0
+                    // 单条最短 3 字节（空 str + u8）
+                    while (i < n && r.remaining >= 3) { list.add(BoardPageEntry(r.str(), r.u8())); i++ }
+                    Msg.BoardPages(w, h, list)
                 }
                 OP_NOTES -> {
                     val n = r.u16()

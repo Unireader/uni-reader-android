@@ -73,6 +73,8 @@ class MacClient(
         fun onBoards(kind: Int, current: String, list: List<WireCodec.BoardEntry>)
         /** 当前画板上的图（不是画板会话时是空表） */
         fun onBoardImages(list: List<WireCodec.BoardImageEntry>)
+        /** 被跟随画板的页（全量镜像；空表 = 不是分页画板，`../PROTOCOL.md §4.8` 分页画板） */
+        fun onBoardPages(w: Float, h: Float, list: List<WireCodec.BoardPageEntry>)
         /** 连接断开（含自动重连中的每一次失败）；msg 供顶栏显示 */
         fun onDisconnected(msg: String)
     }
@@ -163,6 +165,7 @@ class MacClient(
             is WireCodec.Msg.ScratchStrokes -> cb.onScratchStrokes(m.ackRel, m.list)
             is WireCodec.Msg.Boards -> cb.onBoards(m.kind, m.current, m.list)
             is WireCodec.Msg.BoardImages -> cb.onBoardImages(m.list)
+            is WireCodec.Msg.BoardPages -> cb.onBoardPages(m.w, m.h, m.list)
             else -> {}   // page 等不消费的消息忽略
         }
     }

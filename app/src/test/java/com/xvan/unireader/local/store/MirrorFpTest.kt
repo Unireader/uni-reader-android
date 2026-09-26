@@ -102,6 +102,13 @@ class MirrorFpTest {
         "payload" to """{"width":2}""".toByteArray(Charsets.UTF_8),
         "created_at" to "2026-09-24T09:10:00Z", "updated_at" to "2026-09-24T09:10:00Z",
     )
+    // v17 分页画板的页（与 spike/mirror-fp-test.swift 的 board_page 那一行逐字段一致）
+    private val boardPageRow: Map<String, Any?> = mapOf(
+        "id" to "88888888-8888-4888-8888-888888888888",
+        "board_id" to "66666666-6666-4666-8666-666666666666",
+        "sort_key" to 1.5, "width" to 595.0, "height" to 842.0, "template" to "cornell",
+        "created_at" to "2026-09-26T09:00:00Z", "updated_at" to "2026-09-26T09:05:00Z",
+    )
 
     @Test
     fun valueVectors() {
@@ -189,8 +196,15 @@ class MirrorFpTest {
                     "56401f047b227769647468223a327d1f03323032362d30392d32345430393a31303a30305a1f0332" +
                     "3032362d30392d32345430393a31303a30305a",
                 "556ae27f204196f5"),
+            R(29, "board_page", boardPageRow,
+                "0338383838383838382d383838382d343838382d383838382d3838383838383838383838381f" +
+                    "0336363636363636362d363636362d343636362d383636362d3636363636363636363636361f" +
+                    "02000000000000f83f1f0200000000009882401f020000000000508a401f03636f726e656c6c1f" +
+                    "03323032362d30392d32365430393a30303a30305a1f03323032362d30392d32365430393a30353a" +
+                    "30305a",
+                "2b807960580dd994"),
         )
-        assertEquals(8, cases.size)
+        assertEquals(9, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -233,9 +247,20 @@ class MirrorFpTest {
     @Test
     fun tableSpecs() {
         assertEquals(
-            // Mac 在 scratch_pad 与 board_note 之间多一张 md_doc（本端没有 Markdown 笔记，见 MirrorFp.specs 的注释）
-            listOf("document", "variant", "note", "ink_layer", "scratch_pad", "board_note", "board_item", "meta"),
+            // 与 Mac `MirrorFp.specs` 同一份表集合、同一顺序（10 张；location 不在其中）
+            listOf(
+                "document", "variant", "note", "ink_layer", "scratch_pad", "md_doc",
+                "board_note", "board_page", "board_item", "meta",
+            ),
             MirrorFp.specs.map { it.table },
+        )
+        assertEquals(
+            listOf("id", "board_id", "sort_key", "width", "height", "template", "created_at", "updated_at"),
+            MirrorFp.spec("board_page")!!.columns.map { it.name },
+        )
+        assertEquals(
+            listOf("id", "title", "rel_path", "group_name", "sort_order", "created_at", "updated_at"),
+            MirrorFp.spec("md_doc")!!.columns.map { it.name },
         )
         // 画板两张的列表与 Mac 逐字一致（board_note 不含 last_opened_at，同 document）
         assertEquals(

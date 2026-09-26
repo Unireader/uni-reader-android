@@ -254,6 +254,130 @@ class ScratchCanvas @JvmOverloads constructor(
         }
     }
 
+    // ---------- 分页画板（v17；契约见 [BoardPaging] / ../BOARD-NOTE-PLAN.md §9） ----------
+    //
+    // 有页 = 分页模式：页竖排、水平居中于画布 x = 0（第 i 页 = (-W/2, i×(H+24), W, H)），每页纸色底 + 背景模板，
+    // 页外是界面底色；视口竖向滚动、横向夹在页宽内，打开时按页宽适配停在第一页顶；到底后继续上拉一段 → 加一页。
+    // 笔迹 / 图片照旧是**画布坐标**（页内坐标只在落库时出现，由模式1 的宿主换算；模式2 Mac 已换算好）。
+    // 没有页 = 原来的无限画布，下面这些一概不生效。
+
+    private var pageLayout: BoardPaging.Layout? = null
+    private var pageTemplates = IntArray(0)
+    private val shapeCache = HashMap<String, BoardPaging.Shape>()
+    private var pagePlaced = false   // 这一篇（分页）已经按页宽适配过了
+
+    /** 是不是分页画板（有页） */
+    val paged: Boolean get() = (pageLayout?.count ?: 0) > 0
+
+    /** 页数（不是分页 = 0） */
+    val pageCount: Int get() = pageLayout?.count ?: 0
+
+    /** 到底后继续上拉超过一段距离（一次手势只触发一次）——宿主在末尾加一页 */
+    var onPullAddPage: (() -> Unit)? = null
+
+    /** 上拉过程中底部那行提示（宿主给本地化文案；null = 不提示） */
+    var pullHintText: String? = null
+
+    private var pullOver = 0f     // 到底之后又往上拉了多少（dp）
+    private var pullFired = false // 这次手势已经加过一页了
+
+    /**
+     * 换一份页（全量）：[templates] 每页一个背景模板（[BoardPaging] 的 T_*），空 = 不是分页画板。
+     * [replace] = 换了一篇画板（模式2 由 Mac 切过去）：按新一篇的页宽重新适配、停在第一页顶。
+     * 分页 ↔ 无限之间切换也重新摆放；同一篇里加页 / 改背景 / 改尺寸只夹一下视口（同 Mac）。
+     */
+    fun setPages(w: Float, h: Float, templates: IntArray, replace: Boolean = false) {
+        val wasPaged = paged
+        pageLayout = if (templates.isEmpty() || w <= 1f || h <= 1f) null else BoardPaging.Layout(w, h, templates.size)
+        pageTemplates = templates.copyOf()
+        if (replace || wasPaged != paged) pagePlaced = false
+        if (width > 0 && height > 0) {
+            when {
+                paged && !pagePlaced -> placeAtPageTop(0)
+                !paged && wasPaged -> recenter()
+            }
+        }
+        clampViewport()
+        invalidate()
+        onViewportChanged?.invoke()
+    }
+
+    /** 视口中心所在的页（0 起；工具条页码、「改当前页背景」都用它） */
+    fun currentPageIndex(): Int {
+        val l = pageLayout ?: return 0
+        return l.indexForY(oy + viewHdp() / (2 * zoom))
+    }
+
+    /** 分页：第 [i] 页页顶、按页宽适配（缩放上限 2，同 Mac `pageTop`） */
+    fun placeAtPageTop(i: Int) {
+        val l = pageLayout ?: return
+        if (width <= 0 || height <= 0) return
+        val vw = viewWdp()
+        val z = ((vw - 48f) / l.width).coerceIn(ScratchGeom.MIN_ZOOM, 2f)
+        val k = i.coerceIn(0, max(0, l.count - 1))
+        zoom = z
+        ox = 0f - vw / (2 * z)
+        oy = l.originY(k) - PAGED_TOP / z
+        placed = true
+        pagePlaced = true
+        clampViewport()
+        invalidate()
+        onViewportChanged?.invoke()
+    }
+
+    /**
+     * 分页视口夹取（同 Mac `clamped`）：页比视口窄时水平居中，否则夹在页宽 ± 边距内；
+     * 竖向上面让出工具条那段、下面多留一段（上拉加页的提示就在那里）。
+     */
+    private fun clampPaged(b: FloatArray) {
+        val z = max(zoom, 0.0001f)
+        val visW = viewWdp() / z
+        val visH = viewHdp() / z
+        val margin = PAGED_MARGIN / z
+        val top = PAGED_TOP / z
+        if (b[2] + 2 * margin <= visW) {
+            ox = b[0] + b[2] / 2 - visW / 2
+        } else {
+            ox = ox.coerceIn(b[0] - margin, b[0] + b[2] + margin - visW)
+        }
+        val minY = b[1] - top
+        val maxY = max(minY, b[1] + b[3] + margin * 2 - visH)
+        oy = oy.coerceIn(minY, maxY)
+    }
+
+    /**
+     * 平移了一下（[wantY] = 没夹之前想去的 oy，[beforeY] = 平移前的 oy）：到底后继续上拉就累计，
+     * 往回推就退账；超过 [PULL_THRESHOLD] 加一页（一次手势一页）。
+     */
+    private fun notePull(wantY: Float, beforeY: Float) {
+        if (!paged) return
+        val over = (wantY - oy) * zoom
+        if (over > 0.01f) {
+            pullOver += over
+        } else if (wantY < beforeY) {
+            pullOver = max(0f, pullOver - (beforeY - wantY) * zoom)
+        }
+        if (!pullFired && pullOver >= PULL_THRESHOLD) {
+            pullFired = true
+            onPullAddPage?.invoke()
+        }
+        invalidate()
+    }
+
+    /** 手势结束：上拉的账清零（下一次手势重新计） */
+    private fun endPull() {
+        if (pullOver == 0f && !pullFired) return
+        pullOver = 0f
+        pullFired = false
+        invalidate()
+    }
+
+    /** 当前全部笔迹（只读；宿主判断「某页上有没有内容」用） */
+    fun strokeList(): List<Stroke> = strokes
+
+    /** 当前全部图片（只读） */
+    fun picList(): List<BoardPic> = pics
+
     /** 空白纸的引导标题（宿主可换：画板笔记说「空白画板」）；null = 草稿纸的默认说法 */
     var emptyHintTitle: String? = null
 
@@ -291,11 +415,20 @@ class ScratchCanvas @JvmOverloads constructor(
         clearLive()
         ink.clearCache()
         placed = false
-        recenter()
+        pagePlaced = false
+        endPull()
+        if (paged) placeAtPageTop(0) else recenter()
     }
 
-    /** 回中 = 画布原点回视口正中 + zoom 复位 1（「打开后从该处显示」的落点） */
+    /**
+     * 回中 = 画布原点回视口正中 + zoom 复位 1（「打开后从该处显示」的落点）。
+     * 分页画板：回到当前页页顶（按页宽适配，同 Mac）。
+     */
     fun recenter() {
+        if (paged) {
+            placeAtPageTop(currentPageIndex())
+            return
+        }
         if (width > 0 && height > 0) {
             zoom = 1f
             val c = ScratchGeom.centeredOrigin(viewWdp(), viewHdp())
@@ -308,6 +441,10 @@ class ScratchCanvas @JvmOverloads constructor(
 
     /** 适应内容 = 全部笔迹包围盒（留边距）装进视口；空纸退化为回中 */
     fun fitContent() {
+        if (paged) {   // 分页：适配页宽、停在当前页（同 Mac）
+            placeAtPageTop(currentPageIndex())
+            return
+        }
         val f = ScratchGeom.fit(contentBounds(), viewWdp(), viewHdp())
         if (f == null) {
             recenter()
@@ -327,8 +464,9 @@ class ScratchCanvas @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        if (!placed) {
-            if (w > 0 && h > 0) recenter()   // 首次拿到真实尺寸才回中（之前算的都是假的）
+        if (!placed || (paged && !pagePlaced)) {
+            // 首次拿到真实尺寸才回中 / 按页宽适配（之前算的都是假的）
+            if (w > 0 && h > 0) { if (paged) placeAtPageTop(0) else recenter() }
             return
         }
         // 尺寸变化（旋转/分屏）：保持视口中心对应的画布点不动（同 Mac 的 onChange(of: geo.size)）
@@ -344,7 +482,9 @@ class ScratchCanvas @JvmOverloads constructor(
 
     /** 内容包围盒（软边界 / 适应内容 / minimap）= 笔迹 ∪ 页面底图 ∪ 图片（同 Mac 画板的口径） */
     private fun contentBounds(): FloatArray? {
-        val base = ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null }, pageUnderRect)
+        // 分页画板：全部页也算内容（同 Mac contentBounds ∪ boardLayout.bounds）——页是「纸」，不是空白
+        val under = pageUnderRect ?: pageLayout?.bounds()
+        val base = ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null }, under)
         if (pics.isEmpty()) return base
         var x0 = base?.get(0) ?: Float.MAX_VALUE
         var y0 = base?.get(1) ?: Float.MAX_VALUE
@@ -358,6 +498,11 @@ class ScratchCanvas @JvmOverloads constructor(
     }
 
     private fun clampViewport() {
+        val pb = pageLayout?.bounds()
+        if (pb != null) {
+            if (width > 0 && height > 0) clampPaged(pb)
+            return
+        }
         val c = ScratchGeom.clampOrigin(ox, oy, zoom, contentBounds(), viewWdp(), viewHdp())
         ox = c[0]; oy = c[1]
     }
@@ -468,6 +613,7 @@ class ScratchCanvas @JvmOverloads constructor(
                 }
                 touches.clear(); touchOrder.clear()
                 pinching = false; panId = -1; miniDrag = false
+                endPull()   // 一次手势结束：上拉加页的账清零
             }
         }
         return true
@@ -490,7 +636,7 @@ class ScratchCanvas @JvmOverloads constructor(
             pinchMx = (a.x + b.x) / 2f / density
             pinchMy = (a.y + b.y) / 2f / density
             panId = -1
-        } else if (minimapOn && hasContent() && inMinimap(x, y)) {
+        } else if (showMinimap() && inMinimap(x, y)) {
             miniDrag = true
             panId = id
             miniJump(x, y)
@@ -528,10 +674,13 @@ class ScratchCanvas @JvmOverloads constructor(
 
     /** 单指平移：屏幕拖多少视口移多少（注意方向：手指右拖 = 看左边的内容，origin 减） */
     private fun panTo(x: Float, y: Float) {
+        val beforeY = oy
         ox += (lastPanX - x) / density / zoom
         oy += (lastPanY - y) / density / zoom
+        val wantY = oy
         lastPanX = x; lastPanY = y
         clampViewport()
+        notePull(wantY, beforeY)   // 分页：到底后继续上拉 → 加页（无限画布直接返回）
         invalidate()
         onViewportChanged?.invoke()
     }
@@ -543,6 +692,7 @@ class ScratchCanvas @JvmOverloads constructor(
         val d = hypot(a.x - b.x, a.y - b.y)
         val mx = (a.x + b.x) / 2f / density
         val my = (a.y + b.y) / 2f / density
+        val beforeY = oy
         val v = ScratchGeom.zoomAt(ox, oy, zoom, (pinchZ0 * d / pinchD0) / zoom, mx, my)
         ox = v[0]; oy = v[1]; zoom = v[2]
         // 中点整体挪动 = 平移。缩放锚点只保证「中点底下那一点不动」，两指齐挪时 factor≈1、
@@ -551,7 +701,9 @@ class ScratchCanvas @JvmOverloads constructor(
         oy -= (my - pinchMy) / zoom
         pinchMx = mx
         pinchMy = my
+        val wantY = oy
         clampViewport()
+        notePull(wantY, beforeY)   // 双指滚动模式下拖到底也能加页
         invalidate()
         onViewportChanged?.invoke()
     }
@@ -566,7 +718,7 @@ class ScratchCanvas @JvmOverloads constructor(
         penActive = true
         penId = e.getPointerId(idx)
         penX = x; penY = y
-        if (minimapOn && hasContent() && inMinimap(x, y)) {
+        if (showMinimap() && inMinimap(x, y)) {
             penKind = 4
             miniJump(x, y)
             return
@@ -602,10 +754,13 @@ class ScratchCanvas @JvmOverloads constructor(
         when (penKind) {
             4 -> miniJump(x, y)
             3 -> {
+                val beforeY = oy
                 ox += (penX - x) / density / zoom
                 oy += (penY - y) / density / zoom
+                val wantY = oy
                 penX = x; penY = y
                 clampViewport()
+                notePull(wantY, beforeY)
                 invalidate()
                 onViewportChanged?.invoke()
             }
@@ -650,6 +805,7 @@ class ScratchCanvas @JvmOverloads constructor(
                 clearLive()
             }
             2 -> onEraseFinish?.invoke(ArrayList(strokes))
+            3 -> endPull()   // 笔拖着平移的那次手势结束：上拉加页的账清零
         }
         penActive = false
         penId = -1
@@ -726,11 +882,20 @@ class ScratchCanvas @JvmOverloads constructor(
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
 
     private fun hasContent() =
-        strokes.isNotEmpty() || livePts.isNotEmpty() || pageUnderRect != null || pics.isNotEmpty()
+        strokes.isNotEmpty() || livePts.isNotEmpty() || pageUnderRect != null || pics.isNotEmpty() || paged
+
+    /** minimap：分页画板没有（有页码，同 Mac） */
+    private fun showMinimap() = minimapOn && hasContent() && !paged
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(bgColor)
-        drawPattern(canvas)
+        if (paged) {
+            // 分页：页外 = 界面底色，每页纸色底 + 背景模板（无限画布的点阵 / 原点十字不画）
+            canvas.drawColor(voidColor)
+            drawPages(canvas)
+        } else {
+            canvas.drawColor(bgColor)
+            drawPattern(canvas)
+        }
         drawPageUnder(canvas)   // 底纹之上、笔迹之下（页图只是参照物，墨永远在最上面）
         drawPics(canvas)        // 画板笔记的图：同样在笔迹之下（笔迹永远能写在图上）
         // 视口外的笔迹裁掉（画布是无界的一大坨，不裁就是每帧把整张纸重画一遍；同 web 的 boxHits）
@@ -752,7 +917,8 @@ class ScratchCanvas @JvmOverloads constructor(
             val t = curTools()
             overlays.drawEraserRing(canvas, ringX, ringY, t.eraserSize * ScratchGeom.ERASER_REF_W * z * density)
         }
-        if (minimapOn && hasContent()) drawMinimap(canvas)
+        if (showMinimap()) drawMinimap(canvas)
+        if (paged) drawPullHint(canvas)
     }
 
     /**
@@ -808,6 +974,107 @@ class ScratchCanvas @JvmOverloads constructor(
                 c.drawRect(left, top, right, bottom, pagePaint)
             }
         }
+    }
+
+    // ---------- 分页画板：页面 + 背景模板（同 Mac `BoardPagesCALayer`） ----------
+
+    /** 页外颜色 = 界面底色（与模式1 阅读区外围同一个语义色） */
+    private val voidColor by lazy { Ui.col(context, com.xvan.unireader.R.color.surface_dim) }
+    private val pageFill = Paint()
+    private val tmplPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var tmplBuf = FloatArray(256)
+
+    private fun ensureBuf(n: Int): FloatArray {
+        if (tmplBuf.size < n) tmplBuf = FloatArray(max(n, tmplBuf.size * 2))
+        return tmplBuf
+    }
+
+    /**
+     * 画视口里那几页：纸色底 → 模板线 / 点（裁在页内）→ 一圈淡描边。模板几何按「模板@宽×高」缓存
+     * （整本同尺寸，几种模板就几份）。线宽细 1 / 粗 1.5 画布点随缩放（有下限，缩小时不至于看不见），
+     * 颜色由纸色明度推：细 α0.14、粗 α0.30、点 α0.30（三端契约 §9.3）。
+     */
+    private fun drawPages(c: Canvas) {
+        val l = pageLayout ?: return
+        val z = zoom
+        val s = z * density
+        val first = l.indexForY(oy)
+        val last = l.indexForY(oy + viewHdp() / z)
+        for (i in first..max(first, last)) {
+            if (i < 0 || i >= l.count) continue
+            val left = (l.originX() - ox) * s
+            val top = (l.originY(i) - oy) * s
+            val right = left + l.width * s
+            val bottom = top + l.height * s
+            if (right < 0 || bottom < 0 || left > width || top > height) continue
+            pageFill.style = Paint.Style.FILL
+            pageFill.color = bgColor
+            c.drawRect(left, top, right, bottom, pageFill)
+            val t = pageTemplates.getOrElse(i) { BoardPaging.T_BLANK }
+            if (t != BoardPaging.T_BLANK) {
+                val key = "$t@${l.width}x${l.height}"
+                val shape = shapeCache.getOrPut(key) { BoardPaging.shape(t, l.width, l.height) }
+                c.save()
+                c.clipRect(left, top, right, bottom)
+                tmplPaint.style = Paint.Style.STROKE
+                tmplPaint.strokeCap = Paint.Cap.BUTT
+                if (shape.thin.isNotEmpty()) {
+                    tmplPaint.strokeWidth = max(0.5f, 1f * z) * density
+                    tmplPaint.color = withAlpha(inkColor, 0.14f)
+                    drawSegs(c, shape.thin, left, top, s)
+                }
+                if (shape.bold.isNotEmpty()) {
+                    tmplPaint.strokeWidth = max(0.75f, 1.5f * z) * density
+                    tmplPaint.color = withAlpha(inkColor, 0.30f)
+                    drawSegs(c, shape.bold, left, top, s)
+                }
+                if (shape.dots.isNotEmpty()) {
+                    // 方点（同 Mac addRect / 草稿纸点阵的理由：一页上千个点，方点最省）
+                    tmplPaint.strokeWidth = max(1f, BoardPaging.DOT_SIZE * z) * density
+                    tmplPaint.strokeCap = Paint.Cap.SQUARE
+                    tmplPaint.color = withAlpha(inkColor, 0.30f)
+                    val src = shape.dots
+                    val buf = ensureBuf(src.size)
+                    var k = 0
+                    while (k < src.size) {
+                        buf[k] = left + src[k] * s
+                        buf[k + 1] = top + src[k + 1] * s
+                        k += 2
+                    }
+                    c.drawPoints(buf, 0, src.size, tmplPaint)
+                }
+                c.restore()
+            }
+            // 页边一圈淡描边（白页压浅色底也分得出页在哪；同 Mac 灰 0.5 α0.35）
+            pageFill.style = Paint.Style.STROKE
+            pageFill.strokeWidth = density
+            pageFill.color = Color.argb(89, 128, 128, 128)
+            val h = density / 2f
+            c.drawRect(left + h, top + h, right - h, bottom - h, pageFill)
+        }
+    }
+
+    private fun drawSegs(c: Canvas, src: FloatArray, left: Float, top: Float, s: Float) {
+        val buf = ensureBuf(src.size)
+        var k = 0
+        while (k < src.size) {
+            buf[k] = left + src[k] * s
+            buf[k + 1] = top + src[k + 1] * s
+            buf[k + 2] = left + src[k + 2] * s
+            buf[k + 3] = top + src[k + 3] * s
+            k += 4
+        }
+        c.drawLines(buf, 0, src.size, tmplPaint)
+    }
+
+    /** 上拉加页的提示：拉过一小段才出现，加完这一页就收（同 Mac 的 pullHint，画在底部页外那段） */
+    private fun drawPullHint(c: Canvas) {
+        val text = pullHintText ?: return
+        if (pullFired || pullOver <= PULL_HINT_AFTER) return
+        hintPaint.color = Ui.onSurface(context)
+        hintPaint.isFakeBoldText = false
+        hintPaint.textSize = dp(14f)
+        c.drawText(text, width / 2f, height - dp(22f), hintPaint)
     }
 
     /** 粗筛：这条笔迹的包围盒与可视画布矩形有没有交集（逐点算一遍比重画便宜得多，同 web boxHits） */
@@ -1033,6 +1300,18 @@ class ScratchCanvas @JvmOverloads constructor(
         const val MINI_PAD = 12f
         /** 面板内边距：缩略内容与视口框都不许贴到圆角边框上（同 Mac 的 inset=9） */
         const val MINI_INSET = 9f
+
+        /** 分页：页顶上方让出的那段（dp，给浮在顶上的工具条；同 Mac 的 topInset + 56 里那 56） */
+        const val PAGED_TOP = 56f
+
+        /** 分页：页两侧 / 末页之下的边距（dp；末页之下留两倍，上拉提示就在那里） */
+        const val PAGED_MARGIN = 24f
+
+        /** 到底后继续上拉多远（dp）加一页（同 Mac pullThreshold 110 屏幕点） */
+        const val PULL_THRESHOLD = 110f
+
+        /** 拉过多远才出提示（dp；同 Mac 的 12） */
+        const val PULL_HINT_AFTER = 12f
 
         /** 页面底图取不到时的重试次数上限（无限重试 = 每帧一次网络请求） */
         const val MAX_PAGE_RETRY = 3

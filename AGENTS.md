@@ -4,7 +4,10 @@ UniReader 的安卓端：**一个 App 两种模式**（启动页两个标签页�
 「连接 Mac」= 模式2；2026-09-26 起选哪台 Mac 在启动页上做——连过的 Mac 点一下 / 扫码，经
 `PadActivity.start(host, token)` 带参数进去直接开连，不带参数才是旧行为「进去先弹连接设置」；停在哪一页记在本机）。
 
-- 模式1 独立版（`local/`）：平板本机直接打开工作区 `.unrd`，Pdfium 渲染 + 裸 SQLite 落库，不需要 Mac
+- 模式1 独立版（`local/`）：平板本机直接打开工作区 `.unrd`，Pdfium 渲染 + 裸 SQLite 落库，不需要 Mac。
+  🔴 **目标是与 macOS 版功能对齐**（用户 2026-09-26 定）：模式1 是独立产品，Mac 上有的功能这里都要有，
+  **只有平板上确实做不到的才跳过**（跳过的要在 `../TODO.md` 记一句为什么）。Mac 端每加一个功能，默认模式1 也要跟上
+
 - 模式2 输入板（`pad/`）：连 Mac 当手写输入板/第二屏（二进制线格式 + UDP RT 上行）
 - `shared/`：两模式共用的几何 / 输入 / 渲染 / 笔迹算法
 
@@ -87,14 +90,16 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `lassoSelection` 的 setter 里，那个字段有七八处赋值点，逐个补调用迟早漏一处。
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
-  **建表语句只有 `local/store/Schema.kt` 一处**（schema v14，逐字抄 Mac 的 `migrate()`；v13 `image` 表本端只建不用），
-  且只对「文件还不存在」的**全新**库跑一次；`Db.open` 照旧一个字 DDL 都不写、不迁移老库。
-  例外只有两处，语句都与 Mac 逐字相同、都只用 `CREATE … IF NOT EXISTS`：
-  ① 离线镜像合并往没有 `page_align` 表的库里补这张表（`Schema.PAGE_ALIGN_DDL`）；
-  ② 🔴 **画板笔记两张表 `board_note` / `board_item`（v16，用户 2026-09-24 同意的一次例外，只限这两张）**：
-  `LibraryStore.open`（可写打开）时没有就补建（`Schema.ensureBoardTables` / `Schema.BOARD_DDL`），
-  离线镜像合并要往没有它们的库里写画板行时同样先补（`MirrorApply.write`）。**不写 `meta.schema_version`**
-  （本端建的新库仍写 v14：v15 的 `md_doc` 本端没建，写 16 会撒谎）。其它表照旧「Mac 先改，安卓不动结构」。
+  **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
+  （`Schema.VERSION = 17`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  `CREATE … IF NOT EXISTS` 补齐到 v17 的全部表（含本端只建不用的 v15 `md_doc`）+ 与 Mac 同序的 `ADD COLUMN` +
+  写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
+  🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
+  补表、`ADD COLUMN` 补列、写 `meta.schema_version`），也可以提出新的表 / 列。剩下的纪律只有一条——
+  **schema 是两端共同的契约**：任何一端改结构，另一端同一次一起改，DDL 逐字相同、版本号同步，
+  并同步 `../REQUIREMENTS.md §8` 与相关方案文档；不许出现「只有一端认识」的表或列。
+  （历史：此前只在全新库建表、老库一个字 DDL 不写，例外是 `page_align` 镜像补表与 v16 画板两张表补建，
+  现在这些都并入正常迁移。）
 - **扫描页对齐（模式1 只读，2026-09-17，`../SCAN-ALIGN-PLAN.md`）**：开关与测量只在 Mac；本端按**打开的那个文件**的
   内容 hash 读 `page_align`（`LibraryStore.activePageAlign`，老库没表 → 按没开），交给 `PdfSource`。开着时
   `PdfSource.pageSizes` 报对齐后的 `(W, sh)`、`request` 出转正平移过的图——几何层 / 草稿纸垫页 / 参考窗都只经这两处
@@ -137,6 +142,14 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   那几条（画板会话里那张纸永远开着）。`PadScratch.boardMode` 收起关闭 / 页面底图 / 其它草稿纸 / 删除；
   kind=1 时盖一层「Mac 正在看 Markdown 笔记」。图片按 `GET /image?h=<sha>` 取（`pad/BoardImageFetcher`）。
   · 图片（kind=2）两模式都**只显示不编辑**，画在底纹之上、笔迹之下（`ScratchCanvas.setPics`）。
+  · **分页画板（v17，`../BOARD-NOTE-PLAN.md §9`）**：有 `board_page` 行 = 分页。契约（布局 `(-W/2, i×(H+24), W, H)`、
+  模板 u8 与几何、尺寸预设）只在 `shared/BoardPaging.kt`（↔ Mac `BoardModel.swift`，`BoardPagingTest` ↔ `spike/board-store-test.swift`）；
+  画法与视口（页宽适配 / 横向夹页宽 / 到底上拉加页 / 页码）只在 `ScratchCanvas.setPages` 那一份，两模式共用。
+  画布上一律画布坐标；模式1 落库时按「第一个点（图片按上沿）所在页」换成**页内坐标** + payload `page`
+  （换算只在 `local/store/BoardPageSet`）。插页 / 删页 / 改尺寸**只写 `board_page`**（删页连同 `page` 指向它的条目删行），
+  写完整篇重读——页内坐标不变，重读时按新布局自然挪位，没变的条目一行不重写。模式2 收 `boardPages`(0x56)，
+  到底上拉发 `boardPageAdd`(0x57)、改当前页背景发 `boardPageTemplate`(0x58)；插页 / 删页 / 批量 / 改尺寸只在 Mac 与模式1。
+  新建画板两模式都先弹 `shared/NewBoardSheet`（选模式 / 尺寸 / 横竖 / 背景 / 页数），模式2 分页时 `boardAdd` 带可选尾部。
 - **界面文案资源（2026-09-26 起）**：从画板笔记开始，新文案进 `res/values/strings.xml`（英文）+
   `res/values-zh/strings.xml`（中文），两份一起加；更早的文案仍直接写在代码里（中文），没有搬。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +

@@ -233,6 +233,9 @@ object MirrorUi {
                         append("\n有 ${r.hashClashesSkipped} 个版本被跳过：对面已经有同一份文件了。")
                         append("用「关联为同一文档」把它们合并。")
                     }
+                    if (r.pathClashesSkipped > 0) {
+                        append("\n有 ${r.pathClashesSkipped} 篇笔记被跳过：对面同一路径上已经有一篇笔记了。")
+                    }
                 }
                 a.showAlert(
                     "同步完成",

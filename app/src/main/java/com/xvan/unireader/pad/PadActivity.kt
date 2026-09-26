@@ -29,6 +29,7 @@ import com.google.zxing.integration.android.IntentIntegrator
 import com.xvan.unireader.R
 import com.xvan.unireader.shared.BookmarkItem
 import com.xvan.unireader.shared.Layer
+import com.xvan.unireader.shared.NewBoardSheet
 import com.xvan.unireader.shared.MODE_ERASE
 import com.xvan.unireader.shared.MODE_LASSO
 import com.xvan.unireader.shared.MODE_NOTE
@@ -589,7 +590,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     client?.send(WireCodec.encodeBoardOpen(id))
                 }
             }
-            onAddBoard = { client?.send(WireCodec.encodeBoardAdd()) }
+            onAddBoard = { requestNewBoard() }
         }
 
         // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释），只列**当前工作区**那几篇。
@@ -1327,6 +1328,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         boardKind = kind
         boardCurrent = current
         boards = list
+        // boardId 先于 boardMode：切进画板会话时 PadScratch 要拿它判断「手上的页是不是这一篇的」
+        scratch.boardId = if (kind == WireCodec.BOARD_KIND_BOARD) current else null
         scratch.boardMode = kind == WireCodec.BOARD_KIND_BOARD
         scratch.boardTitle = list.firstOrNull { it.id == current }?.title
         drawer.setBoards(list.map {
@@ -1339,6 +1342,24 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 当前画板上的图（全量镜像；不是画板会话时 Mac 发空表，据此清掉） */
     override fun onBoardImages(list: List<WireCodec.BoardImageEntry>) = runOnUiThread {
         scratch.applyBoardImages(list)
+    }
+
+    /** 被跟随画板的页（全量镜像；空表 = 无限画布 / 不是画板会话）：排页、画背景交给草稿纸画布 */
+    override fun onBoardPages(w: Float, h: Float, list: List<WireCodec.BoardPageEntry>) = runOnUiThread {
+        scratch.applyBoardPages(w, h, IntArray(list.size) { list[it].template })
+    }
+
+    /**
+     * 新建画板：先选模式（无限画布 / 分页 + 页面大小、背景、页数），再发 `boardAdd`——分页带可选尾部，
+     * 无限画布发空 payload（老 Mac 也认得）。Mac 建好、开好之后照常回推 boards / boardPages / …
+     */
+    private fun requestNewBoard() {
+        NewBoardSheet.show(this) { spec ->
+            client?.send(
+                if (spec.paged) WireCodec.encodeBoardAddPaged(spec.w, spec.h, spec.template, spec.count)
+                else WireCodec.encodeBoardAdd(),
+            )
+        }
     }
 
     /** 按会话类型摆页面视图 / Markdown 空状态 / 顶栏上只对 PDF 有意义的几颗键 */
@@ -1386,7 +1407,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         list.addView(
             PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.board_new)) {
                 dlg?.dismiss()
-                client?.send(WireCodec.encodeBoardAdd())
+                requestNewBoard()
             },
         )
         sheet.content(list)

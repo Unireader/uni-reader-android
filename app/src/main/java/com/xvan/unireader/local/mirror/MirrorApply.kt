@@ -44,6 +44,8 @@ object MirrorApply {
         var orphansSkipped: Int = 0,
         /** 因为**对面已经有同一份内容**而被丢弃的 `variant` 行（见 [write] 里那段） */
         var hashClashesSkipped: Int = 0,
+        /** 因为**对面已有同路径的另一篇**而被丢弃的 `md_doc` 行（同 Mac `pathClashesSkipped`） */
+        var pathClashesSkipped: Int = 0,
         var lastOpenedTouched: Int = 0,
         var filesCopiedToSource: Int = 0,
         /** 双向补齐的 OCR 缓存页数（见 [fillOcr]） */
@@ -135,10 +137,10 @@ object MirrorApply {
 
     /** 把一批改动写进一个库（**调用方负责包事务**） */
     fun write(db: Db, changes: List<MirrorDiff.Change>, result: Result, side: MirrorDiff.Side) {
-        // 有画板的改动要写、而目标库还没有那两张表（老库）：用与 Mac 逐字相同的语句补上
-        // （「不动已有库结构」的唯一例外，只限这两张表，见 Schema.BOARD_DDL）
-        if (changes.any { it.table == "board_note" || it.table == "board_item" }) {
-            com.xvan.unireader.local.store.Schema.ensureBoardTables(db)
+        // 有较新表（v15 md_doc / v16~17 画板）的改动要写、而目标库还没迁移过（只读打开过的老库）：
+        // 先照 Mac 迁移一遍（补表补列，语句与 Mac 逐字相同，见 Schema.migrate）
+        if (changes.any { it.table == "md_doc" || it.table.startsWith("board_") }) {
+            com.xvan.unireader.local.store.Schema.migrate(db)
         }
         val live = livingDocuments(db, changes)
         val liveBoards = livingBoards(db, changes)
@@ -168,11 +170,27 @@ object MirrorApply {
                 }
                 // 画板条目同理：一边删了整篇画板、另一边又在上面写了几笔 → 那几笔跳过并计数
                 // （外键会让整个事务回滚、整次同步失败）
-                if (table == "board_item") {
+                // 分页画板的页（v17）同理（同 Mac：board_item 与 board_page 都看 board_id）
+                if (table == "board_item" || table == "board_page") {
                     val b = row["board_id"] as? String
                     if (b != null && b !in liveBoards) {
                         result.orphansSkipped++
                         continue
+                    }
+                }
+                // `md_doc.rel_path` 是 UNIQUE（同 Mac）：两边各自把同一个 vault 导进来时 id 不同、路径相同，
+                // 硬插就是整次同步失败。跳过并计数——那是两篇独立的笔记，不能自动合并。
+                if (table == "md_doc") {
+                    val rel = row["rel_path"] as? String
+                    if (rel != null) {
+                        val clash = db.query(
+                            "SELECT id FROM md_doc WHERE rel_path=? AND id<>?",
+                            arrayOf(rel, c.rowId),
+                        ) { it.getString(0) }
+                        if (clash.isNotEmpty()) {
+                            result.pathClashesSkipped++
+                            continue
+                        }
                     }
                 }
                 // `variant.content_hash` 是 UNIQUE：同一份 PDF 在两份镜像上各自入过库时，
@@ -385,7 +403,7 @@ object MirrorApply {
             TAG,
             "合并完成：硬盘 +${r.sourceUpserts}/-${r.sourceDeletes}，" +
                 "本机 +${r.mirrorUpserts}/-${r.mirrorDeletes}，" +
-                "孤儿 ${r.orphansSkipped}，重复内容 ${r.hashClashesSkipped}，补齐文件 ${r.filesCopiedToSource}，" +
+                "孤儿 ${r.orphansSkipped}，重复内容 ${r.hashClashesSkipped}，同路径笔记 ${r.pathClashesSkipped}，补齐文件 ${r.filesCopiedToSource}，" +
                 "补齐识别 +${r.ocrFilledToSource}/+${r.ocrFilledToMirror}，" +
                 "扫描页对齐 ${r.alignToSource}/${r.alignToMirror}",
         )

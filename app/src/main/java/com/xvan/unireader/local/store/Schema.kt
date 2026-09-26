@@ -5,36 +5,34 @@ import android.util.Log
 import java.io.File
 
 /**
- * **建库**——安卓端在本机新建一个工作区时用（`Launcher` 的「新建工作区」）。
+ * **建库 + 迁移**——本模块**唯一**写 DDL 的地方，逐条对应 Mac `Sources/Store/LibraryStore.swift` 的 `migrate()`。
  *
- * 这是本模块**唯一**写 DDL 的地方，且只在「文件还不存在」时跑一次；[Db] 那边照旧一个字的
- * DDL 都不写（打开已存在的库不建表、不迁移，见 `Db.open`）。理由没变：往一个 Mac 建的共享库
- * 上偷偷补表/补列，会让两端对 schema 的认知悄悄分叉；而**从零建一个新库**不存在这个问题——
- * 建出来的就得是 Mac 认识的那一份。
+ * 两个入口：
+ * - [createLibrary]：安卓本机新建工作区（`Launcher` 的「新建工作区」），文件还不存在时建一个空库；
+ * - [migrate]：**可写**打开一个已有的库时（`LibraryStore.open`），与 Mac 一样补齐缺的表（`CREATE … IF NOT EXISTS`）、
+ *   缺的列（`ADD COLUMN`），并把 `meta.schema_version` 写成 [VERSION]。只读打开不迁移。
  *
- * 所以下面这段 DDL 是从 Mac `Sources/Store/LibraryStore.swift` 的 `migrate()` **逐字抄来**的
- * （schema v14），只做了一处形式上的改动：`SQLiteDatabase.execSQL` 一次只吃一条语句，
- * 故拆成了列表。**改表结构永远先改 Mac + `REQUIREMENTS.md §8`，再同步这里。**
+ * 🔴 2026-09-26 用户撤销了「安卓不改表结构」的旧规定（见 android/AGENTS.md）：安卓与 Mac 一样迁移老库。
+ * 剩下的纪律：**schema 是两端共同的契约**——下面每一条 DDL 与 Mac `migrate()` 逐字相同（只是
+ * `execSQL` 一次只吃一条语句，所以拆成了列表），改结构两端同一次一起改，并同步 `REQUIREMENTS.md §8`。
  *
- * 新建的库直接就是 v14（不走任何迁移分支），因此没有「补列」那一节——那是给老库用的。
- * 刻意**没抄**的两条：`idx_note_document_kind_page` 索引与 `page_geom` 表——Mac 注释里写明了
- * 它们不是数据契约、不占 schema 版本（Mac 打开时自己补）。
+ * 刻意**没抄**的只有 `page_geom`：Mac 注释写明它是 Mac 私有的纯缓存表（按内容 hash、不进镜像、
+ * 不升版本、别的端不必认识）。索引 `idx_note_document_kind_page` 不是数据契约，但语句相同、建上无害，一并建。
  */
 object Schema {
 
     const val TAG = "UniReader/Schema"
 
     /**
-     * 建库时写进 `meta.schema_version` 的版本，与 Mac `LibraryStore.schemaVersion` 同步。
-     * v13 = `image` 表（图片笔记，本端还不读写它，只建空表）；v14 = `page_align` 表（扫描页对齐，本端只读）。
-     * 两张表都建上，写进去的版本号才不撒谎。
+     * 与 Mac `LibraryStore.schemaVersion` 同步。v13 `image`、v14 `page_align`、v15 `md_doc`（本端只建表不用）、
+     * v16 `board_note`/`board_item`、v17 `board_page`——表都建上，写进去的版本号才不撒谎。
      */
-    const val VERSION = 14
+    const val VERSION = 17
 
     /**
      * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
-     * 要往**可能没有这张表**的库里整行覆盖（本端早于 v14 建的库、没被新版 Mac 打开过的老库），
-     * 那边要先 `CREATE TABLE IF NOT EXISTS`——语句仍只在这一处（见 `MirrorApply.fillAlign`）。
+     * 要往**可能没有这张表**的库里整行覆盖（只读打开、没迁移过的老库），那边要先 `CREATE TABLE IF NOT EXISTS`
+     * ——语句仍只在这一处（见 `MirrorApply.fillAlign` / `LibraryStore.copyPageAlignTo`）。
      */
     const val PAGE_ALIGN_DDL = """
         CREATE TABLE IF NOT EXISTS page_align (
@@ -47,14 +45,26 @@ object Schema {
         )
         """
 
+    /** v15 Markdown 笔记的元数据表（`../MARKDOWN-NOTES-PLAN.md §2`）。本端没有 Markdown 笔记，只建表不读写 */
+    private val MD_DOC_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS md_doc (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          rel_path TEXT NOT NULL,
+          group_name TEXT NOT NULL DEFAULT '',
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_opened_at TEXT NOT NULL
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_md_doc_path ON md_doc(rel_path)",
+    )
+
     /**
-     * v16 画板笔记两张表 + 索引（`../BOARD-NOTE-PLAN.md §2`），与 Mac `migrate()` 里那两段**逐字相同**。
-     *
-     * 🔴 **本模块「打开已有库一个字 DDL 都不写」的唯一例外**（用户 2026-09-24 同意，只限这两张表）：
-     * 打开工作区时若库里没有它们，就用这几条语句补建（[ensureBoardTables]）——否则平板在没被新版
-     * Mac 打开过的工作区上建不了画板笔记。`CREATE … IF NOT EXISTS` 与 Mac 同一份语句，Mac 以后
-     * 再 migrate 到 v16 时是空操作，两端对 schema 的认知不会分叉。**不写 `meta.schema_version`**。
-     * 改这里必须与 Mac `LibraryStore.swift` 的那两段同步。
+     * v16 画板笔记两张表 + 索引（`../BOARD-NOTE-PLAN.md §2`）+ v17 分页画板的页（§9），
+     * 与 Mac `migrate()` 里那三段**逐字相同**。改这里必须与 Mac `LibraryStore.swift` 同步。
      */
     val BOARD_DDL = listOf(
         """
@@ -81,23 +91,27 @@ object Schema {
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_board_item_board ON board_item(board_id)",
+        // v17：分页画板的页。一个画板有页 = 分页模式，没有页 = 无限画布。条目 payload 带 "page"（这里的 id），
+        // 点与 x/y/w/h 是页内坐标；sort_key 小数（插页取中点）；width/height 整本统一；template 背景模板名。
+        """
+        CREATE TABLE IF NOT EXISTS board_page (
+          id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL REFERENCES board_note(id) ON DELETE CASCADE,
+          sort_key REAL NOT NULL,
+          width REAL NOT NULL, height REAL NOT NULL,
+          template TEXT NOT NULL DEFAULT 'blank',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_board_page_board ON board_page(board_id, sort_key)",
     )
 
     /**
-     * 库里没有画板两张表就补建（见 [BOARD_DDL] 的例外说明）。已有则什么都不做（先查 `sqlite_master`，
-     * 不对已经齐全的库白跑 DDL）。返回是否真的补建了。
+     * 与 Mac `migrate()` 里那段 `CREATE TABLE IF NOT EXISTS …` 逐字一致，只是拆成了单条语句。
+     * 唯一形式上的出入：`location` 建表时就带上 `is_relative`（Mac 是 CREATE 之后 `ADD COLUMN` 补的，
+     * 全新库两者列序相同——Mac `MirrorFingerprint` 的列序注释说的就是这份）。
      */
-    fun ensureBoardTables(db: Db): Boolean {
-        val have = db.query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('board_note','board_item')",
-        ) { it.getString(0) }.toSet()
-        if (have.containsAll(listOf("board_note", "board_item"))) return false
-        db.transaction { for (sql in BOARD_DDL) db.exec(sql.trimIndent()) }
-        Log.i(TAG, "补建画板笔记两张表（board_note / board_item），meta.schema_version 不动")
-        return true
-    }
-
-    /** 与 Mac `migrate()` 里那段 `CREATE TABLE IF NOT EXISTS …` 逐字一致，只是拆成了单条语句 */
     private val DDL = listOf(
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
         """
@@ -136,6 +150,7 @@ object Schema {
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_note_document_page ON note(document_id, page)",
+        "CREATE INDEX IF NOT EXISTS idx_note_document_kind_page ON note(document_id, kind, page)",
         """
         CREATE TABLE IF NOT EXISTS ocr_page (
           content_hash TEXT NOT NULL, page INTEGER NOT NULL, provider TEXT NOT NULL,
@@ -177,7 +192,62 @@ object Schema {
         )
         """,
         PAGE_ALIGN_DDL,
-    ) + BOARD_DDL   // v16 画板笔记（新库一并建上；版本号仍写 v14——v15 的 md_doc 本端没建，写 16 会撒谎）
+    ) + MD_DOC_DDL + BOARD_DDL
+
+    /**
+     * 老库补列：与 Mac `migrate()` 的 `addColumnIfMissing` **逐条同序**（v1 → v12 攒下来的那些）。
+     * 幂等：列已存在就跳过。v12 之后的版本只加表不加列（Mac 注释逐版写明了），没有更多条目。
+     */
+    private val ADD_COLUMNS = listOf(
+        Triple("document", "read_page", "INTEGER NOT NULL DEFAULT 0"),
+        Triple("document", "read_frac", "REAL NOT NULL DEFAULT 0"),
+        Triple("location", "in_workspace", "INTEGER NOT NULL DEFAULT 0"),
+        Triple("document", "read_zoom", "REAL NOT NULL DEFAULT 1"),
+        Triple("document", "read_hfrac", "REAL NOT NULL DEFAULT 0"),
+        Triple("location", "is_relative", "INTEGER NOT NULL DEFAULT 0"),
+        Triple("scratch_pad", "pattern", "TEXT NOT NULL DEFAULT 'dots'"),
+        Triple("scratch_pad", "show_page", "INTEGER NOT NULL DEFAULT 0"),
+        Triple("document", "group_name", "TEXT NOT NULL DEFAULT ''"),
+        Triple("document", "canvas_mode", "INTEGER NOT NULL DEFAULT 0"),
+    )
+
+    private fun columnsOf(db: Db, table: String): Set<String> =
+        db.query("PRAGMA table_info($table)") { it.getString(it.getColumnIndexOrThrow("name")) }.toSet()
+
+    private fun metaValue(db: Db, key: String): String? =
+        db.query("SELECT value FROM meta WHERE key=?", arrayOf(key)) { it.getString(0) }.firstOrNull()
+
+    private fun setMeta(db: Db, key: String, value: String) = db.exec(
+        "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        arrayOf(key, value),
+    )
+
+    /**
+     * **迁移一个已有的库**（可写连接），同 Mac `migrate()`：建缺的表 → 补缺的列 → 写 `schema_version`。
+     * 整套一个事务（中途失败什么都不留）。调用方负责只在可写连接上调。
+     *
+     * 与 Mac 的一处出入：库里的版本号**比本端新**（新版 Mac 已经升到 18 了）时不往回改——
+     * 表照样补（`IF NOT EXISTS` 对新库是空操作），只是不把版本号写小。Mac 那边是无条件写自己的版本。
+     *
+     * @return 迁移前库里写的版本号（没有 / 不是数字 → null），调用方打日志用
+     */
+    fun migrate(db: Db): Int? {
+        val before = runCatching { metaValue(db, "schema_version") }.getOrNull()
+        val beforeV = before?.toIntOrNull()
+        db.transaction {
+            for (sql in DDL) db.exec(sql.trimIndent())
+            for ((table, col, decl) in ADD_COLUMNS) {
+                if (col !in columnsOf(db, table)) {
+                    db.exec("ALTER TABLE $table ADD COLUMN $col $decl")
+                    Log.i(TAG, "补列 $table.$col")
+                }
+            }
+            if (before == null) setMeta(db, "created_at", Iso.now())   // 同 Mac：没有版本号 = 新库
+            if (beforeV == null || beforeV < VERSION) setMeta(db, "schema_version", VERSION.toString())
+        }
+        if (beforeV != VERSION) Log.i(TAG, "迁移 schema_version=$before → v$VERSION（库更新时不回写）")
+        return beforeV
+    }
 
     /**
      * 在 [dbFile]（须尚不存在）建一个空库并写好 `meta`。

@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.xvan.unireader.R
 import com.xvan.unireader.local.ScratchController
+import com.xvan.unireader.shared.NewBoardSheet
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.PageImageSource
@@ -184,6 +185,7 @@ class PadScratch(private val a: Activity) {
     // ---- 工具条读数（init 里装配） ----
     private val barName: TextView
     private val barZoom: TextView
+    private val barPage: TextView
     private val mapBtn: ImageButton
     private val pageBtn: ImageButton
     private val listBtn: ImageButton
@@ -225,6 +227,12 @@ class PadScratch(private val a: Activity) {
         closeBtn.visibility = gone
         listBtn.contentDescription = if (boardMode) a.getString(R.string.board_list) else "草稿纸列表"
         canvas.emptyHintTitle = if (boardMode) a.getString(R.string.board_empty_hint) else null
+        // 离开画板会话：页一并撤掉（草稿纸永远是无限画布）；切进来时若这一篇的页已经先到了，现在补上
+        if (!boardMode) {
+            if (canvas.paged) canvas.setPages(0f, 0f, IntArray(0))
+        } else if (pagesBoardId != null && pagesBoardId == boardId) {
+            canvas.setPages(pageW, pageH, pageTemplates, replace = true)
+        }
         canvas.invalidate()
         // 图钉：画板会话里那张「纸」没有锚点，别在（藏在底下的）PDF 页面上插一枚
         if (boardMode) onPinsChanged?.invoke(emptyList())
@@ -301,6 +309,9 @@ class PadScratch(private val a: Activity) {
         }
         canvas.onViewportChanged = { updateBar() }
         canvas.tools = { toolsProvider?.invoke() }
+        // 分页画板到底上拉：只发请求，Mac 加好页回推 boardPages（一次手势一页，由画布保证）
+        canvas.pullHintText = a.getString(R.string.board_pull_hint)
+        canvas.onPullAddPage = { if (boardMode) sendCtl?.invoke(WireCodec.encodeBoardPageAdd(1)) }
         handler.postDelayed(flusher, 8)
 
         // 工具条：悬浮胶囊，与模式1 同款（⚠️ 对比度 handoff §7.2：纸是浅色的，浮层显式给足——
@@ -323,6 +334,13 @@ class PadScratch(private val a: Activity) {
             setPadding(Ui.dp(a, 4), 0, Ui.dp(a, 4), 0)
         }
         row.addView(barName)
+        // 分页画板的页码（「第 i / N 页」）；其余情况不显示
+        barPage = Ui.body(a, "", variant = false).apply {
+            textSize = 12f
+            setPadding(Ui.dp(a, 4), 0, Ui.dp(a, 4), 0)
+            visibility = View.GONE
+        }
+        row.addView(barPage)
         row.addView(Ui.iconButton(a, R.drawable.ic_scope, "回中", on) { canvas.recenter() })
         row.addView(Ui.iconButton(a, R.drawable.ic_fit, "适应内容", on) { canvas.fitContent() })
         mapBtn = Ui.iconButton(a, R.drawable.ic_map, "缩略图", on) {
@@ -481,13 +499,26 @@ class PadScratch(private val a: Activity) {
         var dlg: AlertDialog? = null
         val sheet = Sheet(a).title(displayName(entry))
 
-        // 底纹三选一（整行可点，当前项打勾）
-        root.addView(Ui.groupTitle(a, "底纹", top = 0))
-        for ((key, label) in ScratchController.PATTERN_LABELS) {
-            root.addView(optionRow(label, patternName(entry.pattern) == key) {
-                requestPaper(index, bg = null, pattern = key)
-                dlg?.dismiss()
-            })
+        val paged = boardMode && canvas.paged
+        if (paged) {
+            // 分页画板：底纹换成「当前页（视口中心所在页）的背景」——平板只改当前页（插页 / 批量在 Mac 上做）
+            val pi = canvas.currentPageIndex()
+            root.addView(Ui.groupTitle(a, a.getString(R.string.board_this_page, pi + 1), top = 0))
+            root.addView(
+                PadPanels.iconRow(a, R.drawable.ic_paper, a.getString(R.string.board_page_background)) {
+                    dlg?.dismiss()
+                    showPageTemplatePicker(pi)
+                },
+            )
+        } else {
+            // 底纹三选一（整行可点，当前项打勾）
+            root.addView(Ui.groupTitle(a, "底纹", top = 0))
+            for ((key, label) in ScratchController.PATTERN_LABELS) {
+                root.addView(optionRow(label, patternName(entry.pattern) == key) {
+                    requestPaper(index, bg = null, pattern = key)
+                    dlg?.dismiss()
+                })
+            }
         }
 
         // 纸色六选一（色块行，当前项 accent 描边）
@@ -640,5 +671,65 @@ class PadScratch(private val a: Activity) {
         barZoom.setTextIfChanged(if (pct == 100) "" else "$pct%")
         mapBtn.setActive(canvas.minimapOn, Ui.onSurface(a), Ui.accent(a))
         pageBtn.setActive(entry.showPage, Ui.onSurface(a), Ui.accent(a))
+        // 分页画板：页码代替 minimap（同 Mac / 模式1）
+        val paged = boardMode && canvas.paged
+        mapBtn.visibility = if (paged) View.GONE else View.VISIBLE
+        barPage.visibility = if (paged) View.VISIBLE else View.GONE
+        if (paged) {
+            barPage.setTextIfChanged(a.getString(R.string.board_page_of, canvas.currentPageIndex() + 1, canvas.pageCount))
+        }
+    }
+
+    // ---------- 分页画板（v17，`../PROTOCOL.md §4.8` 末尾「分页画板」） ----------
+    //
+    // Mac 发 `boardPages` 全量镜像（n=0 = 不是分页画板）；本端按布局契约排页、画背景（`ScratchCanvas.setPages`，
+    // 与模式1 同一份画法），笔迹 / 图片仍是 Mac 换算好的画布坐标。平板上能做的只有两样：
+    // 到底上拉加页（`boardPageAdd(1)`）、改**当前页**（视口中心所在页）的背景（`boardPageTemplate`）。
+    // 插页 / 删页 / 批量 / 改尺寸只在 Mac 与模式1 上做。
+
+    /** 被跟随画板的 id（宿主从 `boards.current` 设）：换了一篇画板，页到了要重新按页宽适配 */
+    var boardId: String? = null
+
+    private var pagesBoardId: String? = null
+    private var pageW = 0f
+    private var pageH = 0f
+    private var pageTemplates = IntArray(0)
+
+    /**
+     * 收 `boardPages`：排页（不是分页画板 → 空表 = 无限画布）。先存下来；不在画板会话里（`boards` 还没到 /
+     * 已经切走）就先不上画布，等 [applyBoardMode] 切进来时再用——两条广播的先后没有保证。
+     */
+    fun applyBoardPages(w: Float, h: Float, templates: IntArray) {
+        val replace = boardId != pagesBoardId
+        pagesBoardId = boardId
+        pageW = w
+        pageH = h
+        pageTemplates = templates
+        canvas.setPages(w, h, if (boardMode) pageTemplates else IntArray(0), replace)
+        updateBar()
+    }
+
+    /** 改当前页的背景：乐观生效 + 发请求，Mac 回推 boardPages 为准 */
+    private fun requestPageTemplate(index: Int, template: Int) {
+        if (index !in pageTemplates.indices) return
+        sendCtl?.invoke(WireCodec.encodeBoardPageTemplate(index, template))
+        pageTemplates = pageTemplates.copyOf().also { it[index] = template }
+        canvas.setPages(pageW, pageH, pageTemplates)
+    }
+
+    private fun showPageTemplatePicker(index: Int) {
+        val cur = pageTemplates.getOrElse(index) { 0 }
+        val root = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+        var dlg: AlertDialog? = null
+        NewBoardSheet.templateLabels(a).forEachIndexed { t, label ->
+            root.addView(optionRow(label, t == cur) {
+                dlg?.dismiss()
+                requestPageTemplate(index, t)
+            })
+        }
+        dlg = Sheet(a).title(a.getString(R.string.board_page_bg_current, index + 1))
+            .content(root)
+            .action(a.getString(R.string.common_cancel))
+            .show()
     }
 }

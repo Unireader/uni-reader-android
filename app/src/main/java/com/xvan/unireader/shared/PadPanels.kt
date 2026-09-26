@@ -179,7 +179,7 @@ object PadPanels {
     }
 
     /** 分段控件的一格（选中态由 [setSegActive] 切） */
-    private fun segButton(a: Activity, s: String, onClick: () -> Unit): TextView =
+    internal fun segButton(a: Activity, s: String, onClick: () -> Unit): TextView =
         TextView(a).apply {
             text = s
             textSize = 14f
@@ -189,7 +189,7 @@ object PadPanels {
             setOnClickListener { onClick() }
         }
 
-    private fun setSegActive(a: Activity, v: TextView, active: Boolean) {
+    internal fun setSegActive(a: Activity, v: TextView, active: Boolean) {
         v.setTextColor(if (active) Ui.accent(a) else Ui.onSurface(a))
         val face =
             if (active) Ui.round(Ui.col(a, R.color.accent_container), Ui.RADIUS, a)

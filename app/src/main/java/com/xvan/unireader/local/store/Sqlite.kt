@@ -13,8 +13,8 @@ import java.io.File
  * **为什么不用 Room**：`library.sqlite` 的 schema 是 Mac 端写死的跨平台契约
  * （`Sources/Store/LibraryStore.swift`，schema v7）。Room 要反过来拥有 schema、还会往库里塞
  * 自己的 `room_master_table` 并校验 identity hash——那是往共享库里拉屎，Mac 侧下次打开就多出
- * 一张不认识的表。这里只负责搬字节，DDL 一个字都不写；**新建**工作区时那份建表语句在
- * [Schema] 里，只对「文件还不存在」的全新库跑一次，永不碰已有的库。
+ * 一张不认识的表。这里只负责搬字节，DDL 一个字都不写；建表 / 迁移语句只在 [Schema] 里
+ * （新建库 [Schema.createLibrary]，可写打开已有库时 [Schema.migrate]，与 Mac `migrate()` 逐字对应）。
  */
 class Db private constructor(
     private val db: SQLiteDatabase,
@@ -26,8 +26,8 @@ class Db private constructor(
         const val TAG = "UniReader/DB"
 
         /**
-         * 打开已存在的库。**不建库、不迁移**——文件不存在直接抛，因为「安卓端悄悄建了个空库」
-         * 比「打不开」难查得多（用户会以为笔记丢了）。
+         * 打开已存在的库。**不建库**——文件不存在直接抛，因为「安卓端悄悄建了个空库」
+         * 比「打不开」难查得多（用户会以为笔记丢了）。迁移不在这一层，由 `LibraryStore.open` 调 [Schema.migrate]。
          */
         fun open(file: File, readOnly: Boolean = false): Db {
             require(file.isFile) { "库文件不存在：${file.absolutePath}" }

@@ -112,6 +112,18 @@ class InkPayload(val raw: JSONObject) {
         return this
     }
 
+    /**
+     * 分页画板上的笔迹（board_item kind=1，v17）：所属那一页的 id（`board_page.id`），此时点是**页内坐标**。
+     * 无此键 = 无限画布上的笔迹（点是画布坐标）。同 Mac `InkStrokePayload.page`。
+     */
+    val page: String? get() = raw.optString("page").ifEmpty { null }
+
+    /** 只写/摘 `page` 键（null = 摘掉），其余键原样保留 */
+    fun withPage(page: String?): InkPayload {
+        if (page == null) raw.remove("page") else raw.put("page", page)
+        return this
+    }
+
     fun bytes(): ByteArray = raw.toString().toByteArray(StandardCharsets.UTF_8)
 
     companion object {

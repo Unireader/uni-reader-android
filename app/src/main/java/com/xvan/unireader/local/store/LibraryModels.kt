@@ -9,8 +9,8 @@ import java.time.format.DateTimeParseException
 /**
  * `library.sqlite`（schema v7）的行模型，逐字对应 Mac 端 `Sources/Store/LibraryModels.swift`。
  *
- * **红线**：字段只能与 Mac 端一致，安卓不得新增列/表/payload 键。要加字段 = 先改
- * `REQUIREMENTS.md §8` + Mac 端 + 升 `schema_version`，两端一起动。
+ * **契约**：字段与 Mac 端一致。任何一端要加列 / 表 / payload 键，都要同一次改两端 +
+ * `REQUIREMENTS.md §8` + 升 `schema_version`（2026-09-26 起安卓也可以改结构、迁移老库，见 android/AGENTS.md）。
  */
 
 /** 逻辑文档「一本书」。可含多个内容版本（variant），笔记全版本共用。 */
@@ -213,6 +213,55 @@ data class BoardItem(
     companion object {
         const val KIND_INK = 1
         const val KIND_IMAGE = 2
+    }
+}
+
+/**
+ * 分页画板的一页（`board_page` 表，v17，`../BOARD-NOTE-PLAN.md §9`）。逐字对应 Mac `LibBoardPage`。
+ * 尺寸整本统一（每页存同一个值、一起改）；[template] 存模板名（`blank`/`lined`/…，见 `shared/BoardPaging`）。
+ * 列表 `ORDER BY sort_key ASC, created_at ASC`（照抄 Mac）。
+ */
+data class BoardPage(
+    val id: String,
+    val boardId: String,
+    val sortKey: Double,
+    val width: Double,
+    val height: Double,
+    val template: String,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
+/**
+ * 一篇分页画板的页（已按 sort_key 排好）+ 布局契约：条目在「画布坐标 ↔ 页内坐标」之间换算只走这里。
+ * [pages] 为空 = 无限画布（换算全部是恒等、不写 `page` 键）。
+ */
+class BoardPageSet(val pages: List<BoardPage>) {
+    val paged: Boolean get() = pages.isNotEmpty()
+    val layout = com.xvan.unireader.shared.BoardPaging.Layout(
+        (pages.firstOrNull()?.width ?: 595.0).toFloat(),
+        (pages.firstOrNull()?.height ?: 842.0).toFloat(),
+        pages.size,
+    )
+    private val byId: Map<String, Int> = pages.withIndex().associate { (i, p) -> p.id.uppercase() to i }
+
+    /** 第 i 页的 id 与画布左上角；不是分页 / 越界 → null */
+    fun ref(i: Int): Ref? {
+        val p = pages.getOrNull(i) ?: return null
+        return Ref(p.id, layout.originX(), layout.originY(i))
+    }
+
+    /** 画布 y 落在哪一页（空隙归上面那页，首之上 / 末之下夹住）的 [Ref]；不是分页 → null */
+    fun refForY(y: Float): Ref? = if (!paged) null else ref(layout.indexForY(y))
+
+    /** payload 里的页 id → 那页的画布左上角；那页不在（孤儿）→ null。比对不分大小写（同 Mac `uppercased()`） */
+    fun originOf(pageId: String): Ref? = byId[pageId.uppercase()]?.let { ref(it) }
+
+    /** 页 id + 该页在画布上的左上角 */
+    data class Ref(val id: String, val ox: Float, val oy: Float)
+
+    companion object {
+        val NONE = BoardPageSet(emptyList())
     }
 }
 

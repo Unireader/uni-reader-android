@@ -322,7 +322,12 @@ class LibraryActivity : Activity() {
     }
 
     /** 新建一篇空画板，建好直接在阅读界面里打开 */
+    /** 新建画板：先选模式（无限画布 / 分页 + 页面大小、背景、页数，`../BOARD-NOTE-PLAN.md §9.4`），再写库 */
     private fun createBoard(ws: File) {
+        com.xvan.unireader.shared.NewBoardSheet.show(this) { spec -> createBoard(ws, spec) }
+    }
+
+    private fun createBoard(ws: File, spec: com.xvan.unireader.shared.NewBoardSheet.Spec) {
         val now = Iso.now()
         val b = BoardNote(
             id = newBoardId(), title = "", bg = ScratchPad.DEFAULT_BG, pattern = ScratchPad.DEFAULT_PATTERN,
@@ -331,7 +336,7 @@ class LibraryActivity : Activity() {
         writeBoard(
             ws, "新建画板",
             body = { s ->
-                s.upsertBoard(b)
+                BoardController.createBoard(s, b, spec)
                 // 表补不上（卷只读）时 upsert 已经抛了；这里再核一次，别打开一篇不存在的画板
                 check(s.board(b.id) != null) { getString(R.string.board_create_failed_msg) }
             },

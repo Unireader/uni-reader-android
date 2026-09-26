@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 102 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 107 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -165,6 +165,11 @@ class WireCodecTest {
             // #99~#100 画板笔记（v16）：boardOpen{id:"B-2"} / boardAdd
             99 to WireCodec.encodeBoardOpen("B-2"),
             100 to WireCodec.encodeBoardAdd(),
+            // #105~#107 分页画板（v17）：boardPageAdd{count:1} / boardPageTemplate{index:2, template:1} /
+            // boardAdd{mode:1, w:842, h:595, template:4(cornell), count:10}
+            105 to WireCodec.encodeBoardPageAdd(1),
+            106 to WireCodec.encodeBoardPageTemplate(2, 1),
+            107 to WireCodec.encodeBoardAddPaged(842f, 595f, 4, 10),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -512,10 +517,32 @@ class WireCodecTest {
         )
     }
 
+    @Test
+    fun decodeBoardPages() {
+        // #103 boardPages{w:595, h:842, list:[]}（不是分页画板）
+        val p0 = WireCodec.decode(unhex(VECTORS[102])) as WireCodec.Msg.BoardPages
+        assertEquals(595f, p0.w)
+        assertEquals(842f, p0.h)
+        assertTrue(p0.list.isEmpty())
+
+        // #104 boardPages{w:595, h:842, list:[{P1,0},{P2,4},{P3,5}]}
+        val p3 = WireCodec.decode(unhex(VECTORS[103])) as WireCodec.Msg.BoardPages
+        assertEquals(595f, p3.w)
+        assertEquals(842f, p3.h)
+        assertEquals(
+            listOf(
+                WireCodec.BoardPageEntry("P1", 0),
+                WireCodec.BoardPageEntry("P2", 4),
+                WireCodec.BoardPageEntry("P3", 5),
+            ),
+            p3.list,
+        )
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(102, VECTORS.size)
+        assertEquals(107, VECTORS.size)
     }
 
     @Test
@@ -528,7 +555,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 102 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 107 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -643,6 +670,13 @@ class WireCodecTest {
             "54",
             "550000",
             "5501000200493106006162636465660000f1c2000021420000c84300009643",
+            // #103~#107 分页画板（v17，`../BOARD-NOTE-PLAN.md §9.5`）：boardPages(0x56) 空 / 三页；
+            // boardPageAdd(0x57)；boardPageTemplate(0x58)；boardAdd(0x54) 带分页尾部
+            "5600c01444008052440000",
+            "5600c01444008052440300020050310002005032040200503305",
+            "570100",
+            "58020001",
+            "54010080524400c01444040a00",
         )
     }
 }

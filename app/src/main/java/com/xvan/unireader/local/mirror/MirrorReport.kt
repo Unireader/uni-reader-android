@@ -31,8 +31,10 @@ object MirrorReport {
         "variant" -> "文档版本"
         "ink_layer" -> "笔迹图层"
         "scratch_pad" -> "草稿纸"
+        "md_doc" -> "Markdown 笔记"
         "board_note" -> "画板笔记"
         "board_item" -> "画板笔记内容"
+        "board_page" -> "画板笔记的页"
         "meta" -> "工作区设置"
         else -> table
     }

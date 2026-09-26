@@ -20,9 +20,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 一个工作区的持久层，对应 Mac 端 `Sources/Store/LibraryStore.swift`（schema v14）。
+ * 一个工作区的持久层，对应 Mac 端 `Sources/Store/LibraryStore.swift`（schema v17）。
  *
- * 与 Mac 端的**唯一区别**：这里不迁移老库（见 [Db.open] 的说明；从零建新库是 [Schema] 的事）。
+ * 可写打开时与 Mac 一样迁移老库（[Schema.migrate]，2026-09-26 起；只读打开不迁移）。
  * SQL 语句逐条照抄 Mac，
  * 包括 `ORDER BY`——列表顺序不一致会让「Mac 上第 3 个文档」和平板上的第 3 个不是同一本。
  *
@@ -50,18 +50,18 @@ class LibraryStore(private val db: Db) : Closeable {
         /** 打开工作区里的库。`readOnly` 用于「库文件不可写」的场景（U 盘只读挂载等）。 */
         fun open(workspaceDir: File, readOnly: Boolean = false): LibraryStore {
             val store = LibraryStore(Db.open(File(workspaceDir, Workspace.DB_REL), readOnly))
+            store.checkpoint()   // 打开即把 Mac 留下的 -wal 合并进主库（§9.2；只读连接自动跳过）
+            // 可写打开 = 与 Mac 一样迁移到本端版本（补表 / 补列 / 写 schema_version，见 Schema.migrate）。
+            // 迁移不上（卷只读之类）不拦开库——读路径对缺表缺列都有兜底，只是新功能（画板等）用不了。
+            if (!readOnly) {
+                runCatching { Schema.migrate(store.db) }
+                    .onFailure { Log.w(TAG, "迁移库结构失败，按原结构继续（部分新功能用不了）", it) }
+            }
             val v = store.meta("schema_version")
             if (v != SCHEMA_VERSION.toString()) {
                 // 不拦：读得动就先读（Mac 升版后平板可能还没更新）。但必须留痕，
                 // 否则「某些笔记不显示」会被当成渲染 bug 查很久。
                 Log.w(TAG, "schema_version=$v，本端按 v$SCHEMA_VERSION 解析——字段可能对不上")
-            }
-            store.checkpoint()   // 打开即把 Mac 留下的 -wal 合并进主库（§9.2；只读连接自动跳过）
-            // 画板笔记两张表：没有就补建（「不动已有库结构」的唯一例外，只限这两张，见 Schema.BOARD_DDL）。
-            // 补不上（卷只读之类）不拦开库——读路径对缺表都有兜底，只是建不了画板。
-            if (!readOnly) {
-                runCatching { Schema.ensureBoardTables(store.db) }
-                    .onFailure { Log.w(TAG, "补建画板笔记表失败，这个工作区暂时建不了画板笔记", it) }
             }
             return store
         }
@@ -1122,18 +1122,74 @@ class LibraryStore(private val db: Db) : Closeable {
         }.toMap()
     }
 
-    /** 一篇画板上的笔迹（kind=1），转成画布用的 [Stroke]（page 恒 0、点是画布坐标） */
-    fun boardStrokes(boardId: String): List<Stroke> {
+    /**
+     * 一篇画板上的笔迹（kind=1），转成画布用的 [Stroke]（page 恒 0、点是**画布坐标**）。
+     * 分页画板（[ps] 有页）：payload 带 `page` 的点是页内坐标，加上那页的画布左上角；那页已不在（镜像合并里
+     * 一边删了页）→ 这条不显示（同 Mac `InkStroke(boardItem:origin:)` 返回 nil）。
+     */
+    fun boardStrokes(boardId: String, ps: BoardPageSet = BoardPageSet.NONE): List<Stroke> {
         val out = ArrayList<Stroke>()
         var bad = 0
+        var orphan = 0
         for (it in boardItems(boardId)) {
             if (it.kind != BoardItem.KIND_INK) continue
             val p = InkPayload.parse(it.payload)
             if (p == null) { bad++; continue }
-            out.add(p.toStroke(it.id, 0))
+            val s = p.toStroke(it.id, 0)
+            val pg = p.page
+            if (pg == null) { out.add(s); continue }
+            val o = ps.originOf(pg)
+            if (o == null) { orphan++; continue }
+            out.add(s.copy(pts = s.pts.map { q -> Pt3(q.x + o.ox, q.y + o.oy, q.p) }))
         }
         if (bad > 0) Log.w(TAG, "画板 ${boardId.take(8)}：$bad 条笔迹 payload 坏掉已跳过")
+        if (orphan > 0) Log.w(TAG, "画板 ${boardId.take(8)}：$orphan 条笔迹所在的页已不在，不显示")
         return out
+    }
+
+    // ---- 分页画板的页（board_page，v17；SQL 照抄 Mac `boardPages` / `upsertBoardPage` / `deleteBoardPage`） ----
+
+    fun boardPages(boardId: String): List<BoardPage> {
+        if (!hasTable("board_page")) return emptyList()
+        return db.query(
+            "SELECT * FROM board_page WHERE board_id=? ORDER BY sort_key ASC, created_at ASC",
+            arrayOf(boardId),
+        ) { boardPage(it) }
+    }
+
+    fun upsertBoardPage(p: BoardPage) {
+        db.exec(
+            """
+            INSERT INTO board_page(id,board_id,sort_key,width,height,template,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET sort_key=excluded.sort_key, width=excluded.width, height=excluded.height,
+              template=excluded.template, updated_at=excluded.updated_at
+            """.trimIndent(),
+            arrayOf(p.id, p.boardId, p.sortKey, p.width, p.height, p.template, p.createdAt, p.updatedAt),
+        )
+    }
+
+    fun deleteBoardPage(id: String) = db.exec("DELETE FROM board_page WHERE id=?", arrayOf(id))
+
+    /**
+     * 删页时连同页上的条目一起删：payload `page` 指向 [pageIds] 里任一页的笔迹 / 图片。返回删了几条。
+     * 归属看 payload 的 `page` 键——那就是落库时「第一个点 / 矩形上沿落在哪页」定下来的归属。
+     */
+    fun deleteBoardItemsOnPages(boardId: String, pageIds: Set<String>): Int {
+        val ids = pageIds.map { it.uppercase() }.toSet()
+        var n = 0
+        for (it in boardItems(boardId)) {
+            val pg = try {
+                JSONObject(String(it.payload, StandardCharsets.UTF_8)).optString("page")
+            } catch (e: Exception) {
+                ""
+            }
+            if (pg.isNotEmpty() && pg.uppercase() in ids) {
+                deleteBoardItem(it.id)
+                n++
+            }
+        }
+        return n
     }
 
     fun upsertBoardItem(i: BoardItem) {
@@ -1155,29 +1211,50 @@ class LibraryStore(private val db: Db) : Closeable {
      * （归属在 board_id 列上，同 Mac `InkStroke.toBoardItem`）；x/y/w/h = 画布坐标包围盒；
      * 画板不分图层，`layerId` 照 Mac 写默认层。id 由调用方给（Mac 那边按 UUID 解析，要大写串）。
      */
-    fun insertBoardStroke(boardId: String, pen: Pen, pts: List<Pt3>, id: String): String? {
+    fun insertBoardStroke(
+        boardId: String,
+        pen: Pen,
+        pts: List<Pt3>,
+        id: String,
+        ps: BoardPageSet = BoardPageSet.NONE,
+    ): String? {
         if (pts.isEmpty()) return null   // 空笔画不落库（同 Mac 的 guard）
-        val b = boundsOf(pts)
+        // 分页画板：按第一个点归页、存页内坐标 + payload `page`（同 Mac `toBoardItem(page:)`）
+        val ref = ps.refForY(pts[0].y)
+        val local = toPageLocal(pts, ref)
+        val b = boundsOf(local)
         val now = nowIso()
         upsertBoardItem(
             BoardItem(
                 id = id, boardId = boardId, kind = BoardItem.KIND_INK,
                 x = b[0], y = b[1], w = b[2], h = b[3],
-                payload = InkPayload.of(pen, pts, LibInkLayer.DEFAULT_ID).bytes(),
+                payload = InkPayload.of(pen, local, LibInkLayer.DEFAULT_ID).withPage(ref?.id).bytes(),
                 createdAt = now, updatedAt = now,
             ),
         )
         return id
     }
 
-    /** 改一条画板笔迹的点集（局部擦除切段后的存活段）；其余键原样保留，包围盒随新点集重算 */
-    private fun updateBoardStrokePoints(itemId: String, pts: List<Pt3>) {
+    /** 画布坐标 → 页内坐标（[ref] = null 即无限画布：原样） */
+    private fun toPageLocal(pts: List<Pt3>, ref: BoardPageSet.Ref?): List<Pt3> =
+        if (ref == null) pts else pts.map { Pt3(it.x - ref.ox, it.y - ref.oy, it.p) }
+
+    /**
+     * 改一条画板笔迹的点集（局部擦除切段后的存活段，[pts] 是画布坐标）；其余键原样保留，包围盒随新点集重算。
+     * 分页画板按新的第一个点重新归页（同 Mac：改过的条目落库时 `boardPageRef(index: boardPageIndex(of:))`）。
+     */
+    private fun updateBoardStrokePoints(itemId: String, pts: List<Pt3>, ps: BoardPageSet) {
         val it = db.query("SELECT * FROM board_item WHERE id=?", arrayOf(itemId)) { boardItem(it) }.firstOrNull()
             ?: return
         val p = InkPayload.parse(it.payload) ?: return
-        val b = boundsOf(pts)
+        val ref = if (pts.isEmpty()) null else ps.refForY(pts[0].y)
+        val local = toPageLocal(pts, ref)
+        val b = boundsOf(local)
         upsertBoardItem(
-            it.copy(x = b[0], y = b[1], w = b[2], h = b[3], payload = p.withPoints(pts).bytes(), updatedAt = nowIso()),
+            it.copy(
+                x = b[0], y = b[1], w = b[2], h = b[3],
+                payload = p.withPoints(local).withPage(ref?.id).bytes(), updatedAt = nowIso(),
+            ),
         )
     }
 
@@ -1185,13 +1262,19 @@ class LibraryStore(private val db: Db) : Closeable {
      * 画板擦除的对账落库：[reconcileScratchStrokes] 的 board_item 变体（没有图层过滤——画板不分图层）。
      * 「头一段沿用原 id」的理由相同（回推在途时的二次擦除要对得上），整批一个事务。
      * 新切出来的段用大写 UUID（Mac 按 UUID 解析 board_item.id，见 [newBoardId]）。
+     * [ps] = 擦除时界面上的那份页（分页画板）：库里的页内坐标按它换成画布坐标再比，写回时再换回去；
+     * 所在页已不在的孤儿行不显示，也就不在比对之列（一行都不碰）。
      */
-    fun reconcileBoardStrokes(boardId: String, local: Map<String, List<Stroke>>): InkDiff {
+    fun reconcileBoardStrokes(
+        boardId: String,
+        local: Map<String, List<Stroke>>,
+        ps: BoardPageSet = BoardPageSet.NONE,
+    ): InkDiff {
         var deleted = 0
         var updated = 0
         var inserted = 0
         transaction {
-            for (old in boardStrokes(boardId)) {
+            for (old in boardStrokes(boardId, ps)) {
                 val segs = local[old.id]
                 if (segs == null) {
                     deleteBoardItem(old.id)
@@ -1199,10 +1282,10 @@ class LibraryStore(private val db: Db) : Closeable {
                     continue
                 }
                 if (segs.size == 1 && segs[0].pts.size == old.pts.size) continue
-                updateBoardStrokePoints(old.id, segs[0].pts)
+                updateBoardStrokePoints(old.id, segs[0].pts, ps)
                 updated++
                 for (i in 1 until segs.size) {
-                    insertBoardStroke(boardId, segs[i].pen, segs[i].pts, newBoardId())
+                    insertBoardStroke(boardId, segs[i].pen, segs[i].pts, newBoardId(), ps)
                     inserted++
                 }
             }
@@ -1323,6 +1406,17 @@ class LibraryStore(private val db: Db) : Closeable {
         createdAt = c.str("created_at"),
         updatedAt = c.str("updated_at"),
         lastOpenedAt = c.strOrNull("last_opened_at"),
+    )
+
+    private fun boardPage(c: android.database.Cursor) = BoardPage(
+        id = c.str("id"),
+        boardId = c.str("board_id"),
+        sortKey = c.dbl("sort_key"),
+        width = c.dbl("width", 595.0),
+        height = c.dbl("height", 842.0),
+        template = c.str("template").ifEmpty { "blank" },
+        createdAt = c.str("created_at"),
+        updatedAt = c.str("updated_at"),
     )
 
     private fun boardItem(c: android.database.Cursor) = BoardItem(

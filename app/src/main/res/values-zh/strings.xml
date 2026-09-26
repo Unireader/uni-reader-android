@@ -23,6 +23,45 @@
     <string name="board_markdown_title">Mac 正在看 Markdown 笔记</string>
     <string name="board_markdown_msg">在 Mac 上切到 PDF 或画板笔记，或者从顶栏选一篇画板笔记。</string>
     <string name="board_items">%1$d 项内容</string>
+
+    <!-- 分页画板（v17，BOARD-NOTE-PLAN.md §9；措辞同 Mac Localizable.strings） -->
+    <string name="board_mode">模式</string>
+    <string name="board_mode_infinite">无限画布</string>
+    <string name="board_mode_paged">分页</string>
+    <string name="board_page_size">页面大小</string>
+    <string name="board_size_a4">A4</string>
+    <string name="board_size_a5">A5</string>
+    <string name="board_size_letter">Letter</string>
+    <string name="board_size_screen">当前屏幕</string>
+    <string name="board_portrait">竖版</string>
+    <string name="board_landscape">横版</string>
+    <string name="board_background">背景</string>
+    <string name="board_tpl_blank">空白</string>
+    <string name="board_tpl_lined">横线</string>
+    <string name="board_tpl_grid">方格</string>
+    <string name="board_tpl_dots">点阵</string>
+    <string name="board_tpl_cornell">康奈尔</string>
+    <string name="board_tpl_two_column">两栏</string>
+    <string name="board_page_count">页数</string>
+    <string name="board_create">创建</string>
+    <string name="board_page_of">第 %1$d / %2$d 页</string>
+    <string name="board_pull_hint">继续上拉添加新页</string>
+    <string name="board_pages">页面</string>
+    <string name="board_this_page">第 %1$d 页</string>
+    <string name="board_insert_before">在前面插入一页</string>
+    <string name="board_insert_after">在后面插入一页</string>
+    <string name="board_page_background">这一页的背景</string>
+    <string name="board_delete_page">删除这一页…</string>
+    <string name="board_select_pages">选择多页…</string>
+    <string name="board_selected_n">已选 %1$d 页</string>
+    <string name="board_all_pages_bg">所有页的背景</string>
+    <string name="board_page_size_all">页面大小（整本）</string>
+    <string name="board_delete_page_confirm">删除这一页？</string>
+    <string name="board_delete_pages_confirm">删除这 %1$d 页？</string>
+    <string name="board_delete_pages_msg">页上的笔迹和图片会一起删除，不能撤销。</string>
+    <string name="board_keep_one_page">分页画板至少要留一页。</string>
+    <string name="board_page_bg_current">第 %1$d 页的背景</string>
+
     <string name="common_cancel">取消</string>
     <string name="common_save">保存</string>
     <string name="common_delete">删除</string>

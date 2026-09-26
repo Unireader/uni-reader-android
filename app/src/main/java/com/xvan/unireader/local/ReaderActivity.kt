@@ -44,6 +44,7 @@ import com.xvan.unireader.shared.MODE_NOTE
 import com.xvan.unireader.shared.MODE_PAGE
 import com.xvan.unireader.shared.MODE_TEXT
 import com.xvan.unireader.shared.NOTE_TAP
+import com.xvan.unireader.shared.NewBoardSheet
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
@@ -1103,8 +1104,16 @@ class ReaderActivity : Activity() {
         }
     }
 
-    /** 新建一篇空画板并在新标签里打开（表不存在且补不上 = 建不了，说一句） */
+    /**
+     * 新建一篇画板并在新标签里打开：先选模式（无限画布 / 分页，`../BOARD-NOTE-PLAN.md §9.4`），
+     * 分页连初始页一起写（表不存在且补不上 = 建不了，说一句）。
+     */
     private fun createBoard() {
+        if (queue == null) return
+        NewBoardSheet.show(this) { spec -> createBoard(spec) }
+    }
+
+    private fun createBoard(spec: NewBoardSheet.Spec) {
         val q = queue ?: return
         val now = Iso.now()
         val b = BoardNote(
@@ -1112,7 +1121,7 @@ class ReaderActivity : Activity() {
             groupName = "", createdAt = now, updatedAt = now, lastOpenedAt = now,
         )
         q.submit("新建画板 ${b.id.take(8)}", { s ->
-            val ok = runCatching { s.upsertBoard(b) }
+            val ok = runCatching { BoardController.createBoard(s, b, spec) }
                 .onFailure { Log.e(TAG, "新建画板写库失败", it) }
                 .isSuccess
             ok to s.boards()
@@ -1198,7 +1207,8 @@ class ReaderActivity : Activity() {
         showOpening("正在打开《${t.title}》…")
         val q = queue ?: return
         val id = t.boardId
-        q.submit("读画板行 ${id.take(8)}", { s -> s.board(id) }, { b ->
+        // 页与画板行一起读（分页画板首屏就按页宽适配，不先闪一下无限画布）
+        q.submit("读画板行 ${id.take(8)}", { s -> s.board(id) to s.boardPages(id) }, { (b, pages) ->
             if (curTab() !== t) return@submit   // 排队期间切走了
             if (b == null) {
                 failToOpen(t, getString(R.string.board_open_failed))
@@ -1207,7 +1217,7 @@ class ReaderActivity : Activity() {
             val name = board.displayName(b)
             if (t.title != name) { t.title = name; refreshTabsBar() }
             title = name
-            board.open(b)
+            board.open(b, pages)
             hideOpening()
             refreshHud()
             if (libBoards.none { it.id == b.id }) refreshBoards()

@@ -27,6 +27,45 @@
     <string name="board_markdown_title">The Mac is showing a Markdown note</string>
     <string name="board_markdown_msg">Switch to a PDF or a board on the Mac, or pick a board above.</string>
     <string name="board_items">%1$d items</string>
+
+    <!-- 分页画板（v17，BOARD-NOTE-PLAN.md §9；措辞同 Mac Localizable.strings） -->
+    <string name="board_mode">Mode</string>
+    <string name="board_mode_infinite">Infinite Canvas</string>
+    <string name="board_mode_paged">Paged</string>
+    <string name="board_page_size">Page Size</string>
+    <string name="board_size_a4">A4</string>
+    <string name="board_size_a5">A5</string>
+    <string name="board_size_letter">Letter</string>
+    <string name="board_size_screen">Current Screen</string>
+    <string name="board_portrait">Portrait</string>
+    <string name="board_landscape">Landscape</string>
+    <string name="board_background">Background</string>
+    <string name="board_tpl_blank">Blank</string>
+    <string name="board_tpl_lined">Lined</string>
+    <string name="board_tpl_grid">Grid</string>
+    <string name="board_tpl_dots">Dots</string>
+    <string name="board_tpl_cornell">Cornell</string>
+    <string name="board_tpl_two_column">Two Columns</string>
+    <string name="board_page_count">Page Count</string>
+    <string name="board_create">Create</string>
+    <string name="board_page_of">Page %1$d of %2$d</string>
+    <string name="board_pull_hint">Keep pulling to add a page</string>
+    <string name="board_pages">Pages</string>
+    <string name="board_this_page">Page %1$d</string>
+    <string name="board_insert_before">Insert Page Before</string>
+    <string name="board_insert_after">Insert Page After</string>
+    <string name="board_page_background">Page Background</string>
+    <string name="board_delete_page">Delete Page…</string>
+    <string name="board_select_pages">Select Several Pages…</string>
+    <string name="board_selected_n">%1$d selected</string>
+    <string name="board_all_pages_bg">Background for All Pages</string>
+    <string name="board_page_size_all">Page Size (Whole Board)</string>
+    <string name="board_delete_page_confirm">Delete this page?</string>
+    <string name="board_delete_pages_confirm">Delete %1$d pages?</string>
+    <string name="board_delete_pages_msg">The strokes and images on it are deleted too. This cannot be undone.</string>
+    <string name="board_keep_one_page">A paged board keeps at least one page.</string>
+    <string name="board_page_bg_current">Background of Page %1$d</string>
+
     <string name="common_cancel">Cancel</string>
     <string name="common_save">Save</string>
     <string name="common_delete">Delete</string>
