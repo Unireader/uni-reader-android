@@ -1,6 +1,8 @@
 # AGENTS.md — UniReader Android
 
-UniReader 的安卓端：**一个 App 两种模式**（启动页二选一，`Launcher.kt`）。
+UniReader 的安卓端：**一个 App 两种模式**（启动页两个标签页，`Launcher.kt`：「本机工作区」= 模式1、
+「连接 Mac」= 模式2；2026-09-26 起选哪台 Mac 在启动页上做——连过的 Mac 点一下 / 扫码，经
+`PadActivity.start(host, token)` 带参数进去直接开连，不带参数才是旧行为「进去先弹连接设置」；停在哪一页记在本机）。
 
 - 模式1 独立版（`local/`）：平板本机直接打开工作区 `.unrd`，Pdfium 渲染 + 裸 SQLite 落库，不需要 Mac
 - 模式2 输入板（`pad/`）：连 Mac 当手写输入板/第二屏（二进制线格式 + UDP RT 上行）

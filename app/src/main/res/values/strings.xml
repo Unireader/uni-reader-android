@@ -31,4 +31,24 @@
     <string name="common_save">Save</string>
     <string name="common_delete">Delete</string>
     <string name="common_done">Done</string>
+
+    <!-- 启动页（两个标签页：本机工作区 = 模式1 / 连接 Mac = 模式2） -->
+    <string name="launcher_tab_local">On This Tablet</string>
+    <string name="launcher_tab_mac">Connect to Mac</string>
+    <string name="launcher_version">Version %1$s</string>
+    <string name="launcher_local_desc">Open a .unrd workspace stored on this tablet. No Mac needed.</string>
+    <string name="launcher_local_open">Open Workspace…</string>
+    <string name="launcher_local_new">New</string>
+    <string name="launcher_local_scan">Scan</string>
+    <string name="launcher_local_rescan">Scan Again</string>
+    <string name="launcher_mac_desc">Use this tablet as a pen tablet and second screen for UniReader on your Mac.</string>
+    <string name="launcher_mac_scan">Scan QR Code</string>
+    <string name="launcher_mac_manual">Enter Address</string>
+    <string name="launcher_mac_known">Macs You Have Connected To</string>
+    <string name="launcher_mac_none">No Mac yet. On the Mac, open the pairing QR code and scan it here.</string>
+    <string name="launcher_mac_remove">Remove this Mac</string>
+    <string name="launcher_mac_tip">The tablet and the Mac must be on the same network.</string>
+    <string name="launcher_mac_scan_prompt">Point at the pairing QR code on the Mac</string>
+    <string name="launcher_mac_scan_bad">Could not read that QR code.</string>
+    <string name="launcher_mac_camera_denied">Camera access was denied, so the QR code cannot be scanned.</string>
 </resources>

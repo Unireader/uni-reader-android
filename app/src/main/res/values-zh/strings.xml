@@ -27,4 +27,24 @@
     <string name="common_save">保存</string>
     <string name="common_delete">删除</string>
     <string name="common_done">完成</string>
+
+    <!-- 启动页（两个标签页：本机工作区 = 模式1 / 连接 Mac = 模式2） -->
+    <string name="launcher_tab_local">本机工作区</string>
+    <string name="launcher_tab_mac">连接 Mac</string>
+    <string name="launcher_version">版本 %1$s</string>
+    <string name="launcher_local_desc">打开存在这台平板上的 .unrd 工作区，不需要 Mac。</string>
+    <string name="launcher_local_open">打开工作区…</string>
+    <string name="launcher_local_new">新建</string>
+    <string name="launcher_local_scan">扫描</string>
+    <string name="launcher_local_rescan">重新扫描</string>
+    <string name="launcher_mac_desc">把平板当作 Mac 上 UniReader 的手写板和第二块屏幕。</string>
+    <string name="launcher_mac_scan">扫码连接</string>
+    <string name="launcher_mac_manual">手动输入地址</string>
+    <string name="launcher_mac_known">连过的 Mac</string>
+    <string name="launcher_mac_none">还没有连过 Mac。在 Mac 上打开配对二维码，用这里扫一下。</string>
+    <string name="launcher_mac_remove">移除这台 Mac</string>
+    <string name="launcher_mac_tip">平板和 Mac 要在同一个网络里。</string>
+    <string name="launcher_mac_scan_prompt">对准 Mac 上的配对二维码</string>
+    <string name="launcher_mac_scan_bad">二维码内容无法识别。</string>
+    <string name="launcher_mac_camera_denied">相机权限被拒，无法扫码。</string>
 </resources>

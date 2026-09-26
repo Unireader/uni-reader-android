@@ -78,6 +78,20 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
          * 放 `cacheDir`，系统在存储紧张时可以自己清掉。
          */
         const val PAGE_DISK_BYTES = 512L * 1024 * 1024
+
+        /** 启动页「连接 Mac」那一页选好的连接参数：带着就直接连，不再弹连接设置 */
+        private const val EXTRA_HOST = "host"
+        private const val EXTRA_TOKEN = "token"
+
+        /** 进输入板。`host`/`token` 都给 = 直接连这台 Mac；不给 = 进来先弹连接设置（旧行为） */
+        fun start(a: Activity, host: String? = null, token: String? = null) {
+            a.startActivity(Intent(a, PadActivity::class.java).apply {
+                if (!host.isNullOrEmpty() && !token.isNullOrEmpty()) {
+                    putExtra(EXTRA_HOST, host)
+                    putExtra(EXTRA_TOKEN, token)
+                }
+            })
+        }
     }
 
     private lateinit var dot: View
@@ -245,7 +259,16 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         buildUi()
         handler.postDelayed(sampler, 1000)
-        showConnDialog()   // 未连接自动弹出
+        val host = intent.getStringExtra(EXTRA_HOST)
+        val token = intent.getStringExtra(EXTRA_TOKEN)
+        if (!host.isNullOrEmpty() && !token.isNullOrEmpty()) {
+            // 启动页已经选好了这台 Mac：直接连。token 过期（authFail）时连接设置照旧会带着 host 弹出来
+            getSharedPreferences("conn", MODE_PRIVATE).edit()
+                .putString("host", host).putString("token", token).apply()
+            connect(host, token)
+        } else {
+            showConnDialog()   // 未连接自动弹出
+        }
     }
 
     override fun onResume() {

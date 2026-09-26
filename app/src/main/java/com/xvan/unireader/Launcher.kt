@@ -17,14 +17,16 @@ import android.text.TextUtils
 import android.util.Log
 import android.view.Gravity
 import android.view.View
-import android.widget.ImageView
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.google.zxing.integration.android.IntentIntegrator
 import com.xvan.unireader.local.FileBrowser
 import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.StorageScan
 import com.xvan.unireader.local.Workspace
+import com.xvan.unireader.pad.KnownMacs
 import com.xvan.unireader.pad.PadActivity
 import com.xvan.unireader.shared.Bg
 import com.xvan.unireader.shared.PadPanels
@@ -58,6 +60,12 @@ class Launcher : Activity() {
     companion object {
         const val TAG = "UniReader/Launcher"
         const val REQ_STORAGE = 71
+        const val REQ_CAMERA = 72
+
+        /** 启动页两个标签页（记在本机 prefs，下次打开还是那一页） */
+        const val TAB_LOCAL = 0
+        const val TAB_MAC = 1
+        const val PREF_TAB = "tab"
 
         /** 扫描进度回主线程的最小间隔：一秒几百个目录，每个都 post 会把 looper 塞满 */
         const val TICK_MS = 120L
@@ -95,17 +103,105 @@ class Launcher : Activity() {
     // ---------- UI ----------
 
     /**
-     * 两种模式各是一张卡片：图标 + 标题 + 一句解释 + 主操作，而不是一串"小标题 + 灰字 + 灰按钮"。
-     * 两张卡等重——它们是并列的两条路，不该有一条看起来像附属功能。
+     * 启动页 = 顶部标题 + **两个标签页**（2026-09-26 用户定）：
+     *  · 「本机工作区」= 模式1：权限（没授权时才占一块）→ 打开 / 新建 / 扫描 → 最近打开 → 扫描到的；
+     *  · 「连接 Mac」= 模式2：连过的 Mac 一行一台、点一下直接连 → 扫码连接 / 手动输入地址。
+     * 从前两种模式是上下两张卡：模式2 那张只有一颗「进入输入板」，连哪台 Mac 要进去以后再在弹窗里选；
+     * 现在选 Mac 这一步挪到了启动页上，进输入板时已经在连了。
+     * 停在哪个标签页记在本机（[PREF_TAB]），下次打开还是那一页——平时只用一种模式的人不用每次切。
      */
     private fun buildUi() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Ui.surface(this@Launcher))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(12))
+            addView(Ui.title(this@Launcher, "UniReader", 28f))
+            addView(Ui.body(this@Launcher, getString(R.string.launcher_version, versionName()))
+                .apply { setPadding(0, dp(2), 0, dp(14)) })
+            addView(buildTabs(), LinearLayout.LayoutParams(-1, -2))
+        }
+        root.addView(header)
+
+        localPage = ScrollView(this).apply { addView(buildLocalPage()) }
+        macPage = ScrollView(this).apply { addView(buildMacPage()) }
+        val pages = FrameLayout(this).apply {
+            addView(localPage, FrameLayout.LayoutParams(-1, -1))
+            addView(macPage, FrameLayout.LayoutParams(-1, -1))
+        }
+        root.addView(pages, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        setContentView(root)
+        root.onSystemBarInsets { top, bottom -> root.setPadding(0, top, 0, bottom) }
+        selectTab(getPreferences(MODE_PRIVATE).getInt(PREF_TAB, TAB_LOCAL))
+        refresh()
+    }
+
+    // ---------- 标签页 ----------
+
+    private lateinit var localPage: ScrollView
+    private lateinit var macPage: ScrollView
+    private lateinit var tabLocal: TextView
+    private lateinit var tabMac: TextView
+    private var tab = TAB_LOCAL
+
+    /**
+     * 两段等宽的分段切换：外面一圈描边、选中那段铺 `accent_container`。扁平，没有投影和渐变。
+     * 图标 + 文字，两段一眼能分出是两种用法。
+     */
+    private fun buildTabs(): LinearLayout {
+        fun seg(icon: Int, label: String, which: Int) = TextView(this).apply {
+            text = label
+            textSize = 15f
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            minHeight = dp(Ui.TOUCH)
+            compoundDrawablePadding = dp(8)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                getDrawable(icon)?.mutate()?.apply { setBounds(0, 0, dp(20), dp(20)) }, null, null, null,
+            )
+            setOnClickListener { selectTab(which) }
+        }
+        tabLocal = seg(R.drawable.ic_folder, getString(R.string.launcher_tab_local), TAB_LOCAL)
+        tabMac = seg(R.drawable.ic_tablet, getString(R.string.launcher_tab_mac), TAB_MAC)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val p = dp(4)
+            setPadding(p, p, p, p)
+            background = Ui.round(Ui.surface(this@Launcher), 14, this@Launcher, Ui.outline(this@Launcher))
+            addView(tabLocal, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(tabMac, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) })
+        }
+    }
+
+    private fun selectTab(which: Int) {
+        tab = if (which == TAB_MAC) TAB_MAC else TAB_LOCAL
+        getPreferences(MODE_PRIVATE).edit().putInt(PREF_TAB, tab).apply()
+        localPage.visibility = if (tab == TAB_LOCAL) View.VISIBLE else View.GONE
+        macPage.visibility = if (tab == TAB_MAC) View.VISIBLE else View.GONE
+        for ((v, on) in listOf(tabLocal to (tab == TAB_LOCAL), tabMac to (tab == TAB_MAC))) {
+            val fg = if (on) Ui.accent(this) else Ui.onSurface(this)
+            v.setTextColor(fg)
+            v.compoundDrawablesRelative[0]?.setTint(if (on) fg else Ui.onVariant(this))
+            val face = if (on) Ui.round(Ui.col(this, R.color.accent_container), 10, this) else null
+            // 换背景一律保住 padding（`Ui.setBackgroundKeepPadding` 那条坑）
+            with(Ui) { v.setBackgroundKeepPadding(rippleOver(this@Launcher, face, 10, onSurface(this@Launcher))) }
+        }
+        if (tab == TAB_MAC) refreshMacs()
+    }
+
+    // ---------- 标签页 1：本机工作区（模式1） ----------
+
+    private fun buildLocalPage(): LinearLayout {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(28))
+            setPadding(dp(20), dp(8), dp(20), dp(28))
         }
-
-        col.addView(Ui.title(this, "UniReader", 30f))
-        col.addView(Ui.body(this, "版本 ${versionName()}").apply { setPadding(0, dp(4), 0, 0) })
+        col.addView(Ui.body(this, getString(R.string.launcher_local_desc)).apply { setPadding(0, 0, 0, dp(14)) })
 
         // —— 权限：没授权时才是一张显眼的卡，授权了就缩成一行小字 ——
         permText = Ui.body(this, "")
@@ -117,42 +213,21 @@ class Launcher : Activity() {
             addView(Ui.spacer(this@Launcher, 8))
             addView(permBtn)
         }
-        col.addView(Ui.spacer(this, 20))
         col.addView(permCard)
+        col.addView(Ui.spacer(this, 12))
 
-        // —— 模式1 ——
+        // 按钮一律走 [Ui.button]：Material 主题默认 `textAllCaps=true`，会把 `.unrd` 显示成 `.UNRD`
+        // ——而 `.unrd` 是要用户在文件夹名里认的后缀（自绘的 TextView 按钮不受影响，别改回 `Button`）。
+        col.addView(Ui.button(this, getString(R.string.launcher_local_open), filled = true) { onPickWorkspace() })
+        scanBtn = Ui.button(this, getString(R.string.launcher_local_scan)) { startScan(auto = false) }
+        newBtn = Ui.button(this, getString(R.string.launcher_local_new)) { onCreateWorkspace() }
+        col.addView(Ui.spacer(this, 8))
+        col.addView(sideBySide(newBtn, scanBtn))
+
         recentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scanBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scanBtn = Ui.button(this, "扫描") { startScan(auto = false) }
-        newBtn = Ui.button(this, "新建") { onCreateWorkspace() }
-        col.addView(Ui.spacer(this, 16))
-        col.addView(
-            modeCard(
-                R.drawable.ic_folder,
-                "打开工作区",
-                "不用连 Mac，直接读平板上的 .unrd。",
-                "选择 .unrd 文件夹…",
-            ) { onPickWorkspace() }.apply {
-                addView(Ui.spacer(this@Launcher, 8))
-                addView(sideBySide(newBtn, scanBtn))
-                addView(scanBox)
-                addView(recentBox)
-            },
-        )
-
-        // —— 模式2 ——
-        col.addView(Ui.spacer(this, 12))
-        col.addView(
-            modeCard(
-                R.drawable.ic_tablet,
-                "连 Mac 当输入板",
-                "平板只采集笔迹，真源在 Mac 上。",
-                "进入输入板",
-            ) {
-                Log.i(TAG, "进入模式2 输入板")
-                startActivity(Intent(this, PadActivity::class.java))
-            },
-        )
+        col.addView(recentBox)
+        col.addView(scanBox)
 
         // —— 单写者提醒（§9.2：工作区没有任何加锁/同步机制）——一行说完，细节点开才看 ——
         col.addView(Ui.spacer(this, 16))
@@ -166,46 +241,98 @@ class Launcher : Activity() {
                 )
             },
         )
-
-        val scroll = ScrollView(this).apply {
-            addView(col)
-            setBackgroundColor(Ui.surface(this@Launcher))
-        }
-        setContentView(scroll)
-        scroll.onSystemBarInsets { top, bottom -> scroll.setPadding(0, top, 0, bottom) }
-        refresh()
+        return col
     }
 
-    /**
-     * 一张模式卡：顶上一行「图标 + 标题」，一句解释，一个主操作按钮。
-     *
-     * 按钮一律走 [Ui.button]：Material 主题默认 `textAllCaps=true`，会把「选择 .unrd 文件夹…」
-     * 显示成「选择 .UNRD 文件夹…」——而 `.unrd` 是要用户在文件夹名里认的后缀，大写就对不上了。
-     * （自绘的 TextView 按钮不受那条影响，这里留个说明免得有人改回 `Button`。）
-     */
-    private fun modeCard(
-        icon: Int,
-        heading: String,
-        desc: String,
-        action: String,
-        onAction: () -> Unit,
-    ): LinearLayout = Ui.card(this, 18).apply {
-        addView(
-            LinearLayout(this@Launcher).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(
-                    ImageView(this@Launcher).apply {
-                        setImageResource(icon)
-                        imageTintList = ColorStateList.valueOf(Ui.accent(this@Launcher))
+    // ---------- 标签页 2：连接 Mac（模式2） ----------
+
+    private lateinit var macBox: LinearLayout
+
+    private fun buildMacPage(): LinearLayout {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(28))
+        }
+        col.addView(Ui.body(this, getString(R.string.launcher_mac_desc)).apply { setPadding(0, 0, 0, dp(14)) })
+        // 主操作 = 扫码（Mac 上的配对二维码带着 IP 和 token，扫一下就齐了）；手动输入是次要路径
+        col.addView(Ui.button(this, getString(R.string.launcher_mac_scan), filled = true) { startQrScan() })
+        col.addView(Ui.spacer(this, 8))
+        col.addView(Ui.button(this, getString(R.string.launcher_mac_manual)) {
+            Log.i(TAG, "进入模式2 输入板（手动输入地址）")
+            PadActivity.start(this)
+        })
+        macBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(macBox)
+        col.addView(Ui.spacer(this, 16))
+        col.addView(Ui.tip(this, getString(R.string.launcher_mac_tip)))
+        return col
+    }
+
+    /** 连过的 Mac：一行一台（名字 + IP），点一下直接进输入板开连；右侧垃圾桶移除 */
+    private fun refreshMacs() {
+        if (!::macBox.isInitialized) return
+        macBox.removeAllViews()
+        macBox.addView(Ui.sectionTitle(this, getString(R.string.launcher_mac_known)))
+        val known = KnownMacs.list(this)
+        if (known.isEmpty()) {
+            macBox.addView(Ui.body(this, getString(R.string.launcher_mac_none)))
+            return
+        }
+        for (e in known) {
+            macBox.addView(
+                twoLineRow(
+                    R.drawable.ic_monitor,
+                    Ui.accent(this),
+                    e.label,
+                    e.host,
+                    trailing = Ui.iconButton(
+                        this,
+                        R.drawable.ic_delete,
+                        getString(R.string.launcher_mac_remove),
+                        Ui.onVariant(this),
+                    ) {
+                        KnownMacs.forget(this, e.host)
+                        refreshMacs()
                     },
-                    LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(10) },
-                )
-                addView(Ui.title(this@Launcher, heading, 18f))
-            },
-        )
-        addView(Ui.body(this@Launcher, desc).apply { setPadding(0, dp(8), 0, dp(14)) })
-        addView(Ui.button(this@Launcher, action, filled = true, onClick = onAction))
+                ) {
+                    Log.i(TAG, "进入模式2 输入板：直连 ${e.host}")
+                    PadActivity.start(this, e.host, e.token)
+                },
+            )
+        }
+    }
+
+    private fun startQrScan() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+            return
+        }
+        IntentIntegrator(this).apply {
+            setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+            setPrompt(getString(R.string.launcher_mac_scan_prompt))
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        }.initiateScan()
+    }
+
+    @Deprecated("zxing IntentIntegrator 走传统 onActivityResult")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        val result = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (result == null) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val raw = result.contents ?: return   // 用户退出了扫码
+        // 二维码内容：http://<ip>:8770/?token=XXXX（同 PadActivity 里那条扫码路径）
+        val uri = Uri.parse(raw)
+        val host = uri.host
+        val token = uri.getQueryParameter("token")
+        if (host.isNullOrEmpty() || token.isNullOrEmpty()) {
+            alert(getString(R.string.launcher_mac_scan), getString(R.string.launcher_mac_scan_bad))
+            return
+        }
+        Log.i(TAG, "进入模式2 输入板：扫码直连 $host")
+        PadActivity.start(this, host, token)
     }
 
     /** 并排两个等宽的次要按钮（「新建」「扫描」）：竖着堆三颗按钮那张卡就成了按钮清单 */
@@ -242,7 +369,8 @@ class Launcher : Activity() {
         permText.setTextColor(if (ok) Ui.onVariant(this) else Ui.onSurface(this))
         scanBtn.visibility = if (ok) View.VISIBLE else View.GONE
         newBtn.visibility = if (ok) View.VISIBLE else View.GONE
-        scanBtn.text = if (Workspace.scanDone(this)) "重新扫描" else "扫描"
+        scanBtn.text = getString(if (Workspace.scanDone(this)) R.string.launcher_local_rescan else R.string.launcher_local_scan)
+        refreshMacs()   // 从输入板回来：刚连上的那台要出现在「连过的 Mac」里
         refreshRecents()
         refreshScan()
         maybeAutoScan(ok)
@@ -370,6 +498,9 @@ class Launcher : Activity() {
         if (requestCode == REQ_STORAGE) {
             Log.i(TAG, "存储权限结果：${grantResults.joinToString()}")
             refresh()
+        } else if (requestCode == REQ_CAMERA) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startQrScan()
+            else alert(getString(R.string.launcher_mac_scan), getString(R.string.launcher_mac_camera_denied))
         }
     }
 
@@ -522,7 +653,7 @@ class Launcher : Activity() {
                 Workspace.saveScanned(this, saved, markDone = full)
                 ui?.onDone(r)
                 refreshScan()
-                scanBtn.text = "重新扫描存储"
+                scanBtn.text = getString(R.string.launcher_local_rescan)
             },
             fail = { e ->
                 scanning = false
