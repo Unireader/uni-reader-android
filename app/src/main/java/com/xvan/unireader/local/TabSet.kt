@@ -24,6 +24,16 @@ object TabSet {
 
     const val TAG = "UniReader/Tabs"
 
+    /**
+     * 画板笔记标签的 docId 前缀（`../BOARD-NOTE-PLAN.md §5`）：标签页组里存 `board:<board_note.id>`，
+     * 与文档 id（UUID）天然不撞，存取格式一个字不用改。
+     */
+    const val BOARD_PREFIX = "board:"
+
+    fun isBoard(docId: String): Boolean = docId.startsWith(BOARD_PREFIX)
+    fun boardIdOf(docId: String): String = docId.removePrefix(BOARD_PREFIX)
+    fun boardKey(boardId: String): String = BOARD_PREFIX + boardId
+
     private const val PREFS = "tabs"
     private const val KEY_DOCS = "docs"
     private const val KEY_ACTIVE = "active"

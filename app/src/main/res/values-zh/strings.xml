@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 界面文案的中文版（英文在 values/strings.xml）。两份的 name 必须一一对应。 -->
+<resources>
+    <!-- 画板笔记（BOARD-NOTE-PLAN.md） -->
+    <string name="board_title">画板笔记</string>
+    <string name="board_group">画板笔记</string>
+    <string name="board_new">新建画板笔记</string>
+    <string name="board_untitled">未命名画板</string>
+    <string name="board_none">还没有画板笔记。</string>
+    <string name="board_list">画板笔记列表</string>
+    <string name="board_rename">改名…</string>
+    <string name="board_rename_title">重命名画板笔记</string>
+    <string name="board_name_hint">画板笔记名称</string>
+    <string name="board_delete">删除这篇画板笔记</string>
+    <string name="board_delete_confirm">删除《%1$s》？</string>
+    <string name="board_delete_msg">上面的全部笔迹和图片会一起删掉，这一步不可撤销。</string>
+    <string name="board_more">更多</string>
+    <string name="board_create_failed">建不了画板笔记</string>
+    <string name="board_create_failed_msg">工作区的库写不进去，可能是只读的存储。</string>
+    <string name="board_write_failed">画板笔记没能保存</string>
+    <string name="board_open_failed">打不开这篇画板笔记</string>
+    <string name="board_empty_hint">空白画板</string>
+    <string name="board_markdown_title">Mac 正在看 Markdown 笔记</string>
+    <string name="board_markdown_msg">在 Mac 上切到 PDF 或画板笔记，或者从顶栏选一篇画板笔记。</string>
+    <string name="board_items">%1$d 项内容</string>
+    <string name="common_cancel">取消</string>
+    <string name="common_save">保存</string>
+    <string name="common_delete">删除</string>
+    <string name="common_done">完成</string>
+</resources>

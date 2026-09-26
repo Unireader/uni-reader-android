@@ -175,6 +175,54 @@ data class ScratchPad(
     }
 }
 
+/**
+ * 一篇画板笔记（`board_note` 表，v16，`../BOARD-NOTE-PLAN.md §2`）：工作区里独立的无限白板，
+ * **不挂 document**。纸样两列与 [ScratchPad] 同语义。逐字对应 Mac `LibBoard`（时间戳存 ISO 串）。
+ * 列表 `ORDER BY COALESCE(last_opened_at, created_at) DESC`（照抄 Mac，最近打开的在前）。
+ */
+data class BoardNote(
+    val id: String,
+    /** 标题（空 = 界面兜底显示「未命名画板」） */
+    val title: String,
+    val bg: String,
+    val pattern: String,
+    /** 预留的一级分组（同 document.group_name），第一批界面不用，原样读写 */
+    val groupName: String,
+    val createdAt: String,
+    val updatedAt: String,
+    /** 最近打开（**不进离线镜像指纹**，打开不算改动——所以只动它时不碰 updated_at） */
+    val lastOpenedAt: String?,
+)
+
+/**
+ * 画板上的一条东西（`board_item` 表，v16）。[kind]：1 = 笔迹（payload 同草稿纸 kind=4 那份 JSON，
+ * **不写 padId**）、2 = 图片（payload `{image, caption, source}`）。x/y/w/h = 画布坐标包围盒。
+ */
+data class BoardItem(
+    val id: String,
+    val boardId: String,
+    val kind: Int,
+    val x: Double,
+    val y: Double,
+    val w: Double,
+    val h: Double,
+    val payload: ByteArray,
+    val createdAt: String,
+    val updatedAt: String,
+) {
+    companion object {
+        const val KIND_INK = 1
+        const val KIND_IMAGE = 2
+    }
+}
+
+/**
+ * 画板笔记（board_note / board_item）的新 id：**大写** UUID 串。
+ * Mac 读这两张表时把 id 解析成 `UUID` 再用 `uuidString`（大写）写回（`BoardModel.swift`）——
+ * 本端若写小写，Mac 那边改名/落笔时 `ON CONFLICT(id)` 对不上，会多出一行重复的画板或笔迹。
+ */
+fun newBoardId(): String = java.util.UUID.randomUUID().toString().uppercase()
+
 /** 一个笔迹图层（`ink_layer` 表，v7）。`colorKey` 是色板 key，不是 RGB——见 [Palette]。 */
 data class LibInkLayer(
     val id: String,

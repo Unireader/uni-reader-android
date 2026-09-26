@@ -11,6 +11,12 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.xvan.unireader.R
+import android.app.AlertDialog
+import com.xvan.unireader.local.store.BoardNote
+import com.xvan.unireader.local.store.Iso
+import com.xvan.unireader.local.store.ScratchPad
+import com.xvan.unireader.local.store.newBoardId
+import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.mirror.MirrorStore
 import com.xvan.unireader.local.mirror.MirrorUi
@@ -50,12 +56,16 @@ class LibraryActivity : Activity() {
 
     /** 一行要显示的全部东西，全在后台备好（主线程不再碰库） */
     private class Row(val doc: LibDocument, val ink: Int, val pdfOk: Boolean, val opened: Boolean)
+
+    /** 画板笔记一行（`../BOARD-NOTE-PLAN.md §5`）：[items] = 上面有几条东西（笔迹 + 图片） */
+    private class BoardRow(val board: BoardNote, val items: Int, val opened: Boolean)
     private class Snapshot(
         val name: String,
         val info: String,
         val rows: List<Row>,
         /** 这个工作区是不是离线副本（换角标、换「打不开」的文案、换右上那颗键的动作） */
         val isMirror: Boolean,
+        val boards: List<BoardRow>,
     )
 
     private lateinit var list: LinearLayout
@@ -166,9 +176,15 @@ class LibraryActivity : Activity() {
             val mirror = MirrorUi.isMirror(store)
             // 借出记录只在源盘那边有；一行足矣（「是信息不是锁」，方案 §5.2）
             val lent = MirrorStore.decodeCheckouts(store.meta(MirrorStore.META_CHECKOUTS)).size
+            // 画板笔记（只读连接：没有这两张表就是「还没有画板」，补建留给可写打开）
+            val counts = store.boardItemCounts()
+            val boards = store.boards().map { b ->
+                BoardRow(b, counts[b.id] ?: 0, TabSet.boardKey(b.id) in opened)
+            }
             Snapshot(
                 name = store.workspaceName().ifEmpty { ws.name },
                 isMirror = mirror,
+                boards = boards,
                 info = buildString {
                     append("${docs.size} 个文档")
                     if (opened.isNotEmpty()) append("　${opened.size} 个在标签页里")
@@ -214,6 +230,140 @@ class LibraryActivity : Activity() {
                 },
             )
         }
+        renderBoards(ws, snap.boards)
+    }
+
+    // ---------- 画板笔记（`../BOARD-NOTE-PLAN.md §5`） ----------
+
+    /** 书库页的「画板笔记」一组：每篇一行（点开 = 在阅读界面的标签页里打开）+「新建」 */
+    private fun renderBoards(ws: File, boards: List<BoardRow>) {
+        list.addView(Ui.groupTitle(this, getString(R.string.board_group), top = 24))
+        for ((i, r) in boards.withIndex()) {
+            if (i > 0) list.addView(Ui.divider(this))
+            list.addView(boardRow(ws, r))
+        }
+        list.addView(
+            PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.board_new)) { createBoard(ws) },
+        )
+    }
+
+    private fun boardName(b: BoardNote) = b.title.ifEmpty { getString(R.string.board_untitled) }
+
+    private fun boardRow(ws: File, r: BoardRow): View {
+        val col = Ui.row(this) { ReaderActivity.start(this, ws, TabSet.boardKey(r.board.id)) }
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        head.addView(
+            Ui.title(this, boardName(r.board), 17f).apply {
+                if (r.opened) setTextColor(Ui.accent(this@LibraryActivity))
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+        head.addView(
+            Ui.iconButton(this, R.drawable.ic_more, getString(R.string.board_more), Ui.onVariant(this)) {
+                showBoardMenu(ws, r.board)
+            },
+        )
+        col.addView(head)
+        col.addView(
+            Ui.body(
+                this,
+                buildString {
+                    append(getString(R.string.board_items, r.items))
+                    if (r.opened) append("　已在标签页里")
+                },
+            ).apply { textSize = 12f },
+        )
+        return col
+    }
+
+    /** 改名 / 删除（与阅读界面抽屉里那份同一套文案） */
+    private fun showBoardMenu(ws: File, b: BoardNote) {
+        var dlg: AlertDialog? = null
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_text, getString(R.string.board_rename)) {
+                dlg?.dismiss()
+                val edit = PadPanels.inputBox(this, getString(R.string.board_name_hint)).apply {
+                    setText(b.title)
+                    setSelection(text.length)
+                }
+                Sheet(this).title(getString(R.string.board_rename_title))
+                    .content(edit)
+                    .action(getString(R.string.common_cancel))
+                    .action(getString(R.string.common_save), primary = true) {
+                        val t = edit.text.toString().trim()
+                        if (t != b.title) {
+                            writeBoard(ws, "画板改名", body = { s ->
+                                s.upsertBoard(b.copy(title = t, updatedAt = Iso.now()))
+                            })
+                        }
+                    }
+                    .show()
+            },
+        )
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_delete, getString(R.string.board_delete), Ui.col(this, R.color.danger)) {
+                dlg?.dismiss()
+                Sheet(this)
+                    .title(getString(R.string.board_delete_confirm, boardName(b)))
+                    .subtitle(getString(R.string.board_delete_msg))
+                    .action(getString(R.string.common_cancel))
+                    .action(getString(R.string.common_delete), primary = true) {
+                        // 删 board_note 行，board_item 随外键 CASCADE 一起走（foreign_keys=ON 在 Db.open 里开着）
+                        writeBoard(ws, "删除画板", body = { s -> s.deleteBoard(b.id) })
+                    }
+                    .show()
+            },
+        )
+        dlg = Sheet(this).title(boardName(b)).content(col).action(getString(R.string.common_cancel)).show()
+    }
+
+    /** 新建一篇空画板，建好直接在阅读界面里打开 */
+    private fun createBoard(ws: File) {
+        val now = Iso.now()
+        val b = BoardNote(
+            id = newBoardId(), title = "", bg = ScratchPad.DEFAULT_BG, pattern = ScratchPad.DEFAULT_PATTERN,
+            groupName = "", createdAt = now, updatedAt = now, lastOpenedAt = now,
+        )
+        writeBoard(
+            ws, "新建画板",
+            body = { s ->
+                s.upsertBoard(b)
+                // 表补不上（卷只读）时 upsert 已经抛了；这里再核一次，别打开一篇不存在的画板
+                check(s.board(b.id) != null) { getString(R.string.board_create_failed_msg) }
+            },
+            failTitle = R.string.board_create_failed,
+            then = { ReaderActivity.start(this, ws, TabSet.boardKey(b.id)) },
+        )
+    }
+
+    /**
+     * 画板的写：开一条**可写**连接（打开时顺带补建两张表，见 `LibraryStore.open`）→ 写 → 关，全在后台。
+     * 列书单那条是只读连接写不了；与「添加 PDF」那条同一个道理，只是这里一次一写、用完即关。
+     * 写成功才调 [then]；失败弹一句（原因在正文）。
+     */
+    private fun writeBoard(
+        ws: File,
+        what: String,
+        body: (LibraryStore) -> Unit,
+        failTitle: Int = R.string.board_write_failed,
+        then: (() -> Unit)? = null,
+    ) {
+        runInBackground(
+            what = what,
+            work = { LibraryStore.open(ws, readOnly = false).use { body(it) } },
+            ok = {
+                then?.invoke()
+                reload()
+            },
+            fail = {
+                alert(getString(failTitle), it.message ?: getString(R.string.board_create_failed_msg))
+                reload()
+            },
+        )
     }
 
     /**

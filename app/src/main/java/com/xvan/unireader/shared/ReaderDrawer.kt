@@ -69,6 +69,16 @@ class ReaderDrawer(private val a: Activity) {
     var onRenameBookmark: (String, String) -> Unit = { _, _ -> }
     var onDeleteBookmark: (String) -> Unit = {}
 
+    // —— 画板笔记（`../BOARD-NOTE-PLAN.md §5`）：书库页的第二组。**[setBoards] 没被调过 = 整组不显示**
+    // （模式2 的画板入口在顶栏 ⋯，不在这里）。[LibItem.id] 是画板 id，[LibItem.open] = 已在标签页里。
+    private var boards: List<LibItem>? = null
+
+    /** 点一篇画板：画板 id */
+    var onOpenBoard: (String) -> Unit = {}
+    var onAddBoard: () -> Unit = {}
+    /** 画板那一行右侧的「更多」（改名 / 删除，由宿主弹） */
+    var onBoardMore: (String) -> Unit = {}
+
     private val tocTab = tabButton("目录", R.drawable.ic_list) { switchTo(TAB_TOC) }
     private val libTab = tabButton("书库", R.drawable.ic_book) { switchTo(TAB_LIB) }
 
@@ -166,6 +176,12 @@ class ReaderDrawer(private val a: Activity) {
         wsName = ws
         lib = list
         Log.i(TAG, "收到书库 ${list.size} 条，工作区「$ws」")
+        if (isOpen && tab == TAB_LIB) rebuild()
+    }
+
+    /** 画板笔记一组（null = 不显示这一组） */
+    fun setBoards(list: List<LibItem>?) {
+        boards = list
         if (isOpen && tab == TAB_LIB) rebuild()
     }
 
@@ -438,31 +454,65 @@ class ReaderDrawer(private val a: Activity) {
         if (wsName.isNotEmpty()) bodyBox.addView(Ui.groupTitle(a, wsName, top = 4))
         if (lib.isEmpty()) {
             bodyBox.addView(Ui.body(a, "工作区里还没有文档"))
-            return
         }
-        for (d in lib) {
-            val badge = if (!d.open) {
-                null
-            } else {
-                TextView(a).apply {
-                    text = "已打开"
-                    textSize = 11f
-                    setTextColor(Ui.accent(a))
-                    setPadding(a.dp(7), a.dp(1), a.dp(7), a.dp(1))
-                    background = Ui.round(Ui.col(a, R.color.accent_container), Ui.PILL, a)
-                }
-            }
-            bodyBox.addView(libRow(d, badge))
+        for (d in lib) bodyBox.addView(libRow(d, openBadge(d.open)))
+        buildBoards()
+    }
+
+    /** 「已打开」小标（文档与画板两组共用） */
+    private fun openBadge(open: Boolean): View? = if (!open) {
+        null
+    } else {
+        TextView(a).apply {
+            text = "已打开"
+            textSize = 11f
+            setTextColor(Ui.accent(a))
+            setPadding(a.dp(7), a.dp(1), a.dp(7), a.dp(1))
+            background = Ui.round(Ui.col(a, R.color.accent_container), Ui.PILL, a)
         }
     }
 
-    private fun libRow(d: LibItem, badge: View?): LinearLayout = LinearLayout(a).apply {
+    /** 画板笔记一组：每篇一行（点开 / 右侧「更多」改名删除）+ 末尾「新建」 */
+    private fun buildBoards() {
+        val list = boards ?: return
+        bodyBox.addView(Ui.groupTitle(a, a.getString(R.string.board_group)))
+        for (b in list) {
+            val trailing = LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                openBadge(b.open)?.let { addView(it) }
+                addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.board_more), Ui.onVariant(a)) {
+                    onBoardMore(b.id)
+                })
+            }
+            bodyBox.addView(
+                libRow(b, trailing, R.drawable.ic_scratch) {
+                    onOpenBoard(b.id)
+                    close()
+                },
+            )
+        }
+        bodyBox.addView(
+            PadPanels.iconRow(a, R.drawable.ic_plus, a.getString(R.string.board_new)) {
+                close()
+                onAddBoard()
+            },
+        )
+    }
+
+    private fun libRow(
+        d: LibItem,
+        badge: View?,
+        icon: Int = R.drawable.ic_doc,
+        onClick: (() -> Unit)? = null,
+    ): LinearLayout = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         isClickable = true
         background = Ui.rippleOver(a, null, Ui.RADIUS, Ui.onSurface(a))
         setPadding(a.dp(8), a.dp(12), a.dp(8), a.dp(12))
         setOnClickListener {
+            if (onClick != null) { onClick(); return@setOnClickListener }
             // 已打开的也照发：两模式的接收端都会自己识别并切过去，而不是重复开一份
             // （模式2 = Mac `openPadDoc`，见 `../PROTOCOL.md §4.1`；模式1 = `openDoc` 切到那个标签页）
             onOpenDoc(d.id)
@@ -470,7 +520,7 @@ class ReaderDrawer(private val a: Activity) {
         }
         addView(
             ImageView(a).apply {
-                setImageResource(R.drawable.ic_doc)
+                setImageResource(icon)
                 imageTintList = ColorStateList.valueOf(Ui.onVariant(a))
             },
             LinearLayout.LayoutParams(a.dp(20), a.dp(20)).apply { marginEnd = a.dp(12) },

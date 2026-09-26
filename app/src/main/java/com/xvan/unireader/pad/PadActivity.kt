@@ -206,6 +206,22 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 草稿纸（模式2 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板；真源在 Mac，这里只发请求 */
     private lateinit var scratch: PadScratch
 
+    // —— 画板笔记（`../PROTOCOL.md §4.8`）：Mac 的 `boards` 全量镜像 ——
+    /** 被跟随会话是什么：0 = PDF（或空标签）、1 = Markdown 笔记、2 = 画板笔记 */
+    private var boardKind = WireCodec.BOARD_KIND_PDF
+
+    /** kind=2 时是哪一篇 */
+    private var boardCurrent = ""
+
+    /** 当前工作区的全部画板笔记（Mac 按最近打开排好序、标题已兜底） */
+    private var boards = listOf<WireCodec.BoardEntry>()
+
+    /** 画板图片来源（按 host 建，连哪台 Mac 取哪台的图） */
+    private var boardImages: BoardImageFetcher? = null
+
+    /** 「Mac 正在看 Markdown 笔记」的空状态（kind=1 时盖住页面视图，不停在上一篇 PDF 上） */
+    private lateinit var mdEmpty: LinearLayout
+
     // —— 量化指标（rtt/e2e/nackRTT/mv-s，照 udp-pad-sim.py refresh）——
     private var rtt = -1.0
     private var e2e = -1.0
@@ -319,6 +335,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             it.topMargin = top + dp(10)
             scratch.barView.layoutParams = it
         }
+        (mdEmpty.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = top
+            mdEmpty.layoutParams = it
+        }
     }
 
     /** 图层面板（真源在 Mac：这里发的都是「请求」，权威状态等 Mac 广播回来） */
@@ -379,6 +399,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 纸上那页多半刚刚看过、直接命中），页纵横比取 layout 下发的页尺寸表
             pageSource = padView.imageSource
             pageAspect = { i -> padView.pageAspect(i) }
+            // 画板会话里浮条最左那颗键 = 画板笔记列表（同 ⋯ 里那一项）
+            onBoardList = { showBoardList() }
             // 工具快照现取阅读画布：纸开着时改笔/改橡皮/切尺子即时生效（尺子走 45° 吸附，同页内）
             toolsProvider = {
                 ScratchCanvas.Tools(
@@ -453,6 +475,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             }
             overflowItems = {
                 listOf(
+                    // 画板笔记：列出 Mac 这个工作区的画板（点一篇 = boardOpen）+ 新建（boardAdd）。
+                    // 放在 ⋯ 的第一项：PDF / Markdown / 画板三种会话下都要能进（§4.8）
+                    TopBar.MenuItem(getString(R.string.board_title) + "…") { showBoardList() },
                     TopBar.MenuItem("夜间模式", padView.night) { padView.toggleNight() },
                     TopBar.MenuItem("显示页面图", padView.showPage) { padView.toggleShowPage() },
                     // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
@@ -547,8 +572,30 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
         topbar.addView(tabsBar.view, LinearLayout.LayoutParams(-1, -2))
 
+        // Markdown 笔记的空状态：Mac 不会为 md 标签发 layout，不盖一层的话会停在上一篇 PDF 上（§4.8）
+        mdEmpty = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Ui.col(this@PadActivity, R.color.surface_dim))
+            isClickable = true   // 吃掉触摸：下面那块页面视图是上一篇的，别还能往上写
+            visibility = View.GONE
+            setPadding(dp(24), 0, dp(24), 0)
+            addView(
+                Ui.title(this@PadActivity, getString(R.string.board_markdown_title), 18f).apply {
+                    gravity = Gravity.CENTER
+                },
+            )
+            addView(
+                Ui.body(this@PadActivity, getString(R.string.board_markdown_msg)).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(8), 0, 0)
+                },
+            )
+        }
+
         val root = FrameLayout(this).apply {
             addView(padView, FrameLayout.LayoutParams(-1, -1))
+            addView(mdEmpty, FrameLayout.LayoutParams(-1, -1))
             // 草稿纸覆盖层：在顶栏**之下**（topMargin 让开顶栏那条带子——handoff §7.1 的白压白坑，
             // applyScratchMargin 负责），在页面画布之上（纸开着时吃掉全部指针事件，PDF 上一笔都
             // 落不下——这是这个功能的定义；probe/环形盘也因此天然不会在纸上触发）
@@ -609,7 +656,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (drawer.isOpen) { drawer.close(); return }
-        if (scratch.isOpen) { scratch.requestClose(); return }
+        // 画板会话里那张「纸」关不掉（§4.8）：返回键照常走
+        if (scratch.isOpen && !scratch.boardMode) { scratch.requestClose(); return }
         @Suppress("DEPRECATION")
         super.onBackPressed()
     }
@@ -893,6 +941,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             pageDisk = PageDiskCache(java.io.File(cacheDir, "pageimg"), PAGE_DISK_BYTES)
         }
         fetcher = PageFetcher(host, pageDisk, PageWidths.cacheBytes(this))
+        // 画板图片：按 host 取（换了 Mac 就换一份缓存——sha 虽不会串，但那台 Mac 未必有这张图）
+        boardImages = BoardImageFetcher(host).also { scratch.canvas.picSource = it }
         docV = ""
         client = MacClient(host, token, this)
         setDot(false)
@@ -1233,6 +1283,80 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
         // ackRel 判据与页内 strokes 完全同款（PadScratch.applyStrokes 里）
         scratch.applyStrokes(ackRel, list, udp?.sentRel ?: 0L)
+    }
+
+    /**
+     * 收 `boards`（`../PROTOCOL.md §4.8`）：被跟随会话的类型 + 画板列表。
+     * - kind=2：整屏是草稿纸画布（笔迹走 scratchpads/scratchStrokes，画板那张纸永远开着），页面视图藏起来；
+     * - kind=1：显示「Mac 正在看 Markdown 笔记」，不停在上一篇 PDF 上；
+     * - kind=0：一切照旧。
+     */
+    override fun onBoards(kind: Int, current: String, list: List<WireCodec.BoardEntry>) = runOnUiThread {
+        boardKind = kind
+        boardCurrent = current
+        boards = list
+        scratch.boardMode = kind == WireCodec.BOARD_KIND_BOARD
+        scratch.boardTitle = list.firstOrNull { it.id == current }?.title
+        applyBoardSurface()
+        refresh()
+    }
+
+    /** 当前画板上的图（全量镜像；不是画板会话时 Mac 发空表，据此清掉） */
+    override fun onBoardImages(list: List<WireCodec.BoardImageEntry>) = runOnUiThread {
+        scratch.applyBoardImages(list)
+    }
+
+    /** 按会话类型摆页面视图 / Markdown 空状态 / 顶栏上只对 PDF 有意义的几颗键 */
+    private fun applyBoardSurface() {
+        val pdf = boardKind == WireCodec.BOARD_KIND_PDF
+        // INVISIBLE 而不是 GONE：保留布局与几何，切回 PDF 时不用重新量一遍
+        padView.visibility = if (pdf) View.VISIBLE else View.INVISIBLE
+        mdEmpty.visibility = if (boardKind == WireCodec.BOARD_KIND_MARKDOWN) View.VISIBLE else View.GONE
+        if (!pdf) padView.clearTransient()   // 盘 / 环留在藏起来的页面上没有意义
+        // 翻页 / 草稿纸 / 画板模式都是「PDF 页面」上的事，画板与 Markdown 会话里收起来
+        for (k in arrayOf("prev", "next", "scratch", "canvas")) bar.setVisible(k, pdf)
+    }
+
+    /**
+     * 画板笔记列表：点一篇 = `boardOpen`（Mac 在被跟随的窗口里打开/切过去），「新建」= `boardAdd`。
+     * 两个都只是请求，Mac 开好之后照常回推 boards / scratchpads / scratchStrokes / boardImages。
+     */
+    private fun showBoardList() {
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        var dlg: AlertDialog? = null
+        val sheet = Sheet(this).title(getString(R.string.board_title))
+        if (boards.isEmpty()) sheet.subtitle(getString(R.string.board_none))
+        for (b in boards) {
+            val cur = boardKind == WireCodec.BOARD_KIND_BOARD && b.id == boardCurrent
+            list.addView(
+                PadPanels.iconRow(
+                    this, R.drawable.ic_scratch, b.title,
+                    if (cur) Ui.accent(this) else Ui.onSurface(this),
+                    trailing = if (!cur) {
+                        null
+                    } else {
+                        ImageView(this).apply {
+                            setImageResource(R.drawable.ic_check)
+                            imageTintList = ColorStateList.valueOf(Ui.accent(this@PadActivity))
+                            layoutParams = LinearLayout.LayoutParams(dp(18), dp(18))
+                        }
+                    },
+                ) {
+                    dlg?.dismiss()
+                    if (!cur) client?.send(WireCodec.encodeBoardOpen(b.id))
+                },
+            )
+        }
+        if (boards.isNotEmpty()) list.addView(Ui.divider(this))
+        list.addView(
+            PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.board_new)) {
+                dlg?.dismiss()
+                client?.send(WireCodec.encodeBoardAdd())
+            },
+        )
+        sheet.content(list)
+        sheet.action(getString(R.string.common_cancel))
+        dlg = sheet.show()
     }
 
     /**

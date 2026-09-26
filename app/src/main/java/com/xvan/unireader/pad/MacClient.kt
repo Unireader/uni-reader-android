@@ -69,6 +69,10 @@ class MacClient(
         fun onNoteNew(page: Long, nx: Float, ny: Float)
         /** 当前打开那张纸的全量笔迹镜像（无 page 字段，pts 是画布坐标）；ackRel 语义同 onStrokes */
         fun onScratchStrokes(ackRel: Long, list: List<Stroke>)
+        /** 画板笔记列表 + 被跟随会话的类型（kind 0=PDF 1=Markdown 2=画板，`../PROTOCOL.md §4.8`） */
+        fun onBoards(kind: Int, current: String, list: List<WireCodec.BoardEntry>)
+        /** 当前画板上的图（不是画板会话时是空表） */
+        fun onBoardImages(list: List<WireCodec.BoardImageEntry>)
         /** 连接断开（含自动重连中的每一次失败）；msg 供顶栏显示 */
         fun onDisconnected(msg: String)
     }
@@ -157,6 +161,8 @@ class MacClient(
             is WireCodec.Msg.ScratchPads -> cb.onScratchPads(m.open, m.list)
             is WireCodec.Msg.NoteNew -> cb.onNoteNew(m.page, m.nx, m.ny)
             is WireCodec.Msg.ScratchStrokes -> cb.onScratchStrokes(m.ackRel, m.list)
+            is WireCodec.Msg.Boards -> cb.onBoards(m.kind, m.current, m.list)
+            is WireCodec.Msg.BoardImages -> cb.onBoardImages(m.list)
             else -> {}   // page 等不消费的消息忽略
         }
     }

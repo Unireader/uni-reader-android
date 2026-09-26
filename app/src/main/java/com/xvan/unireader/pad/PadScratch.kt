@@ -129,7 +129,8 @@ class PadScratch(private val a: Activity) {
             barView.visibility = View.VISIBLE
         }
         onPinsChanged?.invoke(
-            list.mapIndexed { i, p -> PadView.ScratchPin(i, p.page.toInt(), p.nx, p.ny) },
+            if (boardMode) emptyList()
+            else list.mapIndexed { i, p -> PadView.ScratchPin(i, p.page.toInt(), p.nx, p.ny) },
         )
         updateBar()
         onOpenChanged?.invoke()
@@ -185,6 +186,51 @@ class PadScratch(private val a: Activity) {
     private val barZoom: TextView
     private val mapBtn: ImageButton
     private val pageBtn: ImageButton
+    private val listBtn: ImageButton
+    private val closeBtn: ImageButton
+
+    // ---------- 画板笔记（v16，`../PROTOCOL.md §4.8`） ----------
+    //
+    // 被跟随会话是画板标签时，Mac 把它当成「一张永远开着的草稿纸」发过来（open=0、list 只有这一张），
+    // 笔迹 / 橡皮 / 纸样 / 改名的线路一个字节没变。本端要做的只是**把草稿纸特有的那几样收起来**：
+    // 关闭、页面底图、其它草稿纸、删除都没有（画板不能关、没有锚点、删画板只在 Mac 侧栏做），
+    // Mac 也会把这几种请求整帧丢掉。
+
+    /** 当前是不是画板会话（宿主按 `boards.kind == 2` 设） */
+    var boardMode = false
+        set(v) {
+            if (field == v) return
+            field = v
+            applyBoardMode()
+        }
+
+    /** 画板的显示名（宿主从 `boards.list` 里按 current 取，Mac 已兜底；null = 还没收到） */
+    var boardTitle: String? = null
+        set(v) {
+            field = v
+            updateBar()
+        }
+
+    /** 画板会话里工具条最左那颗键：打开画板笔记列表（宿主接） */
+    var onBoardList: (() -> Unit)? = null
+
+    /** 画板上的图（`boardImages`）交给画布；来源由宿主注入 [ScratchCanvas.picSource] */
+    fun applyBoardImages(list: List<WireCodec.BoardImageEntry>) {
+        canvas.setPics(list.map { ScratchCanvas.BoardPic(it.id, it.sha, it.x, it.y, it.w, it.h) })
+    }
+
+    private fun applyBoardMode() {
+        val gone = if (boardMode) View.GONE else View.VISIBLE
+        pageBtn.visibility = gone
+        closeBtn.visibility = gone
+        listBtn.contentDescription = if (boardMode) a.getString(R.string.board_list) else "草稿纸列表"
+        canvas.emptyHintTitle = if (boardMode) a.getString(R.string.board_empty_hint) else null
+        canvas.invalidate()
+        // 图钉：画板会话里那张「纸」没有锚点，别在（藏在底下的）PDF 页面上插一枚
+        if (boardMode) onPinsChanged?.invoke(emptyList())
+        else onPinsChanged?.invoke(pads.mapIndexed { i, p -> PadView.ScratchPin(i, p.page.toInt(), p.nx, p.ny) })
+        updateBar()
+    }
 
     private val flusher = object : Runnable {
         override fun run() {
@@ -267,7 +313,11 @@ class PadScratch(private val a: Activity) {
             setPadding(Ui.dp(a, 6), h, Ui.dp(a, 6), h)
         }
         val on = Ui.onSurface(a)
-        row.addView(Ui.iconButton(a, R.drawable.ic_list, "草稿纸列表", on) { showList() })
+        // 画板会话里这颗键换成「画板笔记列表」（草稿纸列表在画板里没有意义）
+        listBtn = Ui.iconButton(a, R.drawable.ic_list, "草稿纸列表", on) {
+            if (boardMode) onBoardList?.invoke() else showList()
+        }
+        row.addView(listBtn)
         barName = Ui.title(a, "", 14f).apply {
             maxLines = 1
             setPadding(Ui.dp(a, 4), 0, Ui.dp(a, 4), 0)
@@ -290,7 +340,8 @@ class PadScratch(private val a: Activity) {
         }
         row.addView(barZoom)
         // 关纸 = 发 scratchOpen(-1) 请求，等 Mac 回推 scratchpads 才真的收（本地不自作主张）
-        row.addView(Ui.iconButton(a, R.drawable.ic_close, "关闭草稿纸", on) { requestClose() })
+        closeBtn = Ui.iconButton(a, R.drawable.ic_close, "关闭草稿纸", on) { requestClose() }
+        row.addView(closeBtn)
         barView = row
         barView.visibility = View.GONE
     }
@@ -307,6 +358,7 @@ class PadScratch(private val a: Activity) {
     }
 
     fun requestClose() {
+        if (boardMode) return   // 画板不能关（Mac 也会丢这一帧，§4.8）
         sendCtl?.invoke(WireCodec.encodeScratchOpen(-1))
     }
 
@@ -363,6 +415,8 @@ class PadScratch(private val a: Activity) {
     // ---------- 列表（顶栏入口 / 工具条最左图标） ----------
 
     private fun displayName(p: WireCodec.ScratchPadEntry): String {
+        // 画板会话：标题一律取 boards.list 里已兜底的显示名（scratchpads 里那份可能是空串，§4.8）
+        if (boardMode) return boardTitle ?: p.title.ifEmpty { a.getString(R.string.board_untitled) }
         val i = pads.indexOfFirst { it.id == p.id }
         return p.title.ifEmpty { "草稿纸 ${i + 1}" }
     }
@@ -463,24 +517,42 @@ class PadScratch(private val a: Activity) {
         // 管理（v10 起线上有 scratchRename/scratchDelete 了，与模式1 的面板一字排开）
         root.addView(Ui.groupTitle(a, "管理"))
         root.addView(
-            PadPanels.iconRow(a, R.drawable.ic_text, "改名…") {
+            PadPanels.iconRow(a, R.drawable.ic_text, if (boardMode) a.getString(R.string.board_rename) else "改名…") {
                 dlg?.dismiss()
                 showRename(index, entry)
             },
         )
-        root.addView(
-            PadPanels.iconRow(a, R.drawable.ic_delete, "删除这张草稿纸", Ui.col(a, R.color.danger)) {
-                dlg?.dismiss()
-                confirmDelete(index, entry)
-            },
-        )
+        // 画板会话里没有「删除」：删画板只在 Mac 侧栏做（§4.8，Mac 也会丢 scratchDelete）
+        if (!boardMode) {
+            root.addView(
+                PadPanels.iconRow(a, R.drawable.ic_delete, "删除这张草稿纸", Ui.col(a, R.color.danger)) {
+                    dlg?.dismiss()
+                    confirmDelete(index, entry)
+                },
+            )
+        }
 
         sheet.content(root)
-        sheet.action("完成", primary = true)
+        sheet.action(if (boardMode) a.getString(R.string.common_done) else "完成", primary = true)
         dlg = sheet.show()
     }
 
     private fun showRename(index: Int, entry: WireCodec.ScratchPadEntry) {
+        if (boardMode) {
+            // 画板：改的是这篇画板笔记的名字（scratchRename index=0，Mac 落到 board_note，§4.8）
+            val edit = PadPanels.inputBox(a, a.getString(R.string.board_name_hint)).apply {
+                setText(entry.title)
+                setSelection(text.length)
+            }
+            Sheet(a).title(a.getString(R.string.board_rename_title))
+                .content(edit)
+                .action(a.getString(R.string.common_cancel))
+                .action(a.getString(R.string.common_save), primary = true) {
+                    requestRename(0, edit.text.toString().trim())
+                }
+                .show()
+            return
+        }
         val edit = PadPanels.inputBox(a, "草稿纸名字").apply {
             setText(entry.title)
             setSelection(text.length)

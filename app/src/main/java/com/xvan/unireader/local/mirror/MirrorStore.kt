@@ -165,6 +165,8 @@ object MirrorStore {
      * `schema_version`/`open_documents`/`mirror_*` 这些进了基线，同步时就会互相覆盖对方的本机状态。
      */
     fun fingerprints(db: Db, spec: MirrorFp.TableSpec): Map<String, String> {
+        // 表不存在（v16 画板两张在老库里可能还没有）= 这张表没有行，别让 SELECT 炸掉整次建镜像 / 合并
+        if (!hasTable(db, spec.table)) return emptyMap()
         var rows = db.query("SELECT * FROM ${spec.table}") { readRow(it) }
         if (spec.table == "meta") {
             rows = rows.filter { (it["key"] as? String) in MirrorFp.syncedMetaKeys }
@@ -191,6 +193,11 @@ object MirrorStore {
     fun snapshot(db: Db): MirrorSnapshot {
         val out = LinkedHashMap<String, Map<String, Map<String, Any?>>>()
         for (spec in MirrorFp.specs) {
+            // 表不存在（老库还没有画板两张表）→ 当空表；否则整次干跑 / 合并都会因为一条 SELECT 失败
+            if (!hasTable(db, spec.table)) {
+                out[spec.table] = emptyMap()
+                continue
+            }
             var rows = db.query("SELECT * FROM ${spec.table}") { readRow(it) }
             if (spec.table == "meta") {
                 rows = rows.filter { (it["key"] as? String) in MirrorFp.syncedMetaKeys }
@@ -284,6 +291,11 @@ object MirrorStore {
         }
         return out
     }
+
+    /** 库里有没有这张表（`sqlite_master` 探一次；PRAGMA/SELECT 对不存在的表行为不一，统一走这里） */
+    fun hasTable(db: Db, name: String): Boolean =
+        db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name)) { it.getString(0) }
+            .isNotEmpty()
 
     fun hasSyncBase(db: Db): Boolean =
         db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_base'") { it.getString(0) }

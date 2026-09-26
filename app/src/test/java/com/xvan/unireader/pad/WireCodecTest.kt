@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 90 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 102 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -162,6 +162,9 @@ class WireCodecTest {
             ),
             94 to WireCodec.encodeClip(WireCodec.CLIP_CUT, 0, 0f, 0f),
             95 to WireCodec.encodeClip(WireCodec.CLIP_PASTE, 41, 0.25f, 0.75f),
+            // #99~#100 画板笔记（v16）：boardOpen{id:"B-2"} / boardAdd
+            99 to WireCodec.encodeBoardOpen("B-2"),
+            100 to WireCodec.encodeBoardAdd(),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -474,10 +477,45 @@ class WireCodecTest {
         assertEquals(VECTORS[83], hex(WireCodec.encodeCanvas(true)))
     }
 
+    @Test
+    fun decodeBoards() {
+        // #96 boards{kind:0, current:"", list:[]}
+        val b0 = WireCodec.decode(unhex(VECTORS[95])) as WireCodec.Msg.Boards
+        assertEquals(WireCodec.BOARD_KIND_PDF, b0.kind)
+        assertEquals("", b0.current)
+        assertTrue(b0.list.isEmpty())
+
+        // #97 boards{kind:2, current:"B-1", list:[{B-1,极限草稿},{B-2,Untitled}]}
+        val b2 = WireCodec.decode(unhex(VECTORS[96])) as WireCodec.Msg.Boards
+        assertEquals(WireCodec.BOARD_KIND_BOARD, b2.kind)
+        assertEquals("B-1", b2.current)
+        assertEquals(
+            listOf(WireCodec.BoardEntry("B-1", "极限草稿"), WireCodec.BoardEntry("B-2", "Untitled")),
+            b2.list,
+        )
+
+        // #98 boards{kind:1, current:"", list:[{B-1,极限草稿}]}
+        val b1 = WireCodec.decode(unhex(VECTORS[97])) as WireCodec.Msg.Boards
+        assertEquals(WireCodec.BOARD_KIND_MARKDOWN, b1.kind)
+        assertEquals("", b1.current)
+        assertEquals(listOf(WireCodec.BoardEntry("B-1", "极限草稿")), b1.list)
+
+        // #101 boardImages{list:[]}
+        val i0 = WireCodec.decode(unhex(VECTORS[100])) as WireCodec.Msg.BoardImages
+        assertTrue(i0.list.isEmpty())
+
+        // #102 boardImages{list:[{I1, abcdef, -120.5, 40.25, 400, 300}]}
+        val i1 = WireCodec.decode(unhex(VECTORS[101])) as WireCodec.Msg.BoardImages
+        assertEquals(
+            listOf(WireCodec.BoardImageEntry("I1", "abcdef", -120.5f, 40.25f, 400f, 300f)),
+            i1.list,
+        )
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(95, VECTORS.size)
+        assertEquals(102, VECTORS.size)
     }
 
     @Test
@@ -490,7 +528,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 90 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 102 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -596,6 +634,15 @@ class WireCodecTest {
             "51000300000000000000000000000300cdcccc3dcdcc4c3e9a99993ecdcccc3e0000003f9a99193f",
             "5101000000000000000000000000",
             "5102290000000000803e0000403f",
+            // #96~#102 画板笔记（v16，`../PROTOCOL.md §4.8`）：boards(0x52) 三态 / boardOpen(0x53) /
+            // boardAdd(0x54) / boardImages(0x55) 空表 / 一张
+            "520000000000",
+            "52020300422d3102000300422d310c00e69e81e99990e88d89e7a8bf0300422d320800556e7469746c6564",
+            "5201000001000300422d310c00e69e81e99990e88d89e7a8bf",
+            "530300422d32",
+            "54",
+            "550000",
+            "5501000200493106006162636465660000f1c2000021420000c84300009643",
         )
     }
 }

@@ -112,6 +112,30 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
+        // ⚠️ Mac 在 scratch_pad 与画板两张之间还有一张 `md_doc`（v15，Markdown 笔记的元数据行）——
+        // 本端没有 Markdown 笔记，**刻意没加**那一张（它的正文文件本端也不复制）；各表的指纹互不相干，
+        // 少一张表不影响其余表两端对得上，只是那张表的改动不经本端同步。
+        //
+        // v16：画板笔记（`../BOARD-NOTE-PLAN.md §6`）。父表在前（`board_item.board_id` 指向它），两张都按
+        // `updated_at` 取新；`board_item` 一条一行，两边各加的笔迹 / 图自然并起来。
+        // `last_opened_at` 同 `document`：刻意不进指纹（翻开过一次就满屏「改过」）。列顺序与 Mac 逐字一致。
+        TableSpec(
+            "board_note", "id",
+            listOf(
+                t("id"), t("title"), t("bg"), t("pattern"),
+                t("group_name"), t("created_at"), t("updated_at"),
+            ),
+            lww = "updated_at",
+        ),
+        TableSpec(
+            "board_item", "id",
+            listOf(
+                t("id"), t("board_id"), i("kind"),
+                r("x"), r("y"), r("w"), r("h"),
+                b("payload"), t("created_at"), t("updated_at"),
+            ),
+            lww = "updated_at",
+        ),
         TableSpec("meta", "key", listOf(t("key"), t("value"))),
     )
 

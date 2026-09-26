@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 27 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 29 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -88,6 +88,21 @@ class MirrorFpTest {
     )
     private val metaRow: Map<String, Any?> = mapOf("key" to "workspace_name", "value" to "考研")
 
+    // v16 画板笔记（与 spike/mirror-fp-test.swift 的 boardRow / boardItemRow 逐字段一致）
+    private val boardRow: Map<String, Any?> = mapOf(
+        "id" to "66666666-6666-4666-8666-666666666666", "title" to "极限草稿",
+        "bg" to "rgba(252,247,235,1.0)", "pattern" to "grid", "group_name" to "",
+        "created_at" to "2026-09-24T09:00:00Z", "updated_at" to "2026-09-24T09:30:00Z",
+        "last_opened_at" to "2026-09-24T10:00:00Z",
+    )
+    private val boardItemRow: Map<String, Any?> = mapOf(
+        "id" to "77777777-7777-4777-8777-777777777777",
+        "board_id" to "66666666-6666-4666-8666-666666666666",
+        "kind" to 1L, "x" to -120.5, "y" to 40.25, "w" to 300.0, "h" to 88.0,
+        "payload" to """{"width":2}""".toByteArray(Charsets.UTF_8),
+        "created_at" to "2026-09-24T09:10:00Z", "updated_at" to "2026-09-24T09:10:00Z",
+    )
+
     @Test
     fun valueVectors() {
         val cases = listOf(
@@ -161,8 +176,21 @@ class MirrorFpTest {
                 "c08a0fb25628bee7"),
             R(26, "meta", metaRow,
                 "03776f726b73706163655f6e616d651f03e88083e7a094", "84a4a4c8bae2ae38"),
+            R(27, "board_note", boardRow,
+                "0336363636363636362d363636362d343636362d383636362d3636363636363636363636361f" +
+                    "03e69e81e99990e88d89e7a8bf1f0372676261283235322c3234372c3233352c312e30291f" +
+                    "03677269641f031f03323032362d30392d32345430393a30303a30305a1f03323032362d30392d" +
+                    "32345430393a33303a30305a",
+                "8919c0fed8d3b9f4"),
+            R(28, "board_item", boardItemRow,
+                "0337373737373737372d373737372d343737372d383737372d3737373737373737373737371f" +
+                    "0336363636363636362d363636362d343636362d383636362d3636363636363636363636361f" +
+                    "01311f020000000000205ec01f0200000000002044401f020000000000c072401f02000000000000" +
+                    "56401f047b227769647468223a327d1f03323032362d30392d32345430393a31303a30305a1f0332" +
+                    "3032362d30392d32345430393a31303a30305a",
+                "556ae27f204196f5"),
         )
-        assertEquals(6, cases.size)
+        assertEquals(8, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -205,8 +233,18 @@ class MirrorFpTest {
     @Test
     fun tableSpecs() {
         assertEquals(
-            listOf("document", "variant", "note", "ink_layer", "scratch_pad", "meta"),
+            // Mac 在 scratch_pad 与 board_note 之间多一张 md_doc（本端没有 Markdown 笔记，见 MirrorFp.specs 的注释）
+            listOf("document", "variant", "note", "ink_layer", "scratch_pad", "board_note", "board_item", "meta"),
             MirrorFp.specs.map { it.table },
+        )
+        // 画板两张的列表与 Mac 逐字一致（board_note 不含 last_opened_at，同 document）
+        assertEquals(
+            listOf("id", "title", "bg", "pattern", "group_name", "created_at", "updated_at"),
+            MirrorFp.spec("board_note")!!.columns.map { it.name },
+        )
+        assertEquals(
+            listOf("id", "board_id", "kind", "x", "y", "w", "h", "payload", "created_at", "updated_at"),
+            MirrorFp.spec("board_item")!!.columns.map { it.name },
         )
         // 🔴 location 是设备本地事实：同步它就是制造满屏假「路径失效」
         assertNull(MirrorFp.spec("location"))

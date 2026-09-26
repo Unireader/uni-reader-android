@@ -196,6 +196,67 @@ class ScratchCanvas @JvmOverloads constructor(
         }
     }
 
+    // ---------- 画板笔记的图片（v16；契约见 ../PROTOCOL.md §4.8 / ../BOARD-NOTE-PLAN.md §2.3） ----------
+    //
+    // 只有画板笔记有图（草稿纸没有）。位置由宿主给画布坐标矩形（左上原点），**图从哪来**走 [picSource]
+    // （模式1 = 本机 `Images/<sha>.<ext>`，模式2 = HTTP 找 Mac 要 `/image?h=`），本类不知道自己在哪种模式下。
+    // 层序：纸色 → 底纹 →（页面底图）→ **图片** → 笔迹（笔迹永远能写在图上）。叠放序 = 列表顺序。
+    // 本轮两端都只显示不编辑：图片不参与擦除 / 落笔命中。
+
+    /** 画板上的一张图。[key] = 取图的键（图片内容的 sha256），同一张图出现几次只取一次 */
+    class BoardPic(val id: String, val key: String, val x: Float, val y: Float, val w: Float, val h: Float)
+
+    /** 图片来源（两模式各自实现）。回调可以在后台线程，取不到给 null */
+    fun interface BoardPicSource {
+        fun load(key: String, cb: (Bitmap?) -> Unit)
+    }
+
+    var picSource: BoardPicSource? = null
+
+    private var pics = listOf<BoardPic>()
+    private val picBmps = HashMap<String, Bitmap>()
+    private val picPending = HashSet<String>()
+    private val picFails = HashMap<String, Int>()
+
+    /**
+     * 换一整份图片列表（全量镜像）。已经取到的位图按 key 留着——同一张图挪了位置不必重取；
+     * 列表里不再出现的 key 放掉。**[openSession] 不清图片**：图片与笔迹是两条消息，先后没有保证，
+     * 由宿主在离开画板时显式传空表。
+     */
+    fun setPics(list: List<BoardPic>) {
+        pics = list
+        val keys = list.map { it.key }.toHashSet()
+        picBmps.keys.retainAll(keys)
+        picFails.keys.retainAll(keys)
+        clampViewport()
+        invalidate()
+    }
+
+    /** 按需取图：只取可见的、没在途的、失败没超过上限的（无限重试 = 每帧一次请求） */
+    private fun ensurePic(key: String) {
+        val src = picSource ?: return
+        if (picBmps.containsKey(key) || key in picPending) return
+        if ((picFails[key] ?: 0) >= MAX_PAGE_RETRY) return
+        picPending.add(key)
+        src.load(key) { bmp ->
+            post {
+                picPending.remove(key)
+                if (pics.none { it.key == key }) return@post   // 排队期间这张图已经不在了
+                if (bmp != null) {
+                    picBmps[key] = bmp
+                    picFails.remove(key)
+                    invalidate()
+                } else {
+                    picFails[key] = (picFails[key] ?: 0) + 1
+                    invalidate()   // 下一帧再试（有上限）
+                }
+            }
+        }
+    }
+
+    /** 空白纸的引导标题（宿主可换：画板笔记说「空白画板」）；null = 草稿纸的默认说法 */
+    var emptyHintTitle: String? = null
+
     /**
      * 真源回推：整表替换（正在写的这一笔不受影响——它还没进 [strokes]）。
      *
@@ -281,8 +342,20 @@ class ScratchCanvas @JvmOverloads constructor(
 
     // ---------- 视口维护 ----------
 
-    private fun contentBounds(): FloatArray? =
-        ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null }, pageUnderRect)
+    /** 内容包围盒（软边界 / 适应内容 / minimap）= 笔迹 ∪ 页面底图 ∪ 图片（同 Mac 画板的口径） */
+    private fun contentBounds(): FloatArray? {
+        val base = ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null }, pageUnderRect)
+        if (pics.isEmpty()) return base
+        var x0 = base?.get(0) ?: Float.MAX_VALUE
+        var y0 = base?.get(1) ?: Float.MAX_VALUE
+        var x1 = if (base != null) base[0] + base[2] else -Float.MAX_VALUE
+        var y1 = if (base != null) base[1] + base[3] else -Float.MAX_VALUE
+        for (p in pics) {
+            x0 = min(x0, p.x); y0 = min(y0, p.y)
+            x1 = max(x1, p.x + p.w); y1 = max(y1, p.y + p.h)
+        }
+        return floatArrayOf(x0, y0, x1 - x0, y1 - y0)
+    }
 
     private fun clampViewport() {
         val c = ScratchGeom.clampOrigin(ox, oy, zoom, contentBounds(), viewWdp(), viewHdp())
@@ -652,12 +725,14 @@ class ScratchCanvas @JvmOverloads constructor(
     private val miniPath = Path()
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
 
-    private fun hasContent() = strokes.isNotEmpty() || livePts.isNotEmpty() || pageUnderRect != null
+    private fun hasContent() =
+        strokes.isNotEmpty() || livePts.isNotEmpty() || pageUnderRect != null || pics.isNotEmpty()
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(bgColor)
         drawPattern(canvas)
         drawPageUnder(canvas)   // 底纹之上、笔迹之下（页图只是参照物，墨永远在最上面）
+        drawPics(canvas)        // 画板笔记的图：同样在笔迹之下（笔迹永远能写在图上）
         // 视口外的笔迹裁掉（画布是无界的一大坨，不裁就是每帧把整张纸重画一遍；同 web 的 boxHits）
         val z = zoom
         val x0 = ox
@@ -706,6 +781,33 @@ class ScratchCanvas @JvmOverloads constructor(
         pagePaint.strokeWidth = 1f
         pagePaint.color = withAlpha(inkColor, 0.3f)
         c.drawRect(left, top, right, bottom, pagePaint)
+    }
+
+    /**
+     * 画板笔记的图片层：按列表顺序叠放（先画的在下）。图还没取到时先画一个淡框占位
+     * （免得看起来像图丢了）；视口外的整张跳过，也不去取。
+     */
+    private fun drawPics(c: Canvas) {
+        if (pics.isEmpty()) return
+        val z = zoom
+        for (p in pics) {
+            val left = (p.x - ox) * z * density
+            val top = (p.y - oy) * z * density
+            val right = left + p.w * z * density
+            val bottom = top + p.h * z * density
+            if (right < 0 || bottom < 0 || left > width || top > height) continue
+            val bmp = picBmps[p.key]
+            if (bmp != null && !bmp.isRecycled) {
+                pageDst.set(left, top, right, bottom)
+                c.drawBitmap(bmp, null, pageDst, pageBmpPaint)
+            } else {
+                ensurePic(p.key)
+                pagePaint.style = Paint.Style.STROKE
+                pagePaint.strokeWidth = 1f
+                pagePaint.color = withAlpha(inkColor, 0.25f)
+                c.drawRect(left, top, right, bottom, pagePaint)
+            }
+        }
     }
 
     /** 粗筛：这条笔迹的包围盒与可视画布矩形有没有交集（逐点算一遍比重画便宜得多，同 web boxHits） */
@@ -791,7 +893,7 @@ class ScratchCanvas @JvmOverloads constructor(
         hintPaint.textSize = dp(17f)
         val cx = width / 2f
         val cy = height / 2f
-        c.drawText("空白草稿纸", cx, cy - dp(8f), hintPaint)
+        c.drawText(emptyHintTitle ?: "空白草稿纸", cx, cy - dp(8f), hintPaint)
         hintPaint.isFakeBoldText = false
         hintPaint.textSize = dp(13f)
         c.drawText("用笔书写 · 单指平移 · 双指捏合缩放", cx, cy + dp(16f), hintPaint)
@@ -878,6 +980,20 @@ class ScratchCanvas @JvmOverloads constructor(
             miniPaint.color = Color.argb(115, 255, 255, 255)
             c.drawRect(l, t, rr, bb, miniPaint)
         }
+        // 画板笔记的图：同样只画淡框（同页面底图的理由）
+        for (p in pics) {
+            val l = mx(p.x)
+            val t = my(p.y)
+            val rr = mx(p.x + p.w)
+            val bb = my(p.y + p.h)
+            miniPaint.style = Paint.Style.FILL
+            miniPaint.color = Color.argb(26, 255, 255, 255)
+            c.drawRect(l, t, rr, bb, miniPaint)
+            miniPaint.style = Paint.Style.STROKE
+            miniPaint.strokeWidth = 1f
+            miniPaint.color = Color.argb(115, 255, 255, 255)
+            c.drawRect(l, t, rr, bb, miniPaint)
+        }
         // 骨架线即可（minimap 不必还原笔型/压感，1px 折线最省也最清楚）
         miniPaint.style = Paint.Style.STROKE
         miniPaint.strokeWidth = 1f
@@ -920,5 +1036,26 @@ class ScratchCanvas @JvmOverloads constructor(
 
         /** 页面底图取不到时的重试次数上限（无限重试 = 每帧一次网络请求） */
         const val MAX_PAGE_RETRY = 3
+
+        /** 画板图片解码的长边上限（px）：照片原图动辄 4000px+，整张解进内存就是几十 MB 一张 */
+        const val PIC_MAX_SIDE = 2048
+
+        /**
+         * 画板图片解码（两模式共用：模式1 读本机文件、模式2 读 HTTP 回来的字节）。
+         * 先只读尺寸，按 2 的幂降采样到长边不超过 [PIC_MAX_SIDE]。解不开返回 null。
+         */
+        fun decodePic(bytes: ByteArray): Bitmap? {
+            val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
+            if (o.outWidth <= 0 || o.outHeight <= 0) return null
+            var sample = 1
+            while (max(o.outWidth, o.outHeight) / sample > PIC_MAX_SIDE) sample *= 2
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            return try {
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            } catch (e: OutOfMemoryError) {
+                null
+            }
+        }
     }
 }

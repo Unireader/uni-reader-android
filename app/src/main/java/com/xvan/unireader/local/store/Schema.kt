@@ -47,6 +47,56 @@ object Schema {
         )
         """
 
+    /**
+     * v16 画板笔记两张表 + 索引（`../BOARD-NOTE-PLAN.md §2`），与 Mac `migrate()` 里那两段**逐字相同**。
+     *
+     * 🔴 **本模块「打开已有库一个字 DDL 都不写」的唯一例外**（用户 2026-09-24 同意，只限这两张表）：
+     * 打开工作区时若库里没有它们，就用这几条语句补建（[ensureBoardTables]）——否则平板在没被新版
+     * Mac 打开过的工作区上建不了画板笔记。`CREATE … IF NOT EXISTS` 与 Mac 同一份语句，Mac 以后
+     * 再 migrate 到 v16 时是空操作，两端对 schema 的认知不会分叉。**不写 `meta.schema_version`**。
+     * 改这里必须与 Mac `LibraryStore.swift` 的那两段同步。
+     */
+    val BOARD_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS board_note (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          bg TEXT NOT NULL DEFAULT 'rgba(255,255,255,1.0)',
+          pattern TEXT NOT NULL DEFAULT 'dots',
+          group_name TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_opened_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS board_item (
+          id TEXT PRIMARY KEY,
+          board_id TEXT NOT NULL REFERENCES board_note(id) ON DELETE CASCADE,
+          kind INTEGER NOT NULL,
+          x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,
+          payload BLOB NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_board_item_board ON board_item(board_id)",
+    )
+
+    /**
+     * 库里没有画板两张表就补建（见 [BOARD_DDL] 的例外说明）。已有则什么都不做（先查 `sqlite_master`，
+     * 不对已经齐全的库白跑 DDL）。返回是否真的补建了。
+     */
+    fun ensureBoardTables(db: Db): Boolean {
+        val have = db.query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('board_note','board_item')",
+        ) { it.getString(0) }.toSet()
+        if (have.containsAll(listOf("board_note", "board_item"))) return false
+        db.transaction { for (sql in BOARD_DDL) db.exec(sql.trimIndent()) }
+        Log.i(TAG, "补建画板笔记两张表（board_note / board_item），meta.schema_version 不动")
+        return true
+    }
+
     /** 与 Mac `migrate()` 里那段 `CREATE TABLE IF NOT EXISTS …` 逐字一致，只是拆成了单条语句 */
     private val DDL = listOf(
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
@@ -127,7 +177,7 @@ object Schema {
         )
         """,
         PAGE_ALIGN_DDL,
-    )
+    ) + BOARD_DDL   // v16 画板笔记（新库一并建上；版本号仍写 v14——v15 的 md_doc 本端没建，写 16 会撒谎）
 
     /**
      * 在 [dbFile]（须尚不存在）建一个空库并写好 `meta`。

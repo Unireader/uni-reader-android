@@ -85,6 +85,20 @@ object WireCodec {
     const val OP_CLIP = 0x51
 
     /**
+     * 画板笔记（v16，`../PROTOCOL.md §4.8`）：boards / boardImages 是 S→C 全量镜像，
+     * boardOpen / boardAdd 是 C→S 请求。笔迹本身仍走草稿纸那几条（画板会话里那张纸永远开着）。
+     */
+    const val OP_BOARDS = 0x52
+    const val OP_BOARD_OPEN = 0x53
+    const val OP_BOARD_ADD = 0x54
+    const val OP_BOARD_IMAGES = 0x55
+
+    /** `boards.kind`：被跟随会话是什么（0 = PDF 或空标签，1 = Markdown 笔记，2 = 画板笔记） */
+    const val BOARD_KIND_PDF = 0
+    const val BOARD_KIND_MARKDOWN = 1
+    const val BOARD_KIND_BOARD = 2
+
+    /**
      * 剪贴板动作：`0=copy 1=cut 2=paste`（只许尾部追加，与 Mac `WireCodec.clipOps` 同序）。
      * 真身在 `shared/Ink.kt`——两模式的画布都要用它，而 `shared/` 不许认识本文件（红线）。
      */
@@ -164,6 +178,22 @@ object WireCodec {
         val showPage: Boolean,
     )
 
+    /** 画板笔记一项（boards 消息元素）。[title] 是 Mac 已兜底过的显示名，客户端直接显示 */
+    data class BoardEntry(val id: String, val title: String)
+
+    /**
+     * 画板上的一张图（boardImages 消息元素）。[x]/[y]/[w]/[h] = 画布坐标矩形（左上原点，逻辑点）；
+     * 图片本体按 [sha] 走 `GET /image?h=`（`../PROTOCOL.md §4.8`）。
+     */
+    data class BoardImageEntry(
+        val id: String,
+        val sha: String,
+        val x: Float,
+        val y: Float,
+        val w: Float,
+        val h: Float,
+    )
+
     // ---------- 解码结果（u32 用 Long 承载无符号值） ----------
     sealed class Msg {
         /** 兼容空 payload → session/udpPort = 0 */
@@ -230,6 +260,15 @@ object WireCodec {
          * 没开纸时 Mac 发 n=0，据此清掉本地残留。[ackRel] 语义与 [Strokes] 完全一致（§4.2）。
          */
         data class ScratchStrokes(val ackRel: Long, val list: List<Stroke>) : Msg()
+
+        /**
+         * 画板笔记列表 + 被跟随会话的类型（全量镜像）。[kind] 见 BOARD_KIND_*；
+         * [current] = kind=2 时是哪一篇的 id，否则空串。
+         */
+        data class Boards(val kind: Int, val current: String, val list: List<BoardEntry>) : Msg()
+
+        /** 当前画板上的图（不是画板会话时是空表）；叠放序 = 列表顺序（先画的在下） */
+        data class BoardImages(val list: List<BoardImageEntry>) : Msg()
     }
 
     // ---------- Writer ----------
@@ -552,6 +591,14 @@ object WireCodec {
     fun encodeScratchRename(index: Int, title: String): ByteArray =
         Writer().apply { u8(OP_SCRATCH_RENAME); u16(index); str(title) }.bytes()
 
+    /** 请 Mac 在被跟随的窗口里打开这篇画板笔记（已开着就切过去） */
+    fun encodeBoardOpen(id: String): ByteArray =
+        Writer().apply { u8(OP_BOARD_OPEN); str(id) }.bytes()
+
+    /** 请 Mac 新建一篇空画板笔记并打开 */
+    fun encodeBoardAdd(): ByteArray =
+        Writer().apply { u8(OP_BOARD_ADD) }.bytes()
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -668,6 +715,27 @@ object WireCodec {
                     // 无 page 字段（区别于 strokes）：page 恒 0，pts 是画布坐标
                     while (i < n && r.remaining > 0) { list.add(Stroke(0, r.pen(), r.pts3())); i++ }
                     Msg.ScratchStrokes(ackRel, list)
+                }
+                OP_BOARDS -> {
+                    val kind = r.u8()
+                    val current = r.str()
+                    val n = r.u16()
+                    val list = ArrayList<BoardEntry>(n)
+                    var i = 0
+                    // 单条最短 4 字节（两条空 str）
+                    while (i < n && r.remaining >= 4) { list.add(BoardEntry(r.str(), r.str())); i++ }
+                    Msg.Boards(kind, current, list)
+                }
+                OP_BOARD_IMAGES -> {
+                    val n = r.u16()
+                    val list = ArrayList<BoardImageEntry>(n)
+                    var i = 0
+                    // 单条最短 20 字节（两条空 str + 4×f32）
+                    while (i < n && r.remaining >= 20) {
+                        list.add(BoardImageEntry(r.str(), r.str(), r.f32(), r.f32(), r.f32(), r.f32()))
+                        i++
+                    }
+                    Msg.BoardImages(list)
                 }
                 OP_NOTES -> {
                     val n = r.u16()

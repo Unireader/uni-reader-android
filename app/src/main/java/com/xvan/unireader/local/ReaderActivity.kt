@@ -24,8 +24,11 @@ import android.widget.TextView
 import android.widget.Toast
 import com.xvan.unireader.Launcher
 import com.xvan.unireader.R
+import com.xvan.unireader.local.store.BoardNote
+import com.xvan.unireader.local.store.Iso
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibInkLayer
+import com.xvan.unireader.local.store.newBoardId
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.ScratchPad
 import com.xvan.unireader.local.store.StoreQueue
@@ -129,6 +132,14 @@ class ReaderActivity : Activity() {
      * 那时它在内存里只剩 [docId] 与 [title]，重新激活时按库里的进度整份装回来。
      */
     private class Tab(val docId: String, var title: String) {
+        /**
+         * 画板笔记标签（`../BOARD-NOTE-PLAN.md §5`）：[docId] 存成 `board:<id>`（[TabSet.BOARD_PREFIX]），
+         * 于是标签页组的存取、「已打开」判定这些按 docId 走的地方一行不改就认得它，也不会与文档 id 撞。
+         * 画板标签**没有** [canvas]/[pdf]：整页是 [BoardController] 那块 `ScratchCanvas`。
+         */
+        val isBoard: Boolean get() = TabSet.isBoard(docId)
+        val boardId: String get() = TabSet.boardIdOf(docId)
+
         var canvas: LocalCanvasView? = null
         var pdf: PdfSource? = null
 
@@ -176,7 +187,12 @@ class ReaderActivity : Activity() {
     private class RefDoc(val doc: LibDocument, val file: File, val hash: String, val align: ScanAlignTable?)
 
     /** 后台一趟开好的工作区库（顺带把书库列表读出来：标签页栏要标题，"+"要文档列表） */
-    private class WsOpened(val store: LibraryStore, val name: String, val docs: List<LibDocument>)
+    private class WsOpened(
+        val store: LibraryStore,
+        val name: String,
+        val docs: List<LibDocument>,
+        val boards: List<BoardNote>,
+    )
 
     private lateinit var canvasHost: FrameLayout
     private lateinit var bar: TopBar
@@ -191,6 +207,20 @@ class ReaderActivity : Activity() {
 
     /** 草稿纸（模式1 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板 + 库读写 */
     private lateinit var scratch: ScratchController
+
+    /** 画板笔记（`../BOARD-NOTE-PLAN.md §5`）：画板标签激活时铺满内容区的那块画布 + 浮条 + 库读写 */
+    private lateinit var board: BoardController
+
+    /**
+     * 画板标签的**工具状态**（笔 / 橡皮 / 模式 / 尺子 / 双指滚动）。工具在模式1 是挂在每块阅读画布上的，
+     * 而画板标签没有阅读画布——于是单独留一块**不显示**的 [LocalCanvasView] 只当工具状态的容器，
+     * 顶栏的模式 / 笔 / 尺子、笔胶囊、侧键都照旧对它操作（[toolCanvas]），面板一行不用改。
+     * 它加在 [canvasHost] 里但一直是 GONE（不画、不收触摸；退出时随界面一起拆，定时器跟着收）。
+     */
+    private var boardTools: LocalCanvasView? = null
+
+    /** 工作区的画板笔记列表（`board_note`，最近打开在前）：抽屉 / 「+」/ 标签标题都用它 */
+    private var libBoards = listOf<BoardNote>()
 
     /** 划字之后那条「四色高亮 / 批注 / 复制」的浮条（选字模式，见 [TextSelectBar]） */
     private val selectBar by lazy {
@@ -308,6 +338,13 @@ class ReaderActivity : Activity() {
 
     private fun curTab(): Tab? = tabs.getOrNull(active)
 
+    /**
+     * 工具状态从哪块画布读写：文档标签 = 它自己的阅读画布；画板标签 = [boardTools]。
+     * 模式 / 笔 / 尺子 / 笔胶囊 / 侧键走这里；翻页、撤销、框选剪贴板这些「页面上的事」仍只认 [cur]。
+     */
+    private fun toolCanvas(): LocalCanvasView? =
+        cur() ?: if (curTab()?.isBoard == true) boardTools else null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -391,7 +428,7 @@ class ReaderActivity : Activity() {
         )
         if (!fresh) return true
         lastHandledKeyDown = event.downTime
-        val canvas = cur() ?: return true
+        val canvas = toolCanvas() ?: return true   // 画板标签：切的是画板那份工具状态
         when (event.keyCode) {
             KeyEvent.KEYCODE_PAGE_UP -> canvas.cycleMode()
             KeyEvent.KEYCODE_PAGE_DOWN -> canvas.cyclePen()
@@ -423,15 +460,16 @@ class ReaderActivity : Activity() {
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { cur()?.turn(prev = false) }
             gap()
             // 模式键：图标随当前模式变，点一下轮换（环形盘/侧键/Mac 远程仍各自有效，这只是多一条路）
+            // （模式 / 笔 / 尺子走 toolCanvas：画板标签里切的是画板那份工具状态）
             icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") {
-                cur()?.cycleMode()
+                toolCanvas()?.cycleMode()
                 refreshHud()
                 warnIfNoTextLayer()
             }
             // 「切换笔」只在笔模式下出现且染当前笔色（refreshHud() 维护），其余模式占位纯属误导
-            icon("pen", R.drawable.ic_pen, "切换笔") { cur()?.cyclePen(); refreshHud() }
+            icon("pen", R.drawable.ic_pen, "切换笔") { toolCanvas()?.cyclePen(); refreshHud() }
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
-            icon("ruler", R.drawable.ic_ruler, "尺子") { cur()?.toggleRuler(); refreshHud() }
+            icon("ruler", R.drawable.ic_ruler, "尺子") { toolCanvas()?.toggleRuler(); refreshHud() }
             // 撤销/重做：模式1 本机就是真源，栈在 `LocalCanvasView`（**只管笔迹**，见那里的注释）
             icon("undo", R.drawable.ic_undo, "撤销") { cur()?.requestUndo(redo = false) }
             icon("redo", R.drawable.ic_redo, "重做") { cur()?.requestUndo(redo = true) }
@@ -458,10 +496,22 @@ class ReaderActivity : Activity() {
             // 低频项进 ⋯：勾选态每次弹出现算，所以这里存的是生成器（见 TopBar.overflowItems）
             overflowItems = {
                 val c = cur()
-                if (c == null) {
+                val bt = toolCanvas()
+                if (c == null && bt != null) {
+                    // 画板标签：只留对画板有意义的几项
+                    listOf(
+                        TopBar.MenuItem(getString(R.string.board_title) + "…") { showBoardPicker() },
+                        TopBar.MenuItem("双指滚动（防误触）", bt.twoFingerScroll) {
+                            bt.toggleTwoFingerScroll(); saveTools()
+                        },
+                        TopBar.MenuItem("打开另一篇…") { showDocPicker() },
+                        TopBar.MenuItem("切换工作区…") { showWorkspaceSwitcher() },
+                    )
+                } else if (c == null) {
                     listOf(TopBar.MenuItem("切换工作区…") { showWorkspaceSwitcher() })
                 } else {
                     listOf(
+                        TopBar.MenuItem(getString(R.string.board_title) + "…") { showBoardPicker() },
                         TopBar.MenuItem("夜间模式", c.night) { c.toggleNight(); saveTools() },
                         TopBar.MenuItem("显示页面图", c.showPage) { c.toggleShowPage(); refreshHud() },
                         // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
@@ -505,13 +555,17 @@ class ReaderActivity : Activity() {
             }
             onRenameBookmark = { id, title -> writeBookmark("书签改名") { s -> s.renameBookmark(id, title) } }
             onDeleteBookmark = { id -> writeBookmark("删书签") { s -> s.deleteNote(id) } }
+            // 书库页的「画板笔记」一组（模式1 才有；模式2 不设 = 不显示这一组）
+            onOpenBoard = { id -> openDoc(TabSet.boardKey(id)) }
+            onAddBoard = { createBoard() }
+            onBoardMore = { id -> showBoardMenu(id) }
         }
         // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）。
         // 面板改完即时生效（基类自己管），这里只负责把结果存下来——模式2 那两个回调是上行给 Mac 的，
         // 模式1 没有 Mac，改完不存的话退出即丢（见 ToolPrefs）。
         penStat = capsule(this).apply {
             setOnClickListener {
-                val c = cur() ?: return@setOnClickListener
+                val c = toolCanvas() ?: return@setOnClickListener
                 PadPanels.showPenPanel(
                     this@ReaderActivity, c,
                     onPenset = { ToolPrefs.save(this@ReaderActivity, c) },
@@ -541,6 +595,24 @@ class ReaderActivity : Activity() {
                 }
             }
         }
+        // 画板笔记：整页一块画布 + 浮条（数据读写全在 BoardController，这里只接线）
+        board = BoardController(this).apply {
+            toolsProvider = {
+                toolCanvas()?.let { c ->
+                    ScratchCanvas.Tools(
+                        inkTool = c.mode == MODE_NOTE && !c.noteMode,
+                        eraseTool = c.mode == MODE_ERASE,
+                        pen = c.curPenOrNull() ?: PageCanvasView.FALLBACK_PENS[0],
+                        eraserSize = c.eraserSize,
+                        eraserMode = c.eraserMode,
+                        eraserRing = c.eraserRing,
+                        rulerOn = c.rulerOn,
+                    )
+                }
+            }
+            onBoardList = { showBoardPicker() }
+            onBoardChanged = { b -> onBoardRowChanged(b) }
+        }
         // 两颗胶囊各自 wrap：不给 penStat 显式 LayoutParams 的话它默认 MATCH_PARENT，
         // 在 wrap 的竖向容器里就被夹成「最宽那颗」的宽度——「翻页 · 拖动平移」会被截成「拖动平」。
         capsules = LinearLayout(this).apply {
@@ -561,6 +633,8 @@ class ReaderActivity : Activity() {
             // handoff §7.1 的白压白坑），在标签页画布之上（纸开着时吃掉全部指针事件，
             // PDF 上一笔都落不下——这是这个功能的定义）。topMargin 由 applyChromeHeight 让开 chrome。
             addView(scratch.canvas, FrameLayout.LayoutParams(-1, -1))
+            // 画板标签的整页画布：与草稿纸同一层级（chrome 之下，topMargin 同由 applyChromeHeight 给）
+            addView(board.canvas, FrameLayout.LayoutParams(-1, -1))
             addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(chrome, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
@@ -573,6 +647,10 @@ class ReaderActivity : Activity() {
             // 纸上的悬浮工具条：贴 chrome 下方居中（topMargin 同由 applyChromeHeight 给）
             addView(
                 scratch.barView,
+                FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
+            )
+            addView(
+                board.barView,
                 FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
             )
             // 划字动作条：贴屏幕底部居中，只在有选区时显形（见 TextSelectBar）
@@ -615,6 +693,14 @@ class ReaderActivity : Activity() {
             it.topMargin = h.toInt() + dp(10)
             scratch.barView.layoutParams = it
         }
+        (board.canvas.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = h.toInt()
+            board.canvas.layoutParams = it
+        }
+        (board.barView.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = h.toInt() + dp(10)
+            board.barView.layoutParams = it
+        }
     }
 
     // ---------- 工作区 ----------
@@ -635,7 +721,7 @@ class ReaderActivity : Activity() {
             work = {
                 val s = LibraryStore.open(dir)
                 try {
-                    WsOpened(s, s.workspaceName(), s.allDocuments())
+                    WsOpened(s, s.workspaceName(), s.allDocuments(), s.boards())
                 } catch (e: Throwable) {
                     // 只抛不关的话，这个库连接（带 WAL）就悬在后台了（同 §9.5 的 discard 理由）
                     runCatching { s.close() }
@@ -655,6 +741,8 @@ class ReaderActivity : Activity() {
         workspaceName = o.name.ifEmpty { dir.name }
         tabsBar.setWorkspace(workspaceName)
         libDocs = o.docs
+        libBoards = o.boards
+        board.bind(q, dir)
         pushDrawerLibrary()
 
         // 这个卷建不起 WAL（FAT32/exFAT 的 U 盘，§9.3）：不是错误，但得说一声——退出时的
@@ -676,7 +764,8 @@ class ReaderActivity : Activity() {
         active = -1
         for (id in saved.docIds) {
             if (tabs.size >= MAX_TABS) break
-            val t = libTitles[id] ?: continue
+            // 画板标签（`board:<id>`）按画板表认，文档标签按书库认；都查不到的（别处删过）丢掉
+            val t = tabTitleOf(id) ?: continue
             if (tabs.none { it.docId == id }) tabs.add(Tab(id, t))
         }
         var want = saved.active.coerceIn(0, max(0, tabs.size - 1))
@@ -684,8 +773,8 @@ class ReaderActivity : Activity() {
             val i = tabs.indexOfFirst { it.docId == initialDoc }
             when {
                 i >= 0 -> want = i
-                libTitles.containsKey(initialDoc) && tabs.size < MAX_TABS -> {
-                    tabs.add(Tab(initialDoc, libTitles[initialDoc] ?: "文档"))
+                tabTitleOf(initialDoc) != null && tabs.size < MAX_TABS -> {
+                    tabs.add(Tab(initialDoc, tabTitleOf(initialDoc) ?: "文档"))
                     want = tabs.size - 1
                 }
                 else -> Log.w(TAG, "要打开的文档不在库里/标签页已满：$initialDoc")
@@ -760,6 +849,8 @@ class ReaderActivity : Activity() {
     private fun closeWorkspace() {
         scratch.close()   // 开着的草稿纸属于这个工作区的文档，随它一起收
         scratch.bind(null, "", emptyList())
+        board.bind(null, null)   // 画板同理（bind(null) 顺带收起）
+        libBoards = emptyList()
         for (t in tabs) saveProgress(t)
         saveTabSet()
         for (t in tabs) unload(t)
@@ -907,9 +998,12 @@ class ReaderActivity : Activity() {
             workspaceName,
             libDocs.map { LibItem(it.id, it.title, opened.contains(it.id)) },
         )
+        drawer.setBoards(
+            libBoards.map { LibItem(it.id, board.displayName(it), opened.contains(TabSet.boardKey(it.id))) },
+        )
     }
 
-    /** 打开（或切到）本工作区的某一篇 */
+    /** 打开（或切到）本工作区的某一篇（[docId] 为 `board:<id>` 时是画板笔记） */
     private fun openDoc(docId: String) {
         val i = tabs.indexOfFirst { it.docId == docId }
         if (i >= 0) {
@@ -920,8 +1014,219 @@ class ReaderActivity : Activity() {
             showAlert("标签页太多了", "最多同时开 $MAX_TABS 篇，先关掉一个再开。")
             return
         }
-        tabs.add(Tab(docId, libTitles[docId] ?: "文档"))
+        tabs.add(Tab(docId, tabTitleOf(docId) ?: if (TabSet.isBoard(docId)) getString(R.string.board_untitled) else "文档"))
         activate(tabs.size - 1)
+    }
+
+    /** 标签页标题：文档按书库、画板按画板表；都查不到 = null（库里没有了） */
+    private fun tabTitleOf(docId: String): String? =
+        if (TabSet.isBoard(docId)) {
+            libBoards.firstOrNull { it.id == TabSet.boardIdOf(docId) }?.let { board.displayName(it) }
+        } else {
+            libTitles[docId]
+        }
+
+    // ---------- 画板笔记（`../BOARD-NOTE-PLAN.md §5`） ----------
+
+    /** 重读画板列表，刷新抽屉与标签标题（增删改之后都走这里，本地列表不自己推算） */
+    private fun refreshBoards(then: (() -> Unit)? = null) {
+        val q = queue ?: return
+        q.submit("读画板笔记列表", { s -> s.boards() }, { list ->
+            libBoards = list
+            var titled = false
+            for (t in tabs) {
+                if (!t.isBoard) continue
+                val b = list.firstOrNull { it.id == t.boardId } ?: continue
+                val name = board.displayName(b)
+                if (t.title != name) { t.title = name; titled = true }
+            }
+            if (titled) refreshTabsBar()
+            curTab()?.takeIf { it.isBoard }?.let { title = it.title }
+            pushDrawerLibrary()
+            then?.invoke()
+        })
+    }
+
+    /** 画板那边改名 / 改纸样写库成功：同步到列表与标签标题 */
+    private fun onBoardRowChanged(b: BoardNote) {
+        libBoards = libBoards.map { if (it.id == b.id) b else it }
+        val name = board.displayName(b)
+        var titled = false
+        for (t in tabs) if (t.isBoard && t.boardId == b.id && t.title != name) { t.title = name; titled = true }
+        if (titled) refreshTabsBar()
+        curTab()?.takeIf { it.isBoard && it.boardId == b.id }?.let { title = name }
+        pushDrawerLibrary()
+    }
+
+    /**
+     * 画板笔记列表（画板浮条最左那颗键 / ⋯ 菜单）：点一篇打开（已开就切过去），末尾「新建」。
+     * 每次弹之前先重读一次，别拿着过期的列表（书库页那边可能刚新建 / 改名过）。
+     */
+    private fun showBoardPicker() {
+        refreshBoards {
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            var dlg: AlertDialog? = null
+            val sheet = Sheet(this).title(getString(R.string.board_title))
+            if (libBoards.isEmpty()) sheet.subtitle(getString(R.string.board_none))
+            val curId = curTab()?.takeIf { it.isBoard }?.boardId
+            for (b in libBoards) {
+                val isCur = b.id == curId
+                list.addView(
+                    PadPanels.iconRow(
+                        this, R.drawable.ic_scratch, board.displayName(b),
+                        if (isCur) Ui.accent(this) else Ui.onSurface(this),
+                        trailing = if (!isCur) {
+                            null
+                        } else {
+                            ImageView(this).apply {
+                                setImageResource(R.drawable.ic_check)
+                                imageTintList = ColorStateList.valueOf(Ui.accent(this@ReaderActivity))
+                                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18))
+                            }
+                        },
+                    ) {
+                        dlg?.dismiss()
+                        openDoc(TabSet.boardKey(b.id))
+                    },
+                )
+            }
+            if (libBoards.isNotEmpty()) list.addView(Ui.divider(this))
+            list.addView(
+                PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.board_new)) {
+                    dlg?.dismiss()
+                    createBoard()
+                },
+            )
+            sheet.content(list)
+            sheet.action(getString(R.string.common_cancel))
+            dlg = sheet.show()
+        }
+    }
+
+    /** 新建一篇空画板并在新标签里打开（表不存在且补不上 = 建不了，说一句） */
+    private fun createBoard() {
+        val q = queue ?: return
+        val now = Iso.now()
+        val b = BoardNote(
+            id = newBoardId(), title = "", bg = ScratchPad.DEFAULT_BG, pattern = ScratchPad.DEFAULT_PATTERN,
+            groupName = "", createdAt = now, updatedAt = now, lastOpenedAt = now,
+        )
+        q.submit("新建画板 ${b.id.take(8)}", { s ->
+            val ok = runCatching { s.upsertBoard(b) }
+                .onFailure { Log.e(TAG, "新建画板写库失败", it) }
+                .isSuccess
+            ok to s.boards()
+        }, { (ok, list) ->
+            libBoards = list
+            pushDrawerLibrary()
+            if (!ok || list.none { it.id == b.id }) {
+                showAlert(getString(R.string.board_create_failed), getString(R.string.board_create_failed_msg))
+                return@submit
+            }
+            Log.i(TAG, "新建画板 ${b.id.take(8)}")
+            openDoc(TabSet.boardKey(b.id))
+        })
+    }
+
+    /** 抽屉里画板那一行的「更多」：改名 / 删除 */
+    private fun showBoardMenu(id: String) {
+        val b = libBoards.firstOrNull { it.id == id } ?: return
+        var dlg: AlertDialog? = null
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_text, getString(R.string.board_rename)) {
+                dlg?.dismiss()
+                val edit = PadPanels.inputBox(this, getString(R.string.board_name_hint)).apply {
+                    setText(b.title)
+                    setSelection(text.length)
+                }
+                Sheet(this).title(getString(R.string.board_rename_title))
+                    .content(edit)
+                    .action(getString(R.string.common_cancel))
+                    .action(getString(R.string.common_save), primary = true) {
+                        writeBoard("画板改名") { s ->
+                            val t = edit.text.toString().trim()
+                            if (t != b.title) s.upsertBoard(b.copy(title = t, updatedAt = Iso.now()))
+                        }
+                    }
+                    .show()
+            },
+        )
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_delete, getString(R.string.board_delete), Ui.col(this, R.color.danger)) {
+                dlg?.dismiss()
+                Sheet(this)
+                    .title(getString(R.string.board_delete_confirm, board.displayName(b)))
+                    .subtitle(getString(R.string.board_delete_msg))
+                    .action(getString(R.string.common_cancel))
+                    .action(getString(R.string.common_delete), primary = true) { deleteBoard(b.id) }
+                    .show()
+            },
+        )
+        dlg = Sheet(this).title(board.displayName(b)).content(col).action(getString(R.string.common_cancel)).show()
+    }
+
+    /** 画板的写（改名）：写库 → 重读列表 → 开着的那篇跟着库走 */
+    private fun writeBoard(what: String, body: (LibraryStore) -> Unit) {
+        val q = queue ?: return
+        q.submit(what, { s -> runCatching { body(s) }.onFailure { Log.e(TAG, "$what 写库失败", it) } }, {
+            refreshBoards {
+                val cur = board.board ?: return@refreshBoards
+                board.applyExternal(libBoards.firstOrNull { it.id == cur.id })
+            }
+        })
+    }
+
+    /**
+     * 删一篇画板：删 board_note 行，board_item 随外键 CASCADE 一起走。开着它的标签页一并关掉
+     * （先关标签再删库：关标签会收起画布，免得删到一半还在往这篇上落笔）。
+     */
+    private fun deleteBoard(id: String) {
+        val key = TabSet.boardKey(id)
+        val i = tabs.indexOfFirst { it.docId == key }
+        // 关掉的若是最后一个标签，界面会退出；删库照样排进队列（队列在 onDestroy 里才关，排在它后面）
+        if (i >= 0) closeTab(i)
+        writeBoard("删除画板 ${id.take(8)}") { s -> s.deleteBoard(id) }
+    }
+
+    /**
+     * 画板标签激活：工具容器就位 → 去库里读这一篇（书库页那条连接可能刚建 / 刚改过，别信手上的列表）→ 铺开。
+     * 读不到（别处删了）按「打不开」摘掉这个标签。
+     */
+    private fun activateBoard(t: Tab) {
+        ensureBoardTools()
+        showOpening("正在打开《${t.title}》…")
+        val q = queue ?: return
+        val id = t.boardId
+        q.submit("读画板行 ${id.take(8)}", { s -> s.board(id) }, { b ->
+            if (curTab() !== t) return@submit   // 排队期间切走了
+            if (b == null) {
+                failToOpen(t, getString(R.string.board_open_failed))
+                return@submit
+            }
+            val name = board.displayName(b)
+            if (t.title != name) { t.title = name; refreshTabsBar() }
+            title = name
+            board.open(b)
+            hideOpening()
+            refreshHud()
+            if (libBoards.none { it.id == b.id }) refreshBoards()
+        })
+    }
+
+    /**
+     * 画板那份工具状态第一次要用时建出来：有开着的文档画布就照它抄（笔 / 橡皮 / 夜间…同 [attachTab]
+     * 的 donor 口径），否则从 [ToolPrefs] 复原。画板是用来写的：抄过来如果是翻页 / 选字模式就切到笔。
+     */
+    private fun ensureBoardTools() {
+        if (boardTools != null) return
+        val c = LocalCanvasView(this).apply { visibility = View.GONE }
+        canvasHost.addView(c, FrameLayout.LayoutParams(1, 1))
+        val donor = tabs.firstOrNull { it.canvas != null }?.canvas
+        if (donor != null) copyTools(donor, c) else ToolPrefs.load(this, c)
+        if (c.mode != MODE_NOTE && c.mode != MODE_ERASE) c.setModeLocal(MODE_NOTE)
+        c.onHud = { if (curTab()?.isBoard == true) refreshHud() }
+        boardTools = c
     }
 
     /**
@@ -940,6 +1245,17 @@ class ReaderActivity : Activity() {
         if (prev != null && prev !== t) deactivate(prev)
         active = i
         t.usedAt = SystemClock.uptimeMillis()
+        if (t.isBoard) {
+            // 画板标签：没有 PDF、没有草稿纸（整页就是一张纸），草稿纸绑空（入口列不出别篇的纸）
+            scratch.bind(queue, "", emptyList())
+            refreshTabsBar()
+            pushDrawerToc()      // 目录 / 书签清空（画板没有）
+            pushDrawerLibrary()
+            title = t.title
+            saveTabSet()
+            activateBoard(t)
+            return
+        }
         // 草稿纸立刻绑到这一篇（哪怕还没装载完：装载中 docId 就该是它的，否则入口会列出别篇的纸；
         // 装载完 attachTab 会带着读好的纸列表再绑一次）
         scratch.bind(queue, t.docId, t.pads, t.pdf, pageAspectOf(t))
@@ -963,6 +1279,7 @@ class ReaderActivity : Activity() {
 
     /** 退到背景：进度先落库（随时可能被 LRU 卸掉），再把这一屏的位图与缓存额度让出来 */
     private fun deactivate(t: Tab) {
+        if (t.isBoard) board.close()   // 画板标签切走即收（视口不落库，重开回中，三端契约）
         saveProgress(t)
         scratch.close()   // 草稿纸属于「当前这篇」：切走即关（视口不落库，重开回中，三端契约）
         selectBar.hide()  // 划字浮条同理：它指着的是刚切走那一篇的选区
@@ -1077,7 +1394,8 @@ class ReaderActivity : Activity() {
 
         // 工具（笔/橡皮/夜间/模式…）是**设备级**的，不跟文档走：已经有别的标签页开着就照它来，
         // 不然每开一篇都跳回默认笔、夜间模式还会闪一下白。没有别的标签页才从 ToolPrefs 复原。
-        val donor = tabs.firstOrNull { it !== t && it.canvas != null }?.canvas
+        // 只开过画板标签时，画板那份工具状态也算 donor（它同样是这台设备上的工具）
+        val donor = tabs.firstOrNull { it !== t && it.canvas != null }?.canvas ?: boardTools
         if (donor != null) {
             copyTools(donor, c)
         } else {
@@ -1226,6 +1544,7 @@ class ReaderActivity : Activity() {
         val t = tabs.getOrNull(i) ?: return null
         saveProgress(t)
         if (i == active) scratch.close()   // 正开着的草稿纸属于这篇，随它一起收
+        if (i == active && t.isBoard) board.close()
         unload(t)
         tabs.removeAt(i)
         return t
@@ -1285,7 +1604,10 @@ class ReaderActivity : Activity() {
      */
     private fun showDocPicker() {
         val q = queue ?: return
-        q.submit("读书库列表", { s -> s.allDocuments() }, { docs -> renderDocPicker(docs) })
+        q.submit("读书库列表", { s -> s.allDocuments() to s.boards() }, { (docs, boards) ->
+            libBoards = boards
+            renderDocPicker(docs)
+        })
     }
 
     private fun renderDocPicker(docs: List<LibDocument>) {
@@ -1323,6 +1645,29 @@ class ReaderActivity : Activity() {
                 },
             )
         }
+        // 画板笔记一组：与文档平级，在标签页里打开（`../BOARD-NOTE-PLAN.md §5`）
+        list.addView(Ui.groupTitle(this, getString(R.string.board_group)))
+        for (b in libBoards) {
+            val opened = tabs.any { it.docId == TabSet.boardKey(b.id) }
+            list.addView(
+                Ui.row(this) {
+                    dlg?.dismiss()
+                    openDoc(TabSet.boardKey(b.id))
+                }.apply {
+                    addView(
+                        Ui.title(this@ReaderActivity, board.displayName(b), 15f).apply {
+                            if (opened) setTextColor(Ui.accent(this@ReaderActivity))
+                        },
+                    )
+                },
+            )
+        }
+        list.addView(
+            PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.board_new)) {
+                dlg?.dismiss()
+                createBoard()
+            },
+        )
         sheet.content(list)
         sheet.action("取消")
         dlg = sheet.show()
@@ -1346,6 +1691,14 @@ class ReaderActivity : Activity() {
     private fun refreshHud() {
         val canvas = cur()
         bar.setActive("scratch", scratch.isOpen)
+        // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式 / 撤销重做——
+        // 草稿纸那套画布在模式1 本来就没有撤销栈，画板照搬）
+        val isBoard = curTab()?.isBoard == true
+        for (k in arrayOf("prev", "next", "scratch", "lock", "canvas", "undo", "redo")) bar.setVisible(k, !isBoard)
+        if (isBoard) {
+            refreshBoardHud()
+            return
+        }
         if (canvas == null) {
             // 没有当前画布（还在装载 / 刚关掉最后一篇）：胶囊收起来，别显示上一篇的笔和图层
             bar.setPageLabel("—/—", "100%")
@@ -1354,6 +1707,7 @@ class ReaderActivity : Activity() {
             return
         }
         capsules.visibility = View.VISIBLE
+        layerStat.visibility = View.VISIBLE   // 画板标签里收起过（画板不分图层）
         bar.setPageLabel(canvas.hudPage(), canvas.hudZoom())
         drawer.setCurrentPage(canvas.topVisiblePage())   // 目录的「当前章节」追踪（同模式2）
         // 模式键的图标随当前模式变，开关键按下去是 accent 底色——两模式同一套表达（shared/TopBar）
@@ -1388,6 +1742,43 @@ class ReaderActivity : Activity() {
         )
         penStat.setPenSwatch(notePen?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) })
         layerStat.setTextIfChanged(activeLayer()?.let { "图层：${it.name}" } ?: "图层")
+    }
+
+    /**
+     * 画板标签的顶栏 / 胶囊：模式键、笔、尺子照常（对 [boardTools]），页码处显示「—」与画板缩放，
+     * 框选剪贴板三件不出现（画板上框选退化为平移），图层胶囊收起（画板不分图层）。
+     */
+    private fun refreshBoardHud() {
+        val c = boardTools
+        bar.setPageLabel("—", "100%")   // 画板没有页码；缩放读数在画板浮条上（同草稿纸）
+        for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, false)
+        if (c == null) {
+            bar.setVisible("pen", false)
+            capsules.visibility = View.GONE
+            return
+        }
+        capsules.visibility = View.VISIBLE
+        layerStat.visibility = View.GONE
+        bar.setIcon("mode", TopBar.modeIcon(c.mode))
+        bar.setActive("mode", c.mode != MODE_PAGE)
+        bar.setActive("ruler", c.rulerOn)
+        bar.setVisible("pen", c.mode == MODE_NOTE)
+        bar.setTint("pen", c.curPenOrNull()?.let { Ui.penArgb(it) })
+        board.canvas.twoFingerScroll = c.twoFingerScroll
+        val pen = c.curPenOrNull()
+        penStat.setTextIfChanged(
+            when (c.mode) {
+                MODE_NOTE ->
+                    if (pen != null) "${PadConst.brushLabel(brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
+                    else "笔记"
+                MODE_ERASE -> "橡皮擦"
+                else -> "拖动平移"
+            },
+        )
+        penStat.setPenSwatch(
+            pen.takeIf { c.mode == MODE_NOTE }
+                ?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) },
+        )
     }
 
     // ---------- 图层（面板与模式2 共用一份，见 shared/PadPanels.kt） ----------
@@ -1542,7 +1933,7 @@ class ReaderActivity : Activity() {
      * 用很久」的偏好，被系统杀在后台就白设了。`apply()` 是异步落盘，点一下的开销可以忽略。
      */
     private fun saveTools() {
-        val c = cur() ?: return
+        val c = toolCanvas() ?: return
         ToolPrefs.save(this, c)
         refreshHud()
     }
@@ -1552,7 +1943,7 @@ class ReaderActivity : Activity() {
         // 切后台立刻落盘：进程随时可能被杀。背景标签页的进度在切走时已经存过了，这里只管当前这篇
         curTab()?.let { saveProgress(it) }
         // 顶栏切的夜间、环形盘/切笔键换的笔——都在这一刻存下来（面板改的已经即时存过了）
-        cur()?.let { ToolPrefs.save(this, it) }
+        toolCanvas()?.let { ToolPrefs.save(this, it) }
     }
 
     /**
@@ -1582,6 +1973,19 @@ class ReaderActivity : Activity() {
     override fun onResume() {
         super.onResume()
         curTab()?.pdf?.setForeground(true)   // 退后台时让出去的额度，回来复原
+        // 画板可能在书库页（另一条连接）被改名 / 删掉了：回来时跟着库走，删掉的那几个标签摘掉
+        if (tabs.any { it.isBoard }) {
+            refreshBoards {
+                val live = libBoards.map { it.id }.toSet()
+                val gone = tabs.filter { it.isBoard && it.boardId !in live }
+                for (t in gone) {
+                    val i = tabs.indexOf(t)
+                    if (i >= 0) closeTab(i)
+                    if (isFinishing) return@refreshBoards
+                }
+                board.board?.let { cur -> board.applyExternal(libBoards.firstOrNull { it.id == cur.id }) }
+            }
+        }
     }
 
     /** 返回键先关草稿纸（同 Mac 的 Esc），没开着才走正常返回 */

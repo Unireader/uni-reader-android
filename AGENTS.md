@@ -87,7 +87,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表语句只有 `local/store/Schema.kt` 一处**（schema v14，逐字抄 Mac 的 `migrate()`；v13 `image` 表本端只建不用），
   且只对「文件还不存在」的**全新**库跑一次；`Db.open` 照旧一个字 DDL 都不写、不迁移老库。
-  唯一例外是离线镜像合并往没有 `page_align` 表的库里补这张表（`Schema.PAGE_ALIGN_DDL`，与 Mac 逐字相同）。
+  例外只有两处，语句都与 Mac 逐字相同、都只用 `CREATE … IF NOT EXISTS`：
+  ① 离线镜像合并往没有 `page_align` 表的库里补这张表（`Schema.PAGE_ALIGN_DDL`）；
+  ② 🔴 **画板笔记两张表 `board_note` / `board_item`（v16，用户 2026-09-24 同意的一次例外，只限这两张）**：
+  `LibraryStore.open`（可写打开）时没有就补建（`Schema.ensureBoardTables` / `Schema.BOARD_DDL`），
+  离线镜像合并要往没有它们的库里写画板行时同样先补（`MirrorApply.write`）。**不写 `meta.schema_version`**
+  （本端建的新库仍写 v14：v15 的 `md_doc` 本端没建，写 16 会撒谎）。其它表照旧「Mac 先改，安卓不动结构」。
 - **扫描页对齐（模式1 只读，2026-09-17，`../SCAN-ALIGN-PLAN.md`）**：开关与测量只在 Mac；本端按**打开的那个文件**的
   内容 hash 读 `page_align`（`LibraryStore.activePageAlign`，老库没表 → 按没开），交给 `PdfSource`。开着时
   `PdfSource.pageSizes` 报对齐后的 `(W, sh)`、`request` 出转正平移过的图——几何层 / 草稿纸垫页 / 参考窗都只经这两处
@@ -117,6 +122,21 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   顺带给 `notes` 补 `aw`/类型色）。
 - 模式1 的阅读界面 = 「一个工作区」的多标签页（`ReaderActivity` + `DocTabsBar` + `TabSet`）：
   一个工作区一份 `LibraryStore`+`StoreQueue` 全部标签页共用，标签页懒装载、LRU 只保活 3 篇。
+- **画板笔记（v16，2026-09-26，`../BOARD-NOTE-PLAN.md`）**＝工作区里独立的无限白板，整页就是一张草稿纸
+  （画布坐标 / 笔宽 / 橡皮 ×800 / 网格全按 `../PROTOCOL.md §4.4`）。
+  · 模式1：标签页 docId 存 `board:<id>`（`TabSet.BOARD_PREFIX`，于是标签页组存取一行没改）；画板标签**没有**
+  阅读画布，整页是 `local/BoardController` 那块 `ScratchCanvas`（照 `ScratchController` 写，读写 `board_note` /
+  `board_item`：笔迹 kind=1，payload 同草稿纸 kind=4 但**不写 padId**）。工具状态挂在一块不显示的
+  `LocalCanvasView`（`ReaderActivity.boardTools`）上，顶栏模式 / 笔 / 尺子、笔胶囊、侧键都经 `toolCanvas()`。
+  入口：书库页一组、抽屉书库页一组（`ReaderDrawer.setBoards`，模式2 不设 = 不显示）、「+」、⋯、画板浮条最左键。
+  🔴 **新 id 一律大写 UUID**（`newBoardId()`）：Mac 把这两张表的 id 解析成 `UUID` 再按 `uuidString`（大写）写回，
+  小写 id 会让 Mac 那边 `ON CONFLICT(id)` 对不上、多出重复行。
+  · 模式2：`boards`(0x52) / `boardImages`(0x55) 下行、`boardOpen`(0x53) / `boardAdd`(0x54) 上行；笔迹仍走草稿纸
+  那几条（画板会话里那张纸永远开着）。`PadScratch.boardMode` 收起关闭 / 页面底图 / 其它草稿纸 / 删除；
+  kind=1 时盖一层「Mac 正在看 Markdown 笔记」。图片按 `GET /image?h=<sha>` 取（`pad/BoardImageFetcher`）。
+  · 图片（kind=2）两模式都**只显示不编辑**，画在底纹之上、笔迹之下（`ScratchCanvas.setPics`）。
+- **界面文案资源（2026-09-26 起）**：从画板笔记开始，新文案进 `res/values/strings.xml`（英文）+
+  `res/values-zh/strings.xml`（中文），两份一起加；更早的文案仍直接写在代码里（中文），没有搬。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，

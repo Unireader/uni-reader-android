@@ -117,9 +117,31 @@ object MirrorApply {
         return live
     }
 
+    /**
+     * 合并之后目标库里还活着的画板 id（同 [livingDocuments]，给 `board_item` 的 upsert 过滤用；
+     * 同 Mac `MirrorApply.livingBoards`）。表不存在 = 一篇都没有。
+     */
+    fun livingBoards(db: Db, changes: List<MirrorDiff.Change>): Set<String> {
+        val live = if (MirrorStore.hasTable(db, "board_note")) {
+            db.query("SELECT id FROM board_note") { it.getString(0) }.toMutableSet()
+        } else {
+            HashSet()
+        }
+        for (c in changes.filter { it.table == "board_note" }) {
+            if (c.op == MirrorDiff.Op.UPSERT) live.add(c.rowId) else live.remove(c.rowId)
+        }
+        return live
+    }
+
     /** 把一批改动写进一个库（**调用方负责包事务**） */
     fun write(db: Db, changes: List<MirrorDiff.Change>, result: Result, side: MirrorDiff.Side) {
+        // 有画板的改动要写、而目标库还没有那两张表（老库）：用与 Mac 逐字相同的语句补上
+        // （「不动已有库结构」的唯一例外，只限这两张表，见 Schema.BOARD_DDL）
+        if (changes.any { it.table == "board_note" || it.table == "board_item" }) {
+            com.xvan.unireader.local.store.Schema.ensureBoardTables(db)
+        }
         val live = livingDocuments(db, changes)
+        val liveBoards = livingBoards(db, changes)
         val order = MirrorFp.specs.map { it.table }
 
         // ① 先删，后插。反过来会撞 `variant.content_hash` 的 UNIQUE：
@@ -140,6 +162,15 @@ object MirrorApply {
                 if (table != "document" && table != "meta") {
                     val doc = row["document_id"] as? String
                     if (doc != null && doc !in live) {
+                        result.orphansSkipped++
+                        continue
+                    }
+                }
+                // 画板条目同理：一边删了整篇画板、另一边又在上面写了几笔 → 那几笔跳过并计数
+                // （外键会让整个事务回滚、整次同步失败）
+                if (table == "board_item") {
+                    val b = row["board_id"] as? String
+                    if (b != null && b !in liveBoards) {
                         result.orphansSkipped++
                         continue
                     }

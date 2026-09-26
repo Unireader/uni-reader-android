@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  界面文案资源（2026-09-26 画板笔记起用；中文在 values-zh/strings.xml）。
+  这之前的界面文案都还直接写在代码里（中文），新功能的文案一律进这里、中英文两份一起加。
+  措辞与 Mac 的 Localizable.strings 对齐（Board / 画板笔记）。
+-->
+<resources>
+    <!-- 画板笔记（BOARD-NOTE-PLAN.md） -->
+    <string name="board_title">Board</string>
+    <string name="board_group">Boards</string>
+    <string name="board_new">New Board</string>
+    <string name="board_untitled">Untitled Board</string>
+    <string name="board_none">No boards yet.</string>
+    <string name="board_list">Board list</string>
+    <string name="board_rename">Rename…</string>
+    <string name="board_rename_title">Rename Board</string>
+    <string name="board_name_hint">Board name</string>
+    <string name="board_delete">Delete This Board</string>
+    <string name="board_delete_confirm">Delete “%1$s”?</string>
+    <string name="board_delete_msg">All strokes and images on it will be deleted. This cannot be undone.</string>
+    <string name="board_more">More</string>
+    <string name="board_create_failed">Couldn’t create the board</string>
+    <string name="board_create_failed_msg">The workspace library can’t be written to. The storage may be read-only.</string>
+    <string name="board_write_failed">Couldn’t save the board</string>
+    <string name="board_open_failed">Couldn’t open the board</string>
+    <string name="board_empty_hint">Empty board</string>
+    <string name="board_markdown_title">The Mac is showing a Markdown note</string>
+    <string name="board_markdown_msg">Switch to a PDF or a board on the Mac, or pick a board above.</string>
+    <string name="board_items">%1$d items</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_save">Save</string>
+    <string name="common_delete">Delete</string>
+    <string name="common_done">Done</string>
+</resources>

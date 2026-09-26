@@ -57,6 +57,12 @@ class LibraryStore(private val db: Db) : Closeable {
                 Log.w(TAG, "schema_version=$v，本端按 v$SCHEMA_VERSION 解析——字段可能对不上")
             }
             store.checkpoint()   // 打开即把 Mac 留下的 -wal 合并进主库（§9.2；只读连接自动跳过）
+            // 画板笔记两张表：没有就补建（「不动已有库结构」的唯一例外，只限这两张，见 Schema.BOARD_DDL）。
+            // 补不上（卷只读之类）不拦开库——读路径对缺表都有兜底，只是建不了画板。
+            if (!readOnly) {
+                runCatching { Schema.ensureBoardTables(store.db) }
+                    .onFailure { Log.w(TAG, "补建画板笔记表失败，这个工作区暂时建不了画板笔记", it) }
+            }
             return store
         }
     }
@@ -1056,6 +1062,161 @@ class LibraryStore(private val db: Db) : Closeable {
         return InkDiff(deleted, updated, inserted)
     }
 
+    // ---------- 画板笔记（board_note / board_item，v16；`../BOARD-NOTE-PLAN.md §2`） ----------
+    //
+    // SQL 照抄 Mac `LibraryStore.swift` 的「画板笔记」一节（含 ORDER BY）。表不存在（没被新版 Mac
+    // 打开过、且是只读连接没补建上的库）一律当「没有画板」处理，绝不让它把书库/开档流程炸掉。
+
+    /** 两张表都在不在（只读连接上可能不在：补建只在可写打开时做，见 [open]） */
+    fun hasBoardTables(): Boolean = hasTable("board_note") && hasTable("board_item")
+
+    fun boards(): List<BoardNote> {
+        if (!hasTable("board_note")) return emptyList()
+        return db.query("SELECT * FROM board_note ORDER BY COALESCE(last_opened_at, created_at) DESC") { board(it) }
+    }
+
+    fun board(id: String): BoardNote? {
+        if (!hasTable("board_note")) return null
+        return db.query("SELECT * FROM board_note WHERE id=?", arrayOf(id)) { board(it) }.firstOrNull()
+    }
+
+    /** 新建 / 改名 / 改纸样都走这一个 upsert（SQL 照抄 Mac `upsertBoard`） */
+    fun upsertBoard(b: BoardNote) {
+        db.exec(
+            """
+            INSERT INTO board_note(id,title,bg,pattern,group_name,created_at,updated_at,last_opened_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title, bg=excluded.bg, pattern=excluded.pattern,
+              group_name=excluded.group_name, updated_at=excluded.updated_at, last_opened_at=excluded.last_opened_at
+            """.trimIndent(),
+            arrayOf(b.id, b.title, b.bg, b.pattern, b.groupName, b.createdAt, b.updatedAt, b.lastOpenedAt),
+        )
+    }
+
+    /** 只记「最近打开」（**不动 updated_at**——打开不算改动，否则离线镜像会把没改过的画板当成改过） */
+    fun touchBoardOpened(id: String, at: String = nowIso()) {
+        if (!hasTable("board_note")) return
+        db.exec("UPDATE board_note SET last_opened_at=? WHERE id=?", arrayOf(at, id))
+    }
+
+    /** 删一篇画板笔记，上面的全部条目随外键 CASCADE 一起走（`foreign_keys=ON` 在 [Db.open] 里开着） */
+    fun deleteBoard(id: String) {
+        if (!hasTable("board_note")) return
+        db.exec("DELETE FROM board_note WHERE id=?", arrayOf(id))
+    }
+
+    /** 一篇画板的全部条目，`ORDER BY created_at ASC`（= 叠放序，照抄 Mac `boardItems`） */
+    fun boardItems(boardId: String): List<BoardItem> {
+        if (!hasTable("board_item")) return emptyList()
+        return db.query(
+            "SELECT * FROM board_item WHERE board_id=? ORDER BY created_at ASC",
+            arrayOf(boardId),
+        ) { boardItem(it) }
+    }
+
+    /** 每篇画板有几条东西（书库列表的副标题用） */
+    fun boardItemCounts(): Map<String, Int> {
+        if (!hasTable("board_item")) return emptyMap()
+        return db.query("SELECT board_id, COUNT(*) AS n FROM board_item GROUP BY board_id") {
+            it.getString(0) to it.int("n")
+        }.toMap()
+    }
+
+    /** 一篇画板上的笔迹（kind=1），转成画布用的 [Stroke]（page 恒 0、点是画布坐标） */
+    fun boardStrokes(boardId: String): List<Stroke> {
+        val out = ArrayList<Stroke>()
+        var bad = 0
+        for (it in boardItems(boardId)) {
+            if (it.kind != BoardItem.KIND_INK) continue
+            val p = InkPayload.parse(it.payload)
+            if (p == null) { bad++; continue }
+            out.add(p.toStroke(it.id, 0))
+        }
+        if (bad > 0) Log.w(TAG, "画板 ${boardId.take(8)}：$bad 条笔迹 payload 坏掉已跳过")
+        return out
+    }
+
+    fun upsertBoardItem(i: BoardItem) {
+        db.exec(
+            """
+            INSERT INTO board_item(id,board_id,kind,x,y,w,h,payload,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, x=excluded.x, y=excluded.y, w=excluded.w, h=excluded.h,
+              payload=excluded.payload, updated_at=excluded.updated_at
+            """.trimIndent(),
+            arrayOf(i.id, i.boardId, i.kind, i.x, i.y, i.w, i.h, i.payload, i.createdAt, i.updatedAt),
+        )
+    }
+
+    fun deleteBoardItem(id: String) = db.exec("DELETE FROM board_item WHERE id=?", arrayOf(id))
+
+    /**
+     * 落一笔画板笔迹（kind=1）。payload 与草稿纸 kind=4 **同一份 JSON 但不写 padId**
+     * （归属在 board_id 列上，同 Mac `InkStroke.toBoardItem`）；x/y/w/h = 画布坐标包围盒；
+     * 画板不分图层，`layerId` 照 Mac 写默认层。id 由调用方给（Mac 那边按 UUID 解析，要大写串）。
+     */
+    fun insertBoardStroke(boardId: String, pen: Pen, pts: List<Pt3>, id: String): String? {
+        if (pts.isEmpty()) return null   // 空笔画不落库（同 Mac 的 guard）
+        val b = boundsOf(pts)
+        val now = nowIso()
+        upsertBoardItem(
+            BoardItem(
+                id = id, boardId = boardId, kind = BoardItem.KIND_INK,
+                x = b[0], y = b[1], w = b[2], h = b[3],
+                payload = InkPayload.of(pen, pts, LibInkLayer.DEFAULT_ID).bytes(),
+                createdAt = now, updatedAt = now,
+            ),
+        )
+        return id
+    }
+
+    /** 改一条画板笔迹的点集（局部擦除切段后的存活段）；其余键原样保留，包围盒随新点集重算 */
+    private fun updateBoardStrokePoints(itemId: String, pts: List<Pt3>) {
+        val it = db.query("SELECT * FROM board_item WHERE id=?", arrayOf(itemId)) { boardItem(it) }.firstOrNull()
+            ?: return
+        val p = InkPayload.parse(it.payload) ?: return
+        val b = boundsOf(pts)
+        upsertBoardItem(
+            it.copy(x = b[0], y = b[1], w = b[2], h = b[3], payload = p.withPoints(pts).bytes(), updatedAt = nowIso()),
+        )
+    }
+
+    /**
+     * 画板擦除的对账落库：[reconcileScratchStrokes] 的 board_item 变体（没有图层过滤——画板不分图层）。
+     * 「头一段沿用原 id」的理由相同（回推在途时的二次擦除要对得上），整批一个事务。
+     * 新切出来的段用大写 UUID（Mac 按 UUID 解析 board_item.id，见 [newBoardId]）。
+     */
+    fun reconcileBoardStrokes(boardId: String, local: Map<String, List<Stroke>>): InkDiff {
+        var deleted = 0
+        var updated = 0
+        var inserted = 0
+        transaction {
+            for (old in boardStrokes(boardId)) {
+                val segs = local[old.id]
+                if (segs == null) {
+                    deleteBoardItem(old.id)
+                    deleted++
+                    continue
+                }
+                if (segs.size == 1 && segs[0].pts.size == old.pts.size) continue
+                updateBoardStrokePoints(old.id, segs[0].pts)
+                updated++
+                for (i in 1 until segs.size) {
+                    insertBoardStroke(boardId, segs[i].pen, segs[i].pts, newBoardId())
+                    inserted++
+                }
+            }
+        }
+        return InkDiff(deleted, updated, inserted)
+    }
+
+    /** `image` 表里这张图的扩展名（表不存在 / 没登记 → null，调用方按常见扩展名去试） */
+    fun imageExt(sha256: String): String? {
+        if (!hasTable("image")) return null
+        return db.query("SELECT ext FROM image WHERE sha256=?", arrayOf(sha256)) { it.str("ext") }
+            .firstOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
     // ---------- ink_layer ----------
 
     fun inkLayers(documentId: String): List<LibInkLayer> = db.query(
@@ -1151,6 +1312,30 @@ class LibraryStore(private val db: Db) : Closeable {
         id = c.str("id"), documentId = c.str("document_id"), name = c.str("name"),
         colorKey = c.str("color_key"), sortOrder = c.int("sort_order"),
         visible = c.bool("visible", true), createdAt = c.str("created_at"),
+    )
+
+    private fun board(c: android.database.Cursor) = BoardNote(
+        id = c.str("id"),
+        title = c.str("title"),
+        bg = c.str("bg").ifEmpty { ScratchPad.DEFAULT_BG },
+        pattern = ScratchPad.patternOrDefault(c.str("pattern")),
+        groupName = c.str("group_name"),
+        createdAt = c.str("created_at"),
+        updatedAt = c.str("updated_at"),
+        lastOpenedAt = c.strOrNull("last_opened_at"),
+    )
+
+    private fun boardItem(c: android.database.Cursor) = BoardItem(
+        id = c.str("id"),
+        boardId = c.str("board_id"),
+        kind = c.int("kind"),
+        x = c.dbl("x"),
+        y = c.dbl("y"),
+        w = c.dbl("w"),
+        h = c.dbl("h"),
+        payload = c.blob("payload"),
+        createdAt = c.str("created_at"),
+        updatedAt = c.str("updated_at"),
     )
 
     private fun scratchPad(c: android.database.Cursor) = ScratchPad(
