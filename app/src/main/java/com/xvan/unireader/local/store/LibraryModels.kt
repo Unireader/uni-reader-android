@@ -77,6 +77,13 @@ data class LibNote(
     val payload: ByteArray,
     val createdAt: String,
     val updatedAt: String,
+    /**
+     * 笔迹点集的二进制形态（v18 `points` 列，[InkPointsBlob]；非笔迹行 / 还没迁移 = null）。
+     * 写库时 `points_at` 自动取这一行的 `updated_at`（`../BINARY-INK-PLAN.md §2`）。
+     */
+    val points: ByteArray? = null,
+    /** 读出来时二进制是否最新（`points_at == updated_at`，比原始字符串）。写库时不看。 */
+    val pointsValid: Boolean = false,
 ) {
     // payload 是 ByteArray，data class 的默认 equals 会比引用——手写成按内容比，
     // 否则「读出来又写回去」的去重判断会永远认为变了。
@@ -86,7 +93,7 @@ data class LibNote(
         return id == other.id && documentId == other.documentId && kind == other.kind &&
             page == other.page && anchorX == other.anchorX && anchorY == other.anchorY &&
             anchorW == other.anchorW && anchorH == other.anchorH &&
-            payload.contentEquals(other.payload) &&
+            payload.contentEquals(other.payload) && points.contentEquals(other.points) &&
             createdAt == other.createdAt && updatedAt == other.updatedAt
     }
 
@@ -209,6 +216,9 @@ data class BoardItem(
     val payload: ByteArray,
     val createdAt: String,
     val updatedAt: String,
+    /** v18 二进制点集（笔迹条目才有，同 [LibNote.points]） */
+    val points: ByteArray? = null,
+    val pointsValid: Boolean = false,
 ) {
     companion object {
         const val KIND_INK = 1

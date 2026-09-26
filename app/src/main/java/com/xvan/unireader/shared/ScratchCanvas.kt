@@ -30,7 +30,7 @@ import kotlin.math.roundToInt
  *
  * **只管几何/输入/渲染，不碰数据从哪来**（同 `PageCanvasView` 的分工）：数据进出全走回调——
  * 模式1 由 `local/ScratchController` 接 `LibraryStore`（收笔一次 INSERT + 擦除收尾 reconcile）；
- * 模式2 将来接线协议，流式钩子（[onStrokeBegin]/[onStrokeMove]/[onEraseAt]）已经留好。
+ * 模式2 接线协议（流式钩子 [onStrokeBegin]/[onStrokeMove]/[onEraseAt]、框选提交 [onLassoEdit]）。
  *
  * 视口（origin/zoom）是本端私有的：**不落库、不上线**（三端各自独立缩放滚动），打开一律回中。
  * 夜间模式**不反色**：纸色是自己画的，夜间滤镜只在 `PageCanvasView` 的页图层上，天然排除。
@@ -44,10 +44,11 @@ class ScratchCanvas @JvmOverloads constructor(
      * 当前工具快照（宿主从阅读画布现抄）。**每次落笔现取**——纸开着时改笔/改橡皮即时生效，
      * 不需要额外的同步动作。
      *
-     * @param inkTool 笔落下写字（笔记模式）；false = 平移（翻页/框选/文字笔记模式在纸上
-     *   都退化为平移——画布没有「页」也没有页内框选/文字注解，同 web 的退化分支）
+     * @param inkTool 笔落下写字（笔记模式）；都为 false = 平移（翻页/文字笔记模式在纸上
+     *   退化为平移——画布没有「页」也没有文字注解，同 web 的退化分支）
      * @param eraseTool 笔落下擦除
      * @param eraserSize 页宽归一化的橡皮半径；画布半径 = eraserSize × [ScratchGeom.ERASER_REF_W]
+     * @param lassoTool 笔落下框选（圈选 / 拖框内移动 / 拖手柄缩放，只作用于笔迹，见「框选」一节）
      */
     class Tools(
         val inkTool: Boolean,
@@ -57,6 +58,7 @@ class ScratchCanvas @JvmOverloads constructor(
         val eraserMode: Int,     // 0=整笔 1=局部
         val eraserRing: Boolean,
         val rulerOn: Boolean,
+        val lassoTool: Boolean = false,
     )
 
     /** 宿主给：当前工具快照（返回 null = 还没接上，笔落下只平移不崩） */
@@ -79,6 +81,25 @@ class ScratchCanvas @JvmOverloads constructor(
 
     /** 视口变了（平移/缩放/回中/适应/minimap 跳转）——宿主刷新缩放读数之类 */
     var onViewportChanged: (() -> Unit)? = null
+
+    /**
+     * 一次框选移动 / 缩放已经在本地生效（画布坐标）。[poly] 是**变换前**的选区多边形（真源拿它复判命中），
+     * [scale] = `[ax, ay, sx, sy]`（缩放）或 null（移动，用 [dx]/[dy]）；[before]/[after] 是被改的那几条的新旧版本
+     * （id 不变）。模式1 据此落库，模式2 发 `lassoMove` / `lassoScale`（`../PROTOCOL.md §4.4`）。
+     */
+    class LassoEdit(
+        val poly: FloatArray,
+        val dx: Float,
+        val dy: Float,
+        val scale: FloatArray?,
+        val before: List<Stroke>,
+        val after: List<Stroke>,
+    )
+
+    var onLassoEdit: ((LassoEdit) -> Unit)? = null
+
+    /** 有没有选中集变了（顶栏据此灰掉 / 亮起剪切与复制） */
+    var onLassoSelChanged: ((Boolean) -> Unit)? = null
 
     private val density = resources.displayMetrics.density
     private fun dp(v: Float) = v * density
@@ -414,6 +435,8 @@ class ScratchCanvas @JvmOverloads constructor(
      *   回推还没到」之间会露出空窗，肉眼就是上一笔闪一下。判据在 `PadScratch.applyStrokes`。
      */
     fun setStrokes(list: List<Stroke>, keep: List<Stroke> = emptyList()) {
+        // 框选拖动中被整表换掉：拿出来的那几条已经不在新表里的位置上了，这次拖动作废（选中集下面按多边形重判）
+        if (lassoDrag != null) abortLassoDrag()
         val next = ArrayList<Stroke>(list.size + keep.size)
         next.addAll(list)
         next.addAll(keep)
@@ -429,9 +452,15 @@ class ScratchCanvas @JvmOverloads constructor(
             removed = strokes.filter { it !in after }
             added = next.filter { it !in before }
         }
+        if (android.os.SystemClock.uptimeMillis() - lastCommitAt < 3000) {
+            val back = if (lastCommitBefore.isEmpty()) 0 else next.count { it in lastCommitBefore }
+            lassoLog("提交后 ${android.os.SystemClock.uptimeMillis() - lastCommitAt}ms 收到整表：" +
+                "${next.size} 条，删 ${removed.size} 加 ${added.size}，其中提交前的旧位置 $back 条")
+        }
         strokes.clear()
         strokes.addAll(next)
         strokesChanged(removed, added)
+        refreshLassoSelection()
         clampViewport()
         invalidate()
     }
@@ -452,11 +481,13 @@ class ScratchCanvas @JvmOverloads constructor(
         if (gone.isEmpty()) return
         strokes.removeAll { it.id == id }
         strokesChanged(gone, emptyList())
+        refreshLassoSelection()
         invalidate()
     }
 
     /** 打开一张纸：丢掉上一张的全部状态（含活体半笔与几何缓存）并回中 */
     fun openSession() {
+        clearLasso()
         strokes.clear()
         tiles.reset()
         strokeBoundsOk = false
@@ -595,7 +626,7 @@ class ScratchCanvas @JvmOverloads constructor(
 
     private var penActive = false
     private var penId = -1
-    private var penKind = 0        // 0=无 1=落墨 2=擦除 3=平移 4=minimap 拖动
+    private var penKind = 0        // 0=无 1=落墨 2=擦除 3=平移 4=minimap 拖动 5=框选
     private var penX = 0f
     private var penY = 0f
 
@@ -830,7 +861,7 @@ class ScratchCanvas @JvmOverloads constructor(
         onViewportChanged?.invoke()
     }
 
-    // ---- 笔：落墨 / 擦除；翻页·框选·文字笔记模式退化为平移；minimap 可点可拖 ----
+    // ---- 笔：落墨 / 擦除 / 框选；翻页·文字笔记模式退化为平移；minimap 可点可拖 ----
 
     private fun stylusDown(e: MotionEvent, idx: Int) {
         val x = e.getX(idx)
@@ -846,8 +877,13 @@ class ScratchCanvas @JvmOverloads constructor(
             return
         }
         val t = curTools()
+        if (!t.lassoTool && hasSel) clearLasso()   // 换了工具：选中集作废（同页内切模式）
         val c = toCanvas(x, y)
         when {
+            t.lassoTool -> {
+                penKind = 5
+                lassoDown(x, y)
+            }
             t.eraseTool -> {
                 penKind = 2
                 eraseAt(c[0], c[1])
@@ -875,6 +911,7 @@ class ScratchCanvas @JvmOverloads constructor(
         val p = if (historical) e.getHistoricalPressure(pi, h) else e.getPressure(pi)
         when (penKind) {
             4 -> miniJump(x, y)
+            5 -> lassoMove(x, y)
             3 -> {
                 val beforeY = oy
                 val dx = (penX - x) / density / zoom
@@ -931,6 +968,7 @@ class ScratchCanvas @JvmOverloads constructor(
             }
             2 -> onEraseFinish?.invoke(ArrayList(strokes))
             3 -> endPull()   // 笔拖着平移的那次手势结束：上拉加页的账清零
+            5 -> lassoUp()
         }
         penActive = false
         penId = -1
@@ -979,6 +1017,408 @@ class ScratchCanvas @JvmOverloads constructor(
         }
     }
 
+    // ---- 框选（笔：拖空白 = 自由圈选 / 拖选中框内 = 移动 / 拖手柄 = 缩放；只作用于笔迹） ----
+    //
+    // 命中规则与 Mac 本机 `ScratchPadNSView.finishLassoSelect`、平板上行 `lassoMove`（Mac `AppModel+Scratch`）
+    // 同一口径：笔迹任一点落在多边形内。变换算法同 Mac `InkEdit.canvasTranslated/canvasScaled`（画布不夹取，
+    // 线宽 ×√(sx·sy) 夹 0.5…40）。两模式一样**本地立刻生效**（选中那几条换成新版本），再经 [onLassoEdit]
+    // 交给宿主：模式1 落库，模式2 发给 Mac 复判执行、回推 `scratchStrokes` 为准。
+    // 选中集按**多边形**记（不按下标 / id：模式2 的笔迹没有 id）；表一换就按多边形重判（[refreshLassoSelection]），
+    // 变换提交后多边形跟着变换，于是回推回来的新位置照样选得中。
+
+    private val lassoDeadPx = dp(PadConst.LASSO_DEAD)
+    private var selPoly: FloatArray? = null          // 选区多边形（画布坐标，扁平 x,y…）
+    private var selIdx = IntArray(0)                  // 命中的笔迹在 [strokes] 里的下标（随 [selPoly] 重判）
+    private var hasSel = false
+        set(v) {
+            if (field != v) { field = v; onLassoSelChanged?.invoke(v) }
+        }
+    private val selBox = FloatArray(4)               // 命中笔迹的联合包围盒（画布坐标 x0,y0,x1,y1）
+    private var lassoMode = 0                        // 0=未越过死区 1=圈选 2=移动 3=缩放
+    private var lassoMoved = false
+    private var lassoDownX = 0f                      // 落笔点（视口 px）
+    private var lassoDownY = 0f
+    private val lassoPath = ArrayList<Pt2>()         // 圈选路径（画布坐标）
+    private var lassoHandle = -1                     // 缩放拖的哪个手柄（0..7 = tl,tr,bl,br,t,b,l,r）
+    private var lassoAx = 0f                         // 缩放锚点（对侧手柄，画布坐标）
+    private var lassoAy = 0f
+    private var lassoSx = 1f
+    private var lassoSy = 1f
+    private var lassoDx = 0f                         // 移动位移（画布坐标）
+    private var lassoDy = 0f
+    private val lassoOpp = intArrayOf(3, 2, 1, 0, 5, 4, 7, 6)   // 对侧手柄（同 PageCanvasView）
+
+    /** 拖动中从 [strokes] 里拿出来的那几条（下标升序 + 原对象）：单独画在变换后的位置，松手放回 */
+    private class LassoDrag(val idx: IntArray, val orig: List<Stroke>)
+    private var lassoDrag: LassoDrag? = null
+
+    private val boxTmp = FloatArray(4)
+    private val handleTmp = FloatArray(16)
+    private var viewPts = FloatArray(256)
+
+    fun hasLassoSelection(): Boolean = hasSel
+
+    /** 选区多边形（画布坐标）：剪切 / 复制交给真源复判用 */
+    fun lassoPolygon(): FloatArray? = selPoly?.copyOf()
+
+    /** 选中的笔迹（模式1 剪贴板用） */
+    fun lassoSelectedStrokes(): List<Stroke> = selIdx.map { strokes[it] }
+
+    /** 视口正中的画布坐标（粘贴落点：平板没有指针，同页内 `requestClipPaste`） */
+    fun viewportCenterCanvas(): FloatArray = floatArrayOf(ox + viewWdp() / zoom / 2f, oy + viewHdp() / zoom / 2f)
+
+    /** 放弃选中集（换工具 / 换纸 / 宿主要求）。没东西可清时什么都不做——宿主每次刷新顶栏都可以调 */
+    fun clearLasso() {
+        if (selPoly == null && !hasSel && lassoDrag == null && lassoPath.isEmpty() && lassoMode == 0) return
+        if (lassoDrag != null) abortLassoDrag()
+        selPoly = null
+        selIdx = IntArray(0)
+        hasSel = false
+        lassoMode = 0
+        lassoMoved = false
+        lassoPath.clear()
+        invalidate()
+    }
+
+    /** 本地删掉选中的笔迹（剪切的乐观一半），返回删掉的那几条；选中集随之清空 */
+    fun deleteLassoSelection(): List<Stroke> {
+        if (!hasSel) return emptyList()
+        val gone = selIdx.map { strokes[it] }
+        for (i in selIdx.sortedDescending()) strokes.removeAt(i)
+        strokesChanged(gone, emptyList())
+        clearLasso()
+        return gone
+    }
+
+    /** 表换过了：按多边形重判选中集（拖动中不动它——那几条此刻不在表里） */
+    private fun refreshLassoSelection() {
+        val poly = selPoly ?: return
+        if (lassoDrag != null) return
+        hitTest(poly)
+    }
+
+    /**
+     * 按多边形算命中与包围盒；零命中 = 没有选中集。先按包围盒粗筛（笔迹盒子由块缓存按对象缓存着），
+     * 盒子外的点不做射线判定——笔迹多时逐点逐边算是几百万次运算。
+     */
+    private fun hitTest(poly: FloatArray) {
+        val t0 = android.os.SystemClock.uptimeMillis()
+        var px0 = Float.POSITIVE_INFINITY; var py0 = Float.POSITIVE_INFINITY
+        var px1 = Float.NEGATIVE_INFINITY; var py1 = Float.NEGATIVE_INFINITY
+        for (i in poly.indices step 2) {
+            px0 = min(px0, poly[i]); px1 = max(px1, poly[i])
+            py0 = min(py0, poly[i + 1]); py1 = max(py1, poly[i + 1])
+        }
+        val hits = ArrayList<Int>()
+        var x0 = Float.POSITIVE_INFINITY; var y0 = Float.POSITIVE_INFINITY
+        var x1 = Float.NEGATIVE_INFINITY; var y1 = Float.NEGATIVE_INFINITY
+        var tested = 0
+        for (i in strokes.indices) {
+            val s = strokes[i]
+            val b = tiles.box(s)
+            if (b[2] < px0 || b[0] > px1 || b[3] < py0 || b[1] > py1) continue
+            tested++
+            if (s.pts.none { it.x >= px0 && it.x <= px1 && it.y >= py0 && it.y <= py1 &&
+                    InkEdit.pointInPolygon(it.x, it.y, poly) }) continue
+            hits.add(i)
+            for (p in s.pts) { x0 = min(x0, p.x); y0 = min(y0, p.y); x1 = max(x1, p.x); y1 = max(y1, p.y) }
+        }
+        lassoLog("框选判定 ${android.os.SystemClock.uptimeMillis() - t0}ms：全集 ${strokes.size} 条、" +
+            "粗筛后 $tested 条、命中 ${hits.size} 条，多边形 ${poly.size / 2} 点")
+        if (hits.isEmpty()) {
+            selPoly = null
+            selIdx = IntArray(0)
+            hasSel = false
+            return
+        }
+        selPoly = poly
+        selIdx = hits.toIntArray()
+        selBox[0] = x0; selBox[1] = y0; selBox[2] = x1; selBox[3] = y1
+        hasSel = true
+    }
+
+    private fun vx(cx: Float) = (cx - ox) * zoom * density
+    private fun vy(cy: Float) = (cy - oy) * zoom * density
+
+    /** 选中框（视口 px，外扩 6dp、至少 16dp，**不含拖动中的变换**），同 PageCanvasView.lassoViewBox */
+    private fun selViewBox(out: FloatArray): Boolean {
+        if (!hasSel) return false
+        val pad = dp(6f)
+        val x0 = vx(selBox[0]); val y0 = vy(selBox[1])
+        out[0] = x0 - pad
+        out[1] = y0 - pad
+        out[2] = max(vx(selBox[2]) - x0 + pad * 2, dp(16f))
+        out[3] = max(vy(selBox[3]) - y0 + pad * 2, dp(16f))
+        return true
+    }
+
+    private fun handlePts(box: FloatArray, out: FloatArray) {
+        val x = box[0]; val y = box[1]; val w = box[2]; val h = box[3]
+        val xs = floatArrayOf(x, x + w, x, x + w, x + w / 2, x + w / 2, x, x + w)
+        val ys = floatArrayOf(y, y, y + h, y + h, y, y + h, y + h / 2, y + h / 2)
+        for (i in 0 until 8) { out[i * 2] = xs[i]; out[i * 2 + 1] = ys[i] }
+    }
+
+    private fun boxContains(x: Float, y: Float): Boolean {
+        if (!selViewBox(boxTmp)) return false
+        val g = dp(8f)
+        return x >= boxTmp[0] - g && x <= boxTmp[0] + boxTmp[2] + g && y >= boxTmp[1] - g && y <= boxTmp[1] + boxTmp[3] + g
+    }
+
+    private fun lassoDown(x: Float, y: Float) {
+        lassoDownX = x; lassoDownY = y
+        lassoMoved = false
+        lassoMode = 0
+        lassoHandle = -1
+        lassoDx = 0f; lassoDy = 0f
+        lassoSx = 1f; lassoSy = 1f
+    }
+
+    /** 越过死区后判一次形态：落点命中手柄（≤10dp）→ 缩放；落在选中框内 → 移动；否则重新圈选 */
+    private fun lassoMove(x: Float, y: Float) {
+        if (!lassoMoved) {
+            if (hypot(x - lassoDownX, y - lassoDownY) < lassoDeadPx) return
+            lassoMoved = true
+            var m = 1
+            if (selViewBox(boxTmp)) {
+                handlePts(boxTmp, handleTmp)
+                var hit = -1
+                for (i in 0 until 8) {
+                    if (hypot(lassoDownX - handleTmp[i * 2], lassoDownY - handleTmp[i * 2 + 1]) <= dp(10f)) { hit = i; break }
+                }
+                if (hit >= 0) {
+                    m = 3
+                    lassoHandle = hit
+                    val o = lassoOpp[hit]
+                    val a = toCanvas(handleTmp[o * 2], handleTmp[o * 2 + 1])
+                    lassoAx = a[0]; lassoAy = a[1]
+                } else if (boxContains(lassoDownX, lassoDownY)) m = 2
+            }
+            lassoMode = m
+            if (m == 1) {
+                selPoly = null
+                selIdx = IntArray(0)
+                hasSel = false
+                lassoPath.clear()
+                val c = toCanvas(lassoDownX, lassoDownY)
+                lassoPath.add(Pt2(c[0], c[1]))
+            } else beginLassoDrag()
+        }
+        when (lassoMode) {
+            1 -> {
+                // ≥3dp 抽稀（更密的点对多边形命中无增益）
+                val last = lassoPath.last()
+                if (hypot(x - vx(last.x), y - vy(last.y)) >= dp(3f)) {
+                    val c = toCanvas(x, y)
+                    lassoPath.add(Pt2(c[0], c[1]))
+                }
+            }
+            2 -> {
+                lassoDx = (x - lassoDownX) / density / zoom
+                lassoDy = (y - lassoDownY) / density / zoom
+            }
+            3 -> updateLassoScale(x, y)
+        }
+        invalidate()
+    }
+
+    /**
+     * 缩放：被拖手柄当前位置 / 原「手柄→锚点」向量（视口空间，同 PageCanvasView.updateLassoScale）。
+     * 角手柄等比（取变化更大的一轴；平板没有 Shift），边中点单轴；夹 0.05…20。
+     */
+    private fun updateLassoScale(x: Float, y: Float) {
+        val h = lassoHandle
+        if (h < 0 || !selViewBox(boxTmp)) return
+        handlePts(boxTmp, handleTmp)
+        val aVx = vx(lassoAx); val aVy = vy(lassoAy)
+        val denomX = handleTmp[h * 2] - aVx
+        val denomY = handleTmp[h * 2 + 1] - aVy
+        var sx = 1f; var sy = 1f
+        when (h) {
+            4, 5 -> if (abs(denomY) > 1f) sy = (y - aVy) / denomY
+            6, 7 -> if (abs(denomX) > 1f) sx = (x - aVx) / denomX
+            else -> if (abs(denomX) > 1f && abs(denomY) > 1f) {
+                sx = (x - aVx) / denomX; sy = (y - aVy) / denomY
+                val s = if (abs(sx - 1) >= abs(sy - 1)) sx else sy
+                sx = s; sy = s
+            }
+        }
+        lassoSx = sx.coerceIn(0.05f, 20f)
+        lassoSy = sy.coerceIn(0.05f, 20f)
+    }
+
+    /** 开始拖：选中那几条从 [strokes] 里拿出来（块缓存随之去掉它们），拖动中由 [drawLassoDrag] 画 */
+    private fun beginLassoDrag() {
+        if (!hasSel) return
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val idx = selIdx.sortedArray()
+        val orig = idx.map { strokes[it] }
+        for (i in idx.indices.reversed()) strokes.removeAt(idx[i])
+        strokesChanged(orig, emptyList())
+        lassoDrag = LassoDrag(idx, orig)
+        lassoLog("开始拖动（${if (lassoMode == 3) "缩放" else "移动"}）${orig.size} 条，拿出来 ${android.os.SystemClock.uptimeMillis() - t0}ms")
+    }
+
+    /** 把拿出来的放回原位（[list] 与 [LassoDrag.idx] 一一对应，升序插回 = 原来的叠放次序） */
+    private fun putBack(d: LassoDrag, list: List<Stroke>) {
+        for (k in d.idx.indices) strokes.add(min(d.idx[k], strokes.size), list[k])
+        strokesChanged(emptyList(), list)
+    }
+
+    /** 拖动作废：原样放回 */
+    private fun abortLassoDrag() {
+        val d = lassoDrag ?: return
+        lassoDrag = null
+        putBack(d, d.orig)
+        lassoMode = 0
+        lassoMoved = false
+    }
+
+    private fun movedStroke(s: Stroke, dx: Float, dy: Float): Stroke =
+        s.copy(pts = s.pts.map { Pt3(it.x + dx, it.y + dy, it.p) })
+
+    private fun scaledStroke(s: Stroke, ax: Float, ay: Float, sx: Float, sy: Float): Stroke =
+        s.copy(
+            pts = s.pts.map { Pt3(ax + (it.x - ax) * sx, ay + (it.y - ay) * sy, it.p) },
+            pen = s.pen.copy(w = (s.pen.w * kotlin.math.sqrt(sx * sy)).coerceIn(0.5f, 40f)),
+        )
+
+    private fun transformPoly(poly: FloatArray, scale: Boolean): FloatArray {
+        val out = poly.copyOf()
+        for (i in out.indices step 2) {
+            if (scale) {
+                out[i] = lassoAx + (out[i] - lassoAx) * lassoSx
+                out[i + 1] = lassoAy + (out[i + 1] - lassoAy) * lassoSy
+            } else {
+                out[i] += lassoDx
+                out[i + 1] += lassoDy
+            }
+        }
+        return out
+    }
+
+    /** 松手：点一下（没越过死区）且在框外 = 清选中；圈选 = 本地判定；移动 / 缩放 = 本地生效 + 交给宿主 */
+    private fun lassoUp() {
+        if (!lassoMoved || lassoMode == 0) {
+            if (hasSel && !boxContains(lassoDownX, lassoDownY)) clearLasso()
+        } else if (lassoMode == 1) {
+            if (lassoPath.size >= 3) {
+                val poly = FloatArray(lassoPath.size * 2)
+                for (i in lassoPath.indices) { poly[i * 2] = lassoPath[i].x; poly[i * 2 + 1] = lassoPath[i].y }
+                hitTest(poly)
+            }
+        } else {
+            commitLassoDrag()
+        }
+        lassoMode = 0
+        lassoMoved = false
+        lassoHandle = -1
+        lassoPath.clear()
+        invalidate()
+    }
+
+    private fun commitLassoDrag() {
+        val d = lassoDrag ?: return
+        lassoDrag = null
+        val poly = selPoly
+        val isScale = lassoMode == 3
+        val noop = if (isScale) lassoSx == 1f && lassoSy == 1f else lassoDx == 0f && lassoDy == 0f
+        if (poly == null || noop) { putBack(d, d.orig); return }
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val after = d.orig.map {
+            if (isScale) scaledStroke(it, lassoAx, lassoAy, lassoSx, lassoSy) else movedStroke(it, lassoDx, lassoDy)
+        }
+        putBack(d, after)
+        lastCommitAt = android.os.SystemClock.uptimeMillis()
+        lastCommitBefore = HashSet(d.orig)
+        lassoLog("松手提交（${if (isScale) "缩放" else "移动"}）${after.size} 条，放回 ${lastCommitAt - t0}ms")
+        // 选中集跟着走：多边形同一个变换（点在多边形内的关系在仿射变换下保持），下标就是放回的位置
+        hitTest(transformPoly(poly, isScale))
+        onLassoEdit?.invoke(
+            LassoEdit(
+                poly = poly, dx = lassoDx, dy = lassoDy,
+                scale = if (isScale) floatArrayOf(lassoAx, lassoAy, lassoSx, lassoSy) else null,
+                before = d.orig, after = after,
+            ),
+        )
+    }
+
+    private fun ensureViewPts(n: Int): FloatArray {
+        if (viewPts.size < n) viewPts = FloatArray(n * 2)
+        return viewPts
+    }
+
+    /**
+     * 拖动中的那几条：画在变换后的位置。一律用**已缓存的几何**（`drawScratchStroke` 按笔迹内容缓存轮廓）——
+     * 移动 = 挪原点；缩放 = 画布按锚点缩放（只是预览，线宽跟着画布走；松手后按 √(sx·sy) 规则重建）。
+     * 不能每帧 `drawScratchLive` 现建轮廓：选中几百条时一帧就是几百毫秒。
+     */
+    private fun drawLassoDrag(c: Canvas) {
+        val d = lassoDrag ?: return
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val z = zoom
+        if (lassoMode == 3) {
+            c.save()
+            c.scale(lassoSx, lassoSy, vx(lassoAx), vy(lassoAy))
+            for (s in d.orig) ink.drawScratchStroke(c, s, ox, oy, z)
+            c.restore()
+        } else {
+            for (s in d.orig) ink.drawScratchStroke(c, s, ox - lassoDx, oy - lassoDy, z)
+        }
+        val ms = android.os.SystemClock.uptimeMillis() - t0
+        if (ms > 16) lassoLog("拖动预览一帧 ${ms}ms（${d.orig.size} 条）")
+    }
+
+    // ---- 框选排障打点（logcat 标签 UniReader/Lasso） ----
+    private fun lassoLog(msg: String) = android.util.Log.i("UniReader/Lasso", msg)
+
+    /** 最近一次提交：回推里若又出现提交前的那几条（旧位置），说明回推比提交旧——闪烁的直接证据 */
+    private var lastCommitAt = 0L
+    private var lastCommitBefore: Set<Stroke> = emptySet()
+
+    /** 圈选虚线 + 选中光晕 + 高亮框与 8 手柄（拖动中跟着变换预览；同 PageCanvasView.drawLassoOverlay 的画法） */
+    private fun drawLassoOverlay(c: Canvas) {
+        val t0 = android.os.SystemClock.uptimeMillis()
+        drawLassoOverlayInner(c)
+        val ms = android.os.SystemClock.uptimeMillis() - t0
+        if (ms > 16) lassoLog("选中光晕 / 框一帧 ${ms}ms（选中 ${selIdx.size} 条）")
+    }
+
+    private fun drawLassoOverlayInner(c: Canvas) {
+        if (lassoMode == 1 && lassoPath.size >= 2) {
+            val buf = ensureViewPts(lassoPath.size * 2)
+            for (i in lassoPath.indices) { buf[i * 2] = vx(lassoPath[i].x); buf[i * 2 + 1] = vy(lassoPath[i].y) }
+            overlays.drawLassoPath(c, buf, lassoPath.size)
+        }
+        if (!hasSel || !selViewBox(boxTmp)) return
+        val drag = lassoDrag
+        val scaling = drag != null && lassoMode == 3
+        val gdx = if (drag != null && !scaling) lassoDx * zoom * density else 0f
+        val gdy = if (drag != null && !scaling) lassoDy * zoom * density else 0f
+        val aVx = vx(lassoAx); val aVy = vy(lassoAy)
+        fun gx(v: Float) = if (scaling) aVx + (v - aVx) * lassoSx else v + gdx
+        fun gy(v: Float) = if (scaling) aVy + (v - aVy) * lassoSy else v + gdy
+        // 光晕：拖动中画那几条的变换后位置，平时画表里的
+        val sel = drag?.orig ?: selIdx.map { strokes[it] }
+        for (s in sel) {
+            val wPx = (s.pen.w * zoom + 5f) * density
+            if (s.pts.size == 1) {
+                overlays.drawLassoHaloDot(c, gx(vx(s.pts[0].x)), gy(vy(s.pts[0].y)), wPx / 2f)
+                continue
+            }
+            val buf = ensureViewPts(s.pts.size * 2)
+            for (j in s.pts.indices) { buf[j * 2] = gx(vx(s.pts[j].x)); buf[j * 2 + 1] = gy(vy(s.pts[j].y)) }
+            overlays.drawLassoHalo(c, buf, s.pts.size, wPx)
+        }
+        val bx = boxTmp[0]; val by = boxTmp[1]; val bw = boxTmp[2]; val bh = boxTmp[3]
+        val xs = floatArrayOf(gx(bx), gx(bx + bw), gx(bx), gx(bx + bw))
+        val ys = floatArrayOf(gy(by), gy(by), gy(by + bh), gy(by + bh))
+        overlays.drawLassoSelection(c, xs.min(), ys.min(), xs.max(), ys.max())
+        handlePts(boxTmp, handleTmp)
+        for (i in 0 until 8) { handleTmp[i * 2] = gx(handleTmp[i * 2]); handleTmp[i * 2 + 1] = gy(handleTmp[i * 2 + 1]) }
+        overlays.drawLassoHandles(c, handleTmp)
+    }
+
     // ---- 悬停：擦除模式下显示橡皮尺寸圆环（同页内 hover 的口径） ----
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
@@ -1014,7 +1454,8 @@ class ScratchCanvas @JvmOverloads constructor(
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
 
     private fun hasContent() =
-        strokes.isNotEmpty() || livePts.isNotEmpty() || pageUnderRect != null || pics.isNotEmpty() || paged
+        strokes.isNotEmpty() || livePts.isNotEmpty() || pageUnderRect != null || pics.isNotEmpty() || paged ||
+            lassoDrag != null   // 全选着拖：表里暂时是空的，别冒出「空白纸」提示
 
     /** minimap：分页画板没有（有页码，同 Mac） */
     private fun showMinimap() = minimapOn && hasContent() && !paged
@@ -1034,7 +1475,9 @@ class ScratchCanvas @JvmOverloads constructor(
         val z = zoom
         ink.deferRebuild = pinching   // 捏合中别重建几何，canvas 缩放顶一拍（同页内）
         tiles.draw(canvas, ox, oy, z, width, height, pinching, drawDirect)
+        drawLassoDrag(canvas)   // 框选拖动中：被拿出来的那几条画在变换后的位置
         livePen?.let { ink.drawScratchLive(canvas, it, livePts, ox, oy, z) }
+        drawLassoOverlay(canvas)
         // 空白纸的引导（有笔迹后自动消失；同 Mac 的 emptyHint）
         if (!hasContent()) drawEmptyHint(canvas)
         // 橡皮尺寸圆环：半径 = eraserSize × 800 × zoom（三端同一条换算）

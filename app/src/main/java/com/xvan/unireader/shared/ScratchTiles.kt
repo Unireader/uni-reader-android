@@ -116,10 +116,21 @@ internal class ScratchTiles(
      * 就整套块作废——旧图上的笔迹位置可能全不对了，宁可直接画一帧，也不贴错位的旧图。
      */
     fun changed(removed: List<Stroke>, added: List<Stroke>) {
+        if (source.isEmpty()) {
+            // 全删光了（擦掉最后一条 / 框选拖动时把仅有的几条拿出来）：draw() 在空表时直接返回、不排重画，
+            // 旧块里被删的笔迹就一直留在位图上，等下一笔补画（paintIn）进同一张旧图时连带露出来——
+            // 2026-09-26 用户报「模式2 框选拖动松手，原来位置闪一下」，纸上只有 1 条笔迹时必现。整套块清掉。
+            dropAll(cur); cur = HashMap()
+            dropAll(old); old = HashMap(); oldZk = 0f
+            boxes.clear()
+            snap = null
+            return
+        }
         if (removed.isEmpty() && added.isEmpty()) { pruneBoxes(); return }   // 模式2 回推：内容没变、对象全是新的
         snap = null
         dropAll(old); old = HashMap(); oldZk = 0f   // 旧缩放那套不再跟进，直接不要了
         if (removed.size + added.size > BULK) {
+            android.util.Log.i("UniReader/Tiles", "一次变 ${removed.size + added.size} 条 > $BULK：整套块作废重画")
             dropAll(cur); cur = HashMap()
             for (s in removed) boxes.remove(s)
             pruneBoxes()
@@ -358,7 +369,13 @@ internal class ScratchTiles(
     private fun finish(t: Tile, ver: Int, bmp: Bitmap?, failed: Boolean) {
         if (t.dropped) return
         if (failed) { t.queuedVer = -1; return }   // 这块先直接画，下次再排
-        if (ver < t.minAccept || ver <= t.doneVer) return
+        if (ver < t.minAccept || ver <= t.doneVer) {
+            if (ver < t.minAccept) {
+                android.util.Log.i("UniReader/Tiles", "块(${t.i},${t.j}) 后台结果 v$ver 早于 minAccept v${t.minAccept}，丢弃；" +
+                    "当前贴的是 v${t.doneVer}（最新 v${t.ver}）")
+            }
+            return
+        }
         t.bmp = bmp
         t.doneVer = ver
         onTileReady()

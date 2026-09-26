@@ -26,8 +26,9 @@ object Schema {
     /**
      * 与 Mac `LibraryStore.schemaVersion` 同步。v13 `image`、v14 `page_align`、v15 `md_doc`（本端只建表不用）、
      * v16 `board_note`/`board_item`、v17 `board_page`——表都建上，写进去的版本号才不撒谎。
+     * v18：`note` / `board_item` 加 `points BLOB` + `points_at TEXT`（笔迹点集二进制，`../BINARY-INK-PLAN.md`）。
      */
-    const val VERSION = 17
+    const val VERSION = 18
 
     /**
      * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -87,7 +88,8 @@ object Schema {
           x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,
           payload BLOB NOT NULL,
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL,
+          points BLOB, points_at TEXT
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_board_item_board ON board_item(board_id)",
@@ -146,7 +148,8 @@ object Schema {
           document_id TEXT NOT NULL REFERENCES document(id) ON DELETE CASCADE,
           kind INTEGER NOT NULL, page INTEGER NOT NULL,
           anchor_x REAL NOT NULL, anchor_y REAL NOT NULL, anchor_w REAL NOT NULL, anchor_h REAL NOT NULL,
-          payload BLOB NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+          payload BLOB NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          points BLOB, points_at TEXT
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_note_document_page ON note(document_id, page)",
@@ -209,6 +212,11 @@ object Schema {
         Triple("scratch_pad", "show_page", "INTEGER NOT NULL DEFAULT 0"),
         Triple("document", "group_name", "TEXT NOT NULL DEFAULT ''"),
         Triple("document", "canvas_mode", "INTEGER NOT NULL DEFAULT 0"),
+        // v18：笔迹点集二进制（`../BINARY-INK-PLAN.md`），与 Mac 同序
+        Triple("note", "points", "BLOB"),
+        Triple("note", "points_at", "TEXT"),
+        Triple("board_item", "points", "BLOB"),
+        Triple("board_item", "points_at", "TEXT"),
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =

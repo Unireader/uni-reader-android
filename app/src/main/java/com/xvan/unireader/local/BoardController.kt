@@ -135,6 +135,7 @@ class BoardController(private val a: Activity) {
         canvas.pullHintText = a.getString(R.string.board_pull_hint)
         canvas.onStrokeEnd = { pen, pts -> commitInk(pen, pts) }
         canvas.onEraseFinish = { snapshot -> commitErase(snapshot) }
+        canvas.onLassoEdit = { e -> commitLassoEdit(e.after) }
         canvas.onViewportChanged = { updateBar() }
         canvas.onPullAddPage = { appendPages(1) }
         canvas.tools = { toolsProvider?.invoke() }
@@ -215,13 +216,20 @@ class BoardController(private val a: Activity) {
         Log.i(TAG, "打开画板 ${b.id.take(8)}《${b.title}》页数=${pages.size}")
         val id = b.id
         val ps = pageSet
+        val tOpen = android.os.SystemClock.uptimeMillis()
         q.submit("读画板 ${id.take(8)}", { s ->
+            val tStart = android.os.SystemClock.uptimeMillis()
             runCatching { s.touchBoardOpened(id) }.onFailure { Log.w(TAG, "记最近打开失败", it) }
-            readContents(s, id, ps)
+            val c = readContents(s, id, ps)
+            Log.i(TAG, "读画板 排队 ${tStart - tOpen}ms，记最近 + 读库解析 ${android.os.SystemClock.uptimeMillis() - tStart}ms")
+            c
         }, { c ->
             if (board?.id != id) return@submit   // 排队期间换了一篇 / 关了
+            val tApply = android.os.SystemClock.uptimeMillis()
             applyContents(c)
-            Log.i(TAG, "画板 ${id.take(8)} 笔迹 ${c.strokes.size} 条，图片 ${c.pics.size} 张")
+            val now = android.os.SystemClock.uptimeMillis()
+            Log.i(TAG, "画板 ${id.take(8)} 笔迹 ${c.strokes.size} 条（${c.strokes.sumOf { it.pts.size }} 点），" +
+                "图片 ${c.pics.size} 张；上屏 ${now - tApply}ms，从打开起共 ${now - tOpen}ms")
         })
     }
 
@@ -258,11 +266,18 @@ class BoardController(private val a: Activity) {
 
     /** 按 [ps] 把一篇的笔迹与图片读成画布坐标（队列线程） */
     private fun readContents(s: LibraryStore, id: String, ps: BoardPageSet): Contents {
+        val t0 = android.os.SystemClock.uptimeMillis()
         val items = s.boardItems(id)
+        val t1 = android.os.SystemClock.uptimeMillis()
         val exts = HashMap<String, String>()
         val pics = items.filter { it.kind == BoardItem.KIND_IMAGE }.mapNotNull { it.toPic(ps) }
         for (p in pics) if (p.key !in exts) s.imageExt(p.key)?.let { exts[p.key] = it }
-        return Contents(ps, s.boardStrokes(id, ps), pics, exts)
+        val t2 = android.os.SystemClock.uptimeMillis()
+        val strokes = s.boardStrokesOf(id, items, ps)
+        val t3 = android.os.SystemClock.uptimeMillis()
+        Log.i(TAG, "读画板内容：board_item ${items.size} 行 ${t1 - t0}ms，图片 ${t2 - t1}ms，" +
+            "笔迹解析 ${t3 - t2}ms")
+        return Contents(ps, strokes, pics, exts)
     }
 
     private fun applyContents(c: Contents, keep: List<Stroke> = emptyList()) {
@@ -708,6 +723,41 @@ class BoardController(private val a: Activity) {
             }
             updateBar()
         })
+    }
+
+    /**
+     * 框选移动 / 缩放：画布上已经生效，把改过的那几条写回（点 + 线宽；分页画板按新位置重新归页）。
+     * 写失败、或写的时候页布局变了（插页 / 删页 / 改尺寸）→ 整篇重读，以库为准。
+     */
+    private fun commitLassoEdit(changed: List<Stroke>) {
+        val q = queue ?: return
+        val b = board ?: return
+        val ps = pageSet
+        val gen = layoutGen
+        q.submit("画板框选落库 ${changed.size} 条", { s ->
+            runCatching { s.updateBoardStrokes(changed, ps) }
+                .onFailure { Log.e(TAG, "画板框选写库失败，回退到库里的状态", it) }
+                .isSuccess
+        }, { ok ->
+            if ((!ok || gen != layoutGen) && board?.id == b.id) reloadStrokes()
+        })
+    }
+
+    /** 顶栏「剪切 / 复制」在画板上：选中的笔迹进本机剪贴板（画布坐标）；剪切连带删除并落库 */
+    fun clipCopy(cut: Boolean) {
+        val sel = canvas.lassoSelectedStrokes()
+        if (sel.isEmpty()) return
+        InkClipLocal.putCanvas(sel)
+        if (!cut) return
+        canvas.deleteLassoSelection()
+        commitErase(ArrayList(canvas.strokeList()))   // 期望状态少了这几条 → reconcile 删行
+    }
+
+    /** 顶栏「粘贴」在画板上：落到视口正中，逐条当新笔落库 */
+    fun clipPaste() {
+        if (board == null) return
+        val c = canvas.viewportCenterCanvas()
+        for (st in InkClipLocal.takeCanvas(c[0], c[1])) commitInk(st.pen, st.pts)
     }
 
     /** 一次擦除手势收尾：期望状态交给队列 reconcile（同 ScratchController.commitErase） */

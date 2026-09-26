@@ -347,6 +347,15 @@ class ReaderActivity : Activity() {
     private fun toolCanvas(): LocalCanvasView? =
         cur() ?: if (curTab()?.isBoard == true) boardTools else null
 
+    /** 顶栏「剪切 / 复制」：画板标签 → 画板；草稿纸开着 → 纸；否则页里的选中集 */
+    private fun clipCopy(cut: Boolean) {
+        when {
+            curTab()?.isBoard == true -> board.clipCopy(cut)
+            scratch.isOpen -> scratch.clipCopy(cut)
+            else -> cur()?.requestClipCopy(cut)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -475,9 +484,16 @@ class ReaderActivity : Activity() {
             icon("redo", R.drawable.ic_redo, "重做") { cur()?.requestUndo(redo = true) }
             // 剪贴板三件：只在框选模式下出现（对象就是选中集，见 refreshHud）。剪贴板是**进程级**的
             // （`InkClipLocal`），于是跨标签页、跨文档都能粘。
-            icon("clipCut", R.drawable.ic_cut, "剪切选中笔迹") { cur()?.requestClipCopy(cut = true) }
-            icon("clipCopy", R.drawable.ic_copy, "复制选中笔迹") { cur()?.requestClipCopy(cut = false) }
-            icon("clipPaste", R.drawable.ic_paste, "粘贴到视口中央") { cur()?.requestClipPaste() }
+            // 画板标签 / 草稿纸开着时三键作用在那块画布上（画布坐标，见 InkClipLocal）
+            icon("clipCut", R.drawable.ic_cut, "剪切选中笔迹") { clipCopy(cut = true) }
+            icon("clipCopy", R.drawable.ic_copy, "复制选中笔迹") { clipCopy(cut = false) }
+            icon("clipPaste", R.drawable.ic_paste, "粘贴到视口中央") {
+                when {
+                    curTab()?.isBoard == true -> board.clipPaste()
+                    scratch.isOpen -> scratch.clipPaste()
+                    else -> cur()?.requestClipPaste()
+                }
+            }
             // 初始先收起来：`setVisible` 的默认是「可见」，而开局一定不在框选模式
             for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) setVisible(k, false)
             // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
@@ -573,6 +589,7 @@ class ReaderActivity : Activity() {
             anchorProvider = { cur()?.viewportCenterAnchor() }
             onPinsChanged = { pins -> cur()?.setScratchPins(pins) }
             onOpenChanged = { refreshHud() }
+            canvas.onLassoSelChanged = { refreshHud() }   // 顶栏剪切 / 复制跟着灰掉或亮起
             // 工具快照现取当前画布：纸开着时改笔/改橡皮/切尺子即时生效（尺子走 45° 吸附，同页内）
             toolsProvider = {
                 cur()?.let { c ->
@@ -584,6 +601,7 @@ class ReaderActivity : Activity() {
                         eraserMode = c.eraserMode,
                         eraserRing = c.eraserRing,
                         rulerOn = c.rulerOn,
+                        lassoTool = c.mode == MODE_LASSO,
                     )
                 }
             }
@@ -600,11 +618,13 @@ class ReaderActivity : Activity() {
                         eraserMode = c.eraserMode,
                         eraserRing = c.eraserRing,
                         rulerOn = c.rulerOn,
+                        lassoTool = c.mode == MODE_LASSO,
                     )
                 }
             }
             onBoardList = { showBoardPicker() }
             onBoardChanged = { b -> onBoardRowChanged(b) }
+            canvas.onLassoSelChanged = { refreshHud() }
         }
         // 两颗胶囊各自 wrap：不给 penStat 显式 LayoutParams 的话它默认 MATCH_PARENT，
         // 在 wrap 的竖向容器里就被夹成「最宽那颗」的宽度——「翻页 · 拖动平移」会被截成「拖动平」。
@@ -735,6 +755,8 @@ class ReaderActivity : Activity() {
         libBoards = o.boards
         board.bind(q, dir)
         pushDrawerLibrary()
+        // 笔迹整理（转二进制、摘 JSON 点，`../BINARY-INK-PLAN.md §5`）：post 到本轮之后，排在开标签页的那几条读库后面
+        window.decorView.post { compactInkPoints(q, LibraryStore.InkCompactCursor(0, ""), 0) }
 
         // 这个卷建不起 WAL（FAT32/exFAT 的 U 盘，§9.3）：不是错误，但得说一声——退出时的
         // checkpoint 会变成空操作，「搬运前先把 -wal 合并回主库」那层保险在这里没有。
@@ -781,6 +803,23 @@ class ReaderActivity : Activity() {
             return
         }
         activate(want)
+    }
+
+    /**
+     * 一批一个队列任务地整理笔迹行（点集转二进制、摘掉 JSON 点；updated_at 不动）：
+     * 这期间用户落的笔照常插队进来，不用等整个工作区整理完。换了工作区（队列换了）就停，下次打开接着整理。
+     */
+    private fun compactInkPoints(q: StoreQueue, cur: LibraryStore.InkCompactCursor, done: Int) {
+        if (queue !== q) return
+        q.submit("笔迹转二进制", { s ->
+            runCatching { s.compactInkPointsStep(cur) }
+                .onFailure { Log.w(TAG, "笔迹转二进制中断（下次打开接着整理）", it) }
+                .getOrNull()
+        }, { r ->
+            val (n, next) = r ?: return@submit
+            if (next != null) compactInkPoints(q, next, done + n)
+            else if (done + n > 0) Log.i(TAG, "笔迹转二进制完成：整理了 ${done + n} 行")
+        })
     }
 
     private fun failWorkspace(dir: File, reason: String) {
@@ -1731,8 +1770,10 @@ class ReaderActivity : Activity() {
         // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮——剪贴板空时点了是空操作）
         val lasso = canvas.mode == MODE_LASSO
         for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, lasso)
-        bar.setEnabled("clipCut", canvas.hasLassoSelection())
-        bar.setEnabled("clipCopy", canvas.hasLassoSelection())
+        if (!lasso) scratch.canvas.clearLasso()   // 离开框选：纸上的选中集同页内一样作废
+        val hasSel = if (scratch.isOpen) scratch.canvas.hasLassoSelection() else canvas.hasLassoSelection()
+        bar.setEnabled("clipCut", hasSel)
+        bar.setEnabled("clipCopy", hasSel)
         bar.setTint("pen", canvas.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = canvas.twoFingerScroll
@@ -1755,12 +1796,16 @@ class ReaderActivity : Activity() {
 
     /**
      * 画板标签的顶栏 / 胶囊：模式键、笔、尺子照常（对 [boardTools]），页码处显示「—」与画板缩放，
-     * 框选剪贴板三件不出现（画板上框选退化为平移），图层胶囊收起（画板不分图层）。
+     * 框选模式下剪贴板三件作用在画板上（[BoardController.clipCopy]），图层胶囊收起（画板不分图层）。
      */
     private fun refreshBoardHud() {
         val c = boardTools
         bar.setPageLabel(board.hudPage(), board.hudZoom())   // 分页画板显示「当前页/总页数」，无限画布「—」
-        for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, false)
+        val lasso = c?.mode == MODE_LASSO
+        for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, lasso)
+        if (!lasso) board.canvas.clearLasso()
+        bar.setEnabled("clipCut", board.canvas.hasLassoSelection())
+        bar.setEnabled("clipCopy", board.canvas.hasLassoSelection())
         if (c == null) {
             bar.setVisible("pen", false)
             capsules.visibility = View.GONE
@@ -1782,6 +1827,7 @@ class ReaderActivity : Activity() {
                     if (pen != null) "${PadConst.brushLabel(brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
                     else "笔记"
                 MODE_ERASE -> "橡皮擦"
+                MODE_LASSO -> "框选移动"
                 else -> "拖动平移"
             },
         )

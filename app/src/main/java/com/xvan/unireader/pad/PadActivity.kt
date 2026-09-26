@@ -443,8 +443,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     eraserMode = padView.eraserMode,
                     eraserRing = padView.eraserRing,
                     rulerOn = padView.rulerOn,
+                    lassoTool = padView.mode == MODE_LASSO,
                 )
             }
+            // 纸上的框选选中集有无变化 → 顶栏剪切 / 复制跟着灰掉或亮起（同页内）
+            canvas.onLassoSelChanged = { refresh() }
         }
 
         dot = View(this)   // 连接状态点（绿=已认证）
@@ -478,9 +481,16 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("redo", R.drawable.ic_redo, "重做") { padView.requestUndo(redo = true) }
             // 剪贴板三件：只在框选模式下出现（对象就是选中集，见 refreshHud 的 setVisible）。
             // 剪贴板本身是 Mac 的系统剪贴板 → 平板复制的东西能在 Mac 上粘、也能粘进另一篇文档。
-            icon("clipCut", R.drawable.ic_cut, "剪切选中笔迹") { padView.requestClipCopy(cut = true) }
-            icon("clipCopy", R.drawable.ic_copy, "复制选中笔迹") { padView.requestClipCopy(cut = false) }
-            icon("clipPaste", R.drawable.ic_paste, "粘贴到视口中央") { padView.requestClipPaste() }
+            // 草稿纸 / 画板开着时三键作用在纸上（画布坐标，`../PROTOCOL.md §4.4`）
+            icon("clipCut", R.drawable.ic_cut, "剪切选中笔迹") {
+                if (scratch.isOpen) scratch.clipCopy(cut = true) else padView.requestClipCopy(cut = true)
+            }
+            icon("clipCopy", R.drawable.ic_copy, "复制选中笔迹") {
+                if (scratch.isOpen) scratch.clipCopy(cut = false) else padView.requestClipCopy(cut = false)
+            }
+            icon("clipPaste", R.drawable.ic_paste, "粘贴到视口中央") {
+                if (scratch.isOpen) scratch.clipPaste() else padView.requestClipPaste()
+            }
             // 初始先收起来：`setVisible` 的默认是「可见」，而开局一定不在框选模式
             for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) setVisible(k, false)
             // 文字笔记从环形盘进（RK_TEXT），顶栏不再放开关：它只翻一个 noteMode 标志，
@@ -1034,8 +1044,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮，见 buildUi 的注释）
         val lasso = padView.mode == MODE_LASSO
         for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, lasso)
-        bar.setEnabled("clipCut", padView.hasLassoSelection())
-        bar.setEnabled("clipCopy", padView.hasLassoSelection())
+        if (!lasso) scratch.canvas.clearLasso()   // 离开框选：纸上的选中集同页内一样作废
+        val hasSel = if (scratch.isOpen) scratch.canvas.hasLassoSelection() else padView.hasLassoSelection()
+        bar.setEnabled("clipCut", hasSel)
+        bar.setEnabled("clipCopy", hasSel)
         bar.setTint("pen", padView.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = padView.twoFingerScroll

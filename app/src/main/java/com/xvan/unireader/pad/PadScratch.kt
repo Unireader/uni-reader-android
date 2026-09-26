@@ -14,6 +14,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.xvan.unireader.R
 import com.xvan.unireader.local.ScratchController
+import com.xvan.unireader.shared.CLIP_COPY
+import com.xvan.unireader.shared.CLIP_CUT
+import com.xvan.unireader.shared.CLIP_PASTE
 import com.xvan.unireader.shared.NewBoardSheet
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
@@ -168,6 +171,34 @@ class PadScratch(private val a: Activity) {
         canvas.setStrokes(list, keep)   // 正在写的这一笔不受影响（它还没进 strokes，见 ScratchCanvas）
     }
 
+    // ---------- 纸上的剪贴板（顶栏三键在纸开着时改作用在纸上；剪贴板是 Mac 的系统剪贴板） ----------
+
+    /** 剪切 / 复制选中的笔迹：选区多边形（画布坐标）交给 Mac 复判；剪切本地先删掉（回推为准） */
+    fun clipCopy(cut: Boolean) {
+        val poly = canvas.lassoPolygon() ?: return
+        sendCtl?.invoke(
+            WireCodec.encodeClip(if (cut) CLIP_CUT else CLIP_COPY, 0, 0f, 0f, poly),
+        )
+        if (cut) canvas.deleteLassoSelection()
+    }
+
+    /** 粘贴到视口正中（画布坐标） */
+    fun clipPaste() {
+        val c = canvas.viewportCenterCanvas()
+        sendCtl?.invoke(WireCodec.encodeClip(CLIP_PASTE, 0, c[0], c[1]))
+    }
+
+    /** 多边形包围盒 x0,y0,x1,y1（`lassoMove` 的老字段，Mac 有多边形尾部时不看它） */
+    private fun polyBox(p: FloatArray): FloatArray {
+        var x0 = Float.POSITIVE_INFINITY; var y0 = Float.POSITIVE_INFINITY
+        var x1 = Float.NEGATIVE_INFINITY; var y1 = Float.NEGATIVE_INFINITY
+        for (i in p.indices step 2) {
+            x0 = minOf(x0, p[i]); x1 = maxOf(x1, p[i])
+            y0 = minOf(y0, p[i + 1]); y1 = maxOf(y1, p[i + 1])
+        }
+        return floatArrayOf(x0, y0, x1, y1)
+    }
+
     // ---------- RT 流（纸开着时的唯一提交口；坐标已是画布坐标，page 恒 0） ----------
 
     private val handler = Handler(Looper.getMainLooper())
@@ -312,6 +343,16 @@ class PadScratch(private val a: Activity) {
         }
         canvas.onViewportChanged = { updateBar() }
         canvas.tools = { toolsProvider?.invoke() }
+        // 框选：画布上已经本地生效，这里只把提交发给 Mac 复判执行（画布坐标、page 填 0，`../PROTOCOL.md §4.4`）；
+        // Mac 零命中也回推 scratchStrokes，本地以回推为准
+        canvas.onLassoEdit = { e ->
+            val b = polyBox(e.poly)
+            val sc = e.scale
+            sendCtl?.invoke(
+                if (sc == null) WireCodec.encodeLassoMove(0, b[0], b[1], b[2], b[3], e.dx, e.dy, e.poly)
+                else WireCodec.encodeLassoScale(0, b[0], b[1], b[2], b[3], sc[0], sc[1], sc[2], sc[3], e.poly),
+            )
+        }
         // 分页画板到底上拉：只发请求，Mac 加好页回推 boardPages（一次手势一页，由画布保证）
         canvas.pullHintText = a.getString(R.string.board_pull_hint)
         canvas.onPullAddPage = { if (boardMode) sendCtl?.invoke(WireCodec.encodeBoardPageAdd(1)) }

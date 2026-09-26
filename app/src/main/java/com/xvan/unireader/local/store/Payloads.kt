@@ -136,6 +136,78 @@ class InkPayload(val raw: JSONObject) {
             null
         }
 
+        /**
+         * **只读**快路径：读成 [Stroke] + payload 的 `page` 键（分页画板用，无此键 = null）。
+         * 点集用 [InkPointsScan] 直接扫字符串，不建 `JSONArray`——整段交给 `JSONObject` 时每个点都是一个
+         * 小数组对象，1640 条 / 16.8 万点的画板光解析就要 2.4s（2026-09-26 实测）。其余小字段（颜色 / 线宽 /
+         * 笔型 / 图层 / padId / page）仍交给 `JSONObject`。形态认不出就退回 [parse] 整段解析，不丢数据。
+         * 这里不产出 [InkPayload]，所以不可能拿「点集被摘掉的 payload」去回写。
+         */
+        fun readStroke(
+            bytes: ByteArray, id: String, page: Int,
+            blob: ByteArray? = null, blobValid: Boolean = false,
+        ): Pair<Stroke, String?>? {
+            val s = String(bytes, StandardCharsets.UTF_8)
+            val span = InkPointsScan.span(s)
+            // v18 规则（`../BINARY-INK-PLAN.md §3`，Mac `InkStrokePayload.read` 同一份）：
+            //  1. 二进制有效（points_at == updated_at）→ 用二进制，JSON 点不解；
+            //  2. 否则 JSON 里有点 → 用 JSON；3. 否则有二进制 → 用二进制（已清理兼容数据）；4. 都没有 → 空。
+            if (blobValid && span != null) {
+                val bp = InkPointsBlob.decode(blob)
+                if (bp != null) {
+                    try {
+                        val rest = InkPayload(JSONObject(s.substring(0, span.first) + "[]" + s.substring(span.last + 1)))
+                        return rest.toStroke(id, page).copy(pts = bp) to rest.page
+                    } catch (_: Exception) {
+                        // 退回下面的路径
+                    }
+                }
+            }
+            val r = readJsonStroke(s, span, bytes, id, page) ?: return null
+            if (r.first.pts.isEmpty()) {
+                InkPointsBlob.decode(blob)?.let { return r.first.copy(pts = it) to r.second }
+            }
+            return r
+        }
+
+        /** 只读 payload 里的 **JSON 点**（v18 迁移用：编成二进制补进 `points` 列）。解不出 → null */
+        fun jsonPoints(bytes: ByteArray): List<Pt3>? {
+            val s = String(bytes, StandardCharsets.UTF_8)
+            val span = InkPointsScan.span(s)
+            if (span != null) InkPointsScan.points(s, span.first, span.last)?.let { return it }
+            return parse(bytes)?.points()
+        }
+
+        /**
+         * 把 `"points":[…]` 摘成 `"points":[]`（已清理兼容数据时写库前用，`../BINARY-INK-PLAN.md §4`）。
+         * 返回 (换过的 payload, 原来有没有点)；找不到 points 键 → null。只配方括号，不解数字。
+         */
+        fun stripPoints(bytes: ByteArray): Pair<ByteArray, Boolean>? {
+            val s = String(bytes, StandardCharsets.UTF_8)
+            val span = InkPointsScan.span(s) ?: return null
+            val had = s.indexOf('[', span.first + 1).let { it in 0 until span.last }
+            val rest = s.substring(0, span.first) + "[]" + s.substring(span.last + 1)
+            return rest.toByteArray(StandardCharsets.UTF_8) to had
+        }
+
+        private fun readJsonStroke(
+            s: String, span: IntRange?, bytes: ByteArray, id: String, page: Int,
+        ): Pair<Stroke, String?>? {
+            if (span != null) {
+                val pts = InkPointsScan.points(s, span.first, span.last)
+                if (pts != null) {
+                    try {
+                        val rest = InkPayload(JSONObject(s.substring(0, span.first) + "[]" + s.substring(span.last + 1)))
+                        return rest.toStroke(id, page).copy(pts = pts) to rest.page
+                    } catch (_: Exception) {
+                        // 退回整段解析
+                    }
+                }
+            }
+            val p = parse(bytes) ?: return null
+            return p.toStroke(id, page) to p.page
+        }
+
         /** 新笔迹落库：键名与 Mac 端 `InkStrokePayload` 完全一致（color/width/type/points/layerId） */
         fun of(pen: Pen, pts: List<Pt3>, layerId: String, padId: String? = null): InkPayload {
             val o = JSONObject()
@@ -154,6 +226,78 @@ class InkPayload(val raw: JSONObject) {
             if (padId != null) o.put("padId", padId)
             return InkPayload(o).withPoints(pts)
         }
+    }
+}
+
+/**
+ * 笔迹 payload 里 `"points":[[x,y,z],…]` 的手写扫描（只读快路径，见 [InkPayload.readStroke]）。
+ * 数值仍用 `Double.parseDouble` 再转 Float，与 `JSONArray.optDouble(...).toFloat()` 逐位相同；
+ * 缺压感的点按 0.5（同 [InkPayload.points]）。遇到认不出的字符返回 null，由调用方退回整段解析。
+ */
+internal object InkPointsScan {
+
+    /** 顶层 `"points"` 键的值：`[` 与配对 `]` 的下标；找不到 = null */
+    fun span(s: String): IntRange? {
+        var k = s.indexOf("\"points\"")
+        while (k >= 0) {
+            if (k == 0 || s[k - 1] != '\\') {
+                var i = k + 8
+                while (i < s.length && s[i].isWhitespace()) i++
+                if (i < s.length && s[i] == ':') {
+                    i++
+                    while (i < s.length && s[i].isWhitespace()) i++
+                    if (i < s.length && s[i] == '[') {
+                        var depth = 0
+                        for (j in i until s.length) {
+                            when (s[j]) {
+                                '[' -> depth++
+                                ']' -> { depth--; if (depth == 0) return i..j }
+                                '"', '{', '}' -> return null   // 点集里不该有字符串 / 对象
+                            }
+                        }
+                        return null
+                    }
+                }
+            }
+            k = s.indexOf("\"points\"", k + 1)
+        }
+        return null
+    }
+
+    /** 扫 `[open, close]` 之间的点集；形态不对 = null */
+    fun points(s: String, open: Int, close: Int): List<Pt3>? {
+        val out = ArrayList<Pt3>()
+        val v = DoubleArray(3)
+        var n = -1            // -1 = 不在某个点的方括号里；否则 = 这个点已读到几个数
+        var i = open + 1
+        while (i < close) {
+            val c = s[i]
+            when {
+                c == '[' -> { if (n >= 0) return null; n = 0; i++ }
+                c == ']' -> {
+                    if (n < 0) return null
+                    out.add(Pt3(if (n > 0) v[0].toFloat() else 0f, if (n > 1) v[1].toFloat() else 0f,
+                        if (n > 2) v[2].toFloat() else 0.5f))
+                    n = -1; i++
+                }
+                c == ',' || c.isWhitespace() -> i++
+                c == '-' || c == '+' || c == '.' || c in '0'..'9' -> {
+                    if (n < 0) return null
+                    var j = i + 1
+                    while (j < close) {
+                        val d = s[j]
+                        if (d in '0'..'9' || d == '.' || d == 'e' || d == 'E' || d == '-' || d == '+') j++ else break
+                    }
+                    // 别用 Kotlin 的 toDoubleOrNull：它每次先跑一遍正则校验形态，16.8 万点光这一步就一秒多
+                    val x = try { java.lang.Double.parseDouble(s.substring(i, j)) } catch (_: NumberFormatException) { return null }
+                    if (n < 3) v[n] = x
+                    n++
+                    i = j
+                }
+                else -> return null
+            }
+        }
+        return if (n < 0) out else null
     }
 }
 

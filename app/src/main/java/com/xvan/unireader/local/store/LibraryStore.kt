@@ -324,20 +324,84 @@ class LibraryStore(private val db: Db) : Closeable {
     fun upsertNote(n: LibNote) {
         db.exec(
             """
-            INSERT INTO note(id,document_id,kind,page,anchor_x,anchor_y,anchor_w,anchor_h,payload,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO note(id,document_id,kind,page,anchor_x,anchor_y,anchor_w,anchor_h,payload,created_at,updated_at,points,points_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, page=excluded.page,
-              anchor_x=excluded.anchor_x, anchor_y=excluded.anchor_y,
-              anchor_w=excluded.anchor_w, anchor_h=excluded.anchor_h,
-              payload=excluded.payload, updated_at=excluded.updated_at
+              anchor_x=excluded.anchor_x, anchor_y=excluded.anchor_y, anchor_w=excluded.anchor_w, anchor_h=excluded.anchor_h,
+              payload=excluded.payload, updated_at=excluded.updated_at, points=excluded.points, points_at=excluded.points_at
             """.trimIndent(),
             arrayOf(
                 n.id, n.documentId, n.kind, n.page,
                 n.anchorX, n.anchorY, n.anchorW, n.anchorH,
-                n.payload, n.createdAt, n.updatedAt,
+                inkPayloadForWrite(n.payload, n.points), n.createdAt, n.updatedAt,
+                n.points, if (n.points == null) null else n.updatedAt,
             ),
         )
     }
+
+    // ---------- 笔迹点集二进制（v18，`../BINARY-INK-PLAN.md`；Mac `LibraryStore` 同名一节） ----------
+
+    /** 写库前的笔迹 payload：这一行带二进制 → JSON 点摘成 `[]`（点只存二进制）。所有写口都经这里 */
+    private fun inkPayloadForWrite(payload: ByteArray, points: ByteArray?): ByteArray {
+        if (points == null) return payload
+        return InkPayload.stripPoints(payload)?.first ?: payload
+    }
+
+    /** 装笔迹的两张表与各自的笔迹 kind（同 Mac `inkTables`） */
+    private val inkTables = listOf("note" to "2,4", "board_item" to "1")
+
+    /** 整理游标：第几张表（[inkTables] 的下标）+ 这张表里处理到的最后一个 id */
+    data class InkCompactCursor(val table: Int, val after: String)
+
+    /**
+     * 打开工作区时的整理（§5，用户 2026-09-26 定：默认就清掉 JSON 点，不留兼容副本、不备份；Mac `compactInkPoints` 同一份）
+     * 的一步（一批，一个事务）：找出「二进制缺失 / 过期，或 payload 里还带 JSON 点」的笔迹行，一行一次写好——
+     * 二进制有效 → 以它为准，只摘 JSON 点；否则以 JSON 点为准（旧版写的 / 改过的 / v17 老行）→ 编成二进制并摘掉。
+     * `updated_at` 不动（`points_at` 仍等于它）。按 id 翻页；写时再核一次 `updated_at`。
+     * 返回（整理了几行，下一步的游标；null = 全部走完）。分步是为了让宿主一批一个 [StoreQueue] 任务地排，
+     * 用户这期间落的笔不用排在整个工作区后面干等。
+     */
+    fun compactInkPointsStep(cur: InkCompactCursor, batch: Int = 400): Pair<Int, InkCompactCursor?> {
+        if (cur.table >= inkTables.size || !hasColumn("note", "points")) return 0 to null   // 只读打开的老库：没列，不整理
+        val (table, kinds) = inkTables[cur.table]
+        // LIKE 在 BLOB 上按文本比，`[` 不是通配符；两端写的 JSON 都是紧凑形态。不用 json_* 函数：API 26 不保证有 JSON1
+        val rows = db.query(
+            "SELECT id, payload, updated_at, points, points_at IS updated_at AS v FROM $table " +
+                "WHERE kind IN ($kinds) AND id > ? " +
+                "AND (points IS NULL OR points_at IS NOT updated_at OR payload LIKE '%\"points\":[[%') " +
+                "ORDER BY id LIMIT ?",
+            arrayOf(cur.after, batch),
+        ) { c ->
+            arrayOf<Any?>(c.str("id"), c.blob("payload"), c.str("updated_at"), c.blobOrNull("points"), c.int("v") != 0)
+        }
+        if (rows.isEmpty()) {
+            return 0 to (if (cur.table + 1 < inkTables.size) InkCompactCursor(cur.table + 1, "") else null)
+        }
+        val fills = rows.mapNotNull { r ->
+            val id = r[0] as String
+            val payload = r[1] as ByteArray
+            val up = r[2] as String
+            val blob = r[3] as ByteArray?
+            if (r[4] as Boolean && InkPointsBlob.decode(blob) != null) {
+                val (rest, had) = InkPayload.stripPoints(payload) ?: return@mapNotNull null
+                if (!had) return@mapNotNull null
+                return@mapNotNull arrayOf<Any?>(blob, rest, id, up)
+            }
+            val pts = InkPayload.jsonPoints(payload)?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            arrayOf<Any?>(InkPointsBlob.encode(pts), InkPayload.stripPoints(payload)?.first ?: payload, id, up)
+        }
+        if (fills.isNotEmpty()) {
+            db.transaction {
+                for (f in fills) {
+                    db.exec("UPDATE $table SET points=?, points_at=updated_at, payload=? WHERE id=? AND updated_at=?", f)
+                }
+            }
+        }
+        return fills.size to InkCompactCursor(cur.table, rows.last()[0] as String)
+    }
+
+    private fun hasColumn(table: String, col: String): Boolean =
+        db.query("PRAGMA table_info($table)") { it.str("name") }.contains(col)
 
     fun deleteNote(id: String) = db.exec("DELETE FROM note WHERE id=?", arrayOf(id))
 
@@ -784,9 +848,9 @@ class LibraryStore(private val db: Db) : Closeable {
         var bad = 0
         for (n in notes(documentId)) {
             if (n.kind != NoteKind.INK) continue
-            val p = InkPayload.parse(n.payload)
-            if (p == null) { bad++; continue }
-            out.add(p.toStroke(n.id, n.page))
+            val r = InkPayload.readStroke(n.payload, n.id, n.page, n.points, n.pointsValid)
+            if (r == null) { bad++; continue }
+            out.add(r.first)
         }
         if (bad > 0) Log.w(TAG, "$documentId：$bad 条笔迹 payload 坏掉已跳过")
         return out
@@ -809,7 +873,7 @@ class LibraryStore(private val db: Db) : Closeable {
                 id = id, documentId = documentId, kind = NoteKind.INK, page = page,
                 anchorX = b[0], anchorY = b[1], anchorW = b[2], anchorH = b[3],
                 payload = InkPayload.of(pen, pts, layerId).bytes(),
-                createdAt = now, updatedAt = now,
+                createdAt = now, updatedAt = now, points = InkPointsBlob.encode(pts),
             ),
         )
         return id
@@ -876,7 +940,7 @@ class LibraryStore(private val db: Db) : Closeable {
             n.copy(
                 anchorX = b[0], anchorY = b[1], anchorW = b[2], anchorH = b[3],
                 payload = (if (width != null) p.withWidth(width.toDouble()) else p).withPoints(pts).bytes(),
-                updatedAt = nowIso(),
+                updatedAt = nowIso(), points = InkPointsBlob.encode(pts),
             ),
         )
     }
@@ -995,10 +1059,10 @@ class LibraryStore(private val db: Db) : Closeable {
         var bad = 0
         for (n in notes(documentId)) {
             if (n.kind != NoteKind.SCRATCH_INK) continue
-            val p = InkPayload.parse(n.payload)
-            val padId = p?.padId
-            if (p == null || padId == null) { bad++; continue }
-            out.getOrPut(padId) { ArrayList() }.add(p.toStroke(n.id, 0))
+            val s = InkPayload.readStroke(n.payload, n.id, 0, n.points, n.pointsValid)?.first
+            val padId = s?.padId?.ifEmpty { null }
+            if (s == null || padId == null) { bad++; continue }
+            out.getOrPut(padId) { ArrayList() }.add(s)
         }
         if (bad > 0) Log.w(TAG, "$documentId：$bad 条草稿纸笔迹坏掉/缺 padId 已跳过")
         return out
@@ -1024,10 +1088,17 @@ class LibraryStore(private val db: Db) : Closeable {
                 id = id, documentId = documentId, kind = NoteKind.SCRATCH_INK, page = 0,
                 anchorX = b[0], anchorY = b[1], anchorW = b[2], anchorH = b[3],
                 payload = InkPayload.of(pen, pts, LibInkLayer.DEFAULT_ID, padId).bytes(),
-                createdAt = now, updatedAt = now,
+                createdAt = now, updatedAt = now, points = InkPointsBlob.encode(pts),
             ),
         )
         return id
+    }
+
+    /** 框选移动 / 缩放后的草稿纸笔迹写回（点 + 线宽，id 不变；理由同 [updateBoardStrokes]）。整批一个事务 */
+    fun updateScratchStrokes(list: List<Stroke>) {
+        transaction {
+            for (s in list) if (s.id.isNotEmpty()) updateStrokePoints(s.id, s.pts, s.pen.w)
+        }
     }
 
     /**
@@ -1127,16 +1198,20 @@ class LibraryStore(private val db: Db) : Closeable {
      * 分页画板（[ps] 有页）：payload 带 `page` 的点是页内坐标，加上那页的画布左上角；那页已不在（镜像合并里
      * 一边删了页）→ 这条不显示（同 Mac `InkStroke(boardItem:origin:)` 返回 nil）。
      */
-    fun boardStrokes(boardId: String, ps: BoardPageSet = BoardPageSet.NONE): List<Stroke> {
+    fun boardStrokes(boardId: String, ps: BoardPageSet = BoardPageSet.NONE): List<Stroke> =
+        boardStrokesOf(boardId, boardItems(boardId), ps)
+
+    /** 同 [boardStrokes]，但用已经读好的 `board_item` 行（开画板时图片与笔迹共用一次读库） */
+    fun boardStrokesOf(boardId: String, items: List<BoardItem>, ps: BoardPageSet = BoardPageSet.NONE): List<Stroke> {
         val out = ArrayList<Stroke>()
         var bad = 0
         var orphan = 0
-        for (it in boardItems(boardId)) {
+        for (it in items) {
             if (it.kind != BoardItem.KIND_INK) continue
-            val p = InkPayload.parse(it.payload)
-            if (p == null) { bad++; continue }
-            val s = p.toStroke(it.id, 0)
-            val pg = p.page
+            val r = InkPayload.readStroke(it.payload, it.id, 0, it.points, it.pointsValid)
+            if (r == null) { bad++; continue }
+            val s = r.first
+            val pg = r.second
             if (pg == null) { out.add(s); continue }
             val o = ps.originOf(pg)
             if (o == null) { orphan++; continue }
@@ -1195,12 +1270,15 @@ class LibraryStore(private val db: Db) : Closeable {
     fun upsertBoardItem(i: BoardItem) {
         db.exec(
             """
-            INSERT INTO board_item(id,board_id,kind,x,y,w,h,payload,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO board_item(id,board_id,kind,x,y,w,h,payload,created_at,updated_at,points,points_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, x=excluded.x, y=excluded.y, w=excluded.w, h=excluded.h,
-              payload=excluded.payload, updated_at=excluded.updated_at
+              payload=excluded.payload, updated_at=excluded.updated_at, points=excluded.points, points_at=excluded.points_at
             """.trimIndent(),
-            arrayOf(i.id, i.boardId, i.kind, i.x, i.y, i.w, i.h, i.payload, i.createdAt, i.updatedAt),
+            arrayOf(
+                i.id, i.boardId, i.kind, i.x, i.y, i.w, i.h, inkPayloadForWrite(i.payload, i.points),
+                i.createdAt, i.updatedAt, i.points, if (i.points == null) null else i.updatedAt,
+            ),
         )
     }
 
@@ -1229,7 +1307,7 @@ class LibraryStore(private val db: Db) : Closeable {
                 id = id, boardId = boardId, kind = BoardItem.KIND_INK,
                 x = b[0], y = b[1], w = b[2], h = b[3],
                 payload = InkPayload.of(pen, local, LibInkLayer.DEFAULT_ID).withPage(ref?.id).bytes(),
-                createdAt = now, updatedAt = now,
+                createdAt = now, updatedAt = now, points = InkPointsBlob.encode(local),   // 同 JSON：页内坐标
             ),
         )
         return id
@@ -1243,19 +1321,31 @@ class LibraryStore(private val db: Db) : Closeable {
      * 改一条画板笔迹的点集（局部擦除切段后的存活段，[pts] 是画布坐标）；其余键原样保留，包围盒随新点集重算。
      * 分页画板按新的第一个点重新归页（同 Mac：改过的条目落库时 `boardPageRef(index: boardPageIndex(of:))`）。
      */
-    private fun updateBoardStrokePoints(itemId: String, pts: List<Pt3>, ps: BoardPageSet) {
+    private fun updateBoardStrokePoints(itemId: String, pts: List<Pt3>, ps: BoardPageSet, width: Float? = null) {
         val it = db.query("SELECT * FROM board_item WHERE id=?", arrayOf(itemId)) { boardItem(it) }.firstOrNull()
             ?: return
         val p = InkPayload.parse(it.payload) ?: return
         val ref = if (pts.isEmpty()) null else ps.refForY(pts[0].y)
         val local = toPageLocal(pts, ref)
         val b = boundsOf(local)
+        val pw = if (width != null) p.withWidth(width.toDouble()) else p
         upsertBoardItem(
             it.copy(
                 x = b[0], y = b[1], w = b[2], h = b[3],
-                payload = p.withPoints(local).withPage(ref?.id).bytes(), updatedAt = nowIso(),
+                payload = pw.withPoints(local).withPage(ref?.id).bytes(), updatedAt = nowIso(),
+                points = InkPointsBlob.encode(local),
             ),
         )
+    }
+
+    /**
+     * 框选移动 / 缩放后的画板笔迹写回（点 + 线宽，id 不变；分页画板按新位置的第一个点重新归页）。
+     * 不走 [reconcileBoardStrokes]：那条按「点数没变 = 没改」跳过，平移过的笔迹点数恰好不变。整批一个事务。
+     */
+    fun updateBoardStrokes(list: List<Stroke>, ps: BoardPageSet = BoardPageSet.NONE) {
+        transaction {
+            for (s in list) if (s.id.isNotEmpty()) updateBoardStrokePoints(s.id, s.pts, ps, s.pen.w)
+        }
     }
 
     /**
@@ -1389,7 +1479,14 @@ class LibraryStore(private val db: Db) : Closeable {
         anchorX = c.dbl("anchor_x"), anchorY = c.dbl("anchor_y"),
         anchorW = c.dbl("anchor_w"), anchorH = c.dbl("anchor_h"),
         payload = c.blob("payload"), createdAt = c.str("created_at"), updatedAt = c.str("updated_at"),
+        points = c.blobOrNull("points"), pointsValid = pointsValid(c),
     )
+
+    /** 二进制是否最新：`points_at` 与 `updated_at` 的**原始字符串**相等（两端时间戳写法不必一致，同 Mac） */
+    private fun pointsValid(c: android.database.Cursor): Boolean {
+        val at = c.strOrNull("points_at") ?: return false
+        return at == c.strOrNull("updated_at")
+    }
 
     private fun inkLayer(c: android.database.Cursor) = LibInkLayer(
         id = c.str("id"), documentId = c.str("document_id"), name = c.str("name"),
@@ -1430,6 +1527,8 @@ class LibraryStore(private val db: Db) : Closeable {
         payload = c.blob("payload"),
         createdAt = c.str("created_at"),
         updatedAt = c.str("updated_at"),
+        points = c.blobOrNull("points"),
+        pointsValid = pointsValid(c),
     )
 
     private fun scratchPad(c: android.database.Cursor) = ScratchPad(

@@ -107,6 +107,7 @@ class ScratchController(private val a: Activity) {
         canvas.visibility = View.GONE
         canvas.onStrokeEnd = { pen, pts -> commitInk(pen, pts) }
         canvas.onEraseFinish = { snapshot -> commitErase(snapshot) }
+        canvas.onLassoEdit = { e -> commitLassoEdit(e.after) }
         canvas.onViewportChanged = { updateBar() }
         // 工具快照每次落笔现取：纸开着时在顶栏/面板改笔、改橡皮即时生效
         canvas.tools = { toolsProvider?.invoke() }
@@ -471,6 +472,37 @@ class ScratchController(private val a: Activity) {
             }
             updateBar()
         })
+    }
+
+    /** 框选移动 / 缩放：画布上已经生效，把改过的那几条写回（点 + 线宽）；写失败就退回库里的状态 */
+    private fun commitLassoEdit(changed: List<Stroke>) {
+        val q = queue ?: return
+        val pad = openPad ?: return
+        val did = docId
+        q.submit("草稿纸框选落库 ${changed.size} 条", { s ->
+            runCatching { s.updateScratchStrokes(changed) }
+                .onFailure { Log.e(TAG, "草稿纸框选写库失败，回退到库里的状态", it) }
+                .isSuccess
+        }, { ok ->
+            if (!ok && did == docId && openPad?.id == pad.id) reloadStrokes()
+        })
+    }
+
+    /** 顶栏「剪切 / 复制」在纸开着时：选中的笔迹进本机剪贴板（画布坐标）；剪切连带删除并落库 */
+    fun clipCopy(cut: Boolean) {
+        val sel = canvas.lassoSelectedStrokes()
+        if (sel.isEmpty()) return
+        InkClipLocal.putCanvas(sel)
+        if (!cut) return
+        canvas.deleteLassoSelection()
+        commitErase(ArrayList(canvas.strokeList()))   // 期望状态少了这几条 → reconcile 删行
+    }
+
+    /** 顶栏「粘贴」在纸开着时：落到视口正中，逐条当新笔落库 */
+    fun clipPaste() {
+        if (openPad == null) return
+        val c = canvas.viewportCenterCanvas()
+        for (st in InkClipLocal.takeCanvas(c[0], c[1])) commitInk(st.pen, st.pts)
     }
 
     /** 一次擦除手势收尾：期望状态交给队列 reconcile（同 `LocalCanvasView.onEraseEnd` 的口径） */

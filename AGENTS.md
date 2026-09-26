@@ -155,6 +155,20 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （`DIRECT_MAX_PTS`），多了宁可先空着等块。🔴 `ScratchCanvas.strokes` 的每一处增删都要经 `strokesChanged(removed, added)`，
   漏一处那一处改了就看不见。草稿纸几何与缩放成正比，`InkRenderer.drawScratchStroke` 缩放后**不重建**、按比例缩放已有轮廓
   （放大超过 1.5 倍才重建）。计时打点 logcat `UniReader/Tiles`。
+- **笔迹点集二进制（schema v18，2026-09-26，`../BINARY-INK-PLAN.md`）**：`note` / `board_item` 多两列 `points`（`InkPointsBlob`，
+  u8 版本 + f32 x/y/z 小端，跨端向量 `../spike/ink-blob-vectors.txt`）+ `points_at`（= 写时的 `updated_at`，不相等 = 旧版改过、读 JSON）。
+  读一律经 `InkPayload.readStroke(payload, id, page, points, pointsValid)`（四条规则与 Mac `InkStrokePayload.read` 同一份）；
+  写口都要带 `points = InkPointsBlob.encode(...)`；payload 里的 JSON 点一律摘成 `[]`（只在 `LibraryStore.inkPayloadForWrite`）。
+  开工作区后分步整理老行（`compactInkPointsStep`，一批一个 `StoreQueue` 任务）；用户定默认清掉 JSON 点、不留兼容副本。
+  🔴 本端不用 SQL 的 `json_*` 函数（API 26 不保证有 JSON1）。
+- **草稿纸 / 画板上的框选（2026-09-26）**：`ScratchCanvas` 自带一份（`Tools.lassoTool` = 顶栏框选模式），两模式共用：
+  圈选（笔迹任一点落多边形内）/ 拖框内移动 / 拖手柄缩放，**只作用于笔迹**。移动 / 缩放**本地立刻生效**，经
+  `onLassoEdit` 交给宿主：模式1 `updateScratchStrokes` / `updateBoardStrokes` 写回点 + 线宽（🔴 不能走擦除那条
+  reconcile：它按「点数没变 = 没改」跳过，平移过的笔迹点数恰好不变）；模式2 发 `lassoMove` / `lassoScale`，
+  纸开着时坐标按**画布坐标**解释（`../PROTOCOL.md §4.4`，Mac `AppModel+Scratch.applyScratchLasso` 复判）。
+  选中集按**多边形**记，表一换就重判（模式2 的笔迹没有 id）；拖动时选中那几条从 `strokes` 里拿出来单独画，松手放回。
+  顶栏剪切 / 复制 / 粘贴在画板标签或纸开着时作用在纸上：模式1 走 `InkClipLocal.putCanvas/takeCanvas`（画布空间，
+  跨空间折算同 Mac `InkClipboard.scaled`），模式2 发 `clip`（画布坐标，粘贴落点 = 视口正中）。
 - **可自由编组的工具栏（2026-09-26 用户定，像 macOS 那样配置）**：`shared/Toolbox.kt`（摆放 / 拖动 / 顶栏排不下收进 ⋯）+
   `shared/ToolLayout.kt`（纯数据：组 = 名字 + key 列表 + 在顶栏 / 浮动 + 位置；记在 SharedPreferences `toolbars` 的 `layout`，
   **两模式共用一份**）+ `shared/ToolbarEditor.kt`（编辑面板）。每颗键是一颗「工具」，只在一个地方：某一组里，或哪组都不在 = 在 ⋯ 里。

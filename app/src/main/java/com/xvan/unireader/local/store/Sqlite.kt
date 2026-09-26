@@ -148,3 +148,6 @@ fun Cursor.long(name: String, def: Long = 0): Long = getColumnIndex(name).let { 
 fun Cursor.dbl(name: String, def: Double = 0.0): Double = getColumnIndex(name).let { if (it < 0 || isNull(it)) def else getDouble(it) }
 fun Cursor.bool(name: String, def: Boolean = false): Boolean = getColumnIndex(name).let { if (it < 0 || isNull(it)) def else getInt(it) != 0 }
 fun Cursor.blob(name: String): ByteArray = getColumnIndex(name).let { if (it < 0 || isNull(it)) ByteArray(0) else getBlob(it) }
+/** 可空 BLOB：列不存在（老库）/ NULL / 空串都算 null */
+fun Cursor.blobOrNull(name: String): ByteArray? =
+    getColumnIndex(name).let { if (it < 0 || isNull(it)) null else getBlob(it)?.takeIf { b -> b.isNotEmpty() } }
