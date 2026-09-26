@@ -107,7 +107,7 @@ object Ui {
         scaleType = ImageView.ScaleType.FIT_CENTER
         val pad = dp(c, (TOUCH - ICON) / 2)
         setPadding(pad, pad, pad, pad)
-        background = rippleOver(c, null, RADIUS, tint)
+        setBackgroundKeepPadding(iconBg(c, false, tint, tint))
         contentDescription = desc          // 无障碍：全图标之后这是唯一的文字线索
         layoutParams = ViewGroup.LayoutParams(dp(c, TOUCH), dp(c, TOUCH))
         setOnClickListener { onClick() }
@@ -150,19 +150,27 @@ object Ui {
         val state = Triple(active, on, accent)
         if (activeState[this] == state) return
         activeState[this] = state
-        val c = context
         imageTintList = ColorStateList.valueOf(if (active) accent else on)
+        setBackgroundKeepPadding(iconBg(context, active, on, accent))
+    }
+
+    /**
+     * 图标按钮的背景（激活底色 + 水波纹），**开关两态都四边内缩 3dp**：
+     * - 按钮本身是满格排的（顶栏/草稿纸浮条都没有间距），两个相邻开关同时激活时底色会连成一整片、
+     *   分不清是几个键。触摸区不变，只缩底色。
+     * - 🔴 四边都要缩，不能只缩横向：只缩横向会把底色缩成宽高不等的长方形（用户报「只有翻页键是正方形，
+     *   笔/框选按下后是长方形」）。
+     * - 🔴 未激活也要缩：水波纹的范围 = 这块背景的范围，不缩的话按下去的水波纹比激活底色大一圈
+     *   （用户 2026-09-27 报「水波纹比激活状态大很难受」）。
+     * 调用方必须走 [setBackgroundKeepPadding]：InsetDrawable 会把 inset 当 padding 顶掉按钮自己的
+     * 13dp，图标当场胀成约 1.9 倍且再也缩不回去（详见那个方法的注释）。
+     */
+    private fun iconBg(c: Context, active: Boolean, on: Int, accent: Int): Drawable {
         val bg =
             if (active) rippleOver(c, round(col(c, R.color.accent_container), RADIUS, c), RADIUS, accent)
             else rippleOver(c, null, RADIUS, on)
-        // 激活底色四边内缩 3dp：按钮本身是 48dp 满格排的（顶栏/草稿纸浮条都没有间距），
-        // 两个相邻开关同时激活时底色会连成一整片、分不清是几个键。触摸区不变，只缩底色。
-        // 🔴 四边都要缩，不能只缩横向：只缩横向会把底色缩成宽高不等的长方形（用户报「只有翻页
-        // 键是正方形，笔/框选按下后是长方形」——那两档是 [setActive] 的 active 分支，翻页档
-        // 不走这条 active 分支，天然还是方的）。
-        // 必须走 setBackgroundKeepPadding：InsetDrawable 会把 inset 当 padding 顶掉按钮自己的
-        // 13dp，图标当场胀成约 1.9 倍且再也缩不回去（详见那个方法的注释）。
-        setBackgroundKeepPadding(if (active) InsetDrawable(bg, dp(c, 3), dp(c, 3), dp(c, 3), dp(c, 3)) else bg)
+        val i = dp(c, 3)
+        return InsetDrawable(bg, i, i, i, i)
     }
 
     /** Pen → ARGB（顶栏「切换笔」图标染色等「按笔色显示」的场合共用这一处换算） */
