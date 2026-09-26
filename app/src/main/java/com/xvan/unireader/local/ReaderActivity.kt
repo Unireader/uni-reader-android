@@ -527,8 +527,9 @@ class ReaderActivity : Activity() {
                 toolCanvas()?.toggleTwoFingerScroll(); saveTools(); refreshHud()
             }
             // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
-            icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true, available = pdf) {
-                cur()?.toggleHLock(); saveTools(); refreshHud()
+            // 画板 / 草稿纸同样生效（ScratchCanvas.hLocked 跟着这边的开关走），所以按 anyTab
+            icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true, available = anyTab) {
+                toolCanvas()?.toggleHLock(); saveTools(); refreshHud()
             }
             // 书写锁定：锁定后模式键只在 笔记/擦除 间来回、长按环形盘也只剩这两项（本机独立判定，
             // 见 RadialController）——PDF 与画板/草稿纸都能写字，所以跟 twoFinger/hLock 一样按 anyTab 生效
@@ -1795,6 +1796,7 @@ class ReaderActivity : Activity() {
         bar.setTint("pen", canvas.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = canvas.twoFingerScroll
+        scratch.canvas.hLocked = canvas.hLocked
         // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
         val pen = canvas.curPenOrNull()
         val notePen = pen.takeIf { canvas.mode == MODE_NOTE }
@@ -1840,6 +1842,8 @@ class ReaderActivity : Activity() {
         bar.setVisible("pen", c.mode == MODE_NOTE)
         bar.setTint("pen", c.curPenOrNull()?.let { Ui.penArgb(it) })
         board.canvas.twoFingerScroll = c.twoFingerScroll
+        board.canvas.hLocked = c.hLocked
+        bar.setActive("hLock", c.hLocked)
         val pen = c.curPenOrNull()
         penStat.setTextIfChanged(
             when (c.mode) {

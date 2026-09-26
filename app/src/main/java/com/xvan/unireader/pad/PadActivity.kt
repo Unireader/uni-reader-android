@@ -1063,6 +1063,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setTint("pen", padView.curPenOrNull()?.let { Ui.penArgb(it) })
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = padView.twoFingerScroll
+        scratch.canvas.hLocked = padView.hLocked
 
         // 笔胶囊：笔记模式显示当前笔（色块 · 类型 · 粗细），其余模式显示模式名（同网页 PenStat）
         val pen = padView.curPenOrNull()

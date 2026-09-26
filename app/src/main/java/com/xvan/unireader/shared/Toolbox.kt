@@ -47,7 +47,18 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
     /** 一颗工具的说明（编辑面板与 ⋯ 菜单用）。[toggle] = 开关类，⋯ 里画成可勾选项 */
     class Meta(val key: String, val title: String, val toggle: Boolean, val spillFirst: Boolean)
 
-    private class Item(val view: View, val available: () -> Boolean, val wrap: FrameLayout)
+    /**
+     * 包住一颗工具的那层。[blocked] = 此刻不能用、但按 [showDisabled] 灰着显示：整层变淡并吃掉触摸，
+     * **不碰工具 View 自己的 enabled / alpha**（那是宿主的，如剪切在没选中时由宿主灰掉）。
+     */
+    private class ItemWrap(c: android.content.Context) : FrameLayout(c) {
+        var blocked = false
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean = blocked || super.onInterceptTouchEvent(ev)
+        @android.annotation.SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(ev: MotionEvent): Boolean = blocked || super.onTouchEvent(ev)
+    }
+
+    private class Item(val view: View, val available: () -> Boolean, val wrap: ItemWrap)
 
     /** 一个 key 在栏上占的那一格（里面是这个 key 的全部实例，各自按可用与否显隐） */
     private inner class Cell(val key: String) {
@@ -58,17 +69,39 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
         val items = ArrayList<Item>()
         var spilled = false
 
-        /** 此刻有没有东西可显示：某一份可用、且宿主没把它藏起来 */
-        fun live() = items.any { it.wrap.visibility == View.VISIBLE && it.view.visibility == View.VISIBLE }
+        /** 此刻有没有东西可显示（含按 [showDisabled] 灰着显示的） */
+        fun live() = liveItem() != null
 
-        fun liveView(): View? =
-            items.firstOrNull { it.wrap.visibility == View.VISIBLE && it.view.visibility == View.VISIBLE }?.view
+        fun liveItem(): Item? =
+            items.firstOrNull { it.wrap.visibility == View.VISIBLE && it.view.visibility == View.VISIBLE }
+
+        fun liveView(): View? = liveItem()?.view
+    }
+
+    /** 宿主经 [TopBar.setVisible] 藏起来的键（藏 = 此刻不能用，跟 `available` 为假同一个意思） */
+    private val hostHidden = HashSet<String>()
+
+    fun setHostHidden(key: String, hidden: Boolean) {
+        if (if (hidden) hostHidden.add(key) else hostHidden.remove(key)) requestRefresh()
     }
 
     private val metas = LinkedHashMap<String, Meta>()
     private val cells = LinkedHashMap<String, Cell>()
     private val prefs = a.getSharedPreferences("toolbars", Activity.MODE_PRIVATE)
     private val main = Handler(Looper.getMainLooper())
+
+    /**
+     * 此刻不能用的按钮也灰着显示（顶栏 / 浮条 / ⋯ 里都是，点了没反应），而不是整颗拿走（用户 2026-09-27 定）。
+     * 编辑面板里的勾选项，记在本机、两模式共用；默认关 = 不能用就不显示。读数（页码 / 画板名）不受影响，照旧拿走。
+     */
+    var showDisabled: Boolean = prefs.getBoolean(PREF_SHOW_DISABLED, false)
+        set(v) {
+            if (field == v) return
+            field = v
+            prefs.edit().putBoolean(PREF_SHOW_DISABLED, v).apply()
+            lastSig = ""
+            refresh()
+        }
 
     /** 当前布局（编辑面板读它的副本，改完经 [setLayout] 交回来） */
     var layout: ToolLayout = ToolLayout.fromJson(prefs.getString(PREF_LAYOUT, null)) ?: ToolLayout.defaults()
@@ -96,7 +129,7 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
         if (key !in metas) metas[key] = Meta(key, title, toggle, spillFirst)
         val cell = cells.getOrPut(key) { Cell(key) }
         (view.parent as? ViewGroup)?.removeView(view)
-        val wrap = FrameLayout(a).apply { addView(view) }
+        val wrap = ItemWrap(a).apply { addView(view) }
         cell.items.add(Item(view, available, wrap))
         cell.box.addView(wrap, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_VERTICAL })
     }
@@ -132,6 +165,13 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
 
     /** 本模式登记过的工具（登记顺序） */
     fun metas(): Collection<Meta> = metas.values
+
+    /** 这颗工具此刻能不能用（有一份可用、宿主没藏、也没灰掉）——编辑面板据此把不能用的画灰 */
+    fun isUsable(key: String): Boolean {
+        if (key in hostHidden) return false
+        val c = cells[key] ?: return false
+        return c.items.any { it.available() && it.view.visibility == View.VISIBLE && it.view.isEnabled }
+    }
 
     /** 编辑面板里给这颗工具画的图标（按钮取它的图；读数没有图 = null） */
     fun iconOf(key: String): Drawable? =
@@ -290,9 +330,20 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
      */
     fun refresh() {
         refreshPosted = false
-        for (c in cells.values) for (it in c.items) {
-            val v = if (it.available()) View.VISIBLE else View.GONE
-            if (it.wrap.visibility != v) it.wrap.visibility = v
+        for (c in cells.values) {
+            val hidden = c.key in hostHidden
+            var anyUsable = false
+            for (it in c.items) {
+                val usable = !hidden && it.available()
+                if (usable && it.view.visibility == View.VISIBLE) anyUsable = true
+                setWrap(it, if (usable) View.VISIBLE else View.GONE, blocked = false)
+            }
+            // 一份都不能用、又要求灰着显示：挑第一份按钮灰着露出来（同一个 key 的几份实例只露一份）。
+            // 宿主直接把 View 本身藏掉的（控制栏里按画板类型显隐的那几颗）不算，照旧不显示。
+            if (!anyUsable && showDisabled) {
+                c.items.firstOrNull { it.view is ImageButton && it.view.visibility == View.VISIBLE }
+                    ?.let { setWrap(it, View.VISIBLE, blocked = true) }
+            }
         }
         val sig = StringBuilder().append(bar.pinAvailWidth())
         for (gr in rows) if (gr.g.docked && gr.g.pinned) {
@@ -309,6 +360,14 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
     }
 
     private var lastSig = ""
+
+    private fun setWrap(it: Item, vis: Int, blocked: Boolean) {
+        if (it.wrap.visibility != vis) it.wrap.visibility = vis
+        it.wrap.blocked = blocked
+        // 宿主自己已经灰掉的（alpha 0.35）不再叠一层淡，否则淡到看不见
+        val alpha = if (blocked && it.view.isEnabled) 0.35f else 1f
+        if (it.wrap.alpha != alpha) it.wrap.alpha = alpha
+    }
 
     /**
      * 顶栏里只有**固定组**会被收进 ⋯（其余组在滚动段里，排不下就滚动）：固定组宽过 [TopBar.pinAvailWidth] 时，
@@ -368,7 +427,7 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
 
     /**
      * ⋯ 菜单里的工具：顶栏排不下被收起来的（按顶栏上的顺序）+ 哪组都不在的（按登记顺序）。
-     * 只列此刻可用、可点的按钮（读数不列，灰掉的不列）；开关类画成可勾选项。
+     * 只列按钮（读数不列）；此刻不能用 / 被宿主灰掉的，[showDisabled] 开着时灰着列出、关着时不列。开关类画成可勾选项。
      */
     fun overflow(): List<TopBar.MenuItem> {
         val keys = ArrayList<String>()
@@ -377,10 +436,14 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
         val out = ArrayList<TopBar.MenuItem>()
         for (k in keys) {
             val c = cells[k] ?: continue
-            val b = c.liveView() as? ImageButton ?: continue
-            if (!b.isEnabled) continue
+            val it = c.liveItem() ?: continue
+            val b = it.view as? ImageButton ?: continue
+            val usable = !it.wrap.blocked && b.isEnabled
+            if (!usable && !showDisabled) continue
             val m = metas[k] ?: continue
-            out.add(TopBar.MenuItem(m.title, if (m.toggle) b.isActiveOn() else null) { b.performClick() })
+            out.add(TopBar.MenuItem(m.title, if (m.toggle) b.isActiveOn() else null, enabled = usable) {
+                if (usable) b.performClick()
+            })
         }
         return out
     }
@@ -531,6 +594,7 @@ class Toolbox internal constructor(private val a: Activity, private val bar: Top
     companion object {
         const val GRIP_W = 18
         private const val PREF_LAYOUT = "layout"
+        private const val PREF_SHOW_DISABLED = "showDisabled"
         private const val MIME = "application/x-unireader-tools"
         private val PAD_TOGGLES = setOf("padMap", "padPageUnder")
 

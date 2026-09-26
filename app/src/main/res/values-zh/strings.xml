@@ -108,6 +108,7 @@
     <string name="tools_edit_title">编辑工具栏</string>
     <string name="tools_edit_tip">长按按钮拖到别的分组；放在最后一块里的按钮显示在「⋯」菜单中。</string>
     <string name="tools_edit_hidden">不在工具栏上（显示在「⋯」里）</string>
+    <string name="tools_edit_show_disabled">显示暂时不能用的按钮（灰色）</string>
     <string name="tools_edit_drop_here">把按钮拖到这里</string>
     <string name="tools_edit_docked">在顶栏</string>
     <string name="tools_edit_floating">浮动</string>

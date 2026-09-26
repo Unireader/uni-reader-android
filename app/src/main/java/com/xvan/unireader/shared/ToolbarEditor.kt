@@ -52,6 +52,14 @@ class ToolbarEditor(private val a: Activity, private val box: Toolbox) {
 
     private fun rebuild() {
         body.removeAllViews()
+        body.addView(
+            android.widget.CheckBox(a).apply {
+                text = a.getString(R.string.tools_edit_show_disabled)
+                setTextColor(Ui.onSurface(a))
+                isChecked = box.showDisabled
+                setOnCheckedChangeListener { _, on -> box.showDisabled = on }
+            },
+        )
         val registered = box.metas().map { it.key }.toSet()
         for ((i, g) in work.groups.withIndex()) {
             body.addView(header(g, i))
@@ -200,6 +208,8 @@ class ToolbarEditor(private val a: Activity, private val box: Toolbox) {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             background = Ui.round(Ui.surface(a), 10, a, Ui.outline(a))
+            // 此刻不能用的画灰（与顶栏 / ⋯ 同一个判断）；只是提示，照样能拖去换组
+            if (!box.isUsable(key)) alpha = 0.38f
             val p = Ui.dp(a, 6)
             setPadding(p, p, p, p)
             val icon = box.iconOf(key)

@@ -157,6 +157,12 @@ class ScratchCanvas @JvmOverloads constructor(
      */
     var twoFingerScroll = false
 
+    /**
+     * 锁定水平滚动（同页内 `PageCanvasView.hLocked`，宿主把那边的开关抄过来）：单指 / 双指 / 笔拖平移与
+     * 松手惯性都不带横向分量；缩放时以两指中点为锚的横向重锚照旧（不然放大时画面会横向乱跳）。
+     */
+    var hLocked = false
+
     /** 兜底工具（宿主还没接上时笔落下只平移，不崩也不乱画） */
     private val fallbackTools = Tools(
         inkTool = false, eraseTool = false, pen = PageCanvasView.FALLBACK_PENS[0],
@@ -686,6 +692,7 @@ class ScratchCanvas @JvmOverloads constructor(
         lastMoveT = now
         if (dt in 1..99) { velX = 0.7f * velX + 0.3f * (dx / dt); velY = 0.7f * velY + 0.3f * (dy / dt) }
         else { velX = 0f; velY = 0f }
+        if (hLocked) velX = 0f   // 横向锁死：甩出去的那一下也不许带横向分量
     }
 
     private fun cancelMomentum() {
@@ -854,7 +861,7 @@ class ScratchCanvas @JvmOverloads constructor(
         val beforeY = oy
         val dx = (lastPanX - x) / density / zoom
         val dy = (lastPanY - y) / density / zoom
-        ox += dx
+        if (!hLocked) ox += dx
         oy += dy
         trackVelocity(dx, dy)
         val wantY = oy
@@ -877,7 +884,7 @@ class ScratchCanvas @JvmOverloads constructor(
         ox = v[0]; oy = v[1]; zoom = v[2]
         // 中点整体挪动 = 平移。缩放锚点只保证「中点底下那一点不动」，两指齐挪时 factor≈1、
         // zoomAt 原地返回，光靠它双指是拖不动纸的——双指滚动模式下就等于纸钉死了。
-        ox -= (mx - pinchMx) / zoom
+        if (!hLocked) ox -= (mx - pinchMx) / zoom
         oy -= (my - pinchMy) / zoom
         trackVelocity(-(mx - pinchMx) / zoom, -(my - pinchMy) / zoom)   // 双指滚动松手也有惯性
         pinchMx = mx
@@ -945,7 +952,7 @@ class ScratchCanvas @JvmOverloads constructor(
                 val beforeY = oy
                 val dx = (penX - x) / density / zoom
                 val dy = (penY - y) / density / zoom
-                ox += dx
+                if (!hLocked) ox += dx
                 oy += dy
                 if (!historical) trackVelocity(dx, dy)   // 历史点同一时刻投递，只按实时点记速度
                 val wantY = oy

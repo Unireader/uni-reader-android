@@ -180,6 +180,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `bar.tools.adopt(barView, Toolbox.*_BAR_KEYS)` 整排交出去——两边同名的键（适应内容、纸样…）在布局里是同一颗。
   控制栏 `barView` 本身不再上屏，Controller 照旧设它的 visibility，那只当「这些键此刻能不能用」的信号（改了调 `onBarShown`）。
   · 宿主改键的状态照旧 `bar.setActive / setVisible / setTint / setEnabled`，刷完 HUD 调 `bar.tools.refresh()`（没变不重量）。
+  `setVisible(false)` 与 `available` 为假是同一个意思 =「此刻不能用」，**不直接改按钮的 visibility**，交给 `Toolbox`：
+  默认拿走；编辑面板勾了「显示暂时不能用的按钮」（`Toolbox.showDisabled`，prefs `toolbars` 的 `showDisabled`）时
+  灰着显示、点了没反应（包层 `ItemWrap.blocked` 吃掉触摸，不碰按钮自己的 enabled / alpha），⋯ 里也灰着列出。
   · 🔴 新加一颗键：`icon()` 登记 + 在 `ToolLayout.defaults()` 里给它一个默认位置（或进 `MENU_KEYS`），合并逻辑会把它放进老用户的布局；
   图标照例改 `tools/icons/gen.py`。浮着的组插在 `tools.below` 之下（抽屉永远最上层），位置归 `Toolbox`，宿主别改它们的 LayoutParams。
 - **界面文案资源（2026-09-26 起）**：从画板笔记开始，新文案进 `res/values/strings.xml`（英文）+

@@ -59,7 +59,7 @@ class TopBar(private val a: Activity) {
     }
 
     /** 溢出菜单的一项。[checked] 非空即渲染成可勾选项（原生 checkable） */
-    class MenuItem(val title: String, val checked: Boolean? = null, val onClick: () -> Unit)
+    class MenuItem(val title: String, val checked: Boolean? = null, val enabled: Boolean = true, val onClick: () -> Unit)
 
     /** 可自由编组的工具（顶栏上的键、画板 / 草稿纸控制栏、⋯ 里的操作都登记在这里） */
     val tools = Toolbox(a, this)
@@ -173,7 +173,8 @@ class TopBar(private val a: Activity) {
      *
      * [spillFirst]：顶栏排不下先收这个。给「上一页/下一页」这类**有别的办法完成**的操作用。
      * [toggle]：开关类（⋯ 里画成可勾选项，勾没勾按 [setActive] 设的状态）。
-     * [available]：此刻能不能用（如「夜间模式」只在开着 PDF 时）；不能用的不显示、也不进 ⋯。
+     * [available]：此刻能不能用（如「夜间模式」只在开着 PDF 时）；不能用的不显示、也不进 ⋯
+     * （编辑面板勾了「显示暂时不能用的按钮」时改成灰着显示，见 [Toolbox.showDisabled]）。
      */
     fun icon(
         key: String,
@@ -190,14 +191,13 @@ class TopBar(private val a: Activity) {
         return b
     }
 
-    /** 显示/藏掉某个键（藏 = 拿走，不是置灰——置灰用 [setEnabled]）；藏掉的也不进 ⋯ */
+    /**
+     * 此刻这个键能不能用（不能用 = 拿走；编辑面板勾了「显示暂时不能用的按钮」时改成灰着显示、点了没反应，
+     * 由 [Toolbox] 统一决定，所以这里不直接改按钮的 visibility）。置灰但仍在用的场合用 [setEnabled]。
+     */
     fun setVisible(key: String, visible: Boolean) {
-        val b = keyed[key] ?: return
-        val v = if (visible) View.VISIBLE else View.GONE
-        if (b.visibility != v) {
-            b.visibility = v
-            tools.requestRefresh()
-        }
+        if (key !in keyed) return
+        tools.setHostHidden(key, !visible)
     }
 
     /** 给某个键的图标染色（「切换笔」染当前笔色）；null = 回默认 barOn */
@@ -214,7 +214,11 @@ class TopBar(private val a: Activity) {
     }
 
     fun setEnabled(key: String, enabled: Boolean) {
-        keyed[key]?.let { it.isEnabled = enabled; it.alpha = if (enabled) 1f else 0.35f }
+        keyed[key]?.let {
+            if (it.isEnabled == enabled) return
+            it.isEnabled = enabled; it.alpha = if (enabled) 1f else 0.35f
+            tools.requestRefresh()   // 灰着显示的那层淡要跟着换（别叠两层淡）
+        }
     }
 
     /** 拖着一组工具经过顶栏时高亮（松手就并进来） */
@@ -231,11 +235,17 @@ class TopBar(private val a: Activity) {
             MenuItem(a.getString(R.string.tools_edit_menu)) { tools.openEditor() }
         val menu = PopupMenu(a, overflowBtn, Gravity.END)
         list.forEachIndexed { i, item ->
-            val mi = menu.menu.add(Menu.NONE, i, i, item.title)
+            // 禁用项文字显式染淡：系统（MIUI）只把禁用项淡一点点，不是开关的那几项几乎看不出来（用户 2026-09-27 报）
+            val title: CharSequence = if (item.enabled) item.title else android.text.SpannableString(item.title).apply {
+                val c = (Ui.onSurface(a) and 0x00FFFFFF) or (0x61 shl 24)   // 38% 不透明，Material 的禁用文字口径
+                setSpan(android.text.style.ForegroundColorSpan(c), 0, length, 0)
+            }
+            val mi = menu.menu.add(Menu.NONE, i, i, title)
             if (item.checked != null) {
                 mi.isCheckable = true
                 mi.isChecked = item.checked
             }
+            mi.isEnabled = item.enabled
         }
         menu.setOnMenuItemClickListener { mi ->
             list.getOrNull(mi.itemId)?.onClick?.invoke()

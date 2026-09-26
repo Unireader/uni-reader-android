@@ -112,6 +112,7 @@
     <string name="tools_edit_title">Edit toolbars</string>
     <string name="tools_edit_tip">Long press a button and drag it to another group. Buttons in the last section appear in the ⋯ menu.</string>
     <string name="tools_edit_hidden">Not on a toolbar (shown in ⋯)</string>
+    <string name="tools_edit_show_disabled">Show unavailable buttons (grayed out)</string>
     <string name="tools_edit_drop_here">Drag buttons here</string>
     <string name="tools_edit_docked">In top bar</string>
     <string name="tools_edit_floating">Floating</string>
