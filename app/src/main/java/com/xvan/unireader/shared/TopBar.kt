@@ -106,7 +106,13 @@ class TopBar(private val a: Activity) {
      * 缩放 100% 时不显示——它只在偏离时才是信息，而顶栏的横向空间比这条信息值钱。
      */
     fun setPageLabel(page: String, zoom: String) {
-        pageLabel.setTextIfChanged(if (zoom == "100%") page else "$page · $zoom")
+        val s = if (zoom == "100%") page else "$page · $zoom"
+        if (pageLabel.text?.toString() == s) return
+        pageLabel.text = s
+        // 文字变长时右侧尾段（固定在右的组 + ⋯）要跟着重量。这里常在布局回调里被调（画布 onLayout → 刷 HUD），
+        // 那一刻 TextView 的 requestLayout 会被本轮布局吞掉 → 尾段停在旧宽度、⋯ 被挤出去半截（用户 2026-09-27 报，
+        // dumpsys 实测尾段 220px = 旧页码 117 + ⋯ 103，而页码已是 163）。post 到下一拍补一次。
+        pageLabel.post { pageLabel.requestLayout() }
     }
 
     /** ⋯ 里除工具以外的固定项（每次弹出时现算）。工具本身不写在这里——它们由 [tools] 决定在不在 ⋯ 里 */

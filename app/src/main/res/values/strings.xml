@@ -134,6 +134,8 @@
     <string name="tools_show_page">Show page image</string>
     <string name="tools_two_finger">Two-finger scrolling (palm guard)</string>
     <string name="tools_h_lock">Lock horizontal scrolling</string>
+    <string name="tools_write_lock">Writing lock</string>
+    <string name="tools_relative_ink">Relative ink width</string>
     <string name="tools_layers">Layers…</string>
     <string name="tools_goto_page">Go to page…</string>
     <string name="tools_open_doc">Open another document…</string>

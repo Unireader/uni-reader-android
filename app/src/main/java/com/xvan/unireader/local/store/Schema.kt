@@ -28,7 +28,7 @@ object Schema {
      * v16 `board_note`/`board_item`、v17 `board_page`——表都建上，写进去的版本号才不撒谎。
      * v18：`note` / `board_item` 加 `points BLOB` + `points_at TEXT`（笔迹点集二进制，`../BINARY-INK-PLAN.md`）。
      */
-    const val VERSION = 18
+    const val VERSION = 19
 
     /**
      * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -77,6 +77,9 @@ object Schema {
           group_name TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
+          viewport_x REAL NOT NULL DEFAULT 0,
+          viewport_y REAL NOT NULL DEFAULT 0,
+          viewport_zoom REAL NOT NULL DEFAULT 0,
           last_opened_at TEXT
         )
         """,
@@ -217,6 +220,10 @@ object Schema {
         Triple("note", "points_at", "TEXT"),
         Triple("board_item", "points", "BLOB"),
         Triple("board_item", "points_at", "TEXT"),
+        // v19：画板笔记记住上次视口（原点+缩放），与 Mac 同序；zoom<=0 = 没存过，按老规矩摆
+        Triple("board_note", "viewport_x", "REAL NOT NULL DEFAULT 0"),
+        Triple("board_note", "viewport_y", "REAL NOT NULL DEFAULT 0"),
+        Triple("board_note", "viewport_zoom", "REAL NOT NULL DEFAULT 0"),
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =

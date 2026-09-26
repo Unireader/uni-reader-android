@@ -1155,12 +1155,15 @@ class LibraryStore(private val db: Db) : Closeable {
     fun upsertBoard(b: BoardNote) {
         db.exec(
             """
-            INSERT INTO board_note(id,title,bg,pattern,group_name,created_at,updated_at,last_opened_at)
-            VALUES(?,?,?,?,?,?,?,?)
+            INSERT INTO board_note(id,title,bg,pattern,group_name,created_at,updated_at,viewport_x,viewport_y,viewport_zoom,last_opened_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET title=excluded.title, bg=excluded.bg, pattern=excluded.pattern,
               group_name=excluded.group_name, updated_at=excluded.updated_at, last_opened_at=excluded.last_opened_at
             """.trimIndent(),
-            arrayOf(b.id, b.title, b.bg, b.pattern, b.groupName, b.createdAt, b.updatedAt, b.lastOpenedAt),
+            arrayOf(
+                b.id, b.title, b.bg, b.pattern, b.groupName, b.createdAt, b.updatedAt,
+                b.viewportX, b.viewportY, b.viewportZoom, b.lastOpenedAt,
+            ),
         )
     }
 
@@ -1168,6 +1171,15 @@ class LibraryStore(private val db: Db) : Closeable {
     fun touchBoardOpened(id: String, at: String = nowIso()) {
         if (!hasTable("board_note")) return
         db.exec("UPDATE board_note SET last_opened_at=? WHERE id=?", arrayOf(at, id))
+    }
+
+    /** 只记视口（离开时的原点+缩放；同 [touchBoardOpened] 不动 updated_at，见 `BoardNote.viewportZoom` 注释） */
+    fun saveBoardViewport(id: String, x: Double, y: Double, zoom: Double) {
+        if (!hasTable("board_note")) return
+        db.exec(
+            "UPDATE board_note SET viewport_x=?, viewport_y=?, viewport_zoom=? WHERE id=?",
+            arrayOf(x, y, zoom, id),
+        )
     }
 
     /** 删一篇画板笔记，上面的全部条目随外键 CASCADE 一起走（`foreign_keys=ON` 在 [Db.open] 里开着） */
@@ -1502,6 +1514,9 @@ class LibraryStore(private val db: Db) : Closeable {
         groupName = c.str("group_name"),
         createdAt = c.str("created_at"),
         updatedAt = c.str("updated_at"),
+        viewportX = c.dbl("viewport_x"),
+        viewportY = c.dbl("viewport_y"),
+        viewportZoom = c.dbl("viewport_zoom"),
         lastOpenedAt = c.strOrNull("last_opened_at"),
     )
 

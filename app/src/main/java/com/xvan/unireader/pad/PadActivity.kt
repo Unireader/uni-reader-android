@@ -444,6 +444,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     eraserRing = padView.eraserRing,
                     rulerOn = padView.rulerOn,
                     lassoTool = padView.mode == MODE_LASSO,
+                    relativeInk = padView.relativeInkWidth,
                 )
             }
             // 纸上的框选选中集有无变化 → 顶栏剪切 / 复制跟着灰掉或亮起（同页内）
@@ -534,6 +535,15 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
             icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true) {
                 padView.toggleHLock(); refresh()
+            }
+            // 书写锁定：锁定后模式键只在 笔记/擦除 间来回，长按环形盘也只剩这两项（Mac 判定，
+            // 见 `../PROTOCOL.md` `lock` 0x59）；这里只发意图，`onLockChanged` 上行给 Mac
+            icon("writeLock", R.drawable.ic_write_lock, getString(R.string.tools_write_lock), toggle = true) {
+                padView.toggleWritingLock(); refresh()
+            }
+            // 相对粗细：本端按自己的缩放折算笔宽后上行（Mac 原样用），开关与 Mac 双向同步（`relInk` 0x5A）
+            icon("relativeInk", R.drawable.ic_relative_width, getString(R.string.tools_relative_ink), toggle = true) {
+                padView.toggleRelativeInkWidth(); refresh()
             }
             icon("layers", R.drawable.ic_layers, getString(R.string.tools_layers)) { showLayerPanel() }
             icon("gotoPage", R.drawable.ic_hash, getString(R.string.tools_goto_page)) { showGotoPage() }
@@ -1039,6 +1049,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("showPage", padView.showPage)
         bar.setActive("twoFinger", padView.twoFingerScroll)
         bar.setActive("hLock", padView.hLocked)
+        bar.setActive("writeLock", padView.writingLocked)
+        bar.setActive("relativeInk", padView.relativeInkWidth)
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（其余模式它不出现，见 buildUi 的注释）
         bar.setVisible("pen", padView.mode == MODE_NOTE)
         // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮，见 buildUi 的注释）
@@ -1332,6 +1344,17 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onEraser(size: Float, mode: Int, ring: Boolean) = runOnUiThread {
         padView.setEraser(size, mode, ring)
+    }
+
+    /** Mac 侧（或另一台平板）改了书写锁定：应用但不再回发（同 [onEraser] 那套） */
+    override fun onLock(on: Boolean) = runOnUiThread {
+        padView.setWritingLockedLocal(on)
+        refresh()
+    }
+
+    override fun onRelInk(on: Boolean) = runOnUiThread {
+        padView.setRelativeInkWidthLocal(on)
+        refresh()
     }
 
     /** 画板模式：Mac 是页边宽度的唯一真源（逐文档），照它布局即可 */

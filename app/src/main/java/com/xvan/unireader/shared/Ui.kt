@@ -155,11 +155,14 @@ object Ui {
         val bg =
             if (active) rippleOver(c, round(col(c, R.color.accent_container), RADIUS, c), RADIUS, accent)
             else rippleOver(c, null, RADIUS, on)
-        // 激活底色横向内缩 3dp：按钮本身是 48dp 满格排的（顶栏/草稿纸浮条都没有间距），
+        // 激活底色四边内缩 3dp：按钮本身是 48dp 满格排的（顶栏/草稿纸浮条都没有间距），
         // 两个相邻开关同时激活时底色会连成一整片、分不清是几个键。触摸区不变，只缩底色。
+        // 🔴 四边都要缩，不能只缩横向：只缩横向会把底色缩成宽高不等的长方形（用户报「只有翻页
+        // 键是正方形，笔/框选按下后是长方形」——那两档是 [setActive] 的 active 分支，翻页档
+        // 不走这条 active 分支，天然还是方的）。
         // 必须走 setBackgroundKeepPadding：InsetDrawable 会把 inset 当 padding 顶掉按钮自己的
         // 13dp，图标当场胀成约 1.9 倍且再也缩不回去（详见那个方法的注释）。
-        setBackgroundKeepPadding(if (active) InsetDrawable(bg, dp(c, 3), 0, dp(c, 3), 0) else bg)
+        setBackgroundKeepPadding(if (active) InsetDrawable(bg, dp(c, 3), dp(c, 3), dp(c, 3), dp(c, 3)) else bg)
     }
 
     /** Pen → ARGB（顶栏「切换笔」图标染色等「按笔色显示」的场合共用这一处换算） */

@@ -197,6 +197,15 @@ data class BoardNote(
     val groupName: String,
     val createdAt: String,
     val updatedAt: String,
+    /**
+     * 上次离开时的视口（v19，「记住上次滚动位置」）：原点 x/y（画布坐标）+ 缩放。
+     * `viewportZoom <= 0` = 从没存过（新建的画板/老库补列），打开时按老规矩摆
+     * （无限画布回原点、分页停第一页顶）——**同 `lastOpenedAt` 不进离线镜像指纹**，
+     * 单纯翻看挪了挪视口不算内容修改。
+     */
+    val viewportX: Double = 0.0,
+    val viewportY: Double = 0.0,
+    val viewportZoom: Double = 0.0,
     /** 最近打开（**不进离线镜像指纹**，打开不算改动——所以只动它时不碰 updated_at） */
     val lastOpenedAt: String?,
 )

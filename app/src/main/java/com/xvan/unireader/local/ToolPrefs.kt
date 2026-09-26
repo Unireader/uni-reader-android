@@ -2,13 +2,13 @@ package com.xvan.unireader.local
 
 import android.content.Context
 import android.util.Log
-import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.Pen
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 模式1 的工具状态持久化：**笔（含笔宽与当前选中的那支）、橡皮设置、夜间模式、锁缩放、双指滚动**。
+ * 模式1 的工具状态持久化：**笔（含笔宽与当前选中的那支）、橡皮设置、夜间模式、锁缩放、双指滚动、
+ * 书写锁定、相对粗细模式**。
  *
  * 模式2 不需要这个——它的笔架真源在 Mac，连上就整体推下来。模式1 没有 Mac，不存的话每次启动都
  * 回到基类那四支内置兜底笔，用户拖完笔宽一退出就白拖了。
@@ -25,7 +25,7 @@ object ToolPrefs {
     private const val PREFS = "tools"
     private const val KEY = "state"
 
-    fun load(ctx: Context, canvas: PageCanvasView) {
+    fun load(ctx: Context, canvas: LocalCanvasView) {
         val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null) ?: return
         try {
             val o = JSONObject(raw)
@@ -61,6 +61,8 @@ object ToolPrefs {
             if (o.optBoolean("zoomLocked", false) != canvas.zoomLocked) canvas.toggleZoomLock()
             if (o.optBoolean("twoFingerScroll", false) != canvas.twoFingerScroll) canvas.toggleTwoFingerScroll()
             if (o.optBoolean("hLocked", false) != canvas.hLocked) canvas.toggleHLock()
+            if (o.optBoolean("writingLocked", false) != canvas.writingLocked) canvas.toggleWritingLock()
+            if (o.optBoolean("relativeInkWidth", false) != canvas.relativeInkWidth) canvas.toggleRelativeInkWidth()
             Log.i(
                 TAG,
                 "工具状态已复原：笔 ${canvas.penList().size} 支 当前=${canvas.penIndex} " +
@@ -72,7 +74,7 @@ object ToolPrefs {
         }
     }
 
-    fun save(ctx: Context, canvas: PageCanvasView) {
+    fun save(ctx: Context, canvas: LocalCanvasView) {
         try {
             val pens = JSONArray()
             for (p in canvas.penList()) {
@@ -97,6 +99,8 @@ object ToolPrefs {
                 .put("zoomLocked", canvas.zoomLocked)
                 .put("twoFingerScroll", canvas.twoFingerScroll)
                 .put("hLocked", canvas.hLocked)
+                .put("writingLocked", canvas.writingLocked)
+                .put("relativeInkWidth", canvas.relativeInkWidth)
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(KEY, o.toString()).apply()
         } catch (e: Exception) {

@@ -101,6 +101,11 @@ object WireCodec {
     const val OP_BOARD_PAGE_ADD = 0x57
     const val OP_BOARD_PAGE_TEMPLATE = 0x58
 
+    /** 书写锁定（双向，同 [OP_ERASER] 一个 opcode 两个方向都用；`../PROTOCOL.md §4.1`） */
+    const val OP_LOCK = 0x59
+    /** 相对粗细模式开关（双向，同 [OP_LOCK]；`../PROTOCOL.md` `relInk`） */
+    const val OP_REL_INK = 0x5A
+
     /** `boards.kind`：被跟随会话是什么（0 = PDF 或空标签，1 = Markdown 笔记，2 = 画板笔记） */
     const val BOARD_KIND_PDF = 0
     const val BOARD_KIND_MARKDOWN = 1
@@ -252,6 +257,10 @@ object WireCodec {
         data class Canvas(val on: Boolean, val margin: Float) : Msg()
         /** 橡皮设置（双向；size = 归一化半径＝页宽比，mode 0=整笔 1=局部） */
         data class Eraser(val size: Float, val mode: Int, val ring: Boolean) : Msg()
+        /** 书写锁定（双向，同 [Eraser] 一个 opcode 两个方向都用） */
+        data class Lock(val on: Boolean) : Msg()
+        /** 相对粗细模式开关（双向，同 [Lock]） */
+        data class RelInk(val on: Boolean) : Msg()
         /** 工作区书库全量镜像（含 Mac 尚未打开的文档） */
         data class Library(val ws: String, val list: List<LibEntry>) : Msg()
         /** 当前文档的 PDF 目录。[docId] = 内容哈希，与 [Layout] 的 docId/v 同口径，渲染前必须核对 */
@@ -514,6 +523,14 @@ object WireCodec {
     /** 橡皮设置上行（size = 归一化半径，mode 0=整笔 1=局部） */
     fun encodeEraser(size: Float, mode: Int, ring: Boolean): ByteArray =
         Writer().apply { u8(OP_ERASER); f32(size); u8(mode); u8(if (ring) 1 else 0) }.bytes()
+
+    /** 书写锁定上行（同 [encodeEraser]，一个 opcode 两个方向都用） */
+    fun encodeLock(on: Boolean): ByteArray =
+        Writer().apply { u8(OP_LOCK); u8(if (on) 1 else 0) }.bytes()
+
+    /** 相对粗细模式开关上行（同 [encodeLock]） */
+    fun encodeRelInk(on: Boolean): ByteArray =
+        Writer().apply { u8(OP_REL_INK); u8(if (on) 1 else 0) }.bytes()
 
     /**
      * 请求切画板模式（C→S）。**只有 `on` 有意义**，margin 一律编 0——页边宽度轮不到客户端定
@@ -819,6 +836,8 @@ object WireCodec {
                     else Msg.PressRing(true, r.u32(), r.f32(), r.f32())
                 OP_CANVAS -> Msg.Canvas(r.u8() != 0, r.f32())
                 OP_ERASER -> Msg.Eraser(r.f32(), r.u8(), r.u8() != 0)
+                OP_LOCK -> Msg.Lock(r.u8() != 0)
+                OP_REL_INK -> Msg.RelInk(r.u8() != 0)
                 OP_NACK -> {
                     val n = r.u16()
                     val seqs = ArrayList<Long>(n)

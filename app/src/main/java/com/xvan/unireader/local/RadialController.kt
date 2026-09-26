@@ -64,6 +64,9 @@ class RadialController(private val view: PageCanvasView) {
     private var movedFar = false
     private var highlight = -1
     private var items = listOf<RadialItem>()
+    /** 书写锁定时 [items] 里唯一的笔扇区对应 [PageCanvasView.penIndex] 的哪一支（提交时按它设，
+     * 不能按数组下标 0——那套「笔扇区下标＝笔下标」的约定只在全量扇区表里成立，见 [commit]）。 */
+    private var lockedPenIndex = -1
 
     /** 长按候选期间的笔位采样（y 已乘页面纵横比折成与 x 同尺度），只保留窗口内的那几个 */
     private val sampleX = ArrayList<Float>(16)
@@ -166,9 +169,16 @@ class RadialController(private val view: PageCanvasView) {
         if (!watching || movedFar || active) return
         val pens = view.penList()
         if (pens.isEmpty()) return
-        items = pens.map { RadialItem(RK_PEN, it) } +
-            RadialItem(RK_ERASE, TOOL_PEN) + RadialItem(RK_PAGE, TOOL_PEN) +
-            RadialItem(RK_SCRATCH, TOOL_PEN) + RadialItem(RK_TEXT, TOOL_PEN)
+        // 书写锁定（用户 2026-09-26 提）：只剩「当前笔 + 橡皮」，翻页/新建草稿纸/新建文字笔记收起
+        items = if (view.writingLocked) {
+            lockedPenIndex = view.penIndex.coerceIn(pens.indices)
+            listOf(RadialItem(RK_PEN, pens[lockedPenIndex]), RadialItem(RK_ERASE, TOOL_PEN))
+        } else {
+            lockedPenIndex = -1
+            pens.map { RadialItem(RK_PEN, it) } +
+                RadialItem(RK_ERASE, TOOL_PEN) + RadialItem(RK_PAGE, TOOL_PEN) +
+                RadialItem(RK_SCRATCH, TOOL_PEN) + RadialItem(RK_TEXT, TOOL_PEN)
+        }
         active = true
         highlight = -1
         view.setPressRing(false, page, cx, cy)
@@ -199,8 +209,9 @@ class RadialController(private val view: PageCanvasView) {
     private fun commit(index: Int, item: RadialItem) {
         when (item.kind) {
             RK_PEN -> {
-                // 扇区表是「N 支笔在前，橡皮、翻页收尾」，所以笔扇区的下标就是笔的下标
-                view.setPenIndex(index)
+                // 扇区表是「N 支笔在前，橡皮、翻页收尾」，所以笔扇区的下标就是笔的下标；
+                // 书写锁定时扇区表只有一支笔，下标恒为 0，真实笔下标要按 lockedPenIndex 找回来
+                view.setPenIndex(if (lockedPenIndex >= 0) lockedPenIndex else index)
                 view.setMode(MODE_NOTE)   // 选了支笔就是要用它画（同 Mac applyPenSelection）
             }
             RK_ERASE -> view.setMode(MODE_ERASE)

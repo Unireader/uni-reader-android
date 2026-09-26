@@ -136,7 +136,7 @@ class BoardController(private val a: Activity) {
         canvas.onStrokeEnd = { pen, pts -> commitInk(pen, pts) }
         canvas.onEraseFinish = { snapshot -> commitErase(snapshot) }
         canvas.onLassoEdit = { e -> commitLassoEdit(e.after) }
-        canvas.onViewportChanged = { updateBar() }
+        canvas.onViewportChanged = { updateBar(); scheduleViewportSave() }
         canvas.onPullAddPage = { appendPages(1) }
         canvas.tools = { toolsProvider?.invoke() }
         canvas.picSource = ScratchCanvas.BoardPicSource { key, cb -> loadImage(key, cb) }
@@ -211,7 +211,9 @@ class BoardController(private val a: Activity) {
         if (same) { updateBar(); return }
         applyPages(BoardPageSet(pages))
         canvas.setPics(emptyList())
-        canvas.openSession()   // 打开一律回中 / 首页顶（视口不落库不上线，三端各自独立缩放滚动）
+        // 存过视口就回到离开那一刻（「记住上次滚动位置」），没存过才回中 / 首页顶（老规矩）
+        val restore = floatArrayOf(b.viewportX.toFloat(), b.viewportY.toFloat(), b.viewportZoom.toFloat())
+        canvas.openSession(restore)
         updateBar()
         Log.i(TAG, "打开画板 ${b.id.take(8)}《${b.title}》页数=${pages.size}")
         val id = b.id
@@ -233,9 +235,10 @@ class BoardController(private val a: Activity) {
         })
     }
 
-    /** 收起（切到别的标签页 / 关掉画板标签）。视口不留：下次打开照旧回中 */
+    /** 收起（切到别的标签页 / 关掉画板标签）。离开前把节流中的视口立即写一次，别等 0.6s */
     fun close() {
         if (board == null) return
+        flushViewportSave()
         board = null
         canvas.visibility = View.GONE
         barView.visibility = View.GONE
@@ -243,6 +246,31 @@ class BoardController(private val a: Activity) {
         canvas.setPics(emptyList())
         canvas.setStrokes(emptyList())
         applyPages(BoardPageSet.NONE)
+    }
+
+    // ---------- 视口持久化（「记住上次滚动位置」，节流到停手 0.6s 后一次） ----------
+
+    private var viewportSaveWork: Runnable? = null
+
+    private fun scheduleViewportSave() {
+        val work = viewportSaveWork
+        if (work != null) canvas.removeCallbacks(work)
+        val next = Runnable { flushViewportSave() }
+        viewportSaveWork = next
+        canvas.postDelayed(next, 600)
+    }
+
+    /** 立即写一次（[close] 与宿主 `onPause` 都调，进程随时可能被杀，别等节流的 0.6s） */
+    fun flushViewportSave() {
+        viewportSaveWork?.let { canvas.removeCallbacks(it) }
+        viewportSaveWork = null
+        val q = queue ?: return
+        val id = board?.id ?: return
+        val v = canvas.currentViewport()
+        q.submit("存画板视口 ${id.take(8)}") { s ->
+            runCatching { s.saveBoardViewport(id, v[0].toDouble(), v[1].toDouble(), v[2].toDouble()) }
+                .onFailure { Log.w(TAG, "存视口失败", it) }
+        }
     }
 
     /** 宿主在别处（书库 / 抽屉）改了名或删掉了当前这篇：跟着库走 */

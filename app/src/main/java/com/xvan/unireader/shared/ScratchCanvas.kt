@@ -59,6 +59,7 @@ class ScratchCanvas @JvmOverloads constructor(
         val eraserRing: Boolean,
         val rulerOn: Boolean,
         val lassoTool: Boolean = false,
+        val relativeInk: Boolean = false,   // 相对粗细：落笔时按画布当前缩放折算笔宽（同 PageCanvasView.relativeInkWidth）
     )
 
     /** 宿主给：当前工具快照（返回 null = 还没接上，笔落下只平移不崩） */
@@ -485,8 +486,18 @@ class ScratchCanvas @JvmOverloads constructor(
         invalidate()
     }
 
-    /** 打开一张纸：丢掉上一张的全部状态（含活体半笔与几何缓存）并回中 */
-    fun openSession() {
+    /** 当前视口（原点 x/y + 缩放，画布坐标）：画板笔记「记住上次滚动位置」存这个 */
+    fun currentViewport(): FloatArray = floatArrayOf(ox, oy, zoom)
+
+    /** 已存过的视口，尺寸还没到之前先记着（见 [openSession]/[onSizeChanged]） */
+    private var pendingRestore: FloatArray? = null
+
+    /**
+     * 打开一张纸：丢掉上一张的全部状态（含活体半笔与几何缓存）。
+     * [restore] = 存过的视口（原点 x/y + 缩放，画布坐标；null 或 zoom<=0 = 没存过）——
+     * 画板笔记「记住上次滚动位置」用，草稿纸仍传 null（打开一律回中/首页顶）。
+     */
+    fun openSession(restore: FloatArray? = null) {
         clearLasso()
         strokes.clear()
         tiles.reset()
@@ -497,7 +508,24 @@ class ScratchCanvas @JvmOverloads constructor(
         placed = false
         pagePlaced = false
         endPull()
-        if (paged) placeAtPageTop(0) else recenter()
+        pendingRestore = restore?.takeIf { it.size == 3 && it[2] > 0f }
+        applyPendingRestoreOrDefault()
+    }
+
+    /** [pendingRestore] 存在就直接摆过去（分页/无限画布同一套画布坐标，不必分叉）；否则走老规矩 */
+    private fun applyPendingRestoreOrDefault() {
+        val r = pendingRestore
+        if (r == null) {
+            if (paged) placeAtPageTop(0) else recenter()
+            return
+        }
+        if (width <= 0 || height <= 0) return   // 尺寸还没到，onSizeChanged 里再试
+        pendingRestore = null
+        ox = r[0]; oy = r[1]; zoom = r[2]
+        placed = true; pagePlaced = true
+        clampViewport()
+        invalidate()
+        onViewportChanged?.invoke()
     }
 
     /**
@@ -550,8 +578,8 @@ class ScratchCanvas @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (!placed || (paged && !pagePlaced)) {
-            // 首次拿到真实尺寸才回中 / 按页宽适配（之前算的都是假的）
-            if (w > 0 && h > 0) { if (paged) placeAtPageTop(0) else recenter() }
+            // 首次拿到真实尺寸才回中 / 按页宽适配 / 复位存过的视口（之前算的都是假的）
+            if (w > 0 && h > 0) applyPendingRestoreOrDefault()
             return
         }
         // 尺寸变化（旋转/分屏）：保持视口中心对应的画布点不动（同 Mac 的 onChange(of: geo.size)）
@@ -892,12 +920,13 @@ class ScratchCanvas @JvmOverloads constructor(
             }
             t.inkTool -> {
                 penKind = 1
-                livePen = t.pen
+                val pen = if (t.relativeInk && zoom > 0.01f) t.pen.copy(w = t.pen.w / zoom) else t.pen
+                livePen = pen
                 liveLine = t.rulerOn   // 尺子按落笔那一刻锁进这一笔（同 PageCanvasView）
                 livePts.clear()
                 livePts.add(Pt3(c[0], c[1], e.getPressure(idx)))
                 linePress = livePts[0].p   // 尺子笔的峰值压感起点，见 stylusMove 的尺子分支
-                onStrokeBegin?.invoke(t.pen, livePts[0], liveLine)
+                onStrokeBegin?.invoke(pen, livePts[0], liveLine)
             }
             else -> penKind = 3   // 平移
         }

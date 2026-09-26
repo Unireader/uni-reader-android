@@ -184,6 +184,20 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   图标照例改 `tools/icons/gen.py`。浮着的组插在 `tools.below` 之下（抽屉永远最上层），位置归 `Toolbox`，宿主别改它们的 LayoutParams。
 - **界面文案资源（2026-09-26 起）**：从画板笔记开始，新文案进 `res/values/strings.xml`（英文）+
   `res/values-zh/strings.xml`（中文），两份一起加；更早的文案仍直接写在代码里（中文），没有搬。
+- **书写锁定 + 相对粗细模式（2026-09-26）**：锁的是**切笔本身**（09-27 用户纠正）：`PageCanvasView.writingLocked`
+  锁定后 `cyclePen` 笔记档不轮替、`selectPen` 只认当前笔、`cycleMode`/`setModeLocal` 只在 笔记/擦除 间来回；
+  顶栏「writeLock」键在**笔组**里紧跟 mode/pen（图标 `ic_write_lock` = 笔 + 小锁，别再和「锁定缩放」的 `ic_lock`
+  共用——用户报两个锁分不清；老布局经 `ToolLayout.MOVED` 一次性挪过来）；模式1 本机独立判定
+  （`RadialController` 长按盘只剩当前笔+橡皮），模式2 双向发 `../PROTOCOL.md` `lock` 0x59（`MacClient.Callback
+  .onLock`/`PadView.onLockChanged`，同 `eraser` 一个 opcode 两个方向都用）。相对粗细模式在共用层
+  `PageCanvasView.relativeInkWidth`（落笔时 `strokePen()` 按本机 `zoom` 折算 `curStrokePen`），草稿纸 / 画板经
+  `ScratchCanvas.Tools.relativeInk` 按画布缩放折算；**折算在 pad 上做**，模式2 上行的 `pen.w` 已是折算后的值、
+  Mac 原样用（Mac 拿不到 pad 的缩放）。开关模式1 存 `ToolPrefs`，模式2 与 Mac 双向同步 `relInk` 0x5A
+  （`onRelInkChanged`/`setRelativeInkWidthLocal`，同 lock）。
+- **画板笔记记住上次滚动位置（schema v19，2026-09-26，`../BOARD-NOTE-PLAN.md §10`）**：`board_note` 加
+  `viewport_x/y/zoom`（`viewport_zoom<=0` = 没存过，按老规矩摆），**刻意不进 `MirrorFp`**（同 `last_opened_at`）。
+  `ScratchCanvas.openSession(restore:)`/`currentViewport()`，`BoardController` 停手 0.6s 节流写回、
+  `close()`/宿主 `onPause()` 立即 flush。模式2 没有本机库，不在这次范围内，视口仍是各端各自维护。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，

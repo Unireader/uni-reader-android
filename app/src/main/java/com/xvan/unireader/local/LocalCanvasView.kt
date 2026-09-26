@@ -114,6 +114,7 @@ class LocalCanvasView @JvmOverloads constructor(
     private var pendingLine = false
 
     override fun onInkBegin(page: Int, pen: Pen, pt: Pt3, line: Boolean) {
+        // pen 已是基类按相对粗细折算过的那支（= curStrokePen），落库原样用
         pending.clear()
         pending.add(pt)
         pendingPage = page

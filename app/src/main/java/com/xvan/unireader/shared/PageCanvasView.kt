@@ -322,6 +322,60 @@ open class PageCanvasView @JvmOverloads constructor(
     var twoFingerScroll = false
         protected set
 
+    /**
+     * 书写锁定（用户 2026-09-26 提，09-27 改口径：锁的是**切笔本身**；`../PROTOCOL.md` `lock` 0x59）：
+     * 锁定后只能在「当前这支笔 ↔ 橡皮」之间来回——[cyclePen] 在笔记档不再轮替、[selectPen] 只认当前笔，
+     * [cycleMode] 只在笔记/擦除两档来回、[setModeLocal] 也拦下切到其它档（翻页/框选/选字）。本机专属状态（同 `zoomLocked` 那一批），模式1 存 `ToolPrefs`；
+     * 模式2 额外把改动上行给 Mac、也接受 Mac 广播下来的改动（[onLockChanged]）。
+     */
+    var writingLocked = false
+        protected set
+
+    fun toggleWritingLock() {
+        writingLocked = !writingLocked
+        onLockChanged(writingLocked)
+        onHudChanged()
+    }
+
+    /** 从远端（Mac）应用锁定状态，不再回发（同 `setEraserLocal` 的「应用而不广播」）。 */
+    fun setWritingLockedLocal(v: Boolean) {
+        if (v == writingLocked) return
+        writingLocked = v
+        onHudChanged()
+    }
+
+    /** 锁定状态变了（本地触发，不含 [setWritingLockedLocal] 的远端应用）：模式2 覆写它上行给 Mac。 */
+    protected open fun onLockChanged(locked: Boolean) {}
+
+    /**
+     * 相对粗细模式（用户 2026-09-26 提；`../PROTOCOL.md` `relInk` 0x5A）：开着时落笔那一刻按**本机**当前
+     * [zoom] 把预设粗细折算细（[strokePen]），放大写的字缩回原尺寸看就是当初视觉粗细的缩影；关着是绝对粗细。
+     * 折算在本端做：模式1 直接落库，模式2 上行的 `pen.w` 已是折算后的值（Mac 拿不到 pad 的缩放，原样用）。
+     * 草稿纸 / 画板的笔迹经 `ScratchCanvas.Tools.relativeInk` 按画布自己的缩放折算。模式1 存 `ToolPrefs`，
+     * 模式2 与 Mac 双向同步（同 [writingLocked] 那套）。
+     */
+    var relativeInkWidth = false
+        protected set
+
+    fun toggleRelativeInkWidth() {
+        relativeInkWidth = !relativeInkWidth
+        onRelInkChanged(relativeInkWidth)
+        onHudChanged()
+    }
+
+    /** 从远端（Mac）应用，不再回发。 */
+    fun setRelativeInkWidthLocal(v: Boolean) {
+        if (v == relativeInkWidth) return
+        relativeInkWidth = v
+        onHudChanged()
+    }
+
+    /** 相对粗细开关变了（本地触发）：模式2 覆写它上行给 Mac。 */
+    protected open fun onRelInkChanged(on: Boolean) {}
+
+    /** 这一笔实际用的笔：相对粗细开着时按当前缩放折算。 */
+    protected fun strokePen(p: Pen): Pen = if (relativeInkWidth && zoom > 0.01f) p.copy(w = p.w / zoom) else p
+
     fun penList(): List<Pen> = pens
     fun curPenOrNull(): Pen? = pens.getOrNull(penIndex)
     /**
@@ -343,7 +397,9 @@ open class PageCanvasView @JvmOverloads constructor(
         if (activePen) endPen()   // 切换前正常收笔
         val leavingLasso = mode == MODE_LASSO
         val leavingText = mode == MODE_TEXT
-        mode = (mode + 1) % modeLabels.size
+        // 书写锁定：只在 笔记/擦除 间来回，不走完整的那一圈（翻页/框选/选字收起）
+        mode = if (writingLocked) (if (mode == MODE_ERASE) MODE_NOTE else MODE_ERASE)
+               else (mode + 1) % modeLabels.size
         eraserRingAt = null
         if (leavingLasso) clearLasso()
         if (leavingText) clearTextSelection()   // 切走选字：残留的蓝块会误导（同框选那条）
@@ -358,6 +414,7 @@ open class PageCanvasView @JvmOverloads constructor(
         // 切换前正常收笔（与 cycleMode 一致）。**不收笔就等于没反应**：`curStrokePen` 是落笔那一刻
         // 锁进这一笔的，中途换笔不会改写已经在画的这条，于是用户「一直写字不断笔、按一下切笔」时
         // penIndex 明明变了、画面却一点变化都没有（用户实测报的就是这个）。收掉这一笔，下一笔立刻是新笔。
+        if (writingLocked && mode == MODE_NOTE) return   // 书写锁定：已经是这支笔，不轮替（橡皮档按它仍是回到笔）
         if (activePen) endPen()
         if (mode == MODE_NOTE) penIndex = (penIndex + 1) % pens.size
         if (mode == MODE_LASSO) clearLasso()
@@ -372,6 +429,7 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 键盘直切模式（n/v/l 键）：本地切 → 同步 Mac；切走框选即放弃选中。与 cycleMode 同收尾，只是目标指定。 */
     fun setModeLocal(m: Int) {
         if (m !in modeLabels.indices || m == mode) return
+        if (writingLocked && m != MODE_NOTE && m != MODE_ERASE) return   // 锁定时拦下切到其它档
         if (activePen) endPen()
         if (mode == MODE_LASSO) clearLasso()
         if (mode == MODE_TEXT) clearTextSelection()   // 切走选字：残留的蓝块会误导（同框选那条）
@@ -389,6 +447,7 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 数字键直选某支笔：与 cyclePen 同语义（选笔即回笔记模式），只是指定槽位不轮替。 */
     fun selectPen(i: Int) {
         if (i !in pens.indices) return
+        if (writingLocked && i != penIndex) return   // 书写锁定：只许回到当前这支笔
         if (activePen) endPen()
         penIndex = i
         if (mode == MODE_LASSO) clearLasso()
@@ -2652,7 +2711,7 @@ open class PageCanvasView @JvmOverloads constructor(
             MODE_NOTE -> {
                 drawPage = loc.page
                 curPage = loc.page
-                curStrokePen = curPenPreset()
+                curStrokePen = strokePen(curPenPreset())
                 // 尺子开关按**落笔那一刻**锁进这一笔（中途改开关不影响正在写的这笔），并随 begin 上报：
                 // Mac 据此把后续 move 当「替换终点」而不是追加点，两端才都是同一条两点直线。
                 lineStroke = rulerOn

@@ -130,6 +130,8 @@
     <string name="tools_show_page">显示页面图</string>
     <string name="tools_two_finger">双指滚动（防误触）</string>
     <string name="tools_h_lock">锁定水平滚动</string>
+    <string name="tools_write_lock">书写锁定</string>
+    <string name="tools_relative_ink">相对粗细</string>
     <string name="tools_layers">图层…</string>
     <string name="tools_goto_page">跳到第…页</string>
     <string name="tools_open_doc">打开另一篇…</string>

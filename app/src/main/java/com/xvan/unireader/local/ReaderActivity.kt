@@ -530,6 +530,18 @@ class ReaderActivity : Activity() {
             icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true, available = pdf) {
                 cur()?.toggleHLock(); saveTools(); refreshHud()
             }
+            // 书写锁定：锁定后模式键只在 笔记/擦除 间来回、长按环形盘也只剩这两项（本机独立判定，
+            // 见 RadialController）——PDF 与画板/草稿纸都能写字，所以跟 twoFinger/hLock 一样按 anyTab 生效
+            icon("writeLock", R.drawable.ic_write_lock, getString(R.string.tools_write_lock), toggle = true, available = anyTab) {
+                toolCanvas()?.toggleWritingLock(); saveTools(); refreshHud()
+            }
+            // 相对粗细：按本机当前缩放折算笔宽；PDF 页内与画板/草稿纸（按画布缩放）都生效，所以按 anyTab
+            icon(
+                "relativeInk", R.drawable.ic_relative_width,
+                getString(R.string.tools_relative_ink), toggle = true, available = anyTab,
+            ) {
+                toolCanvas()?.toggleRelativeInkWidth(); saveTools(); refreshHud()
+            }
             icon("layers", R.drawable.ic_layers, getString(R.string.tools_layers), available = pdf) { showLayers() }
             icon("gotoPage", R.drawable.ic_hash, getString(R.string.tools_goto_page), available = {
                 cur() != null || (curTab()?.isBoard == true && board.pageCount > 0)   // 分页画板也能跳页
@@ -602,6 +614,7 @@ class ReaderActivity : Activity() {
                         eraserRing = c.eraserRing,
                         rulerOn = c.rulerOn,
                         lassoTool = c.mode == MODE_LASSO,
+                        relativeInk = c.relativeInkWidth,
                     )
                 }
             }
@@ -619,6 +632,7 @@ class ReaderActivity : Activity() {
                         eraserRing = c.eraserRing,
                         rulerOn = c.rulerOn,
                         lassoTool = c.mode == MODE_LASSO,
+                        relativeInk = c.relativeInkWidth,
                     )
                 }
             }
@@ -1538,7 +1552,7 @@ class ReaderActivity : Activity() {
      * [ToolPrefs.load] 里对 night 的做法。**不走"存一遍再读一遍"**：那要多一次 SharedPreferences
      * 往返，而且 ToolPrefs 只管笔/橡皮/夜间/锁缩放/双指滚动，模式与尺子/文字/页图会丢。
      */
-    private fun copyTools(from: PageCanvasView, to: PageCanvasView) {
+    private fun copyTools(from: LocalCanvasView, to: LocalCanvasView) {
         to.setPens(from.penList(), from.penIndex)
         to.setEraserLocal(from.eraserSize, from.eraserMode, from.eraserRing)
         if (to.night != from.night) to.toggleNight()
@@ -1546,6 +1560,8 @@ class ReaderActivity : Activity() {
         if (to.zoomLocked != from.zoomLocked) to.toggleZoomLock()
         if (to.twoFingerScroll != from.twoFingerScroll) to.toggleTwoFingerScroll()
         if (to.hLocked != from.hLocked) to.toggleHLock()
+        if (to.writingLocked != from.writingLocked) to.toggleWritingLock()
+        if (to.relativeInkWidth != from.relativeInkWidth) to.toggleRelativeInkWidth()
         if (to.rulerOn != from.rulerOn) to.toggleRuler()
         if (to.noteMode != from.noteMode) to.toggleNoteMode()
         to.setMode(from.mode)
@@ -1765,6 +1781,8 @@ class ReaderActivity : Activity() {
         bar.setActive("showPage", canvas.showPage)
         bar.setActive("twoFinger", canvas.twoFingerScroll)
         bar.setActive("hLock", canvas.hLocked)
+        bar.setActive("writeLock", canvas.writingLocked)
+        bar.setActive("relativeInk", canvas.relativeInkWidth)
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（与模式2 同一套表达）
         bar.setVisible("pen", canvas.mode == MODE_NOTE)
         // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮——剪贴板空时点了是空操作）
@@ -1817,6 +1835,8 @@ class ReaderActivity : Activity() {
         bar.setActive("mode", c.mode != MODE_PAGE)
         bar.setActive("ruler", c.rulerOn)
         bar.setActive("twoFinger", c.twoFingerScroll)
+        bar.setActive("writeLock", c.writingLocked)
+        bar.setActive("relativeInk", c.relativeInkWidth)
         bar.setVisible("pen", c.mode == MODE_NOTE)
         bar.setTint("pen", c.curPenOrNull()?.let { Ui.penArgb(it) })
         board.canvas.twoFingerScroll = c.twoFingerScroll
@@ -2005,6 +2025,7 @@ class ReaderActivity : Activity() {
         curTab()?.let { saveProgress(it) }
         // 顶栏切的夜间、环形盘/切笔键换的笔——都在这一刻存下来（面板改的已经即时存过了）
         toolCanvas()?.let { ToolPrefs.save(this, it) }
+        board.flushViewportSave()   // 画板视口同理：节流中的那次立即写一次，没开画板时空操作
     }
 
     /**

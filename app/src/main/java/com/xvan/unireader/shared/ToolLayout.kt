@@ -80,7 +80,8 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
                 Group(G_NAV, "", mutableListOf("toc", "prev", "next"), docked = true),
                 Group(
                     G_PEN, "",
-                    mutableListOf("mode", "pen", "ruler", "undo", "redo", "clipCut", "clipCopy", "clipPaste"),
+                    // writeLock（书写锁定）紧跟模式 / 笔：它锁的就是这两颗键能切到哪（用户 2026-09-27 定）
+                    mutableListOf("mode", "pen", "writeLock", "ruler", "undo", "redo", "clipCut", "clipCopy", "clipPaste"),
                     docked = true,
                 ),
                 Group(G_PAGE, "", mutableListOf("scratch", "lock", "canvas", "ref"), docked = true),
@@ -98,11 +99,19 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
         ).also { l ->
             for (g in l.groups) l.known.addAll(g.keys)
             l.known.addAll(MENU_KEYS)
+            for (m in MOVED) l.known.add(m.mark)
         }
+
+        /**
+         * 默认位置后来改过的 key：老布局里它**还在旧的默认组**时挪到新默认位置，只挪一次（[mark] 记进 `known`）；
+         * 用户自己挪到别处的不动。`known` 只被 [mergeNew] 当「见过没有」查，多一条标记不影响别的。
+         */
+        private class Moved(val key: String, val fromGroup: String, val mark: String)
+        private val MOVED = listOf(Moved("writeLock", G_PAGE, "moved:writeLock@pen"))
 
         /** 默认收在 ⋯ 里的（原先就只在菜单里的那些） */
         val MENU_KEYS = listOf(
-            "boardList", "night", "showPage", "twoFinger", "hLock", "layers", "gotoPage",
+            "boardList", "night", "showPage", "twoFinger", "hLock", "relativeInk", "layers", "gotoPage",
             "openDoc", "workspace", "hideBar", "conn",
         )
 
@@ -150,6 +159,17 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
                     ?: Group(dg.id, "", mutableListOf(), dg.docked, pin = dg.pin).also { l.groups.add(it) }
                 val before = dg.keys.subList(0, dg.keys.indexOf(k)).lastOrNull { it in g.keys }
                 g.keys.add(if (before == null) 0 else g.keys.indexOf(before) + 1, k)
+            }
+            for (m in MOVED) {
+                if (m.mark in l.known) continue
+                changed = true
+                l.known.add(m.mark)
+                val from = l.groups.firstOrNull { it.id == m.fromGroup && m.key in it.keys } ?: continue
+                val dg = def.groupOf(m.key) ?: continue
+                val g = l.groups.firstOrNull { it.id == dg.id } ?: continue
+                from.keys.remove(m.key)
+                val before = dg.keys.subList(0, dg.keys.indexOf(m.key)).lastOrNull { it in g.keys }
+                g.keys.add(if (before == null) 0 else g.keys.indexOf(before) + 1, m.key)
             }
             return changed
         }

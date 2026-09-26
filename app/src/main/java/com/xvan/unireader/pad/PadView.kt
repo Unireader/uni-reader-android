@@ -145,6 +145,14 @@ class PadView @JvmOverloads constructor(
         listener?.sendCtl(WireCodec.encodeMode(mode))
     }
 
+    override fun onLockChanged(locked: Boolean) {
+        listener?.sendCtl(WireCodec.encodeLock(locked))
+    }
+
+    override fun onRelInkChanged(on: Boolean) {
+        listener?.sendCtl(WireCodec.encodeRelInk(on))
+    }
+
     override fun onPenSelected(index: Int) {
         listener?.sendCtl(WireCodec.encodePen(index))
     }

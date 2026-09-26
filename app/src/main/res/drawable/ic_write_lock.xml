@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  书写锁定：笔（同 pen 那一支）+ 右下角一把小锁——与「锁定缩放」的整把挂锁一眼分得开
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M6.077,9.788 L11.663,4.202 A2.5,2.5 0 0 1 15.198,7.737 L9.612,13.323 Z M6.077,9.788 L3.602,15.798 L9.612,13.323 M14.6,15 L19.4,15 A1.4,1.4 0 0 1 20.8,16.4 L20.8,19.4 A1.4,1.4 0 0 1 19.4,20.8 L14.6,20.8 A1.4,1.4 0 0 1 13.2,19.4 L13.2,16.4 A1.4,1.4 0 0 1 14.6,15 Z M15,15 L15,13.4 A2,2 0 0 1 19,13.4 L19,15"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
