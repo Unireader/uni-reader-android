@@ -69,9 +69,12 @@ class ReaderDrawer(private val a: Activity) {
     var onRenameBookmark: (String, String) -> Unit = { _, _ -> }
     var onDeleteBookmark: (String) -> Unit = {}
 
-    // —— 画板笔记（`../BOARD-NOTE-PLAN.md §5`）：书库页的第二组。**[setBoards] 没被调过 = 整组不显示**
-    // （模式2 的画板入口在顶栏 ⋯，不在这里）。[LibItem.id] 是画板 id，[LibItem.open] = 已在标签页里。
+    // —— 画板笔记（`../BOARD-NOTE-PLAN.md §5`）：书库页的第二组。**[setBoards] 没被调过 = 整组不显示**。
+    // 两个模式都用：模式1 读本机库，模式2 用 Mac 的 `boards` 镜像。[LibItem.id] 是画板 id，
+    // [LibItem.open] = 模式1 已在标签页里 / 模式2 是 Mac 正开着的那篇。
     private var boards: List<LibItem>? = null
+    /** 每行右侧的「更多」（改名 / 删除）。模式2 关掉：平板只能改**当前**那篇的名字、删画板只在 Mac 上做。 */
+    var boardMoreEnabled = true
 
     /** 点一篇画板：画板 id */
     var onOpenBoard: (String) -> Unit = {}
@@ -481,9 +484,11 @@ class ReaderDrawer(private val a: Activity) {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 openBadge(b.open)?.let { addView(it) }
-                addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.board_more), Ui.onVariant(a)) {
-                    onBoardMore(b.id)
-                })
+                if (boardMoreEnabled) {
+                    addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.board_more), Ui.onVariant(a)) {
+                        onBoardMore(b.id)
+                    })
+                }
             }
             bodyBox.addView(
                 libRow(b, trailing, R.drawable.ic_scratch) {

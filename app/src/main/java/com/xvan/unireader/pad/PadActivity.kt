@@ -558,6 +558,15 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             onDeleteBookmark = { id ->
                 client?.send(WireCodec.encodeBookmarkEdit(WireCodec.BM_DELETE, id))
             }
+            // 画板笔记（`../PROTOCOL.md §4.8`）：书库页列出 Mac 这个工作区的画板；点开 / 新建都只是请求，
+            // Mac 在被跟随的窗口里开好标签后照常回推 boards / scratchpads / scratchStrokes / boardImages。
+            boardMoreEnabled = false
+            onOpenBoard = { id ->
+                if (!(boardKind == WireCodec.BOARD_KIND_BOARD && id == boardCurrent)) {
+                    client?.send(WireCodec.encodeBoardOpen(id))
+                }
+            }
+            onAddBoard = { client?.send(WireCodec.encodeBoardAdd()) }
         }
 
         // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释），只列**当前工作区**那几篇。
@@ -1297,6 +1306,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         boards = list
         scratch.boardMode = kind == WireCodec.BOARD_KIND_BOARD
         scratch.boardTitle = list.firstOrNull { it.id == current }?.title
+        drawer.setBoards(list.map {
+            LibItem(it.id, it.title, open = kind == WireCodec.BOARD_KIND_BOARD && it.id == current)
+        })
         applyBoardSurface()
         refresh()
     }
