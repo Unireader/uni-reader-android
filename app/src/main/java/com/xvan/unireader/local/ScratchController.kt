@@ -84,6 +84,9 @@ class ScratchController(private val a: Activity) {
     /** 开/关纸 → 宿主刷新顶栏入口的开关态 */
     var onOpenChanged: (() -> Unit)? = null
 
+    /** 控制栏显隐变了 → 宿主刷新工具栏（[barView] 不再上屏，它的 visibility 只当「这些键能不能用」的信号） */
+    var onBarShown: (() -> Unit)? = null
+
     private var queue: StoreQueue? = null
     private var docId = ""
 
@@ -221,6 +224,7 @@ class ScratchController(private val a: Activity) {
         applyPageUnder()
         canvas.visibility = View.VISIBLE
         barView.visibility = View.VISIBLE
+        onBarShown?.invoke()
         updateBar()
         onOpenChanged?.invoke()
         Log.i(TAG, "打开草稿纸 ${pad.id.take(8)}《${pad.title}》")
@@ -245,6 +249,7 @@ class ScratchController(private val a: Activity) {
         openPad = null
         canvas.visibility = View.GONE
         barView.visibility = View.GONE
+        onBarShown?.invoke()
         onOpenChanged?.invoke()
     }
 

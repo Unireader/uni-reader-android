@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  拖动把手：两列三行圆点（浮条 / 顶栏里的一组键拖来拖去）
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M7.65,5.6 A1.55,1.55 0 1 1 10.75,5.6 A1.55,1.55 0 1 1 7.65,5.6 Z M7.65,12 A1.55,1.55 0 1 1 10.75,12 A1.55,1.55 0 1 1 7.65,12 Z M7.65,18.4 A1.55,1.55 0 1 1 10.75,18.4 A1.55,1.55 0 1 1 7.65,18.4 Z M13.25,5.6 A1.55,1.55 0 1 1 16.35,5.6 A1.55,1.55 0 1 1 13.25,5.6 Z M13.25,12 A1.55,1.55 0 1 1 16.35,12 A1.55,1.55 0 1 1 13.25,12 Z M13.25,18.4 A1.55,1.55 0 1 1 16.35,18.4 A1.55,1.55 0 1 1 13.25,18.4 Z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

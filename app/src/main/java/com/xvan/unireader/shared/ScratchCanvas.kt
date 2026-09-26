@@ -15,6 +15,7 @@ import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
@@ -89,6 +90,31 @@ class ScratchCanvas @JvmOverloads constructor(
     private var inkColor = Color.BLACK   // 底纹/提示的墨色：由纸色明度推，不跟系统深浅外观走（§4.2 🔴）
     private var pattern = "dots"
     private val strokes = ArrayList<Stroke>()
+
+    /**
+     * 笔迹的分块位图缓存（拖动时只贴图，见 [ScratchTiles]）。🔴 [strokes] 的每一处增删都要经
+     * [strokesChanged] 告诉它（以及内容包围盒 / minimap 骨架那两份缓存），漏一处就是那一处改了看不见。
+     */
+    private val tiles = ScratchTiles(density, strokes) { postInvalidateOnAnimation() }
+
+    /** [strokes] 已经改好：通知块缓存 + 作废包围盒 / minimap 骨架 */
+    private fun strokesChanged(removed: List<Stroke>, added: List<Stroke>) {
+        tiles.changed(removed, added)
+        strokeBoundsOk = false
+        miniSkelOk = false
+    }
+
+    // 笔迹全集的包围盒（软边界每次平移都要，逐点扫一遍全集太贵）
+    private var strokeBoundsCache: FloatArray? = null
+    private var strokeBoundsOk = false
+
+    private fun strokeBounds(): FloatArray? {
+        if (!strokeBoundsOk) {
+            strokeBoundsCache = ScratchGeom.contentBounds(strokes)
+            strokeBoundsOk = true
+        }
+        return strokeBoundsCache
+    }
 
     // ---- 视口（origin = 视口左上角对应的画布坐标 dp） ----
     private var ox = 0f
@@ -388,9 +414,24 @@ class ScratchCanvas @JvmOverloads constructor(
      *   回推还没到」之间会露出空窗，肉眼就是上一笔闪一下。判据在 `PadScratch.applyStrokes`。
      */
     fun setStrokes(list: List<Stroke>, keep: List<Stroke> = emptyList()) {
+        val next = ArrayList<Stroke>(list.size + keep.size)
+        next.addAll(list)
+        next.addAll(keep)
+        // 与现有的比出增删（按内容：模式2 每次回推都是新解码的对象）。整篇没变 = 块一张都不用重画
+        val removed: List<Stroke>
+        val added: List<Stroke>
+        if (strokes.isEmpty() || next.isEmpty()) {
+            removed = ArrayList(strokes)
+            added = next
+        } else {
+            val before = HashSet<Stroke>(strokes)
+            val after = HashSet<Stroke>(next)
+            removed = strokes.filter { it !in after }
+            added = next.filter { it !in before }
+        }
         strokes.clear()
-        strokes.addAll(list)
-        strokes.addAll(keep)
+        strokes.addAll(next)
+        strokesChanged(removed, added)
         clampViewport()
         invalidate()
     }
@@ -401,17 +442,25 @@ class ScratchCanvas @JvmOverloads constructor(
     /** 收笔后宿主生成的带 id 笔迹并进画布（乐观落地，同 `LocalCanvasView.onInkEnd` 的套路） */
     fun addCommitted(s: Stroke) {
         strokes.add(s)
+        strokesChanged(emptyList(), listOf(s))
         invalidate()
     }
 
     /** 落库失败撤销乐观落地（宁可这一笔消失，也不假装存住了） */
     fun removeStroke(id: String) {
-        if (strokes.removeAll { it.id == id }) invalidate()
+        val gone = strokes.filter { it.id == id }
+        if (gone.isEmpty()) return
+        strokes.removeAll { it.id == id }
+        strokesChanged(gone, emptyList())
+        invalidate()
     }
 
     /** 打开一张纸：丢掉上一张的全部状态（含活体半笔与几何缓存）并回中 */
     fun openSession() {
         strokes.clear()
+        tiles.reset()
+        strokeBoundsOk = false
+        miniSkelOk = false
         clearLive()
         ink.clearCache()
         placed = false
@@ -462,6 +511,11 @@ class ScratchCanvas @JvmOverloads constructor(
     private fun viewWdp() = width / density
     private fun viewHdp() = height / density
 
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        tiles.release()   // 停后台出图线程；回到窗口后按需重开
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (!placed || (paged && !pagePlaced)) {
@@ -484,12 +538,19 @@ class ScratchCanvas @JvmOverloads constructor(
     private fun contentBounds(): FloatArray? {
         // 分页画板：全部页也算内容（同 Mac contentBounds ∪ boardLayout.bounds）——页是「纸」，不是空白
         val under = pageUnderRect ?: pageLayout?.bounds()
-        val base = ScratchGeom.contentBounds(strokes, livePts.ifEmpty { null }, under)
-        if (pics.isEmpty()) return base
-        var x0 = base?.get(0) ?: Float.MAX_VALUE
-        var y0 = base?.get(1) ?: Float.MAX_VALUE
-        var x1 = if (base != null) base[0] + base[2] else -Float.MAX_VALUE
-        var y1 = if (base != null) base[1] + base[3] else -Float.MAX_VALUE
+        val base = strokeBounds()
+        val extra = if (livePts.isEmpty() && under == null) null
+            else ScratchGeom.contentBounds(emptyList(), livePts.ifEmpty { null }, under)
+        if (pics.isEmpty() && extra == null) return base
+        var x0 = Float.MAX_VALUE
+        var y0 = Float.MAX_VALUE
+        var x1 = -Float.MAX_VALUE
+        var y1 = -Float.MAX_VALUE
+        for (b in arrayOf(base, extra)) {
+            if (b == null) continue
+            x0 = min(x0, b[0]); y0 = min(y0, b[1])
+            x1 = max(x1, b[0] + b[2]); y1 = max(y1, b[1] + b[3])
+        }
         for (p in pics) {
             x0 = min(x0, p.x); y0 = min(y0, p.y)
             x1 = max(x1, p.x + p.w); y1 = max(y1, p.y + p.h)
@@ -551,6 +612,57 @@ class ScratchCanvas @JvmOverloads constructor(
     private var pinchMy = 0f
     private var miniDrag = false   // 手指正在 minimap 上点/拖（panId = 那根手指）
 
+    // —— 分页画板的松手惯性（2026-09-26 用户报「分页画板滚动没有惯性」）——
+    // 手感与页内阅读区同一套（`PageCanvasView.startMomentum`）：速度按 0.7/0.3 平滑，松手后 0.94^(dt/16) 衰减，
+    // 碰到夹取边界那一轴停。单位 = 画布 dp / ms。惯性滑到底**不算**上拉加页（加页只认手指 / 笔还在拖的那段）。
+    private var velX = 0f
+    private var velY = 0f
+    private var lastMoveT = 0L
+    private var momentumOn = false
+
+    /** 拖动了一下（画布 dp）：记速度，给松手惯性用 */
+    private fun trackVelocity(dx: Float, dy: Float) {
+        val now = android.os.SystemClock.uptimeMillis()
+        val dt = now - lastMoveT
+        lastMoveT = now
+        if (dt in 1..99) { velX = 0.7f * velX + 0.3f * (dx / dt); velY = 0.7f * velY + 0.3f * (dy / dt) }
+        else { velX = 0f; velY = 0f }
+    }
+
+    private fun cancelMomentum() {
+        momentumOn = false
+        velX = 0f; velY = 0f
+        lastMoveT = android.os.SystemClock.uptimeMillis()
+    }
+
+    /** 松手：分页画板按松手速度继续滑（无限画布不甩，维持原样） */
+    private fun startMomentum() {
+        if (!paged || android.os.SystemClock.uptimeMillis() - lastMoveT > 80) { cancelMomentum(); return }
+        if (hypot(velX * zoom, velY * zoom) < 0.05f * density) { cancelMomentum(); return }
+        momentumOn = true
+        var last = android.os.SystemClock.uptimeMillis()
+        val step = object : Runnable {
+            override fun run() {
+                if (!momentumOn) return
+                val now = android.os.SystemClock.uptimeMillis()
+                val dt = min(50f, (now - last).toFloat())
+                last = now
+                val wantX = ox + velX * dt
+                val wantY = oy + velY * dt
+                ox = wantX; oy = wantY
+                clampViewport()
+                if (abs(ox - wantX) > 0.001f) velX = 0f   // 碰边那一轴停
+                if (abs(oy - wantY) > 0.001f) velY = 0f
+                val decay = 0.94f.pow(dt / 16f)
+                velX *= decay; velY *= decay
+                invalidate()
+                onViewportChanged?.invoke()
+                if (hypot(velX * zoom, velY * zoom) > 0.02f * density) postOnAnimation(this) else momentumOn = false
+            }
+        }
+        postOnAnimation(step)
+    }
+
     private val palmPx = dp(PadConst.PALM)
     private val miniRect = RectF()
 
@@ -562,6 +674,7 @@ class ScratchCanvas @JvmOverloads constructor(
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                cancelMomentum()   // 手 / 笔一落下就接住正在滑的纸
                 if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) {
                     fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0))
                 } else {
@@ -608,12 +721,17 @@ class ScratchCanvas @JvmOverloads constructor(
                 else endTouch(id)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                // 松手前是不是在平移（单指 / 双指滚动 / 笔在翻页·框选模式下拖）：是就甩出去
+                // （双指滚动模式下两指先后抬起，最后一指抬起时已不在 pinching：交给 startMomentum 的「80ms 内还在动」判断）
+                val wasPanning = e.actionMasked == MotionEvent.ACTION_UP &&
+                    ((!penActive && !miniDrag) || (penActive && penKind == 3))
                 if (penActive) {
                     stylusUp()
                 }
                 touches.clear(); touchOrder.clear()
                 pinching = false; panId = -1; miniDrag = false
                 endPull()   // 一次手势结束：上拉加页的账清零
+                if (wasPanning) startMomentum() else cancelMomentum()
             }
         }
         return true
@@ -675,8 +793,11 @@ class ScratchCanvas @JvmOverloads constructor(
     /** 单指平移：屏幕拖多少视口移多少（注意方向：手指右拖 = 看左边的内容，origin 减） */
     private fun panTo(x: Float, y: Float) {
         val beforeY = oy
-        ox += (lastPanX - x) / density / zoom
-        oy += (lastPanY - y) / density / zoom
+        val dx = (lastPanX - x) / density / zoom
+        val dy = (lastPanY - y) / density / zoom
+        ox += dx
+        oy += dy
+        trackVelocity(dx, dy)
         val wantY = oy
         lastPanX = x; lastPanY = y
         clampViewport()
@@ -699,6 +820,7 @@ class ScratchCanvas @JvmOverloads constructor(
         // zoomAt 原地返回，光靠它双指是拖不动纸的——双指滚动模式下就等于纸钉死了。
         ox -= (mx - pinchMx) / zoom
         oy -= (my - pinchMy) / zoom
+        trackVelocity(-(mx - pinchMx) / zoom, -(my - pinchMy) / zoom)   // 双指滚动松手也有惯性
         pinchMx = mx
         pinchMy = my
         val wantY = oy
@@ -755,8 +877,11 @@ class ScratchCanvas @JvmOverloads constructor(
             4 -> miniJump(x, y)
             3 -> {
                 val beforeY = oy
-                ox += (penX - x) / density / zoom
-                oy += (penY - y) / density / zoom
+                val dx = (penX - x) / density / zoom
+                val dy = (penY - y) / density / zoom
+                ox += dx
+                oy += dy
+                if (!historical) trackVelocity(dx, dy)   // 历史点同一时刻投递，只按实时点记速度
                 val wantY = oy
                 penX = x; penY = y
                 clampViewport()
@@ -823,28 +948,35 @@ class ScratchCanvas @JvmOverloads constructor(
         val t = curTools()
         val r = t.eraserSize * ScratchGeom.ERASER_REF_W
         val r2 = r * r
-        var changed = false
+        val removed = ArrayList<Stroke>()
+        val added = ArrayList<Stroke>()
         if (t.eraserMode == 0) {
             var i = strokes.size - 1
             while (i >= 0) {
                 val s = strokes[i]
+                // 先按包围盒粗筛（盒子已缓存），离得远的整条不必逐点算
+                if (!near(s, cx, cy, r)) { i--; continue }
                 val hit = s.pts.any { val dx = it.x - cx; val dy = it.y - cy; dx * dx + dy * dy <= r2 }
-                if (hit) { strokes.removeAt(i); changed = true }
+                if (hit) { strokes.removeAt(i); removed.add(s) }
                 i--
             }
         } else {
             val out = ArrayList<Stroke>(strokes.size)
             for (s in strokes) {
+                if (!near(s, cx, cy, r)) { out.add(s); continue }
                 // 草稿纸笔迹 page 恒 0（splitStroke 的页过滤因此恒过，坐标系无关）
                 val segs = InkEdit.splitStroke(s, cx, cy, 0, r2)
-                if (segs.size == 1 && segs[0] === s) out.add(s) else { out.addAll(segs); changed = true }
+                if (segs.size == 1 && segs[0] === s) out.add(s) else { out.addAll(segs); removed.add(s); added.addAll(segs) }
             }
-            if (changed) {
+            if (removed.isNotEmpty()) {
                 strokes.clear()
                 strokes.addAll(out)
             }
         }
-        if (changed) invalidate()
+        if (removed.isNotEmpty()) {
+            strokesChanged(removed, added)
+            invalidate()
+        }
     }
 
     // ---- 悬停：擦除模式下显示橡皮尺寸圆环（同页内 hover 的口径） ----
@@ -898,17 +1030,10 @@ class ScratchCanvas @JvmOverloads constructor(
         }
         drawPageUnder(canvas)   // 底纹之上、笔迹之下（页图只是参照物，墨永远在最上面）
         drawPics(canvas)        // 画板笔记的图：同样在笔迹之下（笔迹永远能写在图上）
-        // 视口外的笔迹裁掉（画布是无界的一大坨，不裁就是每帧把整张纸重画一遍；同 web 的 boxHits）
+        // 成形笔迹走分块位图（拖动时只贴图）；缺块的地方才直接画
         val z = zoom
-        val x0 = ox
-        val y0 = oy
-        val x1 = ox + viewWdp() / z
-        val y1 = oy + viewHdp() / z
         ink.deferRebuild = pinching   // 捏合中别重建几何，canvas 缩放顶一拍（同页内）
-        for (s in strokes) {
-            if (!boxHits(s, x0, y0, x1, y1)) continue
-            ink.drawScratchStroke(canvas, s, ox, oy, z)
-        }
+        tiles.draw(canvas, ox, oy, z, width, height, pinching, drawDirect)
         livePen?.let { ink.drawScratchLive(canvas, it, livePts, ox, oy, z) }
         // 空白纸的引导（有笔迹后自动消失；同 Mac 的 emptyHint）
         if (!hasContent()) drawEmptyHint(canvas)
@@ -1077,18 +1202,35 @@ class ScratchCanvas @JvmOverloads constructor(
         c.drawText(text, width / 2f, height - dp(22f), hintPaint)
     }
 
-    /** 粗筛：这条笔迹的包围盒与可视画布矩形有没有交集（逐点算一遍比重画便宜得多，同 web boxHits） */
-    private fun boxHits(s: Stroke, x0: Float, y0: Float, x1: Float, y1: Float): Boolean {
-        var a0 = Float.MAX_VALUE; var b0 = Float.MAX_VALUE
-        var a1 = -Float.MAX_VALUE; var b1 = -Float.MAX_VALUE
-        for (p in s.pts) {
-            if (p.x < a0) a0 = p.x
-            if (p.x > a1) a1 = p.x
-            if (p.y < b0) b0 = p.y
-            if (p.y > b1) b1 = p.y
+    /**
+     * 直接画成形笔迹（块还没出来时的退路，也就是改之前的画法）：[r] = 只画这片屏幕矩形，null = 整个视口。
+     * 视口外的笔迹按缓存的包围盒裁掉（同 web 的 boxHits）。
+     */
+    private val drawDirect: (Canvas, RectF?) -> Unit = { c, r ->
+        val z = zoom
+        val k = z * density
+        val x0: Float; val y0: Float; val x1: Float; val y1: Float
+        if (r != null) {
+            c.save()
+            c.clipRect(r)
+            x0 = ox + r.left / k; y0 = oy + r.top / k
+            x1 = ox + r.right / k; y1 = oy + r.bottom / k
+        } else {
+            x0 = ox; y0 = oy
+            x1 = ox + viewWdp() / z; y1 = oy + viewHdp() / z
         }
-        val m = s.pen.w + 4   // 线宽余量，免得贴边的粗笔被切掉（同 web）
-        return a1 + m >= x0 && a0 - m <= x1 && b1 + m >= y0 && b0 - m <= y1
+        for (s in strokes) {
+            val b = tiles.box(s)
+            if (b[2] < x0 || b[0] > x1 || b[3] < y0 || b[1] > y1) continue
+            ink.drawScratchStroke(c, s, ox, oy, z)
+        }
+        if (r != null) c.restore()
+    }
+
+    /** 擦除粗筛：橡皮圆与这条笔迹的包围盒（已含线宽余量）挨不挨得上 */
+    private fun near(s: Stroke, cx: Float, cy: Float, r: Float): Boolean {
+        val b = tiles.box(s)
+        return cx >= b[0] - r && cx <= b[2] + r && cy >= b[1] - r && cy <= b[3] + r
     }
 
     /**
@@ -1221,6 +1363,35 @@ class ScratchCanvas @JvmOverloads constructor(
         onViewportChanged?.invoke()
     }
 
+    // minimap 的笔迹骨架：画布坐标下的一整条折线，笔迹变了才重建；画的时候按当前映射缩放过去
+    // （以前每帧逐点重新拼，笔迹多了光这一块就要几十毫秒）
+    private val miniSkel = Path()
+    private var miniSkelOk = false
+
+    private fun buildMiniSkel() {
+        miniSkel.reset()
+        val b = strokeBounds() ?: return
+        // 抽稀：相邻点近于「内容铺满小窗时的半个像素」就跳过（小窗里本来就分不出来）
+        val tol = max(b[2], b[3]) / 400f
+        val tol2 = tol * tol
+        for (s in strokes) {
+            val pts = s.pts
+            if (pts.size < 2) continue
+            var lx = pts[0].x
+            var ly = pts[0].y
+            miniSkel.moveTo(lx, ly)
+            for (i in 1 until pts.size) {
+                val p = pts[i]
+                val dx = p.x - lx
+                val dy = p.y - ly
+                if (i == pts.size - 1 || dx * dx + dy * dy >= tol2) {
+                    miniSkel.lineTo(p.x, p.y)
+                    lx = p.x; ly = p.y
+                }
+            }
+        }
+    }
+
     private fun drawMinimap(c: Canvas) {
         layoutMinimap()
         val f = miniFit()
@@ -1265,13 +1436,14 @@ class ScratchCanvas @JvmOverloads constructor(
         miniPaint.style = Paint.Style.STROKE
         miniPaint.strokeWidth = 1f
         miniPaint.color = Color.argb(179, 255, 255, 255)
-        for (s in strokes) {
-            if (s.pts.size < 2) continue
-            miniPath.reset()
-            miniPath.moveTo(mx(s.pts[0].x), my(s.pts[0].y))
-            for (i in 1 until s.pts.size) miniPath.lineTo(mx(s.pts[i].x), my(s.pts[i].y))
-            c.drawPath(miniPath, miniPaint)
-        }
+        if (!miniSkelOk) { buildMiniSkel(); miniSkelOk = true }
+        val ks = f.s * density
+        c.save()
+        c.translate(mx(0f), my(0f))
+        c.scale(ks, ks)
+        miniPaint.strokeWidth = 0f   // 细线：缩放后仍是 1 像素
+        c.drawPath(miniSkel, miniPaint)
+        c.restore()
         // 当前视口框：淡填充 + 细描边——重实线会比笔迹还抢戏（Mac 样张踩过的坑）
         val z = zoom
         val vx = mx(ox)

@@ -150,6 +150,24 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   写完整篇重读——页内坐标不变，重读时按新布局自然挪位，没变的条目一行不重写。模式2 收 `boardPages`(0x56)，
   到底上拉发 `boardPageAdd`(0x57)、改当前页背景发 `boardPageTemplate`(0x58)；插页 / 删页 / 批量 / 改尺寸只在 Mac 与模式1。
   新建画板两模式都先弹 `shared/NewBoardSheet`（选模式 / 尺寸 / 横竖 / 背景 / 页数），模式2 分页时 `boardAdd` 带可选尾部。
+- **草稿纸 / 画板笔迹走分块位图（2026-09-26，用户报画板多了拖动掉帧）**：`shared/ScratchTiles` 把成形笔迹按
+  「块缩放下 512px 网格」在后台线程池里用软件画进位图，`ScratchCanvas.onDraw` 只贴图；缺块时笔迹少才直接画
+  （`DIRECT_MAX_PTS`），多了宁可先空着等块。🔴 `ScratchCanvas.strokes` 的每一处增删都要经 `strokesChanged(removed, added)`，
+  漏一处那一处改了就看不见。草稿纸几何与缩放成正比，`InkRenderer.drawScratchStroke` 缩放后**不重建**、按比例缩放已有轮廓
+  （放大超过 1.5 倍才重建）。计时打点 logcat `UniReader/Tiles`。
+- **可自由编组的工具栏（2026-09-26 用户定，像 macOS 那样配置）**：`shared/Toolbox.kt`（摆放 / 拖动 / 顶栏排不下收进 ⋯）+
+  `shared/ToolLayout.kt`（纯数据：组 = 名字 + key 列表 + 在顶栏 / 浮动 + 位置；记在 SharedPreferences `toolbars` 的 `layout`，
+  **两模式共用一份**）+ `shared/ToolbarEditor.kt`（编辑面板）。每颗键是一颗「工具」，只在一个地方：某一组里，或哪组都不在 = 在 ⋯ 里。
+  顶栏四段：「固定在左」的组（`TopBar.pinArea`）/ 中间其余并在顶栏里的组（横向滚动，**不往 ⋯ 里收**）/「固定在右」的组
+  （`pinRightArea`）/ 最右的 ⋯（组属性 `pin`：固定的没有把手、不能拖、不滚动）。只有固定组放不下时才把按钮收进 ⋯（读数不收）；
+  「编辑工具栏…」常驻 ⋯（固定组没有把手，编辑入口靠它）。页码（`pageLabel`）与模式2 的延迟读数（`latency`）也是工具，
+  默认在右侧固定的「状态」组。
+  · 顶栏的键经 `TopBar.icon(key, …)` 登记（原先 ⋯ 里的低频项也是 `icon`，带 `toggle` / `available`）；画板 / 草稿纸控制栏由宿主
+  `bar.tools.adopt(barView, Toolbox.*_BAR_KEYS)` 整排交出去——两边同名的键（适应内容、纸样…）在布局里是同一颗。
+  控制栏 `barView` 本身不再上屏，Controller 照旧设它的 visibility，那只当「这些键此刻能不能用」的信号（改了调 `onBarShown`）。
+  · 宿主改键的状态照旧 `bar.setActive / setVisible / setTint / setEnabled`，刷完 HUD 调 `bar.tools.refresh()`（没变不重量）。
+  · 🔴 新加一颗键：`icon()` 登记 + 在 `ToolLayout.defaults()` 里给它一个默认位置（或进 `MENU_KEYS`），合并逻辑会把它放进老用户的布局；
+  图标照例改 `tools/icons/gen.py`。浮着的组插在 `tools.below` 之下（抽屉永远最上层），位置归 `Toolbox`，宿主别改它们的 LayoutParams。
 - **界面文案资源（2026-09-26 起）**：从画板笔记开始，新文案进 `res/values/strings.xml`（英文）+
   `res/values-zh/strings.xml`（中文），两份一起加；更早的文案仍直接写在代码里（中文），没有搬。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +

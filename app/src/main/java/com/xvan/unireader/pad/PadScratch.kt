@@ -73,6 +73,9 @@ class PadScratch(private val a: Activity) {
     /** 开/关纸 → 宿主刷新顶栏入口的开关态 */
     var onOpenChanged: (() -> Unit)? = null
 
+    /** 控制栏显隐变了 → 宿主刷新工具栏（[barView] 不再上屏，它的 visibility 只当「这些键能不能用」的信号） */
+    var onBarShown: (() -> Unit)? = null
+
     /** 「在当前位置新建」的锚点来源（宿主给当前画布的视口中心，页内归一化） */
     var anchorProvider: (() -> Triple<Int, Float, Float>?)? = null
 
@@ -117,7 +120,7 @@ class PadScratch(private val a: Activity) {
             pendingOpt.clear()   // 上一张纸没等到真源的乐观笔，跟着画布状态一起作废
             canvas.setPageUnder(-1, null)
             canvas.visibility = View.GONE
-            barView.visibility = View.GONE
+            if (barView.visibility != View.GONE) { barView.visibility = View.GONE; onBarShown?.invoke() }
         } else {
             if (entry.id != openPadId) {
                 canvas.openSession()   // 换纸/新开：丢上一张的本地状态并回中
@@ -127,7 +130,7 @@ class PadScratch(private val a: Activity) {
             canvas.setPaper(bgCss(entry), patternName(entry.pattern))
             applyPageUnder(entry)
             canvas.visibility = View.VISIBLE
-            barView.visibility = View.VISIBLE
+            if (barView.visibility != View.VISIBLE) { barView.visibility = View.VISIBLE; onBarShown?.invoke() }
         }
         onPinsChanged?.invoke(
             if (boardMode) emptyList()
@@ -663,7 +666,11 @@ class PadScratch(private val a: Activity) {
 
     // ---------- 工具条读数 ----------
 
+    /** 视口变了（平移 / 缩放 / 页变了）→ 宿主刷新顶栏页码（分页画板的页码显示在顶栏） */
+    var onHudChanged: (() -> Unit)? = null
+
     private fun updateBar() {
+        onHudChanged?.invoke()
         val entry = pads.getOrNull(open) ?: return
         barName.setTextIfChanged(displayName(entry))
         // 缩放读数只在不是 100% 时出现（常驻一个「100%」是纯噪音，同 Mac 的口径）

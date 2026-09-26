@@ -104,6 +104,12 @@ class BoardController(private val a: Activity) {
     /** 标题 / 纸样写库成功后回调（宿主刷新标签页标题、抽屉列表） */
     var onBoardChanged: ((BoardNote) -> Unit)? = null
 
+    /**
+     * 控制栏显隐变了（开 / 关画板）→ 宿主刷新工具栏。控制栏的每颗键由宿主交给 `Toolbox` 摆放，
+     * [barView] 本身不再上屏，它的 visibility 只当「这些键此刻能不能用」的信号。
+     */
+    var onBarShown: (() -> Unit)? = null
+
     private var queue: StoreQueue? = null
     private var workspace: File? = null
 
@@ -200,6 +206,7 @@ class BoardController(private val a: Activity) {
         canvas.setPaper(b.bg, b.pattern)
         canvas.visibility = View.VISIBLE
         barView.visibility = View.VISIBLE
+        onBarShown?.invoke()
         if (same) { updateBar(); return }
         applyPages(BoardPageSet(pages))
         canvas.setPics(emptyList())
@@ -224,6 +231,7 @@ class BoardController(private val a: Activity) {
         board = null
         canvas.visibility = View.GONE
         barView.visibility = View.GONE
+        onBarShown?.invoke()
         canvas.setPics(emptyList())
         canvas.setStrokes(emptyList())
         applyPages(BoardPageSet.NONE)
@@ -765,7 +773,24 @@ class BoardController(private val a: Activity) {
         })
     }
 
+    /** 顶栏页码：分页画板 =「当前页/总页数」，无限画布 =「—」（两模式同一套格式，见 PageCanvasView.hudPage） */
+    fun hudPage(): String = if (canvas.paged) "${canvas.currentPageIndex() + 1}/${canvas.pageCount}" else "—"
+
+    fun hudZoom(): String = "${canvas.zoomPct()}%"
+
+    /** 分页画板有几页（不是分页 / 没开 = 0；「跳到第…页」用） */
+    val pageCount: Int get() = if (board != null) canvas.pageCount else 0
+
+    /** 跳到第 [page1Based] 页页顶（按页宽适配，同 Mac pageTop） */
+    fun gotoPage(page1Based: Int) {
+        if (canvas.paged) canvas.placeAtPageTop(page1Based - 1)
+    }
+
+    /** 视口变了（平移 / 缩放 / 加页）→ 宿主刷新顶栏页码 */
+    var onHudChanged: (() -> Unit)? = null
+
     private fun updateBar() {
+        onHudChanged?.invoke()
         val b = board ?: return
         barName.setTextIfChanged(displayName(b))
         val pct = canvas.zoomPct()

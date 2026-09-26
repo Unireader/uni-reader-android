@@ -60,11 +60,19 @@ class Sheet(private val a: Activity) {
 
     private var cancelable = true
     private var dialog: AlertDialog? = null
+    private var maxWDp = MAX_W
+    private var maxHRatio = MAX_H_RATIO
+
+    /** 大弹层（工具栏编辑之类）放宽卡片的最大宽度 / 主体最大高度占比 */
+    fun size(maxWidthDp: Int, maxHeightRatio: Float) = apply {
+        maxWDp = maxWidthDp
+        maxHRatio = maxHeightRatio
+    }
 
     /** 主体的限高滚动容器：内容不高时按内容走，高了才滚 */
     private val scroll = object : ScrollView(a) {
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
-            val max = (a.resources.displayMetrics.heightPixels * MAX_H_RATIO).toInt()
+            val max = (a.resources.displayMetrics.heightPixels * maxHRatio).toInt()
             super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(max, MeasureSpec.AT_MOST))
         }
     }.apply {
@@ -133,7 +141,7 @@ class Sheet(private val a: Activity) {
         d.show()
         val dm = a.resources.displayMetrics
         d.window?.setLayout(
-            min(dm.widthPixels - Ui.dp(a, 48), Ui.dp(a, MAX_W)),
+            min(dm.widthPixels - Ui.dp(a, 48), Ui.dp(a, maxWDp)),
             ViewGroup.LayoutParams.WRAP_CONTENT,
         )
         return d

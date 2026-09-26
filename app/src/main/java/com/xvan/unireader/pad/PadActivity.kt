@@ -52,6 +52,7 @@ import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.TextNote
 import com.xvan.unireader.shared.TopBar
+import com.xvan.unireader.shared.Toolbox
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
@@ -340,6 +341,16 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         latText.maxWidth = latMaxWidth()
     }
 
+    /** 跳页：跟着 Mac 看分页画板时跳画板的页（本端视口，不上线），否则跳 PDF 的页 */
+    private fun showGotoPage() {
+        val bc = scratch.canvas
+        if (scratch.boardMode && bc.paged) {
+            PadPanels.showGotoPage(this, bc.pageCount) { bc.placeAtPageTop(it - 1) }
+        } else {
+            PadPanels.showGotoPage(this, padView.pageCountOrZero()) { padView.gotoPage(it) }
+        }
+    }
+
     /** 收起/展开顶栏（同网页 hideBar/showBar）：收起后右上角浮一枚小按钮，画布拿到整屏 */
     private fun setBarHidden(hidden: Boolean) {
         topbar.visibility = if (hidden) View.GONE else View.VISIBLE
@@ -355,10 +366,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             it.topMargin = top
             scratch.canvas.layoutParams = it
         }
-        (scratch.barView.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.topMargin = top + dp(10)
-            scratch.barView.layoutParams = it
-        }
+        if (::bar.isInitialized) bar.tools.relayout()   // 浮着的工具组：没挪过的贴顶栏下方，挪过的不许钻进顶栏
         (mdEmpty.layoutParams as? FrameLayout.LayoutParams)?.let {
             it.topMargin = top
             mdEmpty.layoutParams = it
@@ -457,10 +465,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 「选择文档」那颗键 2026-08-28 拿掉了：它做的事（在 Mac 已开的几篇之间切）现在是
             // 标签页栏本身，一眼看得见哪几篇开着、点哪个切哪个，比翻一个对话框直接。
             icon("toc", R.drawable.ic_list, "目录 / 书库") { drawer.toggle() }
-            gap()
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { padView.turn(prev = true) }
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { padView.turn(prev = false) }
-            gap()
             // 模式键：位置/图标/激活口径与模式1 逐字一致（两边的顶栏必须还是同一条栏）
             icon("mode", TopBar.modeIcon(MODE_NOTE), "切换模式") { padView.cycleMode() }
             // 「切换笔」只在笔模式下出现且染当前笔色（refresh() 维护），其余模式占位纯属误导
@@ -492,32 +498,37 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 参考窗：另开一本书摆在旁边对照（纯本端只读显示，不上线）
             icon("ref", R.drawable.ic_doc, "参考窗") { refWin.toggle() }
             setEnabled("canvas", connected)   // 断线时灰掉（它只发请求，没连上按了没反应）
-            addTail(dot, 0)
-            addTail(latText, 1)
-            pageLabel.setOnClickListener {
-                PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
+            // 连接状态点 + 延迟读数：也是一颗可自由摆放的工具（默认在顶栏右侧固定的「状态」组里，与页码一起）
+            val latBox = LinearLayout(this@PadActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(dot)
+                addView(latText)
             }
-            overflowItems = {
-                listOf(
-                    // 画板笔记：列出 Mac 这个工作区的画板（点一篇 = boardOpen）+ 新建（boardAdd）。
-                    // 放在 ⋯ 的第一项：PDF / Markdown / 画板三种会话下都要能进（§4.8）
-                    TopBar.MenuItem(getString(R.string.board_title) + "…") { showBoardList() },
-                    TopBar.MenuItem("夜间模式", padView.night) { padView.toggleNight() },
-                    TopBar.MenuItem("显示页面图", padView.showPage) { padView.toggleShowPage() },
-                    // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
-                    TopBar.MenuItem("双指滚动（防误触）", padView.twoFingerScroll) {
-                        padView.toggleTwoFingerScroll()
-                    },
-                    // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
-                    TopBar.MenuItem("锁定水平滚动", padView.hLocked) { padView.toggleHLock() },
-                    TopBar.MenuItem("图层…") { showLayerPanel() },
-                    TopBar.MenuItem("跳到第…页") {
-                        PadPanels.showGotoPage(this@PadActivity, padView.pageCountOrZero()) { padView.gotoPage(it) }
-                    },
-                    TopBar.MenuItem("收起顶栏") { setBarHidden(true) },
-                    TopBar.MenuItem("连接设置…") { showConnDialog() },
-                )
+            tools.register("latency", getString(R.string.tools_latency), latBox)
+            pageLabel.setOnClickListener { showGotoPage() }
+            // 原先只在 ⋯ 里的低频项：2026-09-26 起也是可自由编组的工具（默认布局照旧收在 ⋯ 里，见 ToolLayout.MENU_KEYS；
+            // key 与模式1 同名，布局两模式共用一份）。开关态在 refresh() 里按 setActive 维护
+            // 画板笔记：列出 Mac 这个工作区的画板（点一篇 = boardOpen）+ 新建（boardAdd）。PDF / Markdown / 画板三种会话下都要能进（§4.8）
+            icon("boardList", R.drawable.ic_grid4, getString(R.string.board_title)) { showBoardList() }
+            icon("night", R.drawable.ic_moon, getString(R.string.tools_night), toggle = true) {
+                padView.toggleNight(); refresh()
             }
+            icon("showPage", R.drawable.ic_eye, getString(R.string.tools_show_page), toggle = true) {
+                padView.toggleShowPage(); refresh()
+            }
+            // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
+            icon("twoFinger", R.drawable.ic_two_finger, getString(R.string.tools_two_finger), toggle = true) {
+                padView.toggleTwoFingerScroll(); refresh()
+            }
+            // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
+            icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true) {
+                padView.toggleHLock(); refresh()
+            }
+            icon("layers", R.drawable.ic_layers, getString(R.string.tools_layers)) { showLayerPanel() }
+            icon("gotoPage", R.drawable.ic_hash, getString(R.string.tools_goto_page)) { showGotoPage() }
+            icon("hideBar", R.drawable.ic_chevron_up, getString(R.string.tools_hide_bar)) { setBarHidden(true) }
+            icon("conn", R.drawable.ic_monitor, getString(R.string.tools_conn)) { showConnDialog() }
         }
         (dot.layoutParams as LinearLayout.LayoutParams).apply {
             width = dp(8); height = dp(8); marginEnd = dp(8)
@@ -653,14 +664,19 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                     topMargin = bar.height() + tabsBar.height() + dp(8); marginEnd = dp(8)
                 },
             )
-            // 纸上的悬浮工具条：贴顶栏下方居中（topMargin 同由 applyScratchMargin 给）
-            addView(
-                scratch.barView,
-                FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
-            )
             // 抽屉加在最后 = 盖在最上层（含顶栏）：开着时下面的画布不该还能写字
             addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
+        // 可自由编组的工具栏（shared/Toolbox，与模式1 同一套、布局共用一份本机记录）：草稿纸 / 画板控制栏的每颗键
+        // 也是工具。顶栏收起时并在里面的组跟着一起收
+        bar.tools.apply {
+            minTop = { if (topbar.visibility == View.VISIBLE) barHeightPx else 0 }
+            below = drawer.view
+            adopt(scratch.barView as LinearLayout, Toolbox.PAD2_BAR_KEYS) { scratch.barView.visibility == View.VISIBLE }
+            attach(root)
+        }
+        scratch.onBarShown = { bar.tools.refresh() }
+        scratch.onHudChanged = { if (scratch.boardMode) refresh() }   // 分页画板滚动 → 顶栏页码跟着变
         setContentView(root)
         barHeightPx = bar.height() + tabsBar.height()
         padView.setBarHeight(barHeightPx.toFloat())
@@ -998,7 +1014,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         )
         // 顶栏这几行与模式1 的 `refreshHud` 是同一套表达（shared/TopBar）：
         // 模式键换图标、开关键上 accent 底色。两边各写一份文案的时代就此结束。
-        bar.setPageLabel(padView.hudPage(), padView.hudZoom())
+        // 跟着 Mac 看的是分页画板：页码显示画板的「当前页/总页数」（画布缩放），不是底下那篇 PDF 的
+        val bc = scratch.canvas
+        if (scratch.boardMode && bc.paged) bar.setPageLabel("${bc.currentPageIndex() + 1}/${bc.pageCount}", "${bc.zoomPct()}%")
+        else bar.setPageLabel(padView.hudPage(), padView.hudZoom())
         drawer.setCurrentPage(padView.topVisiblePage())   // 目录的「当前章节」追踪
         bar.setIcon("mode", TopBar.modeIcon(padView.mode))
         bar.setActive("mode", padView.mode != MODE_PAGE)
@@ -1006,6 +1025,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("scratch", scratch.isOpen)
         bar.setActive("lock", padView.zoomLocked)
         bar.setActive("canvas", padView.canvasModeOn())
+        bar.setActive("night", padView.night)
+        bar.setActive("showPage", padView.showPage)
+        bar.setActive("twoFinger", padView.twoFingerScroll)
+        bar.setActive("hLock", padView.hLocked)
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（其余模式它不出现，见 buildUi 的注释）
         bar.setVisible("pen", padView.mode == MODE_NOTE)
         // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮，见 buildUi 的注释）
@@ -1032,6 +1055,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         )
         penStat.setPenSwatch(notePen?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) })
         layerStat.setTextIfChanged(layers.getOrNull(layerIdx)?.let { "图层：${it.name}" } ?: "图层")
+        if (::bar.isInitialized) bar.tools.refresh()   // 哪些工具此刻能用变了就重排（没变不重量，见 Toolbox.refresh）
     }
 
     // 1s 采样窗口：mv/s + 顶栏刷新

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  画板笔记列表：四格
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M6,4.4 L9.2,4.4 A1.6,1.6 0 0 1 10.8,6 L10.8,9.2 A1.6,1.6 0 0 1 9.2,10.8 L6,10.8 A1.6,1.6 0 0 1 4.4,9.2 L4.4,6 A1.6,1.6 0 0 1 6,4.4 Z M14.8,4.4 L18,4.4 A1.6,1.6 0 0 1 19.6,6 L19.6,9.2 A1.6,1.6 0 0 1 18,10.8 L14.8,10.8 A1.6,1.6 0 0 1 13.2,9.2 L13.2,6 A1.6,1.6 0 0 1 14.8,4.4 Z M6,13.2 L9.2,13.2 A1.6,1.6 0 0 1 10.8,14.8 L10.8,18 A1.6,1.6 0 0 1 9.2,19.6 L6,19.6 A1.6,1.6 0 0 1 4.4,18 L4.4,14.8 A1.6,1.6 0 0 1 6,13.2 Z M14.8,13.2 L18,13.2 A1.6,1.6 0 0 1 19.6,14.8 L19.6,18 A1.6,1.6 0 0 1 18,19.6 L14.8,19.6 A1.6,1.6 0 0 1 13.2,18 L13.2,14.8 A1.6,1.6 0 0 1 14.8,13.2 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

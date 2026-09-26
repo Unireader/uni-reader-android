@@ -58,6 +58,7 @@ import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
 import com.xvan.unireader.shared.TocItem
 import com.xvan.unireader.shared.TopBar
+import com.xvan.unireader.shared.Toolbox
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
@@ -456,10 +457,8 @@ class ReaderActivity : Activity() {
                 if (!drawer.isOpen) refreshDrawerLibrary()
                 drawer.toggle()
             }
-            gap()
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { cur()?.turn(prev = true) }
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { cur()?.turn(prev = false) }
-            gap()
             // 模式键：图标随当前模式变，点一下轮换（环形盘/侧键/Mac 远程仍各自有效，这只是多一条路）
             // （模式 / 笔 / 尺子走 toolCanvas：画板标签里切的是画板那份工具状态）
             icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") {
@@ -494,40 +493,33 @@ class ReaderActivity : Activity() {
             // 参考窗：另开一本书摆在旁边对照（只读，不落库、不上线）
             icon("ref", R.drawable.ic_doc, "参考窗") { refWin.toggle() }
             pageLabel.setOnClickListener { showGotoPage() }
-            // 低频项进 ⋯：勾选态每次弹出现算，所以这里存的是生成器（见 TopBar.overflowItems）
-            overflowItems = {
-                val c = cur()
-                val bt = toolCanvas()
-                if (c == null && bt != null) {
-                    // 画板标签：只留对画板有意义的几项
-                    listOf(
-                        TopBar.MenuItem(getString(R.string.board_title) + "…") { showBoardPicker() },
-                        TopBar.MenuItem("双指滚动（防误触）", bt.twoFingerScroll) {
-                            bt.toggleTwoFingerScroll(); saveTools()
-                        },
-                        TopBar.MenuItem("打开另一篇…") { showDocPicker() },
-                        TopBar.MenuItem("切换工作区…") { showWorkspaceSwitcher() },
-                    )
-                } else if (c == null) {
-                    listOf(TopBar.MenuItem("切换工作区…") { showWorkspaceSwitcher() })
-                } else {
-                    listOf(
-                        TopBar.MenuItem(getString(R.string.board_title) + "…") { showBoardPicker() },
-                        TopBar.MenuItem("夜间模式", c.night) { c.toggleNight(); saveTools() },
-                        TopBar.MenuItem("显示页面图", c.showPage) { c.toggleShowPage(); refreshHud() },
-                        // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
-                        TopBar.MenuItem("双指滚动（防误触）", c.twoFingerScroll) {
-                            c.toggleTwoFingerScroll(); saveTools()
-                        },
-                        // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
-                        TopBar.MenuItem("锁定水平滚动", c.hLocked) { c.toggleHLock(); saveTools() },
-                        TopBar.MenuItem("图层…") { showLayers() },
-                        TopBar.MenuItem("跳到第…页") { showGotoPage() },
-                        TopBar.MenuItem("打开另一篇…") { showDocPicker() },
-                        TopBar.MenuItem("切换工作区…") { showWorkspaceSwitcher() },
-                    )
-                }
+            // 原先只在 ⋯ 里的低频项：2026-09-26 起也是可自由编组的工具（默认布局照旧收在 ⋯ 里，见 ToolLayout.MENU_KEYS）。
+            // available = 此刻有没有意义（画板标签里只留对画板有意义的几项）；开关态在 refreshHud 里按 setActive 维护
+            val pdf = { cur() != null }
+            val anyTab = { toolCanvas() != null }
+            icon("boardList", R.drawable.ic_grid4, getString(R.string.board_title), available = anyTab) {
+                showBoardPicker()
             }
+            icon("night", R.drawable.ic_moon, getString(R.string.tools_night), toggle = true, available = pdf) {
+                cur()?.toggleNight(); saveTools(); refreshHud()
+            }
+            icon("showPage", R.drawable.ic_eye, getString(R.string.tools_show_page), toggle = true, available = pdf) {
+                cur()?.toggleShowPage(); refreshHud()
+            }
+            // 防误触：开了之后单指划动不再平移，滚动/缩放一律双指（基类 twoFingerScroll）
+            icon("twoFinger", R.drawable.ic_two_finger, getString(R.string.tools_two_finger), toggle = true, available = anyTab) {
+                toolCanvas()?.toggleTwoFingerScroll(); saveTools(); refreshHud()
+            }
+            // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
+            icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true, available = pdf) {
+                cur()?.toggleHLock(); saveTools(); refreshHud()
+            }
+            icon("layers", R.drawable.ic_layers, getString(R.string.tools_layers), available = pdf) { showLayers() }
+            icon("gotoPage", R.drawable.ic_hash, getString(R.string.tools_goto_page), available = {
+                cur() != null || (curTab()?.isBoard == true && board.pageCount > 0)   // 分页画板也能跳页
+            }) { showGotoPage() }
+            icon("openDoc", R.drawable.ic_book, getString(R.string.tools_open_doc), available = anyTab) { showDocPicker() }
+            icon("workspace", R.drawable.ic_folder, getString(R.string.tools_workspace)) { showWorkspaceSwitcher() }
         }
         tabsBar = DocTabsBar(this).apply {
             onSwitchWorkspace = { showWorkspaceSwitcher() }
@@ -645,20 +637,24 @@ class ReaderActivity : Activity() {
                     leftMargin = dp(10); bottomMargin = dp(10)
                 },
             )
-            // 纸上的悬浮工具条：贴 chrome 下方居中（topMargin 同由 applyChromeHeight 给）
-            addView(
-                scratch.barView,
-                FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
-            )
-            addView(
-                board.barView,
-                FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL),
-            )
             // 划字动作条：贴屏幕底部居中，只在有选区时显形（见 TextSelectBar）
             addView(selectBar.view, selectBar.layoutParams())
             // 抽屉加在最后 = 盖在最上层（含 chrome 与全部浮层）：开着时下面一律不响应（同模式2）
             addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
+        // 可自由编组的工具栏（shared/Toolbox，两模式同一套、布局共用一份）：草稿纸与画板控制栏的每颗键也是工具，
+        // 两边同名的键（适应内容、纸样…）在布局里是同一颗，此刻哪边开着就是哪边那份。
+        // 浮着的组插在划字动作条之下（抽屉永远在最上层）
+        bar.tools.apply {
+            minTop = { chromeHeight() }
+            below = selectBar.view
+            adopt(scratch.barView as LinearLayout, Toolbox.SCRATCH_BAR_KEYS) { scratch.barView.visibility == View.VISIBLE }
+            adopt(board.barView as LinearLayout, Toolbox.BOARD_BAR_KEYS) { board.barView.visibility == View.VISIBLE }
+            attach(root)
+        }
+        scratch.onBarShown = { bar.tools.refresh() }
+        board.onBarShown = { bar.tools.refresh() }
+        board.onHudChanged = { if (curTab()?.isBoard == true) refreshHud() }   // 画板滚动 / 加页 → 顶栏页码跟着变
         setContentView(root)
         barH = bar.height()
         applyChromeHeight()
@@ -690,18 +686,12 @@ class ReaderActivity : Activity() {
             it.topMargin = h.toInt()
             scratch.canvas.layoutParams = it
         }
-        (scratch.barView.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.topMargin = h.toInt() + dp(10)
-            scratch.barView.layoutParams = it
-        }
         (board.canvas.layoutParams as? FrameLayout.LayoutParams)?.let {
             it.topMargin = h.toInt()
             board.canvas.layoutParams = it
         }
-        (board.barView.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.topMargin = h.toInt() + dp(10)
-            board.barView.layoutParams = it
-        }
+        // 浮着的工具组：没挪过的贴 chrome 下方，挪过的不许钻进 chrome（Toolbox.minTop 现读 chromeHeight）
+        bar.tools.relayout()
     }
 
     // ---------- 工作区 ----------
@@ -1699,6 +1689,11 @@ class ReaderActivity : Activity() {
      * 图标那几个是幂等的 setter，同值重设不触发 layout，不必额外挡。
      */
     private fun refreshHud() {
+        refreshHudInner()
+        bar.tools.refresh()   // 哪些工具此刻能用（画板 / 草稿纸开没开、是不是 PDF 标签）变了就重排
+    }
+
+    private fun refreshHudInner() {
         val canvas = cur()
         bar.setActive("scratch", scratch.isOpen)
         // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式 / 撤销重做——
@@ -1727,6 +1722,10 @@ class ReaderActivity : Activity() {
         bar.setActive("ruler", canvas.rulerOn)
         bar.setActive("lock", canvas.zoomLocked)
         bar.setActive("canvas", canvas.canvasModeOn())
+        bar.setActive("night", canvas.night)
+        bar.setActive("showPage", canvas.showPage)
+        bar.setActive("twoFinger", canvas.twoFingerScroll)
+        bar.setActive("hLock", canvas.hLocked)
         // 「切换笔」只在笔模式下出现，并染当前笔的颜色（与模式2 同一套表达）
         bar.setVisible("pen", canvas.mode == MODE_NOTE)
         // 剪贴板三件只在框选模式露面；剪切/复制没选中就灰掉（粘贴常亮——剪贴板空时点了是空操作）
@@ -1760,7 +1759,7 @@ class ReaderActivity : Activity() {
      */
     private fun refreshBoardHud() {
         val c = boardTools
-        bar.setPageLabel("—", "100%")   // 画板没有页码；缩放读数在画板浮条上（同草稿纸）
+        bar.setPageLabel(board.hudPage(), board.hudZoom())   // 分页画板显示「当前页/总页数」，无限画布「—」
         for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, false)
         if (c == null) {
             bar.setVisible("pen", false)
@@ -1772,6 +1771,7 @@ class ReaderActivity : Activity() {
         bar.setIcon("mode", TopBar.modeIcon(c.mode))
         bar.setActive("mode", c.mode != MODE_PAGE)
         bar.setActive("ruler", c.rulerOn)
+        bar.setActive("twoFinger", c.twoFingerScroll)
         bar.setVisible("pen", c.mode == MODE_NOTE)
         bar.setTint("pen", c.curPenOrNull()?.let { Ui.penArgb(it) })
         board.canvas.twoFingerScroll = c.twoFingerScroll
@@ -1899,6 +1899,11 @@ class ReaderActivity : Activity() {
     }
 
     private fun showGotoPage() {
+        if (curTab()?.isBoard == true) {   // 画板标签：分页画板跳到那一页页顶；无限画布没有页
+            val n = board.pageCount
+            if (n > 0) PadPanels.showGotoPage(this, n) { board.gotoPage(it) }
+            return
+        }
         val c = cur() ?: return
         val n = c.pageCountOrZero()
         if (n <= 0) return

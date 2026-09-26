@@ -181,13 +181,15 @@ class InkRenderer(private val density: Float) {
     fun drawScratchStroke(c: Canvas, s: Stroke, ox: Float, oy: Float, zoom: Float) {
         if (s.pts.isEmpty() || zoom <= 0f) return
         var g = cache[s]
-        // 容差按 zoom 的 0.1%：比这更小的缩放变化重建了也看不出来（类比页宽的 0.5px）
-        if (g == null || (!deferRebuild && abs(g.pw - zoom) > zoom * 0.001f)) {
+        // 画布几何与缩放成正比（坐标、线宽都 × zoom），按别的缩放建的几何整体缩放过去就是这个缩放下的样子，
+        // 所以缩放后**不重建**（2026-09-26：重建 = 缩放松手那一刻把整屏笔迹的轮廓重算一遍，就是那一下卡顿）。
+        // 只有放大超过 1.5 倍才重建：描边转轮廓的误差按建的那一刻的像素算，放得太大边缘会走样。
+        if (g == null || (!deferRebuild && zoom > g.pw * 1.5f)) {
             g = buildScratch(s.pen, s.pts, zoom)
             cache[s] = g
             rebuilt++
         }
-        render(c, g, s.pen, -ox * zoom * density, -oy * zoom * density, zoom, zoom)
+        render(c, g, s.pen, -ox * zoom * density, -oy * zoom * density, zoom, zoom, scaleStroke = true)
     }
 
     /** 草稿纸上**正在写的这一笔**（活体层，每帧重建——同 [drawLive] 不进缓存的理由） */
@@ -372,7 +374,14 @@ class InkRenderer(private val density: Float) {
 
     // ---------- 上色 ----------
 
-    private fun render(c: Canvas, g: Geom, pen: Pen, left: Float, top: Float, pw: Float, ph: Float) {
+    /**
+     * [scaleStroke] = marker 的描边宽度也跟着 canvas 缩放走（草稿纸：线宽本来就 × zoom）；
+     * 页内是 false（页内线宽是屏幕 px、不随缩放变，所以要把 canvas 的缩放除回去）。
+     */
+    private fun render(
+        c: Canvas, g: Geom, pen: Pen, left: Float, top: Float, pw: Float, ph: Float,
+        scaleStroke: Boolean = false,
+    ) {
         // 缩放中（deferRebuild）几何还是旧尺寸的，用 canvas 缩放顶一拍；平时恒为 1
         val sx = pw / g.pw
         val sy = ph / g.ph
@@ -387,7 +396,7 @@ class InkRenderer(private val density: Float) {
                 multiply(true)
                 paint.style = Paint.Style.STROKE
                 paint.strokeCap = Paint.Cap.SQUARE   // 平头：圆头会在起收笔处鼓出来
-                paint.strokeWidth = g.strokeW / sx   // 线宽不随缩放变，所以要把 canvas 的缩放除回去
+                paint.strokeWidth = if (scaleStroke) g.strokeW else g.strokeW / sx
                 c.drawPath(layer.path, paint)
                 multiply(false)
                 paint.strokeCap = Paint.Cap.ROUND

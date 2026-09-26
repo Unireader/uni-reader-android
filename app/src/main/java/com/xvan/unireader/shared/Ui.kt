@@ -136,8 +136,20 @@ object Ui {
         setPadding(l, t, r, b)
     }
 
-    /** 切换图标按钮的开关态（底色 + 图标色一起变，见 [iconButton]） */
+    /** 每个按钮上一次 [setActive] 的参数（只在主线程读写） */
+    private val activeState = java.util.WeakHashMap<ImageButton, Triple<Boolean, Int, Int>>()
+
+    /** 这颗按钮当前是不是开着（[setActive] 设过的；没设过 = 关）——⋯ 菜单里的勾选态从这里读 */
+    fun ImageButton.isActiveOn(): Boolean = activeState[this]?.first == true
+
+    /**
+     * 切换图标按钮的开关态（底色 + 图标色一起变，见 [iconButton]）。
+     * 与上一次相同就什么都不做：草稿纸 / 画板的工具条在拖动时每帧都会刷一遍，每次重建底图 = 每帧都在分配 + 重排。
+     */
     fun ImageButton.setActive(active: Boolean, on: Int, accent: Int) {
+        val state = Triple(active, on, accent)
+        if (activeState[this] == state) return
+        activeState[this] = state
         val c = context
         imageTintList = ColorStateList.valueOf(if (active) accent else on)
         val bg =
