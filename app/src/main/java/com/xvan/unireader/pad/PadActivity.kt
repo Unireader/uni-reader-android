@@ -38,6 +38,7 @@ import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.DocTabsBar
 import com.xvan.unireader.shared.LibItem
 import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.PalmSettings
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.ReaderDrawer
 import com.xvan.unireader.shared.RefWindow
@@ -259,6 +260,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        PalmSettings.load(this)
         buildUi()
         handler.postDelayed(sampler, 1000)
         val host = intent.getStringExtra(EXTRA_HOST)
@@ -532,6 +534,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             icon("twoFinger", R.drawable.ic_two_finger, getString(R.string.tools_two_finger), toggle = true) {
                 padView.toggleTwoFingerScroll(); refresh()
             }
+            // 另外三条防误触 + 左手书写：本机偏好、两模式共用一份（PalmSettings），模式2 也存本机
+            PalmSettings.icons(this, this@PadActivity) { refresh() }
+            // 小手：手指此刻能不能用（不能用变灰，点了说原因），默认在右侧「状态」组
+            PalmSettings.fingerIcon(this, this@PadActivity)
             // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
             icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true) {
                 padView.toggleHLock(); refresh()
@@ -1048,6 +1054,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.setActive("night", padView.night)
         bar.setActive("showPage", padView.showPage)
         bar.setActive("twoFinger", padView.twoFingerScroll)
+        PalmSettings.setActive(bar)
         bar.setActive("hLock", padView.hLocked)
         bar.setActive("writeLock", padView.writingLocked)
         bar.setActive("relativeInk", padView.relativeInkWidth)

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  手指操作状态：一只张开的手（四指 + 拇指 + 手掌），不能用时整只变灰
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M9.2,7.2 L9.2,12 M12,4.2 L12,11.4 M14.8,4.8 L14.8,11.4 M17.6,7.4 L17.6,12.4 M9.2,10.8 L9.2,15.2 C9.2,18.2 11.2,19.8 13.8,19.8 C16.4,19.8 17.6,18 17.6,15.8 L17.6,11.2 M9.2,15 L6.4,11.8"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

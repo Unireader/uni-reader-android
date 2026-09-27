@@ -46,6 +46,7 @@ import com.xvan.unireader.shared.MODE_TEXT
 import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.NewBoardSheet
 import com.xvan.unireader.shared.PadConst
+import com.xvan.unireader.shared.PalmSettings
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.PageCanvasView
 import com.xvan.unireader.shared.ReaderDrawer
@@ -371,6 +372,7 @@ class ReaderActivity : Activity() {
         }
         val docId = (savedInstanceState?.getString(EXTRA_DOC_ID) ?: intent.getStringExtra(EXTRA_DOC_ID))
             ?.takeIf { it.isNotEmpty() }
+        PalmSettings.load(this)
         buildUi()
         openWorkspace(File(wsPath), docId)
     }
@@ -526,6 +528,10 @@ class ReaderActivity : Activity() {
             icon("twoFinger", R.drawable.ic_two_finger, getString(R.string.tools_two_finger), toggle = true, available = anyTab) {
                 toolCanvas()?.toggleTwoFingerScroll(); saveTools(); refreshHud()
             }
+            // 另外三条防误触 + 左手书写：本机偏好、两模式共用一份（PalmSettings），与开着哪个标签无关
+            PalmSettings.icons(this, this@ReaderActivity) { refreshHud() }
+            // 小手：手指此刻能不能用（不能用变灰，点了说原因），默认在右侧「状态」组
+            PalmSettings.fingerIcon(this, this@ReaderActivity)
             // 锁横向：放大了看 / 画板模式下在页边写字时，竖着划一道很难不带横向分量
             // 画板 / 草稿纸同样生效（ScratchCanvas.hLocked 跟着这边的开关走），所以按 anyTab
             icon("hLock", R.drawable.ic_h_lock, getString(R.string.tools_h_lock), toggle = true, available = anyTab) {
@@ -1752,6 +1758,7 @@ class ReaderActivity : Activity() {
     private fun refreshHudInner() {
         val canvas = cur()
         bar.setActive("scratch", scratch.isOpen)
+        PalmSettings.setActive(bar)
         // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式 / 撤销重做——
         // 草稿纸那套画布在模式1 本来就没有撤销栈，画板照搬）
         val isBoard = curTab()?.isBoard == true

@@ -579,6 +579,7 @@ class ScratchCanvas @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         tiles.release()   // 停后台出图线程；回到窗口后按需重开
+        fingerGate.detach()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -682,6 +683,12 @@ class ScratchCanvas @JvmOverloads constructor(
     private var gestureOx0 = 0f
     private var gestureOy0 = 0f
     private var gestureZoom0 = 1f
+    private var gestureX0 = 0f            // 这次手指手势第一根手指落下的位置（px），误触判「划了多远」用
+    private var gestureY0 = 0f
+    private var gestureWritePaused = false   // 手指落下时笔刚用过：单指不滚动（双指照常）
+    private var lastFingerDownT = 0L   // 上一根手指落下的时间（不管认没认）：③ 的双指放行用
+    private var zoneHeldId = -1        // 被屏蔽区挡下、还按着的那根手指：第二根很快落下就补回来
+    private val fingerGate = FingerGate(this, penNear)   // 此刻手指能不能用 → 顶栏小手键（同页内）
     private var miniDrag = false   // 手指正在 minimap 上点/拖（panId = 那根手指）
 
     // —— 分页画板的松手惯性（2026-09-26 用户报「分页画板滚动没有惯性」）——
@@ -751,25 +758,28 @@ class ScratchCanvas @JvmOverloads constructor(
                 if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) {
                     if (fingerAllowed(e, 0)) fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0))
                 } else {
-                    penNear.onPen()
+                    penNear.onPen(e.getX(0), e.getY(0))
                     stylusDown(e, 0)
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val idx = e.actionIndex
                 if (e.getToolType(idx) == MotionEvent.TOOL_TYPE_FINGER) {
-                    if (fingerAllowed(e, idx)) fingerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx), e.getTouchMajor(idx))
+                    if (fingerAllowed(e, idx)) {
+                        adoptZoneHeld(e)   // 双指放行：先前被屏蔽区挡下的那根补回来（同页内）
+                        fingerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx), e.getTouchMajor(idx))
+                    }
                 } else if (!penActive) {
-                    penNear.onPen()
-                    rejectFingerGesture("笔落下")   // 手指手势进行中笔落下：那多半是手掌先着了屏
+                    penNear.onPen(e.getX(idx), e.getY(idx))
+                    rejectFingerGesture(Guard.PEN_WRITING)   // 手指手势进行中笔落下：那多半是手掌先着了屏
                     stylusDown(e, idx)   // 笔优先（stylusDown 内清掉手指状态）
                 }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (penActive) {
-                    penNear.onPen()
                     val pi = e.findPointerIndex(penId)
                     if (pi >= 0) {
+                        penNear.onPen(e.getX(pi), e.getY(pi))
                         // 展开历史点（Android 按 batch 投递，不展开 = 采样率腰斩，同 PageCanvasView）
                         for (h in 0 until e.historySize) stylusMove(e, pi, h)
                         stylusMove(e, pi, -1)
@@ -785,40 +795,55 @@ class ScratchCanvas @JvmOverloads constructor(
                         }
                         pinching && touchOrder.size >= 2 -> pinchMove()
                         // 双指滚动模式：单指划动不平移（防误触，同页内 PageCanvasView.panMove）
-                        panId >= 0 && !twoFingerScroll -> {
+                        // 写字时暂停单指滚动（手指落下那一刻定，见 PenProximity.writePaused）：同上
+                        panId >= 0 && !twoFingerScroll && !gestureWritePaused -> {
                             val pi = e.findPointerIndex(panId)
                             if (pi >= 0) panTo(e.getX(pi), e.getY(pi))
+                        }
+                        // 单指被挡下（双指滚动模式 / 刚写过字）：划过死区才提示，轻点不打扰
+                        panId >= 0 -> {
+                            val pi = e.findPointerIndex(panId)
+                            if (pi >= 0 && hypot(e.getX(pi) - gestureX0, e.getY(pi) - gestureY0) > dp(PadConst.DEAD)) {
+                                fingerGate.show(if (twoFingerScroll) Guard.TWO_FINGER else Guard.WRITE_PAUSE)
+                            }
                         }
                     }
                 }
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 val id = e.getPointerId(e.actionIndex)
+                if (id == zoneHeldId) zoneHeldId = -1
                 if (penActive && id == penId) { penNear.onPen(); stylusUp() }
-                else if (id in touches && PenProximity.canceled(e)) rejectFingerGesture("系统判为手掌")
+                else if (id in touches && PenProximity.canceled(e)) rejectFingerGesture(Guard.REJECTED)
                 else endTouch(id)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                zoneHeldId = -1
                 if (penActive) penNear.onPen()
                 else if (touches.isNotEmpty() && PenProximity.canceled(e)) {
-                    rejectFingerGesture("系统判为手掌")
+                    rejectFingerGesture(Guard.REJECTED)
                     endPull()
+                    fingerGate.release()   // 先判误触（show）再收尾，顺序反了会一直灰着（同页内）
+                    fingerGate.update()
                     return true
                 }
+                fingerGate.release()   // 手全部离屏：「不能用」再算一会儿就恢复
                 pinchSplit.logEnd("画布")
                 // 松手前是不是在平移（单指 / 双指滚动 / 笔在翻页·框选模式下拖）：是就甩出去
                 // （双指滚动模式下两指先后抬起，最后一指抬起时已不在 pinching：交给 startMomentum 的「80ms 内还在动」判断）
                 val wasPanning = e.actionMasked == MotionEvent.ACTION_UP &&
                     ((!penActive && !miniDrag) || (penActive && penKind == 3))
+                val suspect = wasPanning && flingSuspect()   // 要在清掉触点之前判
                 if (penActive) {
                     stylusUp()
                 }
                 touches.clear(); touchOrder.clear()
                 pinching = false; panId = -1; miniDrag = false
                 endPull()   // 一次手势结束：上拉加页的账清零
-                if (wasPanning) startMomentum() else cancelMomentum()
+                if (wasPanning && !suspect) startMomentum() else cancelMomentum()
             }
         }
+        fingerGate.update()   // 笔落下 / 抬起、手指被挡都可能改「手指能不能用」
         return true
     }
 
@@ -826,22 +851,61 @@ class ScratchCanvas @JvmOverloads constructor(
 
     /** 这根手指认不认（同页内 PageCanvasView.fingerAllowed） */
     private fun fingerAllowed(e: MotionEvent, idx: Int): Boolean {
+        if (penActive) {
+            PenProximity.logFinger("画布", e, idx, density, Guard.PEN_WRITING.log)
+            fingerGate.show(Guard.PEN_WRITING)   // 写字时压上来的手掌也要算「不能用」（同页内）
+            return false
+        }
+        // ③ 只挡单根手指：与上一根手指落下间隔不到 PAIR_MS = 主动双指操作，放行（同页内）
+        val now = android.os.SystemClock.uptimeMillis()
+        val pair = now - lastFingerDownT < PenProximity.PAIR_MS && (touches.isNotEmpty() || zoneHeldId >= 0)
+        lastFingerDownT = now
         val why = when {
-            penActive -> "笔在写"
-            penNear.near() -> "笔在附近"
-            e.getTouchMajor(idx) > palmPx -> "接触面过大"
+            penNear.near() -> Guard.PEN_NEAR
+            e.getTouchMajor(idx) > palmPx -> Guard.BIG_CONTACT
+            !pair && penNear.inPalmZone(e.getX(idx), e.getY(idx), density) -> Guard.PALM_ZONE
             else -> null
         }
-        PenProximity.logFinger("画布", e, idx, density, why)
+        PenProximity.logFinger("画布", e, idx, density, why?.log)
+        if (why == Guard.PALM_ZONE) zoneHeldId = e.getPointerId(idx)
+        why?.let { fingerGate.show(it) }   // 顶栏小手变灰，直到手全部离屏（同页内）
         return why == null
     }
 
-    /** 进行中的手指手势判成误触：立即结束、不甩惯性；开始不到 [PenProximity.REVERT_MS] 就把视口还原（同页内） */
-    private fun rejectFingerGesture(reason: String) {
+    /** ③ 双指放行时，把先前被屏蔽区挡下、还按在屏上的那根手指补进手势，并撤掉小手的灰（同页内） */
+    private fun adoptZoneHeld(e: MotionEvent) {
+        val id = zoneHeldId
+        if (id < 0) return
+        zoneHeldId = -1
+        val pi = e.findPointerIndex(id)
+        if (pi < 0) return
+        android.util.Log.i(PenProximity.TAG, "画布 两指几乎同时落下，屏蔽区放行")
+        fingerGate.clear()
+        fingerDown(id, e.getX(pi), e.getY(pi), 0f)
+    }
+
+    /** 单指松手前这一下是不是短促的误触划动（同页内 fingerFling）：是就不甩惯性。笔拖动不在此列 */
+    private fun flingSuspect(): Boolean {
+        if (penActive || touchOrder.size != 1) return false
+        val dur = android.os.SystemClock.uptimeMillis() - gestureT0
+        val travel = hypot(lastPanX - gestureX0, lastPanY - gestureY0)
+        // 没划过死区 = 轻点，本来就没有速度可甩；别拿它记一条「判为误触」（页内 fingerFling 只在过了死区后才调）
+        if (travel < dp(PadConst.DEAD)) return false
+        if (!penNear.flingSuspect(dur, travel, density)) return false
+        android.util.Log.i(PenProximity.TAG, "画布短促划动（${dur}ms ${"%.0f".format(travel / density)}dp）判为误触，不甩惯性")
+        return true
+    }
+
+    /**
+     * 进行中的手指手势判成误触：立即结束、不甩惯性；开始不到 [PenProximity.REVERT_MS] 就把视口还原；
+     * 小手一直灰到手全部离屏（同页内）。
+     */
+    private fun rejectFingerGesture(g: Guard) {
         if (touches.isEmpty()) return
         val young = android.os.SystemClock.uptimeMillis() - gestureT0 < PenProximity.REVERT_MS
         val moved = ox != gestureOx0 || oy != gestureOy0 || zoom != gestureZoom0
-        android.util.Log.i(PenProximity.TAG, "画布手指手势判为误触（$reason）" + if (young && moved) "，视口还原" else "")
+        android.util.Log.i(PenProximity.TAG, "画布手指手势判为误触（${g.log}）" + if (young && moved) "，视口还原" else "")
+        fingerGate.show(g)
         pinchSplit.logEnd("画布·误触")
         touches.clear(); touchOrder.clear(); pinching = false; panId = -1; miniDrag = false
         cancelMomentum()
@@ -859,6 +923,8 @@ class ScratchCanvas @JvmOverloads constructor(
         if (touchOrder.isEmpty()) {   // 一次新手势的第一根手指：记下起点，误触时还原到这里
             gestureT0 = android.os.SystemClock.uptimeMillis()
             gestureOx0 = ox; gestureOy0 = oy; gestureZoom0 = zoom
+            gestureX0 = x; gestureY0 = y
+            gestureWritePaused = penNear.writePaused()
             pinchSplit.reset()
         }
         touches[id] = Finger(x, y)
@@ -1517,8 +1583,9 @@ class ScratchCanvas @JvmOverloads constructor(
         penNear.onHover(e)
         // 手指手势进行中笔进了悬停范围：那几根"手指"多半是手侧面（同页内）
         if (e.actionMasked != MotionEvent.ACTION_HOVER_EXIT && touches.isNotEmpty() && penNear.near()) {
-            rejectFingerGesture("笔靠近")
+            rejectFingerGesture(Guard.PEN_NEAR)
         }
+        fingerGate.update()
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE -> {
                 val t = curTools()

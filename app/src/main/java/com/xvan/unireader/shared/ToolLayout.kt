@@ -85,7 +85,7 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
                     docked = true,
                 ),
                 Group(G_PAGE, "", mutableListOf("scratch", "lock", "canvas", "ref"), docked = true),
-                Group(G_STATUS, "", mutableListOf("latency", "pageLabel"), docked = true, pin = PIN_RIGHT),
+                Group(G_STATUS, "", mutableListOf("fingerState", "latency", "pageLabel"), docked = true, pin = PIN_RIGHT),
                 Group(
                     G_PAD, "",
                     mutableListOf(
@@ -111,7 +111,7 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
 
         /** 默认收在 ⋯ 里的（原先就只在菜单里的那些） */
         val MENU_KEYS = listOf(
-            "boardList", "night", "showPage", "twoFinger", "hLock", "relativeInk", "layers", "gotoPage",
+            "boardList", "night", "showPage", "twoFinger", "flingGuard", "writePause", "palmZone", "leftHand", "hLock", "relativeInk", "layers", "gotoPage",
             "openDoc", "workspace", "hideBar", "conn",
         )
 
