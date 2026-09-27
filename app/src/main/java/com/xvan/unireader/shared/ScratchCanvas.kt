@@ -671,10 +671,17 @@ class ScratchCanvas @JvmOverloads constructor(
     private var lastPanX = 0f
     private var lastPanY = 0f
     private var pinching = false
-    private var pinchD0 = 0f
-    private var pinchZ0 = 1f
+    private var pinchLastD = 0f   // 上一帧两指间距（px）——缩放按帧增量算，见 PinchSplit
     private var pinchMx = 0f   // 上一帧两指中点（dp）——双指整体挪动 = 平移，见 [pinchMove]
     private var pinchMy = 0f
+    private val pinchSplit = PinchSplit(density)
+
+    // 防误触（同页内 PageCanvasView）：笔靠近时不认手指；手指手势判成误触时视口还原到它开始之前
+    private val penNear = PenProximity()
+    private var gestureT0 = 0L
+    private var gestureOx0 = 0f
+    private var gestureOy0 = 0f
+    private var gestureZoom0 = 1f
     private var miniDrag = false   // 手指正在 minimap 上点/拖（panId = 那根手指）
 
     // —— 分页画板的松手惯性（2026-09-26 用户报「分页画板滚动没有惯性」）——
@@ -742,21 +749,25 @@ class ScratchCanvas @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 cancelMomentum()   // 手 / 笔一落下就接住正在滑的纸
                 if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) {
-                    fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0))
+                    if (fingerAllowed(e, 0)) fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0))
                 } else {
+                    penNear.onPen()
                     stylusDown(e, 0)
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val idx = e.actionIndex
                 if (e.getToolType(idx) == MotionEvent.TOOL_TYPE_FINGER) {
-                    fingerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx), e.getTouchMajor(idx))
+                    if (fingerAllowed(e, idx)) fingerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx), e.getTouchMajor(idx))
                 } else if (!penActive) {
+                    penNear.onPen()
+                    rejectFingerGesture("笔落下")   // 手指手势进行中笔落下：那多半是手掌先着了屏
                     stylusDown(e, idx)   // 笔优先（stylusDown 内清掉手指状态）
                 }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (penActive) {
+                    penNear.onPen()
                     val pi = e.findPointerIndex(penId)
                     if (pi >= 0) {
                         // 展开历史点（Android 按 batch 投递，不展开 = 采样率腰斩，同 PageCanvasView）
@@ -783,10 +794,18 @@ class ScratchCanvas @JvmOverloads constructor(
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 val id = e.getPointerId(e.actionIndex)
-                if (penActive && id == penId) stylusUp()
+                if (penActive && id == penId) { penNear.onPen(); stylusUp() }
+                else if (id in touches && PenProximity.canceled(e)) rejectFingerGesture("系统判为手掌")
                 else endTouch(id)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (penActive) penNear.onPen()
+                else if (touches.isNotEmpty() && PenProximity.canceled(e)) {
+                    rejectFingerGesture("系统判为手掌")
+                    endPull()
+                    return true
+                }
+                pinchSplit.logEnd("画布")
                 // 松手前是不是在平移（单指 / 双指滚动 / 笔在翻页·框选模式下拖）：是就甩出去
                 // （双指滚动模式下两指先后抬起，最后一指抬起时已不在 pinching：交给 startMomentum 的「80ms 内还在动」判断）
                 val wasPanning = e.actionMasked == MotionEvent.ACTION_UP &&
@@ -805,9 +824,43 @@ class ScratchCanvas @JvmOverloads constructor(
 
     // ---- 手指：单指平移、双指捏合（作用在草稿纸视口上，与页内同款只是目标不同） ----
 
+    /** 这根手指认不认（同页内 PageCanvasView.fingerAllowed） */
+    private fun fingerAllowed(e: MotionEvent, idx: Int): Boolean {
+        val why = when {
+            penActive -> "笔在写"
+            penNear.near() -> "笔在附近"
+            e.getTouchMajor(idx) > palmPx -> "接触面过大"
+            else -> null
+        }
+        PenProximity.logFinger("画布", e, idx, density, why)
+        return why == null
+    }
+
+    /** 进行中的手指手势判成误触：立即结束、不甩惯性；开始不到 [PenProximity.REVERT_MS] 就把视口还原（同页内） */
+    private fun rejectFingerGesture(reason: String) {
+        if (touches.isEmpty()) return
+        val young = android.os.SystemClock.uptimeMillis() - gestureT0 < PenProximity.REVERT_MS
+        val moved = ox != gestureOx0 || oy != gestureOy0 || zoom != gestureZoom0
+        android.util.Log.i(PenProximity.TAG, "画布手指手势判为误触（$reason）" + if (young && moved) "，视口还原" else "")
+        pinchSplit.logEnd("画布·误触")
+        touches.clear(); touchOrder.clear(); pinching = false; panId = -1; miniDrag = false
+        cancelMomentum()
+        if (young && moved) {
+            ox = gestureOx0; oy = gestureOy0; zoom = gestureZoom0
+            clampViewport()
+            invalidate()
+            onViewportChanged?.invoke()
+        }
+    }
+
     private fun fingerDown(id: Int, x: Float, y: Float, touchMajor: Float) {
         if (penActive) return            // 笔在写 → 忽略手掌/手指
         if (touchMajor > palmPx) return  // 大面积接触（手掌）忽略
+        if (touchOrder.isEmpty()) {   // 一次新手势的第一根手指：记下起点，误触时还原到这里
+            gestureT0 = android.os.SystemClock.uptimeMillis()
+            gestureOx0 = ox; gestureOy0 = oy; gestureZoom0 = zoom
+            pinchSplit.reset()
+        }
         touches[id] = Finger(x, y)
         if (id !in touchOrder) touchOrder.add(id)
         if (touchOrder.size >= 2) {
@@ -815,8 +868,7 @@ class ScratchCanvas @JvmOverloads constructor(
             val b = touches[touchOrder[1]] ?: return
             pinching = true
             miniDrag = false   // 第二指落下：minimap 拖动让给捏合
-            pinchD0 = max(dp(40f), hypot(a.x - b.x, a.y - b.y))   // 下限避免起手过近灵敏度爆炸
-            pinchZ0 = zoom
+            pinchLastD = hypot(a.x - b.x, a.y - b.y)
             pinchMx = (a.x + b.x) / 2f / density
             pinchMy = (a.y + b.y) / 2f / density
             panId = -1
@@ -842,13 +894,12 @@ class ScratchCanvas @JvmOverloads constructor(
                 val t = touches[panId]!!
                 lastPanX = t.x; lastPanY = t.y
             }
-            touchOrder.isEmpty() -> panId = -1
+            touchOrder.isEmpty() -> { panId = -1; pinchSplit.logEnd("画布") }
             else -> {
                 val a = touches[touchOrder[0]] ?: return
                 val b = touches[touchOrder[1]] ?: return
                 pinching = true
-                pinchD0 = max(dp(40f), hypot(a.x - b.x, a.y - b.y))
-                pinchZ0 = zoom
+                pinchLastD = hypot(a.x - b.x, a.y - b.y)
                 pinchMx = (a.x + b.x) / 2f / density
                 pinchMy = (a.y + b.y) / 2f / density
                 panId = -1
@@ -872,7 +923,10 @@ class ScratchCanvas @JvmOverloads constructor(
         onViewportChanged?.invoke()
     }
 
-    /** 双指捏合：以两指中点为锚缩放，中点移动跟着平移（与页内 pinchMove 同款跟手） */
+    /**
+     * 双指：以两指中点为锚缩放，中点移动跟着平移（与页内 pinchMove 同款跟手）。
+     * 缩放按帧由 [PinchSplit] 拆出来：双指滚动时手指自然并拢的那点间距变化不算缩放。
+     */
     private fun pinchMove() {
         val a = touches[touchOrder[0]] ?: return
         val b = touches[touchOrder[1]] ?: return
@@ -880,7 +934,9 @@ class ScratchCanvas @JvmOverloads constructor(
         val mx = (a.x + b.x) / 2f / density
         val my = (a.y + b.y) / 2f / density
         val beforeY = oy
-        val v = ScratchGeom.zoomAt(ox, oy, zoom, (pinchZ0 * d / pinchD0) / zoom, mx, my)
+        val f = pinchSplit.factor(pinchLastD, d, (mx - pinchMx) * density, (my - pinchMy) * density)
+        pinchLastD = d
+        val v = ScratchGeom.zoomAt(ox, oy, zoom, f, mx, my)
         ox = v[0]; oy = v[1]; zoom = v[2]
         // 中点整体挪动 = 平移。缩放锚点只保证「中点底下那一点不动」，两指齐挪时 factor≈1、
         // zoomAt 原地返回，光靠它双指是拖不动纸的——双指滚动模式下就等于纸钉死了。
@@ -1458,6 +1514,11 @@ class ScratchCanvas @JvmOverloads constructor(
     // ---- 悬停：擦除模式下显示橡皮尺寸圆环（同页内 hover 的口径） ----
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        penNear.onHover(e)
+        // 手指手势进行中笔进了悬停范围：那几根"手指"多半是手侧面（同页内）
+        if (e.actionMasked != MotionEvent.ACTION_HOVER_EXIT && touches.isNotEmpty() && penNear.near()) {
+            rejectFingerGesture("笔靠近")
+        }
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE -> {
                 val t = curTools()

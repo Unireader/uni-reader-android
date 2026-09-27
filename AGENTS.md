@@ -249,6 +249,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   **不能靠 clamp 收边**——那会把页外笔迹压成页边一条竖线，该由 canvas clip 裁）；
   ③ 变换（`InkEdit.translated/scaled` 的 `xMargin`，默认 0 = 不出本页）。
   页边宽度**模式2 由 Mac 下发**（`canvas` 0x4B），**模式1 本机从笔迹算**（`CanvasMargin`）。
+- **双指与防误触（2026-09-27，`shared/TouchGuard.kt`，页内与草稿纸/画板两处画布共用）**：
+  · 捏合**按帧增量**算缩放，由 `PinchSplit` 按「指距变化 / 中点位移」连续加权（双指滚动时手指并拢不算缩放）。
+  用户否决过「先挪一段再判意图」和百分比死区两种做法（起手不跟手），**别再加起手判定或锁定**。
+  · `PenProximity`：笔悬停中 / 刚离开 0.3s 内不认新手指；手指手势进行中笔靠近、笔落下、系统判为手掌
+  （`ACTION_CANCEL` / `FLAG_CANCELED`）→ 结束该手势、不甩惯性，开始不到 1s 的把画面还原到手指落下之前。
+  数据看 logcat `UniReader/Pinch`、`UniReader/Palm`。
 - **环形选笔盘的长按判据是「位移 + 速度」两道闸**（2026-08-28 用户报「很容易误触」）。
   只看「离落笔点的总位移」挡不住小字：写一个小字全程都在 14dp 半径里打转，停满 1s 盘就凭空弹出来。
   加了滑动窗口内的平均速度（写字必然在动、长按必然不动）。常量在 `PadConst.LP`，

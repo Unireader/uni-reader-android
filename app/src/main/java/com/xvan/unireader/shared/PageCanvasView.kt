@@ -2359,8 +2359,20 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 本次手指手势被 [twoFingerScroll] 挡下过（划了但没平移）——抬手时不能再当轻点去开图钉 */
     protected var gestureBlocked = false
 
-    protected data class Pinch(val d0: Float, val z0: Float, val fx: Float, val fy: Float)
+    protected data class Pinch(val fx: Float, val fy: Float)
     protected var pinch: Pinch? = null
+    // 捏合按帧增量算（见 PinchSplit）：上一帧的两指间距与中点
+    protected var pinchLastD = 0f
+    protected var pinchLastMx = 0f
+    protected var pinchLastMy = 0f
+    protected val pinchSplit = PinchSplit(density)
+
+    // 防误触：笔靠近时不认手指；手指手势被判成误触时还原到它开始之前（见 PenProximity）
+    protected val penNear = PenProximity()
+    protected var gestureT0 = 0L
+    protected var gestureZoom0 = 1f
+    protected var gestureSX0 = 0f
+    protected var gestureSY0 = 0f
 
     // —— 手写笔侧键诊断 ——
     //
@@ -2408,8 +2420,11 @@ open class PageCanvasView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 cancelMomentum()
                 if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) {
-                    fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0), e.eventTime)
+                    if (fingerAllowed(e, 0)) {
+                        fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0), e.eventTime)
+                    }
                 } else {
+                    penNear.onPen()
                     penDown(e, 0)
                 }
             }
@@ -2418,14 +2433,19 @@ open class PageCanvasView @JvmOverloads constructor(
                 cancelMomentum()
                 val idx = e.actionIndex
                 if (e.getToolType(idx) == MotionEvent.TOOL_TYPE_FINGER) {
-                    fingerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx), e.getTouchMajor(idx), e.eventTime)
+                    if (fingerAllowed(e, idx)) {
+                        fingerDown(e.getPointerId(idx), e.getX(idx), e.getY(idx), e.getTouchMajor(idx), e.eventTime)
+                    }
                 } else if (!activePen) {
+                    penNear.onPen()
+                    rejectFingerGesture("笔落下")   // 手指手势进行中笔落下：那多半是手掌先着了屏
                     penDown(e, idx)   // 笔落下：笔优先（penDown 内清掉手指状态）
                 }
             }
 
             MotionEvent.ACTION_MOVE -> {
                 if (activePen) {
+                    penNear.onPen()
                     val pi = e.findPointerIndex(penId)
                     if (pi >= 0) {
                         // 必须展开历史点（Android 按 batch 投递，不展开 = 采样率腰斩）
@@ -2446,14 +2466,18 @@ open class PageCanvasView @JvmOverloads constructor(
 
             MotionEvent.ACTION_POINTER_UP -> {
                 val id = e.getPointerId(e.actionIndex)
-                if (activePen && id == penId) endPen()
+                if (activePen && id == penId) { penNear.onPen(); endPen() }
+                else if (id in touches && PenProximity.canceled(e)) rejectFingerGesture("系统判为手掌")
                 else endTouch(id)
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (activePen) {
+                    penNear.onPen()
                     endPen()
                     touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
+                } else if (touches.isNotEmpty() && PenProximity.canceled(e)) {
+                    rejectFingerGesture("系统判为手掌")
                 } else {
                     val wasPanning = panStarted
                     val wasPinDrag = pinDragActive
@@ -2462,6 +2486,7 @@ open class PageCanvasView @JvmOverloads constructor(
                     val tap = !wasPanning && !wasPinDrag && !wasTextSel && !gesturePinched &&
                         !gestureBlocked && panId >= 0 && e.actionMasked == MotionEvent.ACTION_UP
                     val tx = panDownX; val ty = panDownY
+                    pinchSplit.logEnd("页面")
                     // 松手位置用于提交图钉拖动（比最后一帧 move 更准）
                     val pi = e.findPointerIndex(panId)
                     val ux = if (pi >= 0) e.getX(pi) else tx
@@ -2494,10 +2519,56 @@ open class PageCanvasView @JvmOverloads constructor(
         return true
     }
 
+    /** 这根手指认不认：笔在写 / 笔在附近 / 接触面过大都不认（每次落指打一行接触尺寸，调门槛看它） */
+    private fun fingerAllowed(e: MotionEvent, idx: Int): Boolean {
+        val why = when {
+            activePen -> "笔在写"
+            penNear.near() -> "笔在附近"
+            e.getTouchMajor(idx) > palmPx -> "接触面过大"
+            else -> null
+        }
+        PenProximity.logFinger("页面", e, idx, density, why)
+        return why == null
+    }
+
+    /**
+     * 进行中的手指手势判成误触（笔靠近 / 笔落下 / 系统判为手掌）：立即结束、不甩惯性、不当轻点；
+     * 手势开始不到 [PenProximity.REVERT_MS] 就把缩放与滚动位置还原到手指落下之前。
+     */
+    protected fun rejectFingerGesture(reason: String) {
+        if (touches.isEmpty()) return
+        val young = SystemClock.uptimeMillis() - gestureT0 < PenProximity.REVERT_MS
+        val moved = zoom != gestureZoom0 || scrollX != gestureSX0 || scrollY != gestureSY0
+        Log.i(PenProximity.TAG, "手指手势判为误触（$reason）" + if (young && moved) "，画面还原" else "")
+        pinchSplit.logEnd("页面·误触")
+        if (pinDragActive) onPinDragCancel()
+        touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
+        pinDragCandidate = false; pinDragActive = false
+        textSelCandidate = false; textSelDragging = false; endTextSelect()
+        gestureBlocked = true
+        cancelMomentum(); vx = 0f; vy = 0f
+        if (young && moved) {
+            zoom = gestureZoom0
+            recompute()
+            scrollX = gestureSX0.coerceIn(0f, maxScrollX)
+            scrollY = gestureSY0.coerceIn(0f, maxScrollY)
+            ensureImages()
+            invalidate()
+            emitGeom()
+            onHudChanged()
+            emitScroll()
+        }
+    }
+
     protected fun fingerDown(id: Int, x: Float, y: Float, touchMajor: Float, eventTime: Long) {
         if (activePen) return            // 笔在写 → 忽略手掌/手指
         if (touchMajor > palmPx) return  // 大面积接触（手掌）忽略
-        if (touchOrder.isEmpty()) { gesturePinched = false; gestureBlocked = false }   // 一次新手势的第一根手指
+        if (touchOrder.isEmpty()) {   // 一次新手势的第一根手指：记下起点，误触时还原到这里
+            gesturePinched = false; gestureBlocked = false
+            gestureT0 = SystemClock.uptimeMillis()
+            gestureZoom0 = zoom; gestureSX0 = scrollX; gestureSY0 = scrollY
+            pinchSplit.reset()
+        }
         touches[id] = Finger(x, y)
         if (id !in touchOrder) touchOrder.add(id)
         if (touchOrder.size >= 2) {
@@ -2531,6 +2602,7 @@ open class PageCanvasView @JvmOverloads constructor(
                 textSelCandidate = false; textSelDragging = false; endTextSelect()
             }
             touchOrder.isEmpty() -> {
+                pinchSplit.logEnd("页面")
                 if (panStarted) startMomentum()
                 panId = -1; panStarted = false
                 pinDragCandidate = false
@@ -2553,15 +2625,18 @@ open class PageCanvasView @JvmOverloads constructor(
         val my = (a.y + b.y) / 2f
         val p = pw()
         pinch = Pinch(
-            d0 = max(dp(40f), hypot(a.x - b.x, a.y - b.y)),   // 初始间距下限，避免起手过近灵敏度爆炸
-            z0 = zoom,
             fx = if (p > 0) (mx - contentLeft()) / p else 0.5f,   // 捏合中点抓住的内容比例（固定锚点）
             fy = if (totalH > 0) (my - barH + scrollY) / totalH else 0f,
         )
+        pinchLastD = hypot(a.x - b.x, a.y - b.y)
+        pinchLastMx = mx; pinchLastMy = my
         panId = -1; panStarted = false
     }
 
-    /** 双指捏合：缩放 + 整体移动都跟手（锚点比例始终跟随当前中点）；纯本地查看，不上报位置（避免回环） */
+    /**
+     * 双指：整体移动 100% 跟手（锚点比例始终跟随当前中点）；缩放按帧由 [PinchSplit] 拆出来——
+     * 双指滚动时手指自然并拢的那点间距变化不算缩放。纯本地查看，不上报位置（避免回环）
+     */
     protected fun pinchMove() {
         val pc = pinch ?: return
         val a = touches[touchOrder[0]] ?: return
@@ -2569,8 +2644,10 @@ open class PageCanvasView @JvmOverloads constructor(
         val d = hypot(a.x - b.x, a.y - b.y)
         val mx = (a.x + b.x) / 2f
         val my = (a.y + b.y) / 2f
+        val f = pinchSplit.factor(pinchLastD, d, mx - pinchLastMx, my - pinchLastMy)
+        pinchLastD = d; pinchLastMx = mx; pinchLastMy = my
         val z0 = zoom
-        if (!zoomLocked) zoom = (pc.z0 * d / pc.d0).coerceIn(PadConst.MIN_ZOOM, PadConst.MAX_ZOOM)
+        if (!zoomLocked) zoom = (zoom * f).coerceIn(PadConst.MIN_ZOOM, PadConst.MAX_ZOOM)
         recompute()
         val x0 = scrollX
         scrollY = (pc.fy * totalH - (my - barH)).coerceIn(0f, maxScrollY)
@@ -2924,6 +3001,11 @@ open class PageCanvasView @JvmOverloads constructor(
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
         // 侧键在**悬停**时按下走的是这条路（ACTION_BUTTON_PRESS / HOVER_MOVE），不是 onTouchEvent
         logStylus(e, "generic")
+        penNear.onHover(e)
+        // 手指手势进行中笔进了悬停范围：那几根"手指"多半是手侧面（防误触，见 PenProximity）
+        if (e.actionMasked != MotionEvent.ACTION_HOVER_EXIT && touches.isNotEmpty() && penNear.near()) {
+            rejectFingerGesture("笔靠近")
+        }
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE -> {
                 // 笔悬停在笔记标记上 → `hover` 模式那条笔记展开正文（**只认笔**：手指没有悬停这回事，
