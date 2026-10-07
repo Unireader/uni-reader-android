@@ -86,7 +86,8 @@ if [ "$DO_INSTALL" -eq 1 ]; then
         echo "==> 找不到 adb（$ADB），跳过安装"
     else
         DEVS=()
-        while IFS= read -r line; do DEVS+=("$line"); done < <("$ADB" devices | awk 'NR>1 && $2=="device" {print $1}')
+        # 按制表符切：无线调试的设备名里带空格（如 `adb-xxx (2)._adb-tls-connect._tcp`），按空格切会把它当成离线
+        while IFS= read -r line; do DEVS+=("$line"); done < <("$ADB" devices | awk -F'\t' 'NR>1 && $2=="device" {print $1}')
         if [ "${#DEVS[@]}" -eq 1 ]; then
             echo "==> 安装到 ${DEVS[0]}"
             "$ADB" install -r "$APK"
