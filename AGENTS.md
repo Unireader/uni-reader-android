@@ -42,6 +42,10 @@ python3 tools/icons/gen.py --check   # 只自检不写盘（bbox / 重心 / 尺�
 python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大图（要 matplotlib）
 ```
 
+- **正式包传 GitHub**（2026-10-07 起，用户定）：`./pack.sh` 打出 release 包、提交升版本号、推 `main` 之后，在
+  `Unireader/uni-reader-android` 建 release，**tag = `YYYY-MM-DD-N`**（发包当天日期 + 当天第几个包，从 1 数；先
+  `git ls-remote --tags origin` 数当天已有几个），附件 apk 改名 `UniReader-android-<versionName>.apk`，
+  说明中英各一段、用日常说法（同 Mac 的 `release-notes/`）。Mac 端的 `v<版本>` tag 在另一个仓库，两边互不相干。
 - 新克隆先补 `local.properties`（本机文件，不入 git）：`sdk.dir` + `releaseStorePassword` / `releaseKeyPassword`。
 - 签名：debug/release **共用同一证书** `~/.keystores/xVanTuring.jks`（alias `key0`），保证两个变体可互相覆盖安装。
 - **只打 `arm64-v8a`**（Pdfium 是 native 库，多 ABI 会把 APK 撑几十 MB）→ **x86_64 模拟器装不上**，是刻意取舍。
