@@ -79,6 +79,8 @@ class MacClient(
         fun onBoardImages(list: List<WireCodec.BoardImageEntry>)
         /** 被跟随画板的页（全量镜像；空表 = 不是分页画板，`../PROTOCOL.md §4.8` 分页画板） */
         fun onBoardPages(w: Float, h: Float, list: List<WireCodec.BoardPageEntry>)
+        /** 画板 [id] 在 Mac 库里存的视口（紧跟 boards；zoom<=0 = 没存过，`../PROTOCOL.md §4.8` 画板视口） */
+        fun onBoardViewport(id: String, x: Float, y: Float, zoom: Float)
         /** 连接断开（含自动重连中的每一次失败）；msg 供顶栏显示 */
         fun onDisconnected(msg: String)
     }
@@ -172,6 +174,7 @@ class MacClient(
             is WireCodec.Msg.Boards -> cb.onBoards(m.kind, m.current, m.list)
             is WireCodec.Msg.BoardImages -> cb.onBoardImages(m.list)
             is WireCodec.Msg.BoardPages -> cb.onBoardPages(m.w, m.h, m.list)
+            is WireCodec.Msg.BoardViewport -> cb.onBoardViewport(m.id, m.x, m.y, m.zoom)
             else -> {}   // page 等不消费的消息忽略
         }
     }

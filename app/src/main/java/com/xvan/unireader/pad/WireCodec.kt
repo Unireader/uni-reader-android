@@ -105,6 +105,11 @@ object WireCodec {
     const val OP_LOCK = 0x59
     /** 相对粗细模式开关（双向，同 [OP_LOCK]；`../PROTOCOL.md` `relInk`） */
     const val OP_REL_INK = 0x5A
+    /**
+     * 画板视口（双向，`../PROTOCOL.md §4.8` 末尾、`../BOARD-NOTE-PLAN.md §10.1`）：S→C = Mac 库里存的
+     * （紧跟 boards / boardPages），C→S = 用户动过视口后停手回传。两个方向都带画板 id。
+     */
+    const val OP_BOARD_VIEWPORT = 0x5B
 
     /** `boards.kind`：被跟随会话是什么（0 = PDF 或空标签，1 = Markdown 笔记，2 = 画板笔记） */
     const val BOARD_KIND_PDF = 0
@@ -292,6 +297,12 @@ object WireCodec {
          * 每页一个背景模板 u8（`shared/BoardPaging` 的 T_*）。布局契约：第 i 页 = `(-w/2, i×(h+24), w, h)`。
          */
         data class BoardPages(val w: Float, val h: Float, val list: List<BoardPageEntry>) : Msg()
+
+        /**
+         * 画板 [id] 在库里存的视口（画布坐标的视口左上角 [x]/[y] + [zoom]；`zoom <= 0` = 从没存过）。
+         * 只在刚打开这一篇、用户还没动过视口时用来复位一次。
+         */
+        data class BoardViewport(val id: String, val x: Float, val y: Float, val zoom: Float) : Msg()
     }
 
     /** 分页画板的一页（boardPages 消息元素）：页 id + 背景模板（未知值按空白画） */
@@ -650,6 +661,10 @@ object WireCodec {
     fun encodeBoardPageTemplate(index: Int, template: Int): ByteArray =
         Writer().apply { u8(OP_BOARD_PAGE_TEMPLATE); u16(index); u8(template.coerceIn(0, 255)) }.bytes()
 
+    /** 回传画板 [id] 的视口（画布坐标的视口左上角 + 缩放），Mac 只写库里那三列 */
+    fun encodeBoardViewport(id: String, x: Float, y: Float, zoom: Float): ByteArray =
+        Writer().apply { u8(OP_BOARD_VIEWPORT); str(id); f32(x); f32(y); f32(zoom) }.bytes()
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -838,6 +853,7 @@ object WireCodec {
                 OP_ERASER -> Msg.Eraser(r.f32(), r.u8(), r.u8() != 0)
                 OP_LOCK -> Msg.Lock(r.u8() != 0)
                 OP_REL_INK -> Msg.RelInk(r.u8() != 0)
+                OP_BOARD_VIEWPORT -> Msg.BoardViewport(r.str(), r.f32(), r.f32(), r.f32())
                 OP_NACK -> {
                     val n = r.u16()
                     val seqs = ArrayList<Long>(n)

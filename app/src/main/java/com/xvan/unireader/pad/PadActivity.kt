@@ -281,6 +281,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         fetcher?.setForeground(true)   // 退后台时让出去的页图额度，回来复原
     }
 
+    override fun onPause() {
+        scratch.flushViewportSave()   // 画板位置别等 0.6s 节流：退到后台后进程随时可能被杀
+        super.onPause()
+    }
+
     /**
      * 系统要内存了。页图额度是按设备总内存给的（可到 384MB），而位图住在 native 堆
      * （API 26+）——超支不抛 OOM，是**整个进程被 lowmemorykiller 干掉**，回来就是冷启。
@@ -1414,6 +1419,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 被跟随画板的页（全量镜像；空表 = 无限画布 / 不是画板会话）：排页、画背景交给草稿纸画布 */
     override fun onBoardPages(w: Float, h: Float, list: List<WireCodec.BoardPageEntry>) = runOnUiThread {
         scratch.applyBoardPages(w, h, IntArray(list.size) { list[it].template })
+    }
+
+    /** 画板在 Mac 库里存的位置：刚打开、还没动过就回到那里（「记住上次滚动位置」，见 PadScratch 末尾） */
+    override fun onBoardViewport(id: String, x: Float, y: Float, zoom: Float) = runOnUiThread {
+        scratch.applyBoardViewport(id, x, y, zoom)
     }
 
     /**

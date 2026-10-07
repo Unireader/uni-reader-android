@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 107 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 109 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -170,6 +170,9 @@ class WireCodecTest {
             105 to WireCodec.encodeBoardPageAdd(1),
             106 to WireCodec.encodeBoardPageTemplate(2, 1),
             107 to WireCodec.encodeBoardAddPaged(842f, 595f, 4, 10),
+            // #108~#109 画板视口（v19，双向）：存过的 / 没存过（zoom=0）
+            108 to WireCodec.encodeBoardViewport("B-1", -120.5f, 1688.25f, 1.5f),
+            109 to WireCodec.encodeBoardViewport("B-2", 0f, 0f, 0f),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -539,10 +542,24 @@ class WireCodecTest {
         )
     }
 
+    @Test
+    fun decodeBoardViewport() {
+        // #108 boardViewport{id:"B-1", x:-120.5, y:1688.25, zoom:1.5}
+        assertEquals(
+            WireCodec.Msg.BoardViewport("B-1", -120.5f, 1688.25f, 1.5f),
+            WireCodec.decode(unhex(VECTORS[107])),
+        )
+        // #109 boardViewport{id:"B-2", x:0, y:0, zoom:0}（没存过）
+        assertEquals(
+            WireCodec.Msg.BoardViewport("B-2", 0f, 0f, 0f),
+            WireCodec.decode(unhex(VECTORS[108])),
+        )
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(107, VECTORS.size)
+        assertEquals(109, VECTORS.size)
     }
 
     @Test
@@ -555,7 +572,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 107 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 109 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -677,6 +694,9 @@ class WireCodecTest {
             "570100",
             "58020001",
             "54010080524400c01444040a00",
+            // #108~#109 画板视口（v19，`../BOARD-NOTE-PLAN.md §10.1`）：boardViewport(0x5B) 存过的 / 没存过
+            "5b0300422d310000f1c20008d3440000c03f",
+            "5b0300422d32000000000000000000000000",
         )
     }
 }

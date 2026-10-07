@@ -39,6 +39,7 @@ import com.xvan.unireader.shared.setTextIfChanged
  * 核心语义（SCRATCHPAD-ANDROID-HANDOFF §3.2 / PROTOCOL.md §4.4，弄错全盘皆错）：
  * - **Mac 是「开着哪张纸」的唯一真源**：收到 `scratchpads` 就照做（[applyPads]），本地只发请求
  *   （scratchOpen/scratchAdd/scratchPaper）不自作主张；换纸 = `openSession()` 清状态回中（同 Mac `.id`）。
+ *   画板笔记例外：回到 Mac 库里存的位置（`boardViewport`，见文件末尾「画板视口」）。
  * - `scratchStrokes` = 当前打开那张纸的全量镜像（无 page 字段，pts 是画布坐标 dp，可负无界）；
  *   没开纸时 Mac 发 n=0，据此清掉本地残留。ackRel 判据与页内 `strokes` **完全同款**（见 [applyStrokes]）。
  * - **RT 流编码函数一行不动**：纸开着时触点已在 `ScratchCanvas` 里换成画布坐标，这里只把
@@ -118,15 +119,20 @@ class PadScratch(private val a: Activity) {
         pads = list
         open = if (newOpen in list.indices) newOpen else -1
         val entry = pads.getOrNull(open)
+        if (entry?.id != openPadId) flushViewportSave()   // 换纸 / 关纸前：画板上一篇的位置先补发
         if (entry == null) {
             openPadId = null
+            awaitingViewport = null
             pendingOpt.clear()   // 上一张纸没等到真源的乐观笔，跟着画布状态一起作废
             canvas.setPageUnder(-1, null)
             canvas.visibility = View.GONE
             if (barView.visibility != View.GONE) { barView.visibility = View.GONE; onBarShown?.invoke() }
         } else {
             if (entry.id != openPadId) {
-                canvas.openSession()   // 换纸/新开：丢上一张的本地状态并回中
+                // 换纸/新开：丢上一张的本地状态并回中。画板例外：按库里存的位置复位——手上已有就现在用，
+                // 没有就等紧跟 `boards` 的那条 `boardViewport`（草稿纸的 id 不会出现在 knownViewports 里）
+                canvas.openSession(knownViewports[entry.id])
+                awaitingViewport = entry.id
                 pendingOpt.clear()
             }
             openPadId = entry.id
@@ -236,6 +242,7 @@ class PadScratch(private val a: Activity) {
     var boardMode = false
         set(v) {
             if (field == v) return
+            flushViewportSave()   // 离开画板会话会撤页、回中：先把位置发出去
             field = v
             applyBoardMode()
         }
@@ -341,7 +348,7 @@ class PadScratch(private val a: Activity) {
             lastEraseRel = sendRel?.invoke(WireCodec.encodeEraseEnd()) ?: 0L
             erasing = false
         }
-        canvas.onViewportChanged = { updateBar() }
+        canvas.onViewportChanged = { updateBar(); scheduleViewportSave() }
         canvas.tools = { toolsProvider?.invoke() }
         // 框选：画布上已经本地生效，这里只把提交发给 Mac 复判执行（画布坐标、page 填 0，`../PROTOCOL.md §4.4`）；
         // Mac 零命中也回推 scratchStrokes，本地以回推为准
@@ -737,6 +744,10 @@ class PadScratch(private val a: Activity) {
 
     /** 被跟随画板的 id（宿主从 `boards.current` 设）：换了一篇画板，页到了要重新按页宽适配 */
     var boardId: String? = null
+        set(v) {
+            if (field != v) flushViewportSave()   // 换篇：上一篇没发出去的位置先补发（画布上此刻还是上一篇）
+            field = v
+        }
 
     private var pagesBoardId: String? = null
     private var pageW = 0f
@@ -779,5 +790,50 @@ class PadScratch(private val a: Activity) {
             .content(root)
             .action(a.getString(R.string.common_cancel))
             .show()
+    }
+
+    // ---------- 画板视口（v19，`../PROTOCOL.md §4.8` 末尾「画板视口」、`../BOARD-NOTE-PLAN.md §10.1`） ----------
+    //
+    // 「记住上次滚动位置」：位置存在 Mac 的工作区库里（与 Mac、模式1 同一份）。Mac 每次发 `boards` 都紧跟一条
+    // `boardViewport`；本端只在刚打开那一篇、用户还没动过视口时复位一次。用户动过之后停手 0.6s 回传，
+    // 离开这一篇（换篇 / 回 PDF / 退后台）时立即补发；没动过不回传（只是打开看一眼不该改库里的位置）。
+
+    /** 画板 id → 已知的库里那份位置（Mac 下发的，或本端刚回传的）：打开时先用它，不必等那条消息 */
+    private val knownViewports = HashMap<String, FloatArray>()
+
+    /** 刚打开、还在等 Mac 下发位置的那一篇（收到一条就清；之后因改名等原因重发的不再复位） */
+    private var awaitingViewport: String? = null
+
+    /** 待回传的是哪一篇（用户动过视口时记下，发出后清） */
+    private var viewportSaveFor: String? = null
+    private val viewportSaveWork = Runnable { flushViewportSave() }
+
+    /** 收 `boardViewport`（S→C）：zoom<=0 = 库里没存过 */
+    fun applyBoardViewport(id: String, x: Float, y: Float, zoom: Float) {
+        val v = floatArrayOf(x, y, zoom)
+        if (zoom > 0f) knownViewports[id] = v
+        if (awaitingViewport != id) return
+        awaitingViewport = null
+        if (openPadId == id) canvas.restoreViewport(v)   // 用户已经动过 / 没存过 → 画布自己不动
+    }
+
+    /** 视口变了：用户动过才记下待回传（停手 0.6s 发，同模式1 `BoardController` 与 Mac 的节流） */
+    private fun scheduleViewportSave() {
+        val id = boardId ?: return
+        if (!boardMode || openPadId != id || !canvas.viewportTouched) return
+        viewportSaveFor = id
+        handler.removeCallbacks(viewportSaveWork)
+        handler.postDelayed(viewportSaveWork, 600)
+    }
+
+    /** 立即回传待发的那份（换篇 / 关纸 / 宿主 `onPause` 都调）；画布上已经不是那一篇了就作罢 */
+    fun flushViewportSave() {
+        val id = viewportSaveFor ?: return   // 没有待发的就没有挂着的定时（两者同进同出）
+        handler.removeCallbacks(viewportSaveWork)
+        viewportSaveFor = null
+        if (openPadId != id) return
+        val v = canvas.currentViewport()
+        knownViewports[id] = v
+        sendCtl?.invoke(WireCodec.encodeBoardViewport(id, v[0], v[1], v[2]))
     }
 }

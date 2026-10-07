@@ -339,16 +339,18 @@ class ScratchCanvas @JvmOverloads constructor(
      * 换一份页（全量）：[templates] 每页一个背景模板（[BoardPaging] 的 T_*），空 = 不是分页画板。
      * [replace] = 换了一篇画板（模式2 由 Mac 切过去）：按新一篇的页宽重新适配、停在第一页顶。
      * 分页 ↔ 无限之间切换也重新摆放；同一篇里加页 / 改背景 / 改尺寸只夹一下视口（同 Mac）。
+     * 例外：这一篇刚按存过的位置复位、用户还没动过（[restoreHold]）——页晚于位置到达（模式2 两条消息
+     * 先后没有保证），不摆回首页顶，只按新到的页重夹那份位置。
      */
     fun setPages(w: Float, h: Float, templates: IntArray, replace: Boolean = false) {
         val wasPaged = paged
         pageLayout = if (templates.isEmpty() || w <= 1f || h <= 1f) null else BoardPaging.Layout(w, h, templates.size)
         pageTemplates = templates.copyOf()
-        if (replace || wasPaged != paged) pagePlaced = false
+        if ((replace || wasPaged != paged) && restoreHold == null) pagePlaced = false
         if (width > 0 && height > 0) {
             when {
-                paged && !pagePlaced -> placeAtPageTop(0)
-                !paged && wasPaged -> recenter()
+                paged && !pagePlaced -> placePageTop(0)
+                !paged && wasPaged -> recenterView()
             }
         }
         clampViewport()
@@ -362,10 +364,17 @@ class ScratchCanvas @JvmOverloads constructor(
         return l.indexForY(oy + viewHdp() / (2 * zoom))
     }
 
-    /** 分页：第 [i] 页页顶、按页宽适配（缩放上限 2，同 Mac `pageTop`） */
+    /** 分页：第 [i] 页页顶、按页宽适配（缩放上限 2，同 Mac `pageTop`）——宿主的「跳页」，算用户动了视口 */
     fun placeAtPageTop(i: Int) {
+        takeOverViewport()
+        placePageTop(i)
+    }
+
+    /** [placeAtPageTop] 的本体；打开时的默认摆放也走这里（那不算用户动过） */
+    private fun placePageTop(i: Int) {
         val l = pageLayout ?: return
         if (width <= 0 || height <= 0) return
+        restoreHold = null
         val vw = viewWdp()
         val z = ((vw - 48f) / l.width).coerceIn(ScratchGeom.MIN_ZOOM, 2f)
         val k = i.coerceIn(0, max(0, l.count - 1))
@@ -492,11 +501,35 @@ class ScratchCanvas @JvmOverloads constructor(
         invalidate()
     }
 
-    /** 当前视口（原点 x/y + 缩放，画布坐标）：画板笔记「记住上次滚动位置」存这个 */
-    fun currentViewport(): FloatArray = floatArrayOf(ox, oy, zoom)
+    /**
+     * 当前视口（原点 x/y + 缩放，画布坐标）：画板笔记「记住上次滚动位置」存这个。
+     * 复位过、用户还没动过时给复位的那份原值（此刻屏幕上的可能是内容没到齐时夹过的，见 [restoreHold]）。
+     */
+    fun currentViewport(): FloatArray = restoreHold?.copyOf() ?: floatArrayOf(ox, oy, zoom)
 
     /** 已存过的视口，尺寸还没到之前先记着（见 [openSession]/[onSizeChanged]） */
     private var pendingRestore: FloatArray? = null
+
+    /**
+     * 复位到的原始视口：用户动视口之前，每次夹取都从它重新算（[clampViewport]）。
+     * 复位那一刻页和笔迹往往还没到（模式2 的 `boardPages` / `scratchStrokes` 与位置是几条消息、先后没有保证；
+     * 模式1 的笔迹是复位之后才在队列上读进来的），按空纸夹会把存过的位置拽回原点附近 / 首页顶，
+     * 内容到齐后也回不去了。手 / 笔一落下（或宿主调回中、适应内容、跳页）就放手，此后照常夹。
+     */
+    private var restoreHold: FloatArray? = null
+
+    /**
+     * 这一篇打开以来用户动过视口没有（手 / 笔落下、回中、适应内容、跳页；[openSession] 清零）。
+     * 模式2 只在动过之后才把位置回传给 Mac——只是打开看一眼不该改库里存的位置；晚到的位置也只在没动过时才复位。
+     */
+    var viewportTouched = false
+        private set
+
+    /** 用户接手视口：放掉复位压着的那份，记一笔「动过」 */
+    private fun takeOverViewport() {
+        restoreHold = null
+        viewportTouched = true
+    }
 
     /**
      * 打开一张纸：丢掉上一张的全部状态（含活体半笔与几何缓存）。
@@ -514,7 +547,19 @@ class ScratchCanvas @JvmOverloads constructor(
         placed = false
         pagePlaced = false
         endPull()
+        restoreHold = null
+        viewportTouched = false
         pendingRestore = restore?.takeIf { it.size == 3 && it[2] > 0f }
+        applyPendingRestoreOrDefault()
+    }
+
+    /**
+     * 存过的位置比打开晚到（模式2：Mac 的 `boardViewport` 跟在 `boards` 后面，而纸是 `scratchpads` 打开的）：
+     * 这一篇打开以来用户还没动过视口才复位，动过了以用户为准。zoom<=0 = 没存过，不动。
+     */
+    fun restoreViewport(v: FloatArray) {
+        if (viewportTouched || v.size != 3 || v[2] <= 0f) return
+        pendingRestore = v.copyOf()
         applyPendingRestoreOrDefault()
     }
 
@@ -522,14 +567,14 @@ class ScratchCanvas @JvmOverloads constructor(
     private fun applyPendingRestoreOrDefault() {
         val r = pendingRestore
         if (r == null) {
-            if (paged) placeAtPageTop(0) else recenter()
+            if (paged) placePageTop(0) else recenterView()
             return
         }
         if (width <= 0 || height <= 0) return   // 尺寸还没到，onSizeChanged 里再试
         pendingRestore = null
-        ox = r[0]; oy = r[1]; zoom = r[2]
+        restoreHold = r
         placed = true; pagePlaced = true
-        clampViewport()
+        clampViewport()   // 从 restoreHold 取值再夹
         invalidate()
         onViewportChanged?.invoke()
     }
@@ -539,11 +584,18 @@ class ScratchCanvas @JvmOverloads constructor(
      * 分页画板：回到当前页页顶（按页宽适配，同 Mac）。
      */
     fun recenter() {
+        takeOverViewport()
+        recenterView()
+    }
+
+    /** [recenter] 的本体；打开时的默认摆放也走这里（那不算用户动过） */
+    private fun recenterView() {
         if (paged) {
-            placeAtPageTop(currentPageIndex())
+            placePageTop(currentPageIndex())
             return
         }
         if (width > 0 && height > 0) {
+            restoreHold = null
             zoom = 1f
             val c = ScratchGeom.centeredOrigin(viewWdp(), viewHdp())
             ox = c[0]; oy = c[1]
@@ -555,13 +607,14 @@ class ScratchCanvas @JvmOverloads constructor(
 
     /** 适应内容 = 全部笔迹包围盒（留边距）装进视口；空纸退化为回中 */
     fun fitContent() {
+        takeOverViewport()
         if (paged) {   // 分页：适配页宽、停在当前页（同 Mac）
-            placeAtPageTop(currentPageIndex())
+            placePageTop(currentPageIndex())
             return
         }
         val f = ScratchGeom.fit(contentBounds(), viewWdp(), viewHdp())
         if (f == null) {
-            recenter()
+            recenterView()
             return
         }
         ox = f[0]; oy = f[1]; zoom = f[2]
@@ -625,6 +678,8 @@ class ScratchCanvas @JvmOverloads constructor(
     }
 
     private fun clampViewport() {
+        // 复位过、用户还没动：每次都从原值重新夹（页 / 笔迹陆续到了，夹的范围才放宽到原值够得着）
+        restoreHold?.let { ox = it[0]; oy = it[1]; zoom = it[2] }
         val pb = pageLayout?.bounds()
         if (pb != null) {
             if (width > 0 && height > 0) clampPaged(pb)
@@ -755,6 +810,7 @@ class ScratchCanvas @JvmOverloads constructor(
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 cancelMomentum()   // 手 / 笔一落下就接住正在滑的纸
+                takeOverViewport()   // 此后视口归用户：复位的那份不再压着、晚到的位置也不再复位
                 if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) {
                     if (fingerAllowed(e, 0)) fingerDown(e.getPointerId(0), e.getX(0), e.getY(0), e.getTouchMajor(0))
                 } else {

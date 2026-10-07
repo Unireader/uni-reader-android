@@ -200,7 +200,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - **画板笔记记住上次滚动位置（schema v19，2026-09-26，`../BOARD-NOTE-PLAN.md §10`）**：`board_note` 加
   `viewport_x/y/zoom`（`viewport_zoom<=0` = 没存过，按老规矩摆），**刻意不进 `MirrorFp`**（同 `last_opened_at`）。
   `ScratchCanvas.openSession(restore:)`/`currentViewport()`，`BoardController` 停手 0.6s 节流写回、
-  `close()`/宿主 `onPause()` 立即 flush。模式2 没有本机库，不在这次范围内，视口仍是各端各自维护。
+  `close()`/宿主 `onPause()` 立即 flush。**模式2 经协议读写同一份**（2026-10-07，`../BOARD-NOTE-PLAN.md §10.1`）：
+  `boardViewport` 0x5B 双向带画板 id，Mac 紧跟 `boards` 下发库里那份，`PadScratch` 打开时复位一次、**用户动过视口**
+  （`ScratchCanvas.viewportTouched`）才停手 0.6s 回传，换篇 / 回 PDF / `onPause` 立即补发。
+  🔴 `ScratchCanvas.restoreHold`：复位后、用户动手前，每次夹取都从复位原值重算（页 / 笔迹晚到也不会把位置夹回原点或首页顶），
+  `setPages` 也不再摆回首页顶；手 / 笔落下、回中、适应内容、跳页才放手。新加挪视口的公开入口要先调 `takeOverViewport()`。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，
