@@ -530,6 +530,24 @@ class ScratchCanvas @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * 真源回推：**追加**这几条（模式2 的 `scratchStrokesAppend`，同页内 `PageCanvasView.appendStrokes`）。
+     * 追加本来就知道加了哪几条，不用像 [setStrokes] 那样拿整表比增删。
+     *
+     * @param settled 同时退场的乐观笔迹（`ackRel` 已追上，判据在 `PadScratch.appendStrokes`），按对象同一性摘掉；
+     *   追加与退场在同一次操作里，屏幕上恰好一条
+     */
+    fun appendStrokes(list: List<Stroke>, settled: List<Stroke> = emptyList()) {
+        // 框选拖动中摘乐观笔：同 setStrokes，拿出来的那几条位置作废，这次拖动作废
+        if (settled.isNotEmpty() && lassoDrag != null) abortLassoDrag()
+        if (settled.isNotEmpty()) strokes.removeAll { s -> settled.any { it === s } }
+        strokes.addAll(list)
+        strokesChanged(settled, list)   // 🔴 每一处增删都要经它，否则分块位图不重画、改了看不见
+        refreshLassoSelection()
+        clampViewport()
+        invalidate()
+    }
+
     /** 按本地 id 找一条已落画布的笔迹（乐观笔迹认领用；找不到 = 已被本地擦除/切段） */
     fun strokeById(id: String): Stroke? = strokes.firstOrNull { it.id == id }
 

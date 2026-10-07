@@ -71,8 +71,11 @@ class MacClient(
         fun onScratchPads(open: Int, list: List<WireCodec.ScratchPadEntry>)
         /** Mac 通知在该页的页内点开文字笔记编辑器（新建态；环形盘 textNote 扇区提交的结果） */
         fun onNoteNew(page: Long, nx: Float, ny: Float)
-        /** 当前打开那张纸的全量笔迹镜像（无 page 字段，pts 是画布坐标）；ackRel 语义同 onStrokes */
-        fun onScratchStrokes(ackRel: Long, list: List<Stroke>)
+        /**
+         * 当前打开那张纸的笔迹镜像（无 page 字段，pts 是画布坐标）；ackRel 语义同 onStrokes。
+         * @param append true = 追加（`scratchStrokesAppend` 0x5D，Mac 只在收笔那一处发），false = 整表替换
+         */
+        fun onScratchStrokes(ackRel: Long, list: List<Stroke>, append: Boolean)
         /** 画板笔记列表 + 被跟随会话的类型（kind 0=PDF 1=Markdown 2=画板，`../PROTOCOL.md §4.8`） */
         fun onBoards(kind: Int, current: String, list: List<WireCodec.BoardEntry>)
         /** 当前画板上的图（不是画板会话时是空表） */
@@ -172,7 +175,7 @@ class MacClient(
             is WireCodec.Msg.Canvas -> cb.onCanvas(m.on, m.margin)
             is WireCodec.Msg.ScratchPads -> cb.onScratchPads(m.open, m.list)
             is WireCodec.Msg.NoteNew -> cb.onNoteNew(m.page, m.nx, m.ny)
-            is WireCodec.Msg.ScratchStrokes -> cb.onScratchStrokes(m.ackRel, m.list)
+            is WireCodec.Msg.ScratchStrokes -> cb.onScratchStrokes(m.ackRel, m.list, m.append)
             is WireCodec.Msg.Boards -> cb.onBoards(m.kind, m.current, m.list)
             is WireCodec.Msg.BoardImages -> cb.onBoardImages(m.list)
             is WireCodec.Msg.BoardPages -> cb.onBoardPages(m.w, m.h, m.list)

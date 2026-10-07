@@ -294,6 +294,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `strokesAppend`(0x4C) 是**追加**（payload 逐字节相同，只差 opcode）。Mac 只在收笔那一处发追加帧
   ——全量镜像每收一笔就重发整篇是 O(n²)。对应 `PageCanvasView.setStrokes` / `appendStrokes` 两个入口，
   追加那条**不走**擦除那道整份丢弃闸（追加不会把擦掉的复活），只按 `ackRel` 销账乐观笔。
+  草稿纸 / 画板同理（2026-10-07）：`scratchStrokes`(0x3E) 整表替换、`scratchStrokesAppend`(0x5D) 追加，对应
+  `PadScratch.applyStrokes` / `appendStrokes`；分页画板的整表**只有平板所在页前后各 3 页**（`../PROTOCOL.md §4.8`），不是全篇。
 - **`ackRel` 对账：落墨与擦除是两件事，别用同一条判据**（2026-08-28 修，`../PROTOCOL.md §4.2`）。
   整份丢弃一份回推快照，只因为它**比本地的擦除旧**（比 `lastEraseRel`）。拿「本端已发出的最后一个
   `seqRel`」去比是错的：ink move 每 8ms 就是一个新序号，连续快写时判据永远为真、快照一份都进不来，

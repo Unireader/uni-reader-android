@@ -1381,14 +1381,15 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         refresh()
     }
 
-    override fun onScratchStrokes(ackRel: Long, list: List<Stroke>) = runOnUiThread {
-        // 纸上 ink end 发出 → 收到 scratchStrokes 广播 = e2e（与 onStrokes 同一条计时报表）
+    override fun onScratchStrokes(ackRel: Long, list: List<Stroke>, append: Boolean) = runOnUiThread {
+        // 纸上 ink end 发出 → 收到 scratchStrokes(Append) 广播 = e2e（与 onStrokes 同一条计时报表）
         if (tEnd > 0) {
             e2e = (System.currentTimeMillis() - tEnd).toDouble()
             graphView.addE2e(e2e.toFloat())
         }
-        // ackRel 判据与页内 strokes 完全同款（PadScratch.applyStrokes 里）
-        scratch.applyStrokes(ackRel, list, udp?.sentRel ?: 0L)
+        // ackRel 判据与页内 strokes 完全同款（PadScratch.applyStrokes / appendStrokes 里）
+        if (append) scratch.appendStrokes(ackRel, list)
+        else scratch.applyStrokes(ackRel, list, udp?.sentRel ?: 0L)
     }
 
     /**

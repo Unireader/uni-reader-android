@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 111 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 112 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -573,10 +573,21 @@ class WireCodecTest {
         )
     }
 
+    @Test
+    fun decodeScratchStrokesAppend() {
+        // #112 scratchStrokesAppend：payload 与 #59 scratchStrokes 逐字节相同，只差 opcode 与 append 标记
+        val m112 = WireCodec.decode(unhex(VECTORS[111])) as WireCodec.Msg.ScratchStrokes
+        val m59 = WireCodec.decode(unhex(VECTORS[58])) as WireCodec.Msg.ScratchStrokes
+        assertTrue(m112.append)
+        assertTrue(!m59.append)
+        assertEquals(m59.copy(append = true), m112)
+        assertEquals(VECTORS[58].substring(2), VECTORS[111].substring(2))
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(111, VECTORS.size)
+        assertEquals(112, VECTORS.size)
     }
 
     @Test
@@ -589,7 +600,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 111 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 112 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -717,6 +728,8 @@ class WireCodecTest {
             // #110~#111 分页画板同步滚动（`../PROTOCOL.md §4.8`）：boardScroll(0x5C) 页中 / 顶上留白
             "5c0300422d31030000000000803e000000000824fe40",
             "5c0300422d3100000000000080bd0000000000000000",
+            // #112 草稿纸 / 画板笔迹追加（`../PROTOCOL.md §4.4`）：scratchStrokesAppend(0x5D)，与 #59 同一份 list
+            "5d07000000010000001414140000803f000020410302000000f1c2008080420000003f00000044000002c10000803f",
         )
     }
 }

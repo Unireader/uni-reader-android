@@ -181,6 +181,28 @@ class PadScratch(private val a: Activity) {
         canvas.setStrokes(list, keep)   // 正在写的这一笔不受影响（它还没进 strokes，见 ScratchCanvas）
     }
 
+    /**
+     * 收 `scratchStrokesAppend`（0x5D）：真源只是在末尾**追加**了这几条（Mac 只在收笔那一处发，擦除 / 框选 /
+     * 撤销 / 换纸仍发全量走 [applyStrokes]）。从前一律全量，画板写到几千笔时一份就好几 MB，每写一笔整份重发一次，
+     * WiFi 塞满、写字时卡时好（2026-10-07 用户报，9214 笔 ≈ 8MB）。
+     *
+     * 同页内 `PageCanvasView.appendStrokes`：不需要擦除闸（追加不会把擦掉的复活）；`ackRel` 已追上的乐观笔
+     * 在这里退场、没追上的原样留着，追加与退场在同一次操作里，屏幕上恰好一条。`ackRel = 0`（UDP 会话未建）
+     * 照全量那条的口径：乐观笔全部退场。
+     */
+    fun appendStrokes(ackRel: Long, list: List<Stroke>) {
+        strokesRecvAt = System.currentTimeMillis()
+        val settled = ArrayList<Stroke>()
+        val it = pendingOpt.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (ackRel > 0L && e.value > ackRel) continue   // 真源还没收下这一笔，乐观版继续顶着
+            canvas.strokeById(e.key)?.let { s -> settled.add(s) }
+            it.remove()
+        }
+        canvas.appendStrokes(list, settled)
+    }
+
     // ---------- 纸上的剪贴板（顶栏三键在纸开着时改作用在纸上；剪贴板是 Mac 的系统剪贴板） ----------
 
     /** 剪切 / 复制选中的笔迹：选区多边形（画布坐标）交给 Mac 复判；剪切本地先删掉（回推为准） */

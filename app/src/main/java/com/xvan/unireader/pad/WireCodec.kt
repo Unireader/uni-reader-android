@@ -57,6 +57,9 @@ object WireCodec {
     const val OP_SCRATCH_MOVE = 0x2E
     const val OP_SCRATCH_PADS = 0x3D
     const val OP_SCRATCH_STROKES = 0x3E
+
+    /** 与 [OP_SCRATCH_STROKES] 逐字节相同，语义是「追加」（`../PROTOCOL.md §4.4`，同 [OP_STROKES_APPEND] 之于 strokes） */
+    const val OP_SCRATCH_STROKES_APPEND = 0x5D
     const val OP_NOTE_NEW = 0x3F
     const val OP_SCROLL = 0x40
     const val OP_HOVER = 0x41
@@ -285,8 +288,10 @@ object WireCodec {
          * 当前打开那张纸上的全量笔迹镜像（Mac 唯一真源）。**无 page 字段**——画布不属于任何一页，
          * 这里复用 [Stroke] 时 page 恒为 0、pts 是画布坐标（逻辑点，可负无界，PROTOCOL.md §4.4）。
          * 没开纸时 Mac 发 n=0，据此清掉本地残留。[ackRel] 语义与 [Strokes] 完全一致（§4.2）。
+         * [append] = 这一份是**追加**（`scratchStrokesAppend` 0x5D）而不是整表替换，同 [Strokes.append]：
+         * Mac 只在纯追加（收笔）时发，擦除 / 框选 / 撤销 / 换纸仍发全量。
          */
-        data class ScratchStrokes(val ackRel: Long, val list: List<Stroke>) : Msg()
+        data class ScratchStrokes(val ackRel: Long, val list: List<Stroke>, val append: Boolean = false) : Msg()
 
         /**
          * 画板笔记列表 + 被跟随会话的类型（全量镜像）。[kind] 见 BOARD_KIND_*；
@@ -785,14 +790,14 @@ object WireCodec {
                     Msg.ScratchPads(if (openRaw == SCRATCH_NO_OPEN) -1 else openRaw, list)
                 }
                 OP_NOTE_NEW -> Msg.NoteNew(r.u32(), r.f32(), r.f32())
-                OP_SCRATCH_STROKES -> {
+                OP_SCRATCH_STROKES, OP_SCRATCH_STROKES_APPEND -> {
                     val ackRel = r.u32()
                     val n = r.u32()
                     val list = ArrayList<Stroke>()
                     var i = 0L
                     // 无 page 字段（区别于 strokes）：page 恒 0，pts 是画布坐标
                     while (i < n && r.remaining > 0) { list.add(Stroke(0, r.pen(), r.pts3())); i++ }
-                    Msg.ScratchStrokes(ackRel, list)
+                    Msg.ScratchStrokes(ackRel, list, append = op == OP_SCRATCH_STROKES_APPEND)
                 }
                 OP_BOARDS -> {
                     val kind = r.u8()
