@@ -205,6 +205,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （`ScratchCanvas.viewportTouched`）才停手 0.6s 回传，换篇 / 回 PDF / `onPause` 立即补发。
   🔴 `ScratchCanvas.restoreHold`：复位后、用户动手前，每次夹取都从复位原值重算（页 / 笔迹晚到也不会把位置夹回原点或首页顶），
   `setPages` 也不再摆回首页顶；手 / 笔落下、回中、适应内容、跳页才放手。新加挪视口的公开入口要先调 `takeOverViewport()`。
+  · **分页画板改为与 Mac 同步滚动**（2026-10-07，`../BOARD-NOTE-PLAN.md §12`，协议 `boardScroll` 0x5C）：同 PDF，谁滚谁领头；
+  只同步竖向位置（`ScratchCanvas.pageAnchor`：锚线 = 视图顶下 `PAGED_TOP`，折成「页 + 页内比例」），缩放各自独立。
+  `followPageAnchor` 在手指 / 笔落着或惯性中不跟；跟过去那一下 `followApplying` 为真、不回发；用户没动过视口不发。
+  分页画板因此**不再走 `boardViewport`**（不复位、不回传），那条只剩无限画布在用。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，

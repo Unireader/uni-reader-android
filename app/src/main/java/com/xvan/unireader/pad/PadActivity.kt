@@ -429,6 +429,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         scratch = PadScratch(this).apply {
             sendRel = { udp?.sendRel(it) ?: 0L }
             sendCtl = { client?.send(it) }
+            sendUnrel = { udp?.sendUnrel(it) }   // 同页内 scroll：UDP 不保证送达，最新胜
             onMoveFrame = { mvCount++ }
             onInkEndSent = { tEnd = System.currentTimeMillis() }
             onPinsChanged = { pins -> padView.setScratchPins(pins) }
@@ -1424,6 +1425,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 画板在 Mac 库里存的位置：刚打开、还没动过就回到那里（「记住上次滚动位置」，见 PadScratch 末尾） */
     override fun onBoardViewport(id: String, x: Float, y: Float, zoom: Float) = runOnUiThread {
         scratch.applyBoardViewport(id, x, y, zoom)
+    }
+
+    /** 分页画板：Mac 本机滚到的位置，没碰着画布就跟过去（同 PDF 的 viewport） */
+    override fun onBoardScroll(id: String, page: Long, frac: Float) = runOnUiThread {
+        scratch.applyBoardScroll(id, page, frac)
     }
 
     /**

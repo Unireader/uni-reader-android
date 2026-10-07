@@ -370,6 +370,55 @@ class ScratchCanvas @JvmOverloads constructor(
         placePageTop(i)
     }
 
+    // ---------- 分页画板同步滚动（模式2 与 Mac，`../PROTOCOL.md §4.8`「分页画板同步滚动」） ----------
+
+    /**
+     * 同步位置：锚线（页顶该摆的那条线，视图顶下 [PAGED_TOP]，与 Mac 的 `topInset + 56` 同义）落在画布的 y，
+     * 折成「第几页 + 在这一页（页高 + 页缝）里的比例」——页与页之间连续，顶上留白时比例为负。不是分页 = null。
+     */
+    fun pageAnchor(): Pair<Int, Float>? {
+        val l = pageLayout ?: return null
+        if (width <= 0 || height <= 0 || zoom <= 0f) return null
+        val p = (oy + PAGED_TOP / zoom) / l.stride
+        val page = floor(p).toInt().coerceIn(0, max(0, l.count - 1))
+        return page to (p - page)
+    }
+
+    /** 正在按对端的位置挪视口（宿主据此不回发，防回环） */
+    var followApplying = false
+        private set
+
+    /** 尺寸还没到时收到的对端位置（见 [followPageAnchor]） */
+    private var pendingFollow: Pair<Int, Float>? = null
+
+    /**
+     * 跟到对端的位置（只动竖向，缩放与横向不变）。用户正碰着画布（手指 / 笔）或惯性还在滑时不跟，返回 false
+     * （同 PDF「书写中忽略 viewport」）。不算用户动过视口（[viewportTouched] 不变）。
+     */
+    fun followPageAnchor(page: Int, frac: Float): Boolean {
+        val l = pageLayout ?: return false
+        if (width <= 0 || height <= 0) {
+            // 第一次显示画板时常见：画布刚从 GONE 变可见、还没布局。记下，尺寸一到再跟（onSizeChanged）
+            pendingFollow = page to frac
+            return true
+        }
+        if (penActive || touches.isNotEmpty() || momentumOn) return false
+        if (!pagePlaced) placePageTop(0)   // 还没按页宽适配过：先适配，缩放才对
+        restoreHold = null
+        oy = (page + frac) * l.stride - PAGED_TOP / zoom
+        placed = true
+        pagePlaced = true
+        clampViewport()
+        invalidate()
+        followApplying = true
+        try {
+            onViewportChanged?.invoke()
+        } finally {
+            followApplying = false
+        }
+        return true
+    }
+
     /** [placeAtPageTop] 的本体；打开时的默认摆放也走这里（那不算用户动过） */
     private fun placePageTop(i: Int) {
         val l = pageLayout ?: return
@@ -549,6 +598,7 @@ class ScratchCanvas @JvmOverloads constructor(
         endPull()
         restoreHold = null
         viewportTouched = false
+        pendingFollow = null
         pendingRestore = restore?.takeIf { it.size == 3 && it[2] > 0f }
         applyPendingRestoreOrDefault()
     }
@@ -639,7 +689,10 @@ class ScratchCanvas @JvmOverloads constructor(
         super.onSizeChanged(w, h, oldw, oldh)
         if (!placed || (paged && !pagePlaced)) {
             // 首次拿到真实尺寸才回中 / 按页宽适配 / 复位存过的视口（之前算的都是假的）
-            if (w > 0 && h > 0) applyPendingRestoreOrDefault()
+            if (w > 0 && h > 0) {
+                applyPendingRestoreOrDefault()
+                pendingFollow?.let { (p, f) -> pendingFollow = null; followPageAnchor(p, f) }
+            }
             return
         }
         // 尺寸变化（旋转/分屏）：保持视口中心对应的画布点不动（同 Mac 的 onChange(of: geo.size)）

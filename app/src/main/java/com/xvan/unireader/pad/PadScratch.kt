@@ -65,6 +65,9 @@ class PadScratch(private val a: Activity) {
     /** WS 可靠通道（scratchOpen/scratchAdd/scratchPaper 请求） */
     var sendCtl: ((ByteArray) -> Unit)? = null
 
+    /** 不保证送达的实时通道（分页画板同步滚动 `boardScroll`，同页内 `scroll`：最新胜） */
+    var sendUnrel: ((ByteArray) -> Unit)? = null
+
     /** 每发一帧 ink/erase move（顶栏 mv/s 计数，同页内口径） */
     var onMoveFrame: (() -> Unit)? = null
 
@@ -133,6 +136,7 @@ class PadScratch(private val a: Activity) {
                 // 没有就等紧跟 `boards` 的那条 `boardViewport`（草稿纸的 id 不会出现在 knownViewports 里）
                 canvas.openSession(knownViewports[entry.id])
                 awaitingViewport = entry.id
+                lastScrollSent = null
                 pendingOpt.clear()
             }
             openPadId = entry.id
@@ -348,7 +352,7 @@ class PadScratch(private val a: Activity) {
             lastEraseRel = sendRel?.invoke(WireCodec.encodeEraseEnd()) ?: 0L
             erasing = false
         }
-        canvas.onViewportChanged = { updateBar(); scheduleViewportSave() }
+        canvas.onViewportChanged = { updateBar(); scheduleViewportSave(); reportBoardScroll() }
         canvas.tools = { toolsProvider?.invoke() }
         // 框选：画布上已经本地生效，这里只把提交发给 Mac 复判执行（画布坐标、page 填 0，`../PROTOCOL.md §4.4`）；
         // Mac 零命中也回推 scratchStrokes，本地以回推为准
@@ -808,8 +812,13 @@ class PadScratch(private val a: Activity) {
     private var viewportSaveFor: String? = null
     private val viewportSaveWork = Runnable { flushViewportSave() }
 
-    /** 收 `boardViewport`（S→C）：zoom<=0 = 库里没存过 */
+    /**
+     * 收 `boardViewport`（S→C）：zoom<=0 = 库里没存过。
+     * **分页画板不用它**：位置由 `boardScroll` 实时跟 Mac 同步（见文件末尾「同步滚动」），按库里那份复位会把
+     * Mac 的缩放带过来。Mac 先发 `boardPages` 再发这条，到这里时画布已经知道是不是分页。
+     */
     fun applyBoardViewport(id: String, x: Float, y: Float, zoom: Float) {
+        if (canvas.paged) return
         val v = floatArrayOf(x, y, zoom)
         if (zoom > 0f) knownViewports[id] = v
         if (awaitingViewport != id) return
@@ -820,7 +829,7 @@ class PadScratch(private val a: Activity) {
     /** 视口变了：用户动过才记下待回传（停手 0.6s 发，同模式1 `BoardController` 与 Mac 的节流） */
     private fun scheduleViewportSave() {
         val id = boardId ?: return
-        if (!boardMode || openPadId != id || !canvas.viewportTouched) return
+        if (!boardMode || openPadId != id || !canvas.viewportTouched || canvas.paged) return   // 分页走同步滚动
         viewportSaveFor = id
         handler.removeCallbacks(viewportSaveWork)
         handler.postDelayed(viewportSaveWork, 600)
@@ -835,5 +844,31 @@ class PadScratch(private val a: Activity) {
         val v = canvas.currentViewport()
         knownViewports[id] = v
         sendCtl?.invoke(WireCodec.encodeBoardViewport(id, v[0], v[1], v[2]))
+    }
+
+    // ---------- 分页画板同步滚动（`../PROTOCOL.md §4.8`「分页画板同步滚动」、`../BOARD-NOTE-PLAN.md §12`） ----------
+    //
+    // 同 PDF 的 scroll / viewport：谁在滚谁领头，另一端跟随；只同步竖向位置（页 + 页内比例），两端缩放各自独立。
+    // 本端用户动过视口之后的每次变化发一条（Mac 平滑跟随、不回发）；Mac 本机滚动时广播过来，用户没碰着画布就跟过去。
+
+    /** 上次发出 / 跟过去的位置：没变不发（跟过去的那份 Mac 本来就知道，记下免得之后原样回声一次） */
+    private var lastScrollSent: Pair<Int, Float>? = null
+
+    private fun reportBoardScroll() {
+        val id = boardId ?: return
+        if (!boardMode || openPadId != id || !canvas.paged) return
+        val a = canvas.pageAnchor() ?: return
+        if (canvas.followApplying) { lastScrollSent = a; return }
+        if (!canvas.viewportTouched || a == lastScrollSent) return   // 刚打开还没动过：Mac 领头
+        lastScrollSent = a
+        sendUnrel?.invoke(
+            WireCodec.encodeBoardScroll(id, a.first.toLong(), a.second, android.os.SystemClock.uptimeMillis().toDouble()),
+        )
+    }
+
+    /** 收 `boardScroll`（S→C）：Mac 本机滚到的位置。不是开着的这篇 / 不是分页就丢；用户正碰着画布时画布自己不跟 */
+    fun applyBoardScroll(id: String, page: Long, frac: Float) {
+        if (!boardMode || id != boardId || openPadId != id || !canvas.paged) return
+        canvas.followPageAnchor(page.toInt(), frac)
     }
 }

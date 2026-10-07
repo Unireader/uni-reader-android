@@ -110,6 +110,11 @@ object WireCodec {
      * （紧跟 boards / boardPages），C→S = 用户动过视口后停手回传。两个方向都带画板 id。
      */
     const val OP_BOARD_VIEWPORT = 0x5B
+    /**
+     * 分页画板同步滚动（双向，`../PROTOCOL.md §4.8`「分页画板同步滚动」）：`str id · u32 page · f32 frac · f64 t`。
+     * C→S 走 UDP 不保证送达（同 scroll），S→C 走 WS。位置口径见 `ScratchCanvas.pageAnchor`。
+     */
+    const val OP_BOARD_SCROLL = 0x5C
 
     /** `boards.kind`：被跟随会话是什么（0 = PDF 或空标签，1 = Markdown 笔记，2 = 画板笔记） */
     const val BOARD_KIND_PDF = 0
@@ -303,6 +308,9 @@ object WireCodec {
          * 只在刚打开这一篇、用户还没动过视口时用来复位一次。
          */
         data class BoardViewport(val id: String, val x: Float, val y: Float, val zoom: Float) : Msg()
+
+        /** 分页画板 [id] 在 Mac 上滚到的位置（[page] + 页内比例 [frac]，口径见 `ScratchCanvas.pageAnchor`；[t] = Mac 时钟毫秒） */
+        data class BoardScroll(val id: String, val page: Long, val frac: Float, val t: Double) : Msg()
     }
 
     /** 分页画板的一页（boardPages 消息元素）：页 id + 背景模板（未知值按空白画） */
@@ -665,6 +673,10 @@ object WireCodec {
     fun encodeBoardViewport(id: String, x: Float, y: Float, zoom: Float): ByteArray =
         Writer().apply { u8(OP_BOARD_VIEWPORT); str(id); f32(x); f32(y); f32(zoom) }.bytes()
 
+    /** 分页画板上本机滚到的位置（[t] = 本机单调时钟毫秒，Mac 拿它做插值平滑，同 [encodeScroll]） */
+    fun encodeBoardScroll(id: String, page: Long, frac: Float, t: Double): ByteArray =
+        Writer().apply { u8(OP_BOARD_SCROLL); str(id); u32(page); f32(frac); f64(t) }.bytes()
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -854,6 +866,7 @@ object WireCodec {
                 OP_LOCK -> Msg.Lock(r.u8() != 0)
                 OP_REL_INK -> Msg.RelInk(r.u8() != 0)
                 OP_BOARD_VIEWPORT -> Msg.BoardViewport(r.str(), r.f32(), r.f32(), r.f32())
+                OP_BOARD_SCROLL -> Msg.BoardScroll(r.str(), r.u32(), r.f32(), r.f64())
                 OP_NACK -> {
                     val n = r.u16()
                     val seqs = ArrayList<Long>(n)
