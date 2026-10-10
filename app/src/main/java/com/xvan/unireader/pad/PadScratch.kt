@@ -786,6 +786,7 @@ class PadScratch(private val a: Activity) {
      */
     fun applyBoardPages(w: Float, h: Float, templates: IntArray) {
         val replace = boardId != pagesBoardId
+        syncLog("收 boardPages ${templates.size}页 replace=$replace boardMode=$boardMode")
         pagesBoardId = boardId
         pageW = w
         pageH = h
@@ -890,7 +891,13 @@ class PadScratch(private val a: Activity) {
 
     /** 收 `boardScroll`（S→C）：Mac 本机滚到的位置。不是开着的这篇 / 不是分页就丢；用户正碰着画布时画布自己不跟 */
     fun applyBoardScroll(id: String, page: Long, frac: Float) {
-        if (!boardMode || id != boardId || openPadId != id || !canvas.paged) return
-        canvas.followPageAnchor(page.toInt(), frac)
+        if (!boardMode || id != boardId || openPadId != id || !canvas.paged) {
+            syncLog("收 boardScroll 第${page}页+$frac 丢弃：boardMode=$boardMode 是这篇=${id == boardId} 纸开着=${openPadId == id} 分页=${canvas.paged}")
+            return
+        }
+        val ok = canvas.followPageAnchor(page.toInt(), frac)
+        syncLog("收 boardScroll 第${page}页+$frac → ${if (ok) "跟过去" else "画布正被碰着，不跟"}")
     }
+
+    private fun syncLog(msg: String) = android.util.Log.i("UniReader/BoardSync", msg)
 }

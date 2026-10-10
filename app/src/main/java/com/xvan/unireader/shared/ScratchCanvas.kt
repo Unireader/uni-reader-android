@@ -427,6 +427,7 @@ class ScratchCanvas @JvmOverloads constructor(
         val vw = viewWdp()
         val z = ((vw - 48f) / l.width).coerceIn(ScratchGeom.MIN_ZOOM, 2f)
         val k = i.coerceIn(0, max(0, l.count - 1))
+        android.util.Log.i("UniReader/BoardSync", "画布摆到第${k}页页顶（${Throwable().stackTrace.drop(1).take(3).joinToString(" ← ") { it.methodName }}）")
         zoom = z
         ox = 0f - vw / (2 * z)
         oy = l.originY(k) - PAGED_TOP / z

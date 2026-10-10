@@ -1399,6 +1399,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
      * - kind=0：一切照旧。
      */
     override fun onBoards(kind: Int, current: String, list: List<WireCodec.BoardEntry>) = runOnUiThread {
+        android.util.Log.i("UniReader/BoardSync", "收 boards kind=$kind current=${current.take(8)}")
         boardKind = kind
         boardCurrent = current
         boards = list
