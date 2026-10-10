@@ -222,6 +222,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 只有圆点这类元素允许填充。
   生成前逐个量 bbox，超出安全区、重心偏出 12±0.4、尺寸不在区间、或与代码里的
   `R.drawable.ic_*` 引用对不上（画了没人用 / 用了没画 / res 里有手工残留），**当场报错不写盘**。
+  **App 图标不归 `gen.py` 管**（2026-10-10，复用 Mac 图标）：`res/mipmap-anydpi/ic_launcher.xml`（自适应图标）+
+  `res/drawable/launcher_background.xml` / `launcher_foreground.xml`，几何照抄 `../design/icon/UniReader-icon.svg`
+  （换算写在 foreground 文件头），Mac 图标改了这里手动同步；文件名刻意不用 `ic_` 开头，免得被 `--check` 当成手工残留。
 
 ## 红线与高频坑
 

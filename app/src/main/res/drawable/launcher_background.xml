@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App 图标背景层：照搬 Mac 图标 `../design/icon/UniReader-icon.svg` 的渐变底（#5B9CFB → #1E4FBE）。
+  坐标换算同 launcher_foreground.xml：SVG 坐标 + 238，画布 1500 单位 = 108dp。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1500"
+    android:viewportHeight="1500">
+    <path android:pathData="M0,0 L1500,0 L1500,1500 L0,1500 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="388"
+                android:startY="278"
+                android:endX="1138"
+                android:endY="1238"
+                android:startColor="#FF5B9CFB"
+                android:endColor="#FF1E4FBE" />
+        </aapt:attr>
+    </path>
+</vector>

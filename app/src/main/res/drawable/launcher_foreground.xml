@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App 图标前景层（也兼作安卓 13+ 主题图标的单色层）：照搬 Mac 图标 `../design/icon/UniReader-icon.svg` 的白色 R。
+  换算：SVG 是 1024 画布、圆角方块占 12..1012（1000 单位）；让它对上自适应图标的可见区 72dp，
+  则 108dp 整画布 = 1500 单位，中心 512 → 750，整体平移 238。路径与描边宽度逐字照抄 SVG。
+  R 离中心最远约 345 单位（≈25dp），在 66dp 安全圆（半径 33dp）以内，任何遮罩形状都裁不到。
+  改 Mac 图标时这里同步改。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1500"
+    android:viewportHeight="1500">
+    <group
+        android:translateX="238"
+        android:translateY="238">
+        <path
+            android:pathData="M410,300 L410,740"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="140"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M410,300 A190,110 0 0 1 410,520 Q530,580 617,740"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="140"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>
