@@ -84,6 +84,12 @@
     <string name="launcher_mac_scan">Scan QR Code</string>
     <string name="launcher_mac_manual">Enter Address</string>
     <string name="launcher_mac_known">Macs You Have Connected To</string>
+    <string name="launcher_mac_lan">Macs on This Network</string>
+    <string name="launcher_mac_lan_searching">Searching… Turn on the tablet service in UniReader on the Mac.</string>
+    <string name="launcher_mac_lan_failed">Could not search this network.</string>
+    <string name="launcher_mac_lan_ready">%1$s · Paired, tap to connect</string>
+    <string name="launcher_mac_lan_stale">%1$s · Pairing code was reset, tap to scan again</string>
+    <string name="launcher_mac_lan_new">%1$s · Not paired, tap to scan the QR code</string>
     <string name="launcher_mac_none">No Mac yet. On the Mac, open the pairing QR code and scan it here.</string>
     <string name="launcher_mac_remove">Remove this Mac</string>
     <string name="launcher_mac_tip">The tablet and the Mac must be on the same network.</string>

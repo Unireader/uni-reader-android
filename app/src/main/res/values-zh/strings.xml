@@ -80,6 +80,12 @@
     <string name="launcher_mac_scan">扫码连接</string>
     <string name="launcher_mac_manual">手动输入地址</string>
     <string name="launcher_mac_known">连过的 Mac</string>
+    <string name="launcher_mac_lan">局域网里的 Mac</string>
+    <string name="launcher_mac_lan_searching">正在查找… Mac 上的 UniReader 要先打开平板服务。</string>
+    <string name="launcher_mac_lan_failed">无法在这个网络里查找设备。</string>
+    <string name="launcher_mac_lan_ready">%1$s · 已配对，点一下连接</string>
+    <string name="launcher_mac_lan_stale">%1$s · 配对码已重置，点一下重新扫码</string>
+    <string name="launcher_mac_lan_new">%1$s · 未配对，点一下扫码配对</string>
     <string name="launcher_mac_none">还没有连过 Mac。在 Mac 上打开配对二维码，用这里扫一下。</string>
     <string name="launcher_mac_remove">移除这台 Mac</string>
     <string name="launcher_mac_tip">平板和 Mac 要在同一个网络里。</string>

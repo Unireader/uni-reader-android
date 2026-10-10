@@ -3,6 +3,8 @@
 UniReader 的安卓端：**一个 App 两种模式**（启动页两个标签页，`Launcher.kt`：「本机工作区」= 模式1、
 「连接 Mac」= 模式2；2026-09-26 起选哪台 Mac 在启动页上做——连过的 Mac 点一下 / 扫码，经
 `PadActivity.start(host, token)` 带参数进去直接开连，不带参数才是旧行为「进去先弹连接设置」；停在哪一页记在本机）。
+2026-10-10 起「连接 Mac」页在「连过的 Mac」之上多一组**局域网里的 Mac**（`pad/MacDiscovery`，Bonjour `_unireader._tcp`，契约
+`../PROTOCOL.md §8`）：只在这一页显示着、启动页在前台时查找；广播只带配对码指纹，对上了点一下直连，对不上 / 没配过点了去扫码。
 
 - 模式1 独立版（`local/`）：平板本机直接打开工作区 `.unrd`，Pdfium 渲染 + 裸 SQLite 落库，不需要 Mac。
   🔴 **目标是与 macOS 版功能对齐**（用户 2026-09-26 定）：模式1 是独立产品，Mac 上有的功能这里都要有，
@@ -249,7 +251,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `spike/scan-align-test.swift` ①②⑤，**戳的跨端向量**（样例 payload → `7438e8a2`）两端各算一遍抄进测试；
   `local/mirror/MirrorDiff.alignPlan` 与 `Plan.isCleanPushToMirror`/`pendingToSource` ↔ Mac `MirrorDiff.swift`
   （`MirrorDiffTest` 的对齐三条 ↔ `spike/mirror-align-test.swift` ①②）
-  ——变换差一个符号，Mac 上写的笔迹在平板上就落在「整页微微转了一点」的位置。
+  ——变换差一个符号，Mac 上写的笔迹在平板上就落在「整页微微转了一点」的位置；
+  `pad/MacDiscovery.fingerprint`（配对码指纹，局域网发现 TXT `tk`）↔ Mac `Pairing.fingerprint`，
+  本端 `MacDiscoveryTest.fingerprintVectors` ↔ `../spike/pairing-fp-test.swift` 同两条向量
+  ——差一点，连过的 Mac 在发现列表里就永远显示「配对码已重置」。
   改完三端测试一起跑（安卓 `WireCodecTest` 的向量与 Mac/web 的跨端向量同源）。
 - **草稿纸画布坐标系 = 逻辑点（dp），原点＝创建点、可负无界**；橡皮半径按 `eraserRefWidth = 800`
   从页宽归一化折算，**三端必须同一个数**（`../SCRATCHPAD-ANDROID-HANDOFF.md §1`）。

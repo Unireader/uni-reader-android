@@ -27,6 +27,7 @@ import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.StorageScan
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.pad.KnownMacs
+import com.xvan.unireader.pad.MacDiscovery
 import com.xvan.unireader.pad.PadActivity
 import com.xvan.unireader.shared.Bg
 import com.xvan.unireader.shared.PadPanels
@@ -97,7 +98,15 @@ class Launcher : Activity() {
     /** 从系统设置授权页返回时不会有回调，只能在 onResume 重新查一遍 */
     override fun onResume() {
         super.onResume()
+        resumed = true
         refresh()
+        syncDiscovery()
+    }
+
+    override fun onPause() {
+        resumed = false
+        syncDiscovery()
+        super.onPause()
     }
 
     // ---------- UI ----------
@@ -192,6 +201,7 @@ class Launcher : Activity() {
             with(Ui) { v.setBackgroundKeepPadding(rippleOver(this@Launcher, face, 10, onSurface(this@Launcher))) }
         }
         if (tab == TAB_MAC) refreshMacs()
+        syncDiscovery()
     }
 
     // ---------- 标签页 1：本机工作区（模式1） ----------
@@ -268,17 +278,74 @@ class Launcher : Activity() {
         return col
     }
 
-    /** 连过的 Mac：一行一台（名字 + IP），点一下直接进输入板开连；右侧垃圾桶移除 */
+    // ---------- 局域网发现（MacDiscovery，../PROTOCOL.md §8） ----------
+
+    private var resumed = false
+    private var discovery: MacDiscovery? = null
+
+    /** 只在「连接 Mac」页显示着、启动页在前台时查找；切走 / 进输入板就停，回来重新查一轮 */
+    private fun syncDiscovery() {
+        val want = resumed && tab == TAB_MAC
+        val d = discovery ?: if (want) MacDiscovery(this) { refreshMacs() }.also { discovery = it } else return
+        if (want) d.start() else d.stop()
+    }
+
+    /**
+     * 两组：
+     *  · **局域网里的 Mac**（此刻开着平板服务的）：按配对码指纹和连过的对号（[MacDiscovery.match]）——
+     *    对得上点一下直接连（IP 换过也照样用新地址连）；码对不上或没配过，点一下就去扫码。
+     *  · **连过的 Mac**：一行一台（名字 + IP），点一下直接进输入板开连；右侧垃圾桶移除。
+     *    已经在上一组里认出来的那几条不重复列，Mac 一下线就回到这组。
+     */
     private fun refreshMacs() {
         if (!::macBox.isInitialized) return
         macBox.removeAllViews()
-        macBox.addView(Ui.sectionTitle(this, getString(R.string.launcher_mac_known)))
         val known = KnownMacs.list(this)
+        val online = discovery?.found.orEmpty()
+
+        macBox.addView(Ui.sectionTitle(this, getString(R.string.launcher_mac_lan)))
+        if (online.isEmpty()) {
+            val failed = discovery?.failed == true
+            macBox.addView(Ui.body(this, getString(
+                if (failed) R.string.launcher_mac_lan_failed else R.string.launcher_mac_lan_searching,
+            )))
+        }
+        val shownTokens = HashSet<String>()   // 同一个配对码 = 同一台 Mac（含它换 IP 前留下的旧条目）
+        for (f in online) {
+            val m = MacDiscovery.match(f, known)
+            val sub = when (m.state) {
+                MacDiscovery.State.READY -> R.string.launcher_mac_lan_ready
+                MacDiscovery.State.STALE -> R.string.launcher_mac_lan_stale
+                MacDiscovery.State.NEW -> R.string.launcher_mac_lan_new
+            }
+            if (m.state == MacDiscovery.State.READY) m.entry?.let { shownTokens += it.token }
+            macBox.addView(
+                twoLineRow(
+                    R.drawable.ic_monitor,
+                    if (m.state == MacDiscovery.State.READY) Ui.accent(this) else Ui.onVariant(this),
+                    f.name,
+                    getString(sub, f.host),
+                ) {
+                    val e = m.entry
+                    if (m.state == MacDiscovery.State.READY && e != null) {
+                        Log.i(TAG, "进入模式2 输入板：局域网发现直连 ${f.host}（${f.name}，记录里是 ${e.host}）")
+                        PadActivity.start(this, f.host, e.token)
+                    } else {
+                        Log.i(TAG, "局域网发现的 ${f.host}（${f.name}）${m.state} → 扫码配对")
+                        startQrScan()
+                    }
+                },
+            )
+        }
+
+        val rest = known.filter { it.token !in shownTokens }
+        if (known.isNotEmpty() && rest.isEmpty()) return   // 连过的全在上一组里了
+        macBox.addView(Ui.sectionTitle(this, getString(R.string.launcher_mac_known)))
         if (known.isEmpty()) {
             macBox.addView(Ui.body(this, getString(R.string.launcher_mac_none)))
             return
         }
-        for (e in known) {
+        for (e in rest) {
             macBox.addView(
                 twoLineRow(
                     R.drawable.ic_monitor,
@@ -774,6 +841,7 @@ class Launcher : Activity() {
         busyDlg = null
         // 界面都没了还在遍历 U 盘毫无意义，且会一直占着 I/O 线程
         scanCancel?.stop()
+        discovery?.stop()
         super.onDestroy()
     }
 

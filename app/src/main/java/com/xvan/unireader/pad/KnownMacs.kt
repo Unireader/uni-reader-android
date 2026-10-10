@@ -23,9 +23,10 @@ import java.util.concurrent.TimeUnit
  * 同步 + 重出字节向量（`PROTOCOL.md` 开头的红线），而这只是一句展示用的文本。**探测失败不是错误**：
  * 名字留空，列表退回显示 IP（[Entry.label]），下次连上再补。
  *
- * **token 会过期**：Mac 侧 `LANServer.token` 是每次启动现生成的（`Pairing.makeToken()`），
- * Mac 重开 App 后这里存的 token 就不认了 → authFail。那时弹窗会带着 host 重新弹出来，扫一下码即可；
- * 历史条目本身不删（IP 通常没变，重扫只是补 token）。
+ * **token 只在 Mac 上「重置配对码」后失效**：Mac 侧配对码是持久的（`Pairing.persistentToken`，2026-08-12 起）。
+ * 重置后这里存的 token 就不认了 → authFail，那时弹窗会带着 host 重新弹出来，扫一下码即可；
+ * 历史条目本身不删（IP 通常没变，重扫只是补 token）。Mac 在线时启动页的局域网发现（[MacDiscovery]）
+ * 会按配对码指纹提前标出「码已重置」，也会按指纹认出换了 IP 的同一台 Mac。
  */
 object KnownMacs {
 
