@@ -11,7 +11,7 @@ import com.xvan.unireader.shared.exercise.ExShown
  * 模式1 的一组题 + 练到哪了（`../EXERCISE-PLAN.md §10.2`），逐条照 Mac `ExerciseDeck`：
  *
  * - 题目集合是**快照**：打开时按范围取一次，之后库里变了只**就地刷新**已在里面的题、把新进范围（且过得了筛选）的题接在末尾——
- *   移出错题本 / 取消收藏 / 刚做过（「没做过」筛选下）的题这一轮还留着，不会在眼前突然消失；真删了的才去掉。
+ *   移出错题本 / 取消收藏 / 刚做过（「只看没做过」开着）的题这一轮还留着，不会在眼前突然消失；真删了的才去掉。
  * - 这一轮的作答、点过「再做一次」的题只在内存里（App 开着期间），库里只记作答行。
  * - 按「工作区 + 范围」一份存在进程里（[shared]），切标签 / 切回来接着练。
  *
@@ -109,8 +109,11 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         index = index.coerceIn(0, maxOf(0, items.size - 1))
     }
 
+    /** 这一组有没有「只看没做过」：错题本那一支没有（进了错题本的题一定做过，筛出来永远是空的）。 */
+    val offersUnansweredFilter: Boolean get() = !scope.isMistakes
+
     fun setFilter(f: ExFilter): Boolean {
-        if (f == filter) return false
+        if (f == filter || (f != ExFilter.ALL && !offersUnansweredFilter)) return false
         filter = f
         return true
     }
@@ -159,6 +162,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         return ExDeckView(
             scope = scope.key, title = title, filter = filter.code, index = index,
             done = answers.size, right = answers.values.count { it.correct == true }, cards = cards,
+            noFilter = !offersUnansweredFilter,
         )
     }
 

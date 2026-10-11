@@ -69,13 +69,15 @@ data class ExDeckView(
     /** 范围键（与 Mac `ExerciseScope.key` 同）；空 = 没在练。 */
     val scope: String,
     val title: String,
-    /** 0 全部 · 1 没做过 · 2 错题 · 3 收藏。 */
+    /** 0 全部 · 1 只看没做过（`2` 错题 / `3` 收藏已去掉，老 Mac 发来按「全部」显示）。 */
     val filter: Int,
     val index: Int,
     /** 这一轮做了几道、对几道。 */
     val done: Int,
     val right: Int,
     val cards: List<ExCard>,
+    /** 这一组没有「只看没做过」（错题本那一支：错题都做过）——顶栏不显示那个开关。 */
+    val noFilter: Boolean = false,
 ) {
     val current: ExCard? get() = cards.getOrNull(index)
     /** 有没有正显示着作答的题（「全部重做」能不能点）。 */

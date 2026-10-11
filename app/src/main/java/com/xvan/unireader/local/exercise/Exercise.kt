@@ -226,6 +226,9 @@ sealed class ExScope {
     data class Chapter(val id: String, val path: List<String>) : ExScope()
     data class WrongDocument(val id: String) : ExScope()
     data class WrongChapter(val id: String, val path: List<String>) : ExScope()
+    /** 收藏按书 / 按章展开的那几级（同错题本）。 */
+    data class StarredDocument(val id: String) : ExScope()
+    data class StarredChapter(val id: String, val path: List<String>) : ExScope()
 
     /** 范围键（与 Mac `ExerciseScope.key` 逐字相同：标签页存的、线上发的都是它）。 */
     val key: String
@@ -237,6 +240,8 @@ sealed class ExScope {
             is Chapter -> "chap:$id:" + ExChapter.text(path)
             is WrongDocument -> WRONG_PREFIX + Document(id).key
             is WrongChapter -> WRONG_PREFIX + Chapter(id, path).key
+            is StarredDocument -> STARRED_PREFIX + Document(id).key
+            is StarredChapter -> STARRED_PREFIX + Chapter(id, path).key
         }
 
     /** 这个范围属于哪本书（全部 / 错题本 / 收藏不属于某一本）。 */
@@ -246,6 +251,8 @@ sealed class ExScope {
             is Chapter -> id
             is WrongDocument -> id
             is WrongChapter -> id
+            is StarredDocument -> id
+            is StarredChapter -> id
             else -> null
         }
 
@@ -260,19 +267,28 @@ sealed class ExScope {
         is Chapter -> e.documentId == id && ExChapter.contains(path, e.chapter)
         is WrongDocument -> e.wrong && e.documentId == id
         is WrongChapter -> e.wrong && e.documentId == id && ExChapter.contains(path, e.chapter)
+        is StarredDocument -> e.starred && e.documentId == id
+        is StarredChapter -> e.starred && e.documentId == id && ExChapter.contains(path, e.chapter)
     }
 
     companion object {
         private const val WRONG_PREFIX = "wrong:"
+        private const val STARRED_PREFIX = "starred:"
 
         fun parse(key: String): ExScope? = when (key) {
             "all" -> All
             "wrong" -> Wrong
             "starred" -> Starred
             else -> when {
+                // 错题本 / 收藏底下的几级 = 前缀 + 书 / 章的键
                 key.startsWith(WRONG_PREFIX) -> when (val inner = parse(key.removePrefix(WRONG_PREFIX))) {
                     is Document -> WrongDocument(inner.id)
                     is Chapter -> WrongChapter(inner.id, inner.path)
+                    else -> null
+                }
+                key.startsWith(STARRED_PREFIX) -> when (val inner = parse(key.removePrefix(STARRED_PREFIX))) {
+                    is Document -> StarredDocument(inner.id)
+                    is Chapter -> StarredChapter(inner.id, inner.path)
                     else -> null
                 }
                 key.startsWith("chap:") -> {
@@ -287,16 +303,17 @@ sealed class ExScope {
     }
 }
 
-/** 习题标签顶上的筛选（同 Mac `ExerciseFilter`，值即线上 `exDeck.filter`）。 */
+/**
+ * 习题标签顶上的筛选（同 Mac `ExerciseFilter`，值即线上 `exDeck.filter`）：只剩「只看没做过」一个开关
+ * （用户 2026-10-11 定：哪一组题在抽屉里选，顶栏只管做题进度）。`2` 错题 / `3` 收藏已去掉，不再用。
+ */
 enum class ExFilter(val code: Int) {
-    ALL(0), UNANSWERED(1), WRONG(2), STARRED(3);
+    ALL(0), UNANSWERED(1);
 
     /** `attempts` = 这道题一共做过几次（含书上的作答）。 */
     fun includes(e: Exercise, attempts: Int): Boolean = when (this) {
         ALL -> true
         UNANSWERED -> attempts == 0
-        WRONG -> e.wrong
-        STARRED -> e.starred
     }
 
     companion object {
@@ -306,8 +323,8 @@ enum class ExFilter(val code: Int) {
 
 // ---------- 侧栏的数 + 章节树 + 分组（同 Mac `ExerciseSummary` / `ExerciseChapterTree` / `ExerciseGroupNode`）----------
 
-/** 挂在某个章节路径上的题：几道、最早在第几页（0 起；全没页码 = `Int.MAX_VALUE`）、其中几道在错题本里。 */
-data class ExChapterStat(val count: Int, val firstPage: Int, val wrong: Int = 0)
+/** 挂在某个章节路径上的题：几道、最早在第几页（0 起；全没页码 = `Int.MAX_VALUE`）、其中几道在错题本里、几道收藏了。 */
+data class ExChapterStat(val count: Int, val firstPage: Int, val wrong: Int = 0, val starred: Int = 0)
 
 data class ExSummary(
     val total: Int = 0,
@@ -328,12 +345,20 @@ data class ExSummary(
         is ExScope.WrongDocument -> (chapters[scope.id] ?: emptyMap()).values.sumOf { it.wrong }
         is ExScope.WrongChapter -> (chapters[scope.id] ?: emptyMap())
             .entries.sumOf { if (ExChapter.contains(scope.path, it.key)) it.value.wrong else 0 }
+        is ExScope.StarredDocument -> (chapters[scope.id] ?: emptyMap()).values.sumOf { it.starred }
+        is ExScope.StarredChapter -> (chapters[scope.id] ?: emptyMap())
+            .entries.sumOf { if (ExChapter.contains(scope.path, it.key)) it.value.starred else 0 }
     }
 
     /** 错题本里一本书的章节分布：只留有错题的章节，`count` 换成错题数（`firstPage` 仍按这一节全部题，排序同书底下那棵）。 */
-    fun mistakeChapters(documentId: String): Map<List<String>, ExChapterStat> =
-        (chapters[documentId] ?: emptyMap()).filterValues { it.wrong > 0 }
-            .mapValues { ExChapterStat(it.value.wrong, it.value.firstPage, it.value.wrong) }
+    fun mistakeChapters(documentId: String): Map<List<String>, ExChapterStat> = marked(documentId) { it.wrong }
+
+    /** 收藏里一本书的章节分布（同错题本那棵，数的是收藏）。 */
+    fun starredChapters(documentId: String): Map<List<String>, ExChapterStat> = marked(documentId) { it.starred }
+
+    private fun marked(documentId: String, n: (ExChapterStat) -> Int): Map<List<String>, ExChapterStat> =
+        (chapters[documentId] ?: emptyMap()).filterValues { n(it) > 0 }
+            .mapValues { it.value.copy(count = n(it.value)) }
 }
 
 /** 一本书底下的章节树：由「每个路径恰好几道」累加出每一级的总数。 */
@@ -402,7 +427,8 @@ data class ExGroupNode(val scope: ExScope, val title: String, val count: Int, va
     companion object {
         /**
          * 建整段（规则只有 Mac `ExerciseGroupNode.build` 一份，这里逐条照抄）：全部 / 错题本 / 收藏三行恒在；
-         * 错题本底下是有错题的书 → 章节树（数的是错题）；之后每本有题的书一行，底下章节树。没有题 → 空。
+         * 错题本、收藏底下各是有错题 / 有收藏的书 → 章节树（数的是错题 / 收藏）；之后每本有题的书一行，底下章节树。
+         * 没有题 → 空。
          */
         fun build(
             s: ExSummary,
@@ -413,30 +439,36 @@ data class ExGroupNode(val scope: ExScope, val title: String, val count: Int, va
             if (s.total <= 0) return emptyList()
             val wrongChildren = documents.filter { s.count(ExScope.WrongDocument(it.first)) > 0 }.map { (id, t) ->
                 ExGroupNode(ExScope.WrongDocument(id), t, s.count(ExScope.WrongDocument(id)),
-                    chapters(id, s.mistakeChapters(id), mistakes = true, noChapter = noChapter))
+                    chapters(s.mistakeChapters(id), noChapter) { ExScope.WrongChapter(id, it) })
+            }
+            val starredChildren = documents.filter { s.count(ExScope.StarredDocument(it.first)) > 0 }.map { (id, t) ->
+                ExGroupNode(ExScope.StarredDocument(id), t, s.count(ExScope.StarredDocument(id)),
+                    chapters(s.starredChapters(id), noChapter) { ExScope.StarredChapter(id, it) })
             }
             val rows = arrayListOf(
                 ExGroupNode(ExScope.All, title(ExScope.All), s.count(ExScope.All)),
                 ExGroupNode(ExScope.Wrong, title(ExScope.Wrong), s.count(ExScope.Wrong), wrongChildren),
-                ExGroupNode(ExScope.Starred, title(ExScope.Starred), s.count(ExScope.Starred)),
+                ExGroupNode(ExScope.Starred, title(ExScope.Starred), s.count(ExScope.Starred), starredChildren),
             )
             for ((id, t) in documents) {
                 val n = s.byDocument[id] ?: 0
                 if (n <= 0) continue
-                rows += ExGroupNode(ExScope.Document(id), t, n, chapters(id, s.chapters[id] ?: emptyMap(), false, noChapter))
+                rows += ExGroupNode(ExScope.Document(id), t, n,
+                    chapters(s.chapters[id] ?: emptyMap(), noChapter) { ExScope.Chapter(id, it) })
             }
             return rows
         }
 
-        /** 一本书底下的章节树：一道题都没设章节 → 不展开；有设有没设 → 末尾一行「未分章节」。 */
+        /**
+         * 一本书底下的章节树：一道题都没设章节 → 不展开；有设有没设 → 末尾一行「未分章节」。
+         * `scope` = 章节路径在这一支里是哪个范围（书底下 / 错题本底下 / 收藏底下）。
+         */
         fun chapters(
-            docId: String,
             stats: Map<List<String>, ExChapterStat>,
-            mistakes: Boolean,
             noChapter: String,
+            scope: (List<String>) -> ExScope,
         ): List<ExGroupNode> {
             if (stats.keys.none { it.isNotEmpty() }) return emptyList()
-            fun scope(p: List<String>): ExScope = if (mistakes) ExScope.WrongChapter(docId, p) else ExScope.Chapter(docId, p)
             fun make(t: ExChapterTree): ExGroupNode = ExGroupNode(scope(t.path), t.label, t.count, t.children.map(::make))
             val out = ExChapterTree.build(stats).map(::make).toMutableList()
             val none = stats[emptyList()]

@@ -1,7 +1,6 @@
 package com.xvan.unireader.shared.exercise
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Typeface
@@ -21,8 +20,6 @@ import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
 import com.xvan.unireader.R
-import com.xvan.unireader.shared.PadPanels
-import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Ui
 import java.text.DateFormat
 import java.util.Date
@@ -73,7 +70,11 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
     }
-    private val filterBtn = pill("") { showFilterMenu() }
+    /**
+     * 只看没做过（开关，开着时高亮；同 Mac）。哪一组题在抽屉里选，顶栏只管做题进度；
+     * 错题本那一支不显示（错题都做过，[ExDeckView.noFilter]）。
+     */
+    private val unansweredBtn = pill(s(R.string.ex_unanswered_only)) { host.setFilter(if (deck.filter == 1) 0 else 1) }
     /** 全部重做（同 Mac）：当前这一组（范围 + 筛选）都当没答过，从第一题练起。没有显示着作答的题时灰着。 */
     private val redoAllBtn = pill(s(R.string.ex_redo_all)) {
         if (!deck.hasShown) return@pill
@@ -96,7 +97,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             },
             LinearLayout.LayoutParams(0, -2, 1f),
         )
-        for (v in listOf(redoAllBtn, filterBtn)) {
+        for (v in listOf(redoAllBtn, unansweredBtn)) {
             addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         }
         addView(practiceTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
@@ -331,34 +332,10 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val parts = arrayListOf(s(R.string.ex_count, deck.cards.size))
         if (deck.done > 0) parts += s(R.string.ex_round, deck.done, deck.right)
         progressView.text = parts.joinToString(" · ")
-        filterBtn.text = filterName(deck.filter) + " ▾"
+        unansweredBtn.visibility = if (deck.noFilter) View.GONE else View.VISIBLE
+        paintPill(unansweredBtn, deck.filter == 1)
         redoAllBtn.isEnabled = deck.hasShown
         redoAllBtn.alpha = if (deck.hasShown) 1f else 0.4f
-    }
-
-    private fun filterName(f: Int): String = when (f) {
-        1 -> s(R.string.ex_filter_unanswered)
-        2 -> s(R.string.ex_filter_wrong)
-        3 -> s(R.string.ex_filter_starred)
-        else -> s(R.string.ex_filter_all)
-    }
-
-    private fun showFilterMenu() {
-        val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-        var dlg: AlertDialog? = null
-        for (f in 0..3) {
-            val on = f == deck.filter
-            col.addView(
-                PadPanels.iconRow(
-                    a, R.drawable.ic_check, filterName(f),
-                    if (on) Ui.accent(a) else Ui.onSurface(a),
-                ) {
-                    dlg?.dismiss()
-                    if (!on) host.setFilter(f)
-                }.also { row -> if (!on) (row.getChildAt(0) as? ImageView)?.visibility = View.INVISIBLE },
-            )
-        }
-        dlg = Sheet(a).title(a.getString(R.string.ex_title)).content(col).action(a.getString(R.string.common_cancel)).show()
     }
 
     private fun setListMode(on: Boolean) {
@@ -385,7 +362,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         if (c == null) {
             column.visibility = View.GONE
             emptyView.visibility = View.VISIBLE
-            emptyView.text = if (deck.filter != 0) s(R.string.ex_empty_filter) else s(R.string.ex_empty)
+            emptyView.text = if (deck.filter == 1) s(R.string.ex_empty_unanswered) else s(R.string.ex_empty)
             builtFor = null
             shownKey = ""
             return

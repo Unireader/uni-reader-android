@@ -176,10 +176,7 @@
     <string name="ex_next">下一题</string>
     <string name="ex_practice">练习</string>
     <string name="ex_list">列表</string>
-    <string name="ex_filter_all">全部</string>
-    <string name="ex_filter_unanswered">没做过</string>
-    <string name="ex_filter_wrong">错题本</string>
-    <string name="ex_filter_starred">收藏</string>
+    <string name="ex_unanswered_only">只看没做过</string>
     <string name="ex_result_correct">回答正确</string>
     <string name="ex_result_wrong">回答错误，正确答案是 %1$s。</string>
     <string name="ex_result_none">这道题还没有答案，已记下你的选择。</string>
@@ -204,7 +201,7 @@
     <string name="ex_round">本轮已做 %1$d 题，对 %2$d 题</string>
     <string name="ex_redo_all">全部重做</string>
     <string name="ex_redo_n">重做这 %1$d 道题</string>
-    <string name="ex_empty_filter">没有符合筛选条件的题。</string>
+    <string name="ex_empty_unanswered">这里的题都做过了。</string>
     <string name="ex_empty">这里还没有题。可以在 Mac 上让 Agent 识别 PDF 里的习题。</string>
     <string name="ex_open_new_tab">在新标签页中打开</string>
     <string name="ex_set_chapter">设置章节…</string>

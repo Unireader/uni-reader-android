@@ -100,13 +100,20 @@ class ExerciseTest {
             ExScope.All, ExScope.Wrong, ExScope.Starred, ExScope.Document("D-1"),
             ExScope.Chapter("D-1", listOf("第二章 导数", "2.3: 冒号")), ExScope.Chapter("D-1", emptyList()),
             ExScope.WrongDocument("D-1"), ExScope.WrongChapter("D-1", listOf("第一章")), ExScope.WrongChapter("D-1", emptyList()),
+            ExScope.StarredDocument("D-1"), ExScope.StarredChapter("D-1", listOf("第一章", "1.1: 冒号")),
+            ExScope.StarredChapter("D-1", emptyList()),
         )
         for (s in scopes) assertEquals(s.key, s, ExScope.parse(s.key))
         assertEquals("chap:D-1:[\"第二章 导数\",\"2.3 求导法则\"]", ExScope.Chapter("D-1", listOf("第二章 导数", "2.3 求导法则")).key)
         assertEquals("wrong:doc:D-1", ExScope.WrongDocument("D-1").key)
+        assertEquals("starred:doc:D-1", ExScope.StarredDocument("D-1").key)
         assertEquals("chap:D-1:", ExScope.Chapter("D-1", emptyList()).key)
         assertNull(ExScope.parse("wrong:all"))
         assertNull(ExScope.parse("wrong:wrong"))
+        assertNull(ExScope.parse("starred:all"))
+        assertEquals(ExScope.Starred, ExScope.parse("starred"))
+        assertFalse(ExScope.StarredChapter("D", emptyList()).isMistakes)
+        assertEquals("D", ExScope.StarredChapter("D", listOf("x")).documentId)
         assertNull(ExScope.parse("doc:"))
         assertNull(ExScope.parse("chap:nocolon"))
         assertTrue(ExScope.Wrong.isMistakes && ExScope.WrongChapter("D", emptyList()).isMistakes)
@@ -139,19 +146,24 @@ class ExerciseTest {
         assertFalse(ExScope.WrongChapter("D1", listOf("第一章")).includes(b))
         assertTrue(ExScope.WrongDocument("D1").includes(a) && !ExScope.WrongDocument("D1").includes(other))
         assertTrue(ExScope.Starred.includes(c) && !ExScope.Starred.includes(a))
+        assertTrue(ExScope.StarredChapter("D1", emptyList()).includes(c) && !ExScope.StarredChapter("D1", emptyList()).includes(b))
+        assertTrue(ExScope.StarredDocument("D1").includes(c) && !ExScope.StarredDocument("D2").includes(c))
         assertTrue(ExFilter.UNANSWERED.includes(a, 0) && !ExFilter.UNANSWERED.includes(a, 1))
-        assertTrue(ExFilter.WRONG.includes(a, 3) && !ExFilter.WRONG.includes(b, 3))
+        // 只剩全部 / 只看没做过（老 Mac 发来的 2 错题 / 3 收藏不认）
+        assertEquals(listOf(ExFilter.ALL, ExFilter.UNANSWERED), ExFilter.entries.toList())
+        assertNull(ExFilter.of(2))
+        assertNull(ExFilter.of(3))
     }
 
     // ---------- 侧栏的数 + 章节树 + 分组（同 Mac「错题本按书 / 按章展开」「分组」两段） ----------
 
     private val stats = mapOf(
         listOf("第一章 函数", "1.1 映射") to ExChapterStat(1, 2, 1),
-        listOf("第一章 函数", "1.2 极限") to ExChapterStat(1, 5, 0),
-        listOf("第三章") to ExChapterStat(1, 30, 1),
+        listOf("第一章 函数", "1.2 极限") to ExChapterStat(1, 5, 0, starred = 1),
+        listOf("第三章") to ExChapterStat(1, 30, 1, starred = 1),
         listOf("第二章") to ExChapterStat(1, 12, 0),
     )
-    private val sum = ExSummary(total = 4, wrong = 2, starred = 0, byDocument = mapOf("D3" to 4), chapters = mapOf("D3" to stats))
+    private val sum = ExSummary(total = 4, wrong = 2, starred = 2, byDocument = mapOf("D3" to 4), chapters = mapOf("D3" to stats))
 
     @Test
     fun summaryCounts() {
@@ -162,6 +174,12 @@ class ExerciseTest {
         val mc = sum.mistakeChapters("D3")
         assertEquals(setOf(listOf("第一章 函数", "1.1 映射"), listOf("第三章")), mc.keys)
         assertTrue(mc.values.all { it.count == 1 })
+        // 收藏按书 / 按章（同错题本，数的是收藏）
+        assertEquals(2, sum.count(ExScope.StarredDocument("D3")))
+        assertEquals(1, sum.count(ExScope.StarredChapter("D3", listOf("第一章 函数"))))
+        val sc = sum.starredChapters("D3")
+        assertEquals(setOf(listOf("第一章 函数", "1.2 极限"), listOf("第三章")), sc.keys)
+        assertTrue(sc.values.all { it.count == 1 })
     }
 
     @Test
@@ -182,13 +200,23 @@ class ExerciseTest {
         val docs = listOf("nodoc" to "没题的书", "D3" to "书三")
         val g = ExGroupNode.build(sum, docs, { it.key }, "未分章节")
         assertEquals(listOf(ExScope.All, ExScope.Wrong, ExScope.Starred, ExScope.Document("D3")), g.map { it.scope })
-        assertEquals(listOf(4, 2, 0, 4), g.map { it.count })
+        assertEquals(listOf(4, 2, 2, 4), g.map { it.count })
         assertEquals(listOf(ExScope.WrongDocument("D3")), g[1].children.map { it.scope })
         assertEquals(listOf("第一章 函数", "第三章"), g[1].children[0].children.map { it.title })
         assertEquals(
             listOf(ExScope.WrongChapter("D3", listOf("第一章 函数", "1.1 映射"))),
             g[1].children[0].children[0].children.map { it.scope },
         )
+        // 收藏底下：有收藏的书 → 收藏章节树，章节是收藏范围
+        assertEquals(listOf(ExScope.StarredDocument("D3")), g[2].children.map { it.scope })
+        assertEquals(listOf("第一章 函数", "第三章"), g[2].children[0].children.map { it.title })
+        assertEquals(
+            listOf(ExScope.StarredChapter("D3", listOf("第一章 函数", "1.2 极限"))),
+            g[2].children[0].children[0].children.map { it.scope },
+        )
+        // 没有收藏 → 收藏那一行不展开
+        val noStar = sum.copy(starred = 0, chapters = mapOf("D3" to stats.mapValues { it.value.copy(starred = 0) }))
+        assertTrue(ExGroupNode.build(noStar, docs, { it.key }, "x")[2].children.isEmpty())
         val flat = ExGroupNode.flatten(g)
         assertEquals(0, flat[0].second)
         assertEquals(ExScope.Wrong, flat[1].first.scope)
@@ -241,6 +269,13 @@ class ExerciseTest {
         // b 真删了：去掉，当前题落到原位置上的那一道
         d.applyReload(LocalExerciseDeck.Fresh(listOf(c), emptyMap(), mapOf("a" to a, "b" to null)))
         assertEquals(listOf("a", "c"), d.items.map { it.id })
+        // 错题本那一支没有「只看没做过」：开不了，顶栏也不显示那个开关
+        assertFalse(d.setFilter(ExFilter.UNANSWERED))
+        assertEquals(ExFilter.ALL, d.filter)
+        assertTrue(d.view("错题本").noFilter)
+        val book = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.StarredDocument("D1"))
+        assertTrue(book.setFilter(ExFilter.UNANSWERED))
+        assertFalse(book.view("收藏 · 书").noFilter)
     }
 
     @Test

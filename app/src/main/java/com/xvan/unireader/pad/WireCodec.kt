@@ -779,7 +779,9 @@ object WireCodec {
                 ),
             )
         }
-        return com.xvan.unireader.shared.exercise.ExDeckView(scope, title, filter, index, done, right, cards)
+        // 可选尾部 noFilter（2026-10-11）：1 = 这一组没有「只看没做过」（错题本那一支）；老 Mac 不发 = 有
+        val noFilter = r.remaining >= 1 && r.u8() == 1
+        return com.xvan.unireader.shared.exercise.ExDeckView(scope, title, filter, index, done, right, cards, noFilter)
     }
 
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------

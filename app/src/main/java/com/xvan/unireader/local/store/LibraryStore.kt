@@ -768,13 +768,13 @@ class LibraryStore(private val db: Db) : Closeable {
         val chapters = HashMap<String, MutableMap<List<String>, com.xvan.unireader.local.exercise.ExChapterStat>>()
         db.query(
             """
-            SELECT document_id, chapter, COUNT(*), MIN(page), SUM(wrong) FROM exercise WHERE document_id IS NOT NULL
+            SELECT document_id, chapter, COUNT(*), MIN(page), SUM(wrong), SUM(starred) FROM exercise WHERE document_id IS NOT NULL
             GROUP BY document_id, chapter
             """.trimIndent(),
         ) {
             val first = if (it.isNull(3)) Int.MAX_VALUE else it.getInt(3)
             Triple(it.getString(0), com.xvan.unireader.local.exercise.ExChapter.parse(it.getString(1) ?: ""),
-                com.xvan.unireader.local.exercise.ExChapterStat(it.getInt(2), first, it.getInt(4)))
+                com.xvan.unireader.local.exercise.ExChapterStat(it.getInt(2), first, it.getInt(4), it.getInt(5)))
         }.forEach { (doc, path, stat) -> chapters.getOrPut(doc) { HashMap() }[path] = stat }
         return com.xvan.unireader.local.exercise.ExSummary(total, wrong, starred, byDoc, chapters)
     }

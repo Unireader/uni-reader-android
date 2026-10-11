@@ -106,6 +106,8 @@ class ExerciseController(private val a: Activity) : ExHost {
         is ExScope.Chapter -> docTitle(sc.id) + " · " + (sc.path.lastOrNull() ?: a.getString(R.string.ex_no_chapter))
         is ExScope.WrongDocument -> a.getString(R.string.ex_mistakes) + " · " + scopeTitle(ExScope.Document(sc.id))
         is ExScope.WrongChapter -> a.getString(R.string.ex_mistakes) + " · " + scopeTitle(ExScope.Chapter(sc.id, sc.path))
+        is ExScope.StarredDocument -> a.getString(R.string.ex_starred) + " · " + scopeTitle(ExScope.Document(sc.id))
+        is ExScope.StarredChapter -> a.getString(R.string.ex_starred) + " · " + scopeTitle(ExScope.Chapter(sc.id, sc.path))
     }
 
     private fun docTitle(id: String) = docs.firstOrNull { it.first == id }?.second ?: a.getString(R.string.ex_title)

@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 120 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 121 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -609,7 +609,8 @@ class WireCodecTest {
         val d = (WireCodec.decode(unhex(VECTORS[115])) as WireCodec.Msg.ExDeck).view
         assertEquals("doc:D-1", d.scope)
         assertEquals("高数", d.title)
-        assertEquals(2, d.filter)
+        assertEquals(1, d.filter)
+        assertFalse(d.noFilter)
         assertEquals(1, d.index)
         assertEquals(2, d.done)
         assertEquals(1, d.right)
@@ -644,6 +645,16 @@ class WireCodecTest {
         val e = (WireCodec.decode(unhex(VECTORS[116])) as WireCodec.Msg.ExDeck).view
         assertEquals("", e.scope)
         assertTrue(e.cards.isEmpty())
+        // #121 exDeck 尾部 noFilter = 1：错题本那一支，顶栏不显示「只看没做过」
+        val f = unhex(VECTORS[120])
+        val w = (WireCodec.decode(f) as WireCodec.Msg.ExDeck).view
+        assertEquals("wrong:doc:D-1", w.scope)
+        assertEquals("错题本 · 高数", w.title)
+        assertTrue(w.noFilter && w.cards.isEmpty())
+        // 老 Mac 发的帧没有这个尾部字节：照样解得出，按「有」处理
+        val old = (WireCodec.decode(f.copyOf(f.size - 1)) as WireCodec.Msg.ExDeck).view
+        assertEquals("wrong:doc:D-1", old.scope)
+        assertFalse(old.noFilter)
         // #118 exIndex
         assertEquals(WireCodec.Msg.ExIndex("wrong", 7), WireCodec.decode(unhex(VECTORS[117])))
     }
@@ -651,7 +662,7 @@ class WireCodecTest {
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(120, VECTORS.size)
+        assertEquals(121, VECTORS.size)
     }
 
     @Test
@@ -664,7 +675,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 112 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 121 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -795,21 +806,24 @@ class WireCodecTest {
             // #112 草稿纸 / 画板笔迹追加（`../PROTOCOL.md §4.4`）：scratchStrokesAppend(0x5D)，与 #59 同一份 list
             "5d07000000010000001414140000803f000020410302000000f1c2008080420000003f00000044000002c10000803f",
             // #113~#120 习题（`../PROTOCOL.md §4.9`）：exGroups(0x5E) / exOpen(0x5F) 一章、关掉 /
-            // exDeck(0x60) 两道题、空 / exIndex(0x61) / exAct(0x62) 交卷、重做
+            // exDeck(0x60) 两道题（只看没做过）、空 / exIndex(0x61) / exAct(0x62) 交卷、重做
+            // （2026-10-11 起 exDeck 尾部多一个 noFilter 字节：#116 / #117 末尾的 00）
             "5e04000300616c6c0c00e585a8e983a8e4b9a0e9a2980c0000050077726f6e670900e99499e9a298e69cac0300000d00" +
                 "77726f6e673a646f633a442d310600e9ab98e695b00300011d00636861703a442d313a5b22e7acace4ba8ce7aba020" +
                 "e5afbce695b0225d1000e7acace4ba8ce7aba020e5afbce695b0050001",
             "5f1d00636861703a442d313a5b22e7acace4ba8ce7aba020e5afbce695b0225d",
             "5f0000",
-            "600700646f633a442d310600e9ab98e695b00201000200010002000300452d310100350c000000000b1100e7acace4ba8c" +
+            "600700646f633a442d310600e9ab98e695b00101000200010002000300452d310100350c000000000b1100e7acace4ba8c" +
                 "e7aba020e280ba20322e330a00e4b9a0e9a29820322d331d00e8aebe2024662878293d785e3224efbc8ce5889920246627" +
                 "2831293d24030100410300243024010042030024312401004303002432240100430600e6b182e5afbc020100420200000" +
                 "0cc829c794203000100010041020300452d320000000000000110000000000600e5a49ae98089020100410300e794b201" +
-                "00420300e4b9990000000000000000000000000000000000000000000000",
-            "6000000000000000000000000000",
+                "00420300e4b999000000000000000000000000000000000000000000000000",
+            "600000000000000000000000000000",
             "61050077726f6e670700",
             "620700646f633a442d31000300452d3102004143681000000000",
             "6207007374617272656403000000000200000002000300452d310300452d32",
+            // #121 exDeck 尾部 noFilter = 1（错题本那一支没有「只看没做过」，2026-10-11）
+            "600d0077726f6e673a646f633a442d311300e99499e9a298e69cac20c2b720e9ab98e695b000000000000000000001",
         )
     }
 }

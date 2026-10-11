@@ -180,10 +180,7 @@
     <string name="ex_next">Next</string>
     <string name="ex_practice">Practice</string>
     <string name="ex_list">List</string>
-    <string name="ex_filter_all">All</string>
-    <string name="ex_filter_unanswered">Not Done Yet</string>
-    <string name="ex_filter_wrong">Mistakes</string>
-    <string name="ex_filter_starred">Starred</string>
+    <string name="ex_unanswered_only">Not Done Only</string>
     <string name="ex_result_correct">Correct</string>
     <string name="ex_result_wrong">Wrong. The answer is %1$s.</string>
     <string name="ex_result_none">This question has no answer yet. Your choice was recorded.</string>
@@ -208,7 +205,7 @@
     <string name="ex_round">this round: %1$d done, %2$d right</string>
     <string name="ex_redo_all">Redo All</string>
     <string name="ex_redo_n">Redo %1$d Questions</string>
-    <string name="ex_empty_filter">No questions match this filter.</string>
+    <string name="ex_empty_unanswered">You’ve done every question here.</string>
     <string name="ex_empty">No exercises here yet. On the Mac, ask the Agent to recognize the exercises in a PDF.</string>
     <string name="ex_open_new_tab">Open in New Tab</string>
     <string name="ex_set_chapter">Set Chapter…</string>
