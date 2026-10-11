@@ -27,8 +27,9 @@ object Schema {
      * 与 Mac `LibraryStore.schemaVersion` 同步。v13 `image`、v14 `page_align`、v15 `md_doc`（本端只建表不用）、
      * v16 `board_note`/`board_item`、v17 `board_page`——表都建上，写进去的版本号才不撒谎。
      * v18：`note` / `board_item` 加 `points BLOB` + `points_at TEXT`（笔迹点集二进制，`../BINARY-INK-PLAN.md`）。
+     * v20：`exercise` / `exercise_attempt`（习题，`../EXERCISE-PLAN.md §2`；本端只建表不用）。
      */
-    const val VERSION = 19
+    const val VERSION = 20
 
     /**
      * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -110,6 +111,44 @@ object Schema {
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_board_page_board ON board_page(board_id, sort_key)",
+    )
+
+    /**
+     * v20 习题两张表 + 索引（`../EXERCISE-PLAN.md §2`），与 Mac `migrate()` 里那段**逐字相同**。
+     * 本端这一轮只建表不读写（平板练习放下一轮）；改这里必须与 Mac `LibraryStore.swift` 同步。
+     */
+    private val EXERCISE_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS exercise (
+          id TEXT PRIMARY KEY,
+          document_id TEXT REFERENCES document(id) ON DELETE CASCADE,
+          page INTEGER,
+          seq INTEGER NOT NULL DEFAULT 0,
+          kind INTEGER NOT NULL DEFAULT 0,
+          number TEXT NOT NULL DEFAULT '',
+          section TEXT NOT NULL DEFAULT '',
+          payload BLOB NOT NULL,
+          starred INTEGER NOT NULL DEFAULT 0,
+          wrong INTEGER NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          chapter TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_exercise_doc ON exercise(document_id, page, seq)",
+        """
+        CREATE TABLE IF NOT EXISTS exercise_attempt (
+          id TEXT PRIMARY KEY,
+          exercise_id TEXT NOT NULL REFERENCES exercise(id) ON DELETE CASCADE,
+          answer TEXT NOT NULL,
+          correct INTEGER,
+          elapsed_ms INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_exercise_attempt_ex ON exercise_attempt(exercise_id, created_at)",
     )
 
     /**
@@ -198,7 +237,7 @@ object Schema {
         )
         """,
         PAGE_ALIGN_DDL,
-    ) + MD_DOC_DDL + BOARD_DDL
+    ) + MD_DOC_DDL + BOARD_DDL + EXERCISE_DDL
 
     /**
      * 老库补列：与 Mac `migrate()` 的 `addColumnIfMissing` **逐条同序**（v1 → v12 攒下来的那些）。
@@ -224,6 +263,9 @@ object Schema {
         Triple("board_note", "viewport_x", "REAL NOT NULL DEFAULT 0"),
         Triple("board_note", "viewport_y", "REAL NOT NULL DEFAULT 0"),
         Triple("board_note", "viewport_zoom", "REAL NOT NULL DEFAULT 0"),
+        // v20 发布前补的两列（章节 + 书上作答，`../EXERCISE-PLAN.md §2.3/§2.4`），与 Mac 同序
+        Triple("exercise", "chapter", "TEXT NOT NULL DEFAULT ''"),
+        Triple("exercise_attempt", "source", "TEXT NOT NULL DEFAULT ''"),
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =

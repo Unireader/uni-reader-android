@@ -97,8 +97,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
-  （`Schema.VERSION = 17`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
-  `CREATE … IF NOT EXISTS` 补齐到 v17 的全部表（含本端只建不用的 v15 `md_doc`）+ 与 Mac 同序的 `ADD COLUMN` +
+  （`Schema.VERSION = 20`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  `CREATE … IF NOT EXISTS` 补齐到 v20 的全部表（含本端只建不用的 v15 `md_doc` 与 v20 习题两张表
+  `exercise` / `exercise_attempt`，`../EXERCISE-PLAN.md`）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
   🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
   补表、`ADD COLUMN` 补列、写 `meta.schema_version`），也可以提出新的表 / 列。剩下的纪律只有一条——
