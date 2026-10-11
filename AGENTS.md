@@ -98,8 +98,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
   （`Schema.VERSION = 20`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
-  `CREATE … IF NOT EXISTS` 补齐到 v20 的全部表（含本端只建不用的 v15 `md_doc` 与 v20 习题两张表
-  `exercise` / `exercise_attempt`，`../EXERCISE-PLAN.md`）+ 与 Mac 同序的 `ADD COLUMN` +
+  `CREATE … IF NOT EXISTS` 补齐到 v20 的全部表（含本端只建不用的 v15 `md_doc`；v20 习题两张表
+  `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
   🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
   补表、`ADD COLUMN` 补列、写 `meta.schema_version`），也可以提出新的表 / 列。剩下的纪律只有一条——
@@ -216,6 +216,19 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   只同步竖向位置（`ScratchCanvas.pageAnchor`：锚线 = 视图顶下 `PAGED_TOP`，折成「页 + 页内比例」），缩放各自独立。
   `followPageAnchor` 在手指 / 笔落着或惯性中不跟；跟过去那一下 `followApplying` 为真、不回发；用户没动过视口不发。
   分页画板因此**不再走 `boardViewport`**（不复位、不回传），那条只剩无限画布在用。
+- **习题（v20，2026-10-11，`../EXERCISE-PLAN.md §10`）**：两模式共用一份界面 `shared/exercise/ExerciseScreen`
+  （顶栏 范围名 / 进度 / 筛选 / 全部重做 / 练习·列表；练习页一次一题、左右划翻题；列表页长按多选）+ 抽屉第三页「习题」
+  （`ReaderDrawer.setExercises`，有题才出现）。界面只认中立数据 `ExDeckView` / `ExCard`，操作交给 `ExHost`：
+  · 模式1 = `local/ExerciseController`：纯逻辑 `local/exercise/Exercise.kt`（逐条照抄 Mac `Exercise.swift`，JVM 单测 `ExerciseTest`）+
+  一组题的进度 `LocalExerciseDeck`（照 Mac `ExerciseDeck`：快照、这一轮的作答、再做一次、筛选）+ `LibraryStore` 的习题一节（SQL 照抄 Mac）。
+  标签页 docId 存 `ex:<范围键>`（公用，错题本一支另一个）/ `exs:<范围键>`（长按「在新标签页中打开」），同 Mac `StoredTab`。
+  看原题 = 本机 Pdfium 出整页再裁框；设章节读 `PdfSource.toc`。**不做删除**（安卓没有回收站，删只在 Mac 上做）。
+  · 模式2 = `pad/RemoteExHost`：题目与作答只在 Mac，操作编成 `exAct` / `exIndex` 发过去，Mac 回 `exDeck`（`../PROTOCOL.md §4.9`）。
+  平板可以自己开一组（标签栏末尾一个能关的标签，`DocTabsBar.closable`），Mac 不跟着换；Mac 当前标签是习题（`boards.kind = 3`）时跟随显示。
+  两边开着同一组时用的是 Mac 上**同一份**进度，作答 / 第几题 / 筛选天然同步。原题图 `GET /exercise.png?id=&w=`。
+  · 题干 / 选项 / 解析的 Markdown + 公式：`shared/exercise/MathText`（Markwon + JLaTeXMath，依赖只在这一个文件；`$…$` 先改写成
+  Markwon 认的 `$$…$$`，见 `normalize`）。**Markwon 默认会给文字挂上点链接的处理、把触摸吃掉**——bind 之后摘掉，否则点选项正文选不中。
+  · 离线镜像：两张表进 `MirrorFp.specs`（向量 #30/#31），`MirrorApply.livingExercises` 挡掉「题已删、作答还要写」的孤儿。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，
@@ -256,6 +269,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `local/mirror/MirrorDiff.alignPlan` 与 `Plan.isCleanPushToMirror`/`pendingToSource` ↔ Mac `MirrorDiff.swift`
   （`MirrorDiffTest` 的对齐三条 ↔ `spike/mirror-align-test.swift` ①②）
   ——变换差一个符号，Mac 上写的笔迹在平板上就落在「整页微微转了一点」的位置；
+  `local/exercise/Exercise.kt`（**习题**：判题、以前的作答、范围键、筛选、章节树、侧栏分组）↔ Mac `Sources/App/Exercise.swift`
+  （+ `Window/Exercise/ExerciseDeck.swift` ↔ `LocalExerciseDeck`），本端 `ExerciseTest` ↔ `../spike/exercise-test.swift` 的同名几段
+  ——规则差一点，同一组题两端显示的题数、「上次作答」、范围键就对不上（标签页存的、线上发的都是范围键）；
   `pad/MacDiscovery.fingerprint`（配对码指纹，局域网发现 TXT `tk`）↔ Mac `Pairing.fingerprint`，
   本端 `MacDiscoveryTest.fingerprintVectors` ↔ `../spike/pairing-fp-test.swift` 同两条向量
   ——差一点，连过的 Mac 在发现列表里就永远显示「配对码已重置」。

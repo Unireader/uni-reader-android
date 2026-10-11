@@ -86,6 +86,12 @@ class MacClient(
         fun onBoardViewport(id: String, x: Float, y: Float, zoom: Float)
         /** 分页画板 [id] 在 Mac 上滚到的位置（同步滚动，`../PROTOCOL.md §4.8`） */
         fun onBoardScroll(id: String, page: Long, frac: Float)
+        /** 抽屉「习题」一段（被跟随会话所在工作区的分组，全量镜像；`../PROTOCOL.md §4.9`） */
+        fun onExGroups(list: List<com.xvan.unireader.shared.exercise.ExGroup>)
+        /** 平板开着那一组习题的全量（`scope` 为空 = 那一组开不了了） */
+        fun onExDeck(view: com.xvan.unireader.shared.exercise.ExDeckView)
+        /** 那一组只换了第几题（Mac 本机翻的） */
+        fun onExIndex(scope: String, index: Int)
         /** 连接断开（含自动重连中的每一次失败）；msg 供顶栏显示 */
         fun onDisconnected(msg: String)
     }
@@ -181,6 +187,9 @@ class MacClient(
             is WireCodec.Msg.BoardPages -> cb.onBoardPages(m.w, m.h, m.list)
             is WireCodec.Msg.BoardViewport -> cb.onBoardViewport(m.id, m.x, m.y, m.zoom)
             is WireCodec.Msg.BoardScroll -> cb.onBoardScroll(m.id, m.page, m.frac)
+            is WireCodec.Msg.ExGroups -> cb.onExGroups(m.list)
+            is WireCodec.Msg.ExDeck -> cb.onExDeck(m.view)
+            is WireCodec.Msg.ExIndex -> cb.onExIndex(m.scope, m.index)
             else -> {}   // page 等不消费的消息忽略
         }
     }

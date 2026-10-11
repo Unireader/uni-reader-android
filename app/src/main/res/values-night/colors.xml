@@ -23,6 +23,7 @@
     <color name="accent_container">#FF16324D</color>
 
     <color name="danger">#FFF85149</color>
+    <color name="success">#FF3FB950</color>
 
     <!-- 书签缎带：深色底上提亮一档，否则暗红压在 #0D1117 上几乎看不见 -->
     <color name="bookmark">#FFF07A7A</color>

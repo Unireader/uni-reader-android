@@ -35,6 +35,8 @@ object MirrorReport {
         "board_note" -> "画板笔记"
         "board_item" -> "画板笔记内容"
         "board_page" -> "画板笔记的页"
+        "exercise" -> "习题"
+        "exercise_attempt" -> "做题记录"
         "meta" -> "工作区设置"
         else -> table
     }

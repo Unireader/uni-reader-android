@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 29 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 31 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -109,6 +109,22 @@ class MirrorFpTest {
         "sort_key" to 1.5, "width" to 595.0, "height" to 842.0, "template" to "cornell",
         "created_at" to "2026-09-26T09:00:00Z", "updated_at" to "2026-09-26T09:05:00Z",
     )
+    // v20 习题（与 spike/mirror-fp-test.swift 的 exercise / exercise_attempt 两行逐字段一致；correct 为 NULL）
+    private val exerciseRow: Map<String, Any?> = mapOf(
+        "id" to "99999999-9999-4999-8999-999999999999",
+        "document_id" to "11111111-1111-4111-8111-111111111111",
+        "page" to 11L, "seq" to 2L, "kind" to 1L, "number" to "5", "section" to "习题 2-3",
+        "payload" to """{"answer":["A","C"],"options":[],"stem":"设 ${'$'}f(x)=x^2${'$'}"}""".toByteArray(Charsets.UTF_8),
+        "starred" to 1L, "wrong" to 0L, "source" to "kimi",
+        "created_at" to "2026-10-10T09:00:00.000Z", "updated_at" to "2026-10-11T08:00:00.000Z",
+        "chapter" to """["第二章 导数","2.3 求导法则"]""",
+    )
+    private val exerciseAttemptRow: Map<String, Any?> = mapOf(
+        "id" to "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        "exercise_id" to "99999999-9999-4999-8999-999999999999",
+        "answer" to "AC", "correct" to null, "elapsed_ms" to 4200L,
+        "created_at" to "2026-10-11T08:00:00.000Z", "source" to "",
+    )
 
     @Test
     fun valueVectors() {
@@ -203,8 +219,23 @@ class MirrorFpTest {
                     "03323032362d30392d32365430393a30303a30305a1f03323032362d30392d32365430393a30353a" +
                     "30305a",
                 "2b807960580dd994"),
+            R(30, "exercise", exerciseRow,
+                "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
+                    "0331313131313131312d313131312d343131312d383131312d3131313131313131313131311f" +
+                    "0131311f01321f01311f03351f03e4b9a0e9a29820322d331f047b22616e73776572223a5b22" +
+                    "41222c2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe202466287829" +
+                    "3d785e3224227d1f01311f01301f036b696d691f03323032362d31302d31305430393a30303a" +
+                    "30302e3030305a1f03323032362d31302d31315430383a30303a30302e3030305a1f035b22e7" +
+                    "acace4ba8ce7aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d",
+                "7344ab9c504f7ca8"),
+            R(31, "exercise_attempt", exerciseAttemptRow,
+                "0341414141414141412d414141412d344141412d384141412d4141414141414141414141411f" +
+                    "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
+                    "0341431f001f01343230301f03323032362d31302d31315430383a30303a30302e3030305a1f" +
+                    "03",
+                "47b5ec746dc2a008"),
         )
-        assertEquals(9, cases.size)
+        assertEquals(11, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -247,13 +278,26 @@ class MirrorFpTest {
     @Test
     fun tableSpecs() {
         assertEquals(
-            // 与 Mac `MirrorFp.specs` 同一份表集合、同一顺序（10 张；location 不在其中）
+            // 与 Mac `MirrorFp.specs` 同一份表集合、同一顺序（12 张；location 不在其中；v20 加了习题两张）
             listOf(
                 "document", "variant", "note", "ink_layer", "scratch_pad", "md_doc",
-                "board_note", "board_page", "board_item", "meta",
+                "board_note", "board_page", "board_item", "exercise", "exercise_attempt", "meta",
             ),
             MirrorFp.specs.map { it.table },
         )
+        assertEquals(
+            listOf(
+                "id", "document_id", "page", "seq", "kind", "number", "section", "payload", "starred", "wrong",
+                "source", "created_at", "updated_at", "chapter",
+            ),
+            MirrorFp.spec("exercise")!!.columns.map { it.name },
+        )
+        assertEquals("updated_at", MirrorFp.spec("exercise")!!.lww)
+        assertEquals(
+            listOf("id", "exercise_id", "answer", "correct", "elapsed_ms", "created_at", "source"),
+            MirrorFp.spec("exercise_attempt")!!.columns.map { it.name },
+        )
+        assertNull(MirrorFp.spec("exercise_attempt")!!.lww)
         assertEquals(
             listOf("id", "board_id", "sort_key", "width", "height", "template", "created_at", "updated_at"),
             MirrorFp.spec("board_page")!!.columns.map { it.name },

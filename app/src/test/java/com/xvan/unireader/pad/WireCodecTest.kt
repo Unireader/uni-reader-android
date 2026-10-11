@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 112 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 120 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -176,6 +176,14 @@ class WireCodecTest {
             // #110~#111 分页画板同步滚动（双向）：页中 / 顶上留白（frac 为负）
             110 to WireCodec.encodeBoardScroll("B-1", 3, 0.25f, 123456.5),
             111 to WireCodec.encodeBoardScroll("B-1", 0, -0.0625f, 0.0),
+            // #114~#115 习题（`../PROTOCOL.md §4.9`）：exOpen 开一章 / 关掉（空串）
+            114 to WireCodec.encodeExOpen("chap:D-1:[\"第二章 导数\"]"),
+            115 to WireCodec.encodeExOpen(""),
+            // #118 exIndex（双向，C→S 形态与 S→C 同字节）
+            118 to WireCodec.encodeExIndex("wrong", 7),
+            // #119~#120 exAct：交卷（AC，用时 4200ms）/ 重做两道、从第 2 题练起
+            119 to WireCodec.encodeExAct("doc:D-1", WireCodec.EX_ACT_SUBMIT, "E-1", "AC", 4200),
+            120 to WireCodec.encodeExAct("starred", WireCodec.EX_ACT_REDO, num = 2, ids = listOf("E-1", "E-2")),
         )
         for ((line, bytes) in cases) {
             assertEquals("向量#$line 编码不一致", VECTORS[line - 1], hex(bytes))
@@ -584,10 +592,66 @@ class WireCodecTest {
         assertEquals(VECTORS[58].substring(2), VECTORS[111].substring(2))
     }
 
+    @Test
+    fun decodeExercises() {
+        // #113 exGroups：四行，含中文名与缩进层级
+        val g = WireCodec.decode(unhex(VECTORS[112])) as WireCodec.Msg.ExGroups
+        assertEquals(
+            listOf(
+                com.xvan.unireader.shared.exercise.ExGroup("all", "全部习题", 12, 0),
+                com.xvan.unireader.shared.exercise.ExGroup("wrong", "错题本", 3, 0),
+                com.xvan.unireader.shared.exercise.ExGroup("wrong:doc:D-1", "高数", 3, 1),
+                com.xvan.unireader.shared.exercise.ExGroup("chap:D-1:[\"第二章 导数\"]", "第二章 导数", 5, 1),
+            ),
+            g.list,
+        )
+        // #116 exDeck：两道题（上次做错的单选 / 还没答、没答案的多选）
+        val d = (WireCodec.decode(unhex(VECTORS[115])) as WireCodec.Msg.ExDeck).view
+        assertEquals("doc:D-1", d.scope)
+        assertEquals("高数", d.title)
+        assertEquals(2, d.filter)
+        assertEquals(1, d.index)
+        assertEquals(2, d.done)
+        assertEquals(1, d.right)
+        assertEquals(2, d.cards.size)
+        val c0 = d.cards[0]
+        assertEquals("E-1", c0.id)
+        assertEquals("5", c0.number)
+        assertEquals(12, c0.page)
+        assertFalse(c0.multiple)
+        // flags 11 = 收藏 | 在错题本 | 有出处页
+        assertTrue(c0.starred && c0.wrong && c0.hasOriginal && !c0.figure && !c0.agentAnswer)
+        assertEquals("第二章 › 2.3", c0.chapter)
+        assertEquals("习题 2-3", c0.section)
+        assertEquals("设 \$f(x)=x^2\$，则 \$f'(1)=\$", c0.stem)
+        assertEquals(listOf("A" to "\$0\$", "B" to "\$1\$", "C" to "\$2\$"), c0.options)
+        assertEquals("C", c0.answer)
+        assertEquals("求导", c0.explanation)
+        assertEquals(com.xvan.unireader.shared.exercise.ExShown.PRACTICED, c0.shown)
+        assertEquals("B", c0.chosen)
+        assertEquals(com.xvan.unireader.shared.exercise.ExJudge.WRONG, c0.correct)
+        assertEquals(1760000000000L, c0.lastAt)
+        assertEquals(3, c0.tries)
+        assertEquals(1, c0.rights)
+        assertEquals("A", c0.marked)
+        assertEquals(com.xvan.unireader.shared.exercise.ExJudge.WRONG, c0.markedCorrect)
+        val c1 = d.cards[1]
+        assertTrue(c1.multiple && c1.agentAnswer && !c1.hasOriginal)   // flags 16 = 答案是 Agent 推算的
+        assertEquals(0, c1.page)
+        assertEquals(com.xvan.unireader.shared.exercise.ExShown.NONE, c1.shown)
+        assertEquals("", c1.answer)
+        // #117 exDeck 空（Mac 说这一组开不了了）
+        val e = (WireCodec.decode(unhex(VECTORS[116])) as WireCodec.Msg.ExDeck).view
+        assertEquals("", e.scope)
+        assertTrue(e.cards.isEmpty())
+        // #118 exIndex
+        assertEquals(WireCodec.Msg.ExIndex("wrong", 7), WireCodec.decode(unhex(VECTORS[117])))
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(112, VECTORS.size)
+        assertEquals(120, VECTORS.size)
     }
 
     @Test
@@ -730,6 +794,22 @@ class WireCodecTest {
             "5c0300422d3100000000000080bd0000000000000000",
             // #112 草稿纸 / 画板笔迹追加（`../PROTOCOL.md §4.4`）：scratchStrokesAppend(0x5D)，与 #59 同一份 list
             "5d07000000010000001414140000803f000020410302000000f1c2008080420000003f00000044000002c10000803f",
+            // #113~#120 习题（`../PROTOCOL.md §4.9`）：exGroups(0x5E) / exOpen(0x5F) 一章、关掉 /
+            // exDeck(0x60) 两道题、空 / exIndex(0x61) / exAct(0x62) 交卷、重做
+            "5e04000300616c6c0c00e585a8e983a8e4b9a0e9a2980c0000050077726f6e670900e99499e9a298e69cac0300000d00" +
+                "77726f6e673a646f633a442d310600e9ab98e695b00300011d00636861703a442d313a5b22e7acace4ba8ce7aba020" +
+                "e5afbce695b0225d1000e7acace4ba8ce7aba020e5afbce695b0050001",
+            "5f1d00636861703a442d313a5b22e7acace4ba8ce7aba020e5afbce695b0225d",
+            "5f0000",
+            "600700646f633a442d310600e9ab98e695b00201000200010002000300452d310100350c000000000b1100e7acace4ba8c" +
+                "e7aba020e280ba20322e330a00e4b9a0e9a29820322d331d00e8aebe2024662878293d785e3224efbc8ce5889920246627" +
+                "2831293d24030100410300243024010042030024312401004303002432240100430600e6b182e5afbc020100420200000" +
+                "0cc829c794203000100010041020300452d320000000000000110000000000600e5a49ae98089020100410300e794b201" +
+                "00420300e4b9990000000000000000000000000000000000000000000000",
+            "6000000000000000000000000000",
+            "61050077726f6e670700",
+            "620700646f633a442d31000300452d3102004143681000000000",
+            "6207007374617272656403000000000200000002000300452d310300452d32",
         )
     }
 }

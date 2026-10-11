@@ -25,6 +25,7 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import com.google.zxing.integration.android.IntentIntegrator
 import com.xvan.unireader.R
 import com.xvan.unireader.shared.BookmarkItem
@@ -239,6 +240,23 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 「Mac 正在看 Markdown 笔记」的空状态（kind=1 时盖住页面视图，不停在上一篇 PDF 上） */
     private lateinit var mdEmpty: LinearLayout
 
+    // —— 习题（`../EXERCISE-PLAN.md §10.4`，协议 `../PROTOCOL.md §4.9`）——
+    // 用户 2026-10-11 定：「mac 和 pad 同步，但是 tab 页可以不一样」。平板可以自己开一组题（标签栏末尾一个、能关），
+    // Mac 不跟着换；Mac 当前标签是习题（boards.kind = 3）时平板跟随显示那一组。数据只在 Mac。
+    /** 抽屉「习题」一段（Mac 下发的被跟随会话所在工作区的分组） */
+    private var exGroups = listOf<com.xvan.unireader.shared.exercise.ExGroup>()
+    /** 平板自己开的那组（范围键）；空 = 没有自己的习题标签 */
+    private var exOwn = ""
+    private var exOwnTitle = ""
+    /** 平板自己的习题标签开在哪个工作区（换了工作区就收掉它：那组题属于原来的工作区） */
+    private var exOwnWs = ""
+    /** 标签栏上当前是平板自己的习题标签 */
+    private var exOwnActive = false
+    /** 此刻显示的那一组（发过 `exOpen` 的）；空 = 不在习题上 */
+    private var exShown = ""
+    private lateinit var exHost: RemoteExHost
+    private lateinit var exScreen: com.xvan.unireader.shared.exercise.ExerciseScreen
+
     // —— 量化指标（rtt/e2e/nackRTT/mv-s，照 udp-pad-sim.py refresh）——
     private var rtt = -1.0
     private var e2e = -1.0
@@ -377,6 +395,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         (mdEmpty.layoutParams as? FrameLayout.LayoutParams)?.let {
             it.topMargin = top
             mdEmpty.layoutParams = it
+        }
+        (exScreen.view.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = top
+            exScreen.view.layoutParams = it
         }
     }
 
@@ -634,6 +656,24 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 }
             }
             onAddBoard = { requestNewBoard() }
+            // 习题：点一组 = 平板自己的习题标签开这一组（Mac 不切）。模式2 只有这一个自己的标签，没有「新标签页」
+            onOpenExercises = { key -> openOwnExercises(key) }
+        }
+
+        // 习题页（与模式1 同一份界面）：操作全部发给 Mac，Mac 回 exDeck 再画
+        exHost = RemoteExHost(
+            send = { client?.send(it) },
+            scope = { exShown },
+            host = { connHost },
+        ).apply {
+            onLocalGo = { i -> exScreen.showIndex(i) }
+            onOpenedSource = {
+                // Mac 开好那篇会把平板锁过去；这边先离开自己的习题标签，回到跟随 Mac
+                if (exOwnActive) { exOwnActive = false; syncExercises() }
+            }
+        }
+        exScreen = com.xvan.unireader.shared.exercise.ExerciseScreen(this, exHost).apply {
+            view.visibility = View.GONE
         }
 
         // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释），只列**当前工作区**那几篇。
@@ -643,7 +683,20 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             canClose = false
             setWorkspace("书库")   // 占位：`docs`/`library` 广播一到就换成 Mac 那边的工作区名
             onSwitchWorkspace = { showWorkspaceSwitcher() }
-            onSelect = { i -> visDocs.getOrNull(i)?.let { client?.send(WireCodec.encodeSelectDoc(it.id)) } }
+            onSelect = { i ->
+                if (exOwn.isNotEmpty() && i == visDocs.size) {
+                    // 平板自己的习题标签（栏末尾那个）：只在本机切，Mac 不动
+                    if (!exOwnActive) { exOwnActive = true; syncExercises() }
+                } else {
+                    val wasOwn = exOwnActive
+                    exOwnActive = false
+                    visDocs.getOrNull(i)?.let { client?.send(WireCodec.encodeSelectDoc(it.id)) }
+                    if (wasOwn) syncExercises()
+                }
+            }
+            // 只有平板自己的习题标签能关（Mac 的标签关不了，见字段注释）
+            closable = { i -> exOwn.isNotEmpty() && i == visDocs.size }
+            onClose = { i -> if (exOwn.isNotEmpty() && i == visDocs.size) closeOwnExercises() }
             onAdd = { drawer.open(ReaderDrawer.TAB_LIB) }
         }
         topbar.addView(tabsBar.view, LinearLayout.LayoutParams(-1, -2))
@@ -676,6 +729,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // applyScratchMargin 负责），在页面画布之上（纸开着时吃掉全部指针事件，PDF 上一笔都
             // 落不下——这是这个功能的定义；probe/环形盘也因此天然不会在纸上触发）
             addView(scratch.canvas, FrameLayout.LayoutParams(-1, -1))
+            // 习题页：盖住页面与草稿纸（同模式1 的习题标签：整页就是它），顶栏之下（topMargin 由 applyScratchMargin 给）
+            addView(exScreen.view, FrameLayout.LayoutParams(-1, -1))
             addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(topbar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(
@@ -1025,6 +1080,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         // 画板图片：按 host 取（换了 Mac 就换一份缓存——sha 虽不会串，但那台 Mac 未必有这张图）
         boardImages = BoardImageFetcher(host).also { scratch.canvas.picSource = it }
         docV = ""
+        // 换一台 Mac：自己开的习题标签属于原来那台，收掉；原题图缓存作废
+        exOwn = ""
+        exOwnActive = false
+        exShown = ""
+        exHost.clear()
+        exGroups = emptyList()
+        drawer.setExercises(emptyList())
         client = MacClient(host, token, this)
         setDot(false)
         statusMsg = "连接中…"
@@ -1048,7 +1110,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         // 模式键换图标、开关键上 accent 底色。两边各写一份文案的时代就此结束。
         // 跟着 Mac 看的是分页画板：页码显示画板的「当前页/总页数」（画布缩放），不是底下那篇 PDF 的
         val bc = scratch.canvas
-        if (scratch.boardMode && bc.paged) bar.setPageLabel("${bc.currentPageIndex() + 1}/${bc.pageCount}", "${bc.zoomPct()}%")
+        if (exShown.isNotEmpty()) bar.setPageLabel("—", "")   // 习题页：没有页
+        else if (scratch.boardMode && bc.paged) bar.setPageLabel("${bc.currentPageIndex() + 1}/${bc.pageCount}", "${bc.zoomPct()}%")
         else bar.setPageLabel(padView.hudPage(), padView.hudZoom())
         drawer.setCurrentPage(padView.topVisiblePage())   // 目录的「当前章节」追踪
         bar.setIcon("mode", TopBar.modeIcon(padView.mode))
@@ -1126,6 +1189,9 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         connDialog?.dismiss()
         setDot(true)
         statusMsg = ""
+        // 习题：新连接上 Mac 不知道平板开着哪组，重报一次（Mac 随后回推的 boards 也会触发，这里先发不等）
+        exShown = ""
+        syncExercises()
         refresh()
     }
 
@@ -1227,6 +1293,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     override fun onDocs(following: Boolean, selected: String, list: List<WireCodec.DocEntry>) = runOnUiThread {
         docs = list
         selectedDoc = selected
+        // 换了工作区：平板自己开的那组题属于原来的工作区，收掉（同模式1 切工作区时标签页组整组换掉）
+        val ws = docs.firstOrNull { it.id == selectedDoc }?.ws ?: docs.firstOrNull()?.ws.orEmpty()
+        if (exOwn.isNotEmpty() && ws.isNotEmpty() && exOwnWs.isNotEmpty() && ws != exOwnWs) {
+            exOwn = ""
+            exOwnActive = false
+            syncExercises()
+        }
         rebuildTabs()
     }
 
@@ -1243,7 +1316,80 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         if (sel != null && ws.isNotEmpty()) lastDocInWs[ws] = sel.id
         visDocs = docs.filter { it.ws == ws }
         tabsBar.setWorkspace(ws.ifEmpty { libWs.ifEmpty { "书库" } })
-        tabsBar.setTabs(visDocs.map { it.title }, visDocs.indexOfFirst { it.id == selectedDoc })
+        // 平板自己的习题标签接在 Mac 那几篇后面（只在本机，能关）
+        val titles = visDocs.map { it.title } + if (exOwn.isNotEmpty()) listOf(exOwnTitle) else emptyList()
+        val active = if (exOwnActive && exOwn.isNotEmpty()) visDocs.size else visDocs.indexOfFirst { it.id == selectedDoc }
+        tabsBar.setTabs(titles, active)
+    }
+
+    // ---------- 习题（`../EXERCISE-PLAN.md §10.4`） ----------
+
+    /** 此刻该显示哪一组：自己的习题标签开着就是它，否则 Mac 当前标签是习题就跟随那一组，都不是 = 不在习题上。 */
+    private fun visibleExercises(): String = when {
+        exOwnActive && exOwn.isNotEmpty() -> exOwn
+        boardKind == WireCodec.BOARD_KIND_EXERCISE -> boardCurrent
+        else -> ""
+    }
+
+    /** 显示哪一组变了就告诉 Mac（`exOpen`），并摆好习题页 / 页面视图 / 标签栏 / 抽屉高亮。 */
+    private fun syncExercises() {
+        val want = visibleExercises()
+        if (want != exShown) {
+            exShown = want
+            client?.send(WireCodec.encodeExOpen(want))
+            if (want.isEmpty()) exScreen.onHidden() else exScreen.showLoading(titleOf(want))
+        }
+        exScreen.view.visibility = if (want.isEmpty()) View.GONE else View.VISIBLE
+        drawer.setExerciseCurrent(want)
+        applyBoardSurface()
+        rebuildTabs()
+        refresh()
+    }
+
+    private fun titleOf(key: String): String =
+        exGroups.firstOrNull { it.key == key }?.title ?: getString(R.string.ex_title)
+
+    /** 抽屉里点了一组：平板自己的习题标签开这一组（已经有就就地换），Mac 不切。 */
+    private fun openOwnExercises(key: String) {
+        exOwn = key
+        exOwnTitle = titleOf(key)
+        exOwnWs = docs.firstOrNull { it.id == selectedDoc }?.ws.orEmpty()
+        exOwnActive = true
+        syncExercises()
+    }
+
+    private fun closeOwnExercises() {
+        exOwn = ""
+        exOwnActive = false
+        syncExercises()
+    }
+
+    override fun onExGroups(list: List<com.xvan.unireader.shared.exercise.ExGroup>) = runOnUiThread {
+        exGroups = list
+        drawer.setExercises(list)
+    }
+
+    override fun onExDeck(view: com.xvan.unireader.shared.exercise.ExDeckView) = runOnUiThread {
+        if (view.scope.isEmpty()) {
+            // Mac 说这一组开不了了（那本书删了 / 工作区关了）：自己的标签收掉，跟随的那组等 Mac 换标签
+            if (exShown.isNotEmpty()) {
+                if (exOwnActive) {
+                    Toast.makeText(this, R.string.ex_closed, Toast.LENGTH_SHORT).show()
+                    closeOwnExercises()
+                }
+            }
+            return@runOnUiThread
+        }
+        if (view.scope != exShown) return@runOnUiThread   // 切组时的先后错位：不是此刻显示的那组就丢
+        exScreen.show(view)
+        if (view.scope == exOwn && view.title.isNotEmpty() && view.title != exOwnTitle) {
+            exOwnTitle = view.title   // Mac 那边的范围名（带书名）比抽屉那一行的名字全
+            rebuildTabs()
+        }
+    }
+
+    override fun onExIndex(scope: String, index: Int) = runOnUiThread {
+        if (scope == exShown) exScreen.showIndex(index)
     }
 
     /**
@@ -1411,6 +1557,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             LibItem(it.id, it.title, open = kind == WireCodec.BOARD_KIND_BOARD && it.id == current)
         })
         applyBoardSurface()
+        syncExercises()   // Mac 换到 / 换走习题标签（kind = 3）：跟随显示的那一组跟着变
         refresh()
     }
 
@@ -1449,10 +1596,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     /** 按会话类型摆页面视图 / Markdown 空状态 / 顶栏上只对 PDF 有意义的几颗键 */
     private fun applyBoardSurface() {
-        val pdf = boardKind == WireCodec.BOARD_KIND_PDF
+        // 习题页盖着的时候（自己的习题标签 / 跟随 Mac 的习题标签）同样当「不是 PDF」
+        val ex = visibleExercises().isNotEmpty()
+        val pdf = boardKind == WireCodec.BOARD_KIND_PDF && !ex
         // INVISIBLE 而不是 GONE：保留布局与几何，切回 PDF 时不用重新量一遍
         padView.visibility = if (pdf) View.VISIBLE else View.INVISIBLE
-        mdEmpty.visibility = if (boardKind == WireCodec.BOARD_KIND_MARKDOWN) View.VISIBLE else View.GONE
+        mdEmpty.visibility = if (boardKind == WireCodec.BOARD_KIND_MARKDOWN && !ex) View.VISIBLE else View.GONE
         if (!pdf) padView.clearTransient()   // 盘 / 环留在藏起来的页面上没有意义
         // 翻页 / 草稿纸 / 画板模式都是「PDF 页面」上的事，画板与 Markdown 会话里收起来
         for (k in arrayOf("prev", "next", "scratch", "canvas")) bar.setVisible(k, pdf)

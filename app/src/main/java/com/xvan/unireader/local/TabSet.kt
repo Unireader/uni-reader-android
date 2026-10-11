@@ -34,6 +34,22 @@ object TabSet {
     fun boardIdOf(docId: String): String = docId.removePrefix(BOARD_PREFIX)
     fun boardKey(boardId: String): String = BOARD_PREFIX + boardId
 
+    /**
+     * 习题标签（`../EXERCISE-PLAN.md §10.2`，同 Mac `StoredTab`）：`ex:<范围键>` = 公用的那个（抽屉里点哪组都在它里面换，
+     * 错题本那一支另一个），`exs:<范围键>` = 长按「在新标签页中打开」单独开的。范围键见 `ExScope.key`。
+     */
+    const val EX_PREFIX = "ex:"
+    const val EXS_PREFIX = "exs:"
+
+    fun isExercise(docId: String): Boolean = docId.startsWith(EX_PREFIX) || docId.startsWith(EXS_PREFIX)
+    fun isSeparateExercise(docId: String): Boolean = docId.startsWith(EXS_PREFIX)
+    fun exerciseKeyOf(docId: String): String = when {
+        docId.startsWith(EXS_PREFIX) -> docId.removePrefix(EXS_PREFIX)
+        docId.startsWith(EX_PREFIX) -> docId.removePrefix(EX_PREFIX)
+        else -> ""
+    }
+    fun exerciseTab(scopeKey: String, separate: Boolean): String = (if (separate) EXS_PREFIX else EX_PREFIX) + scopeKey
+
     private const val PREFS = "tabs"
     private const val KEY_DOCS = "docs"
     private const val KEY_ACTIVE = "active"

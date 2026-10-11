@@ -119,10 +119,30 @@ object WireCodec {
      */
     const val OP_BOARD_SCROLL = 0x5C
 
-    /** `boards.kind`：被跟随会话是什么（0 = PDF 或空标签，1 = Markdown 笔记，2 = 画板笔记） */
+    /** `boards.kind`：被跟随会话是什么（0 = PDF 或空标签，1 = Markdown 笔记，2 = 画板笔记，3 = 习题） */
     const val BOARD_KIND_PDF = 0
     const val BOARD_KIND_MARKDOWN = 1
     const val BOARD_KIND_BOARD = 2
+    /** 被跟随会话是习题标签（2026-10-11）：`boards.current` = 那一组的范围键（`../PROTOCOL.md §4.9`） */
+    const val BOARD_KIND_EXERCISE = 3
+
+    /**
+     * 习题（2026-10-11，`../PROTOCOL.md §4.9`）：分组（S→C）/ 平板开哪组（C→S）/ 一组的全量（S→C）/
+     * 第几题（双向）/ 平板的操作（C→S）。
+     */
+    const val OP_EX_GROUPS = 0x5E
+    const val OP_EX_OPEN = 0x5F
+    const val OP_EX_DECK = 0x60
+    const val OP_EX_INDEX = 0x61
+    const val OP_EX_ACT = 0x62
+
+    /** `exAct.act`（只许尾部追加，与 Mac `AppModel+Exercise.applyExAct` 同表） */
+    const val EX_ACT_SUBMIT = 0
+    const val EX_ACT_STAR = 1
+    const val EX_ACT_REMOVE_WRONG = 2
+    const val EX_ACT_REDO = 3
+    const val EX_ACT_FILTER = 4
+    const val EX_ACT_OPEN_SOURCE = 5
 
     /**
      * 剪贴板动作：`0=copy 1=cut 2=paste`（只许尾部追加，与 Mac `WireCodec.clipOps` 同序）。
@@ -316,6 +336,15 @@ object WireCodec {
 
         /** 分页画板 [id] 在 Mac 上滚到的位置（[page] + 页内比例 [frac]，口径见 `ScratchCanvas.pageAnchor`；[t] = Mac 时钟毫秒） */
         data class BoardScroll(val id: String, val page: Long, val frac: Float, val t: Double) : Msg()
+
+        /** 抽屉「习题」一段（全量镜像，摊平的分组；空 = 这个工作区没有题） */
+        data class ExGroups(val list: List<com.xvan.unireader.shared.exercise.ExGroup>) : Msg()
+
+        /** 平板开着那一组的全量（[view] 的 `scope` 为空 = 那一组开不了了，平板关掉习题页） */
+        data class ExDeck(val view: com.xvan.unireader.shared.exercise.ExDeckView) : Msg()
+
+        /** 那一组只换了第几题（Mac 本机翻的） */
+        data class ExIndex(val scope: String, val index: Int) : Msg()
     }
 
     /** 分页画板的一页（boardPages 消息元素）：页 id + 背景模板（未知值按空白画） */
@@ -682,6 +711,77 @@ object WireCodec {
     fun encodeBoardScroll(id: String, page: Long, frac: Float, t: Double): ByteArray =
         Writer().apply { u8(OP_BOARD_SCROLL); str(id); u32(page); f32(frac); f64(t) }.bytes()
 
+    /** 平板现在显示哪一组习题（范围键；空串 = 不在习题上）。Mac 回一份 `exDeck` */
+    fun encodeExOpen(scope: String): ByteArray =
+        Writer().apply { u8(OP_EX_OPEN); str(scope) }.bytes()
+
+    /** 平板翻到第几题（Mac 把那一组的进度挪过去） */
+    fun encodeExIndex(scope: String, index: Int): ByteArray =
+        Writer().apply { u8(OP_EX_INDEX); str(scope); u16(index) }.bytes()
+
+    /** 平板的操作（[act] 见 EX_ACT_*；各字段用法见 `../PROTOCOL.md §4.9` 的 act 表） */
+    fun encodeExAct(
+        scope: String,
+        act: Int,
+        id: String = "",
+        arg: String = "",
+        num: Long = 0,
+        ids: List<String> = emptyList(),
+    ): ByteArray = Writer().apply {
+        u8(OP_EX_ACT); str(scope); u8(act); str(id); str(arg); u32(num)
+        u16(ids.size)
+        for (s in ids) str(s)
+    }.bytes()
+
+    /**
+     * `exDeck` 的本体 → 习题界面的中立数据（`shared/exercise/ExModel`）。字段一一对应，`flags` 拆成几个布尔，
+     * `page` 原样（1 起，0 = 不知道），`lastAt` 是 Unix 毫秒。截断的帧照常抛异常、整帧作废。
+     */
+    private fun decodeExDeck(r: Reader): com.xvan.unireader.shared.exercise.ExDeckView {
+        val scope = r.str()
+        val title = r.str()
+        val filter = r.u8()
+        val index = r.u16()
+        val done = r.u16()
+        val right = r.u16()
+        val n = r.u16()
+        val cards = ArrayList<com.xvan.unireader.shared.exercise.ExCard>(n)
+        for (i in 0 until n) {
+            val id = r.str()
+            val number = r.str()
+            val page = r.u32().toInt()
+            val kind = r.u8()
+            val flags = r.u8()
+            val chapter = r.str()
+            val section = r.str()
+            val stem = r.str()
+            val m = r.u8()
+            val options = ArrayList<Pair<String, String>>(m)
+            for (k in 0 until m) { val key = r.str(); options.add(key to r.str()) }
+            val answer = r.str()
+            val explanation = r.str()
+            val shown = r.u8()
+            val chosen = r.str()
+            val correct = r.u8()
+            val lastAt = r.f64()
+            val tries = r.u16()
+            val rights = r.u16()
+            val marked = r.str()
+            val markedCorrect = r.u8()
+            cards.add(
+                com.xvan.unireader.shared.exercise.ExCard(
+                    id = id, number = number, page = page, multiple = kind == 1,
+                    starred = flags and 1 != 0, wrong = flags and 2 != 0, figure = flags and 4 != 0,
+                    hasOriginal = flags and 8 != 0, agentAnswer = flags and 16 != 0,
+                    chapter = chapter, section = section, stem = stem, options = options,
+                    answer = answer, explanation = explanation, shown = shown, chosen = chosen, correct = correct,
+                    lastAt = lastAt.toLong(), tries = tries, rights = rights, marked = marked, markedCorrect = markedCorrect,
+                ),
+            )
+        }
+        return com.xvan.unireader.shared.exercise.ExDeckView(scope, title, filter, index, done, right, cards)
+    }
+
     // ---------- 解码（S→C）；未知 opcode / 坏帧返回 null，不崩 ----------
 
     fun decode(d: ByteArray): Msg? {
@@ -872,6 +972,19 @@ object WireCodec {
                 OP_REL_INK -> Msg.RelInk(r.u8() != 0)
                 OP_BOARD_VIEWPORT -> Msg.BoardViewport(r.str(), r.f32(), r.f32(), r.f32())
                 OP_BOARD_SCROLL -> Msg.BoardScroll(r.str(), r.u32(), r.f32(), r.f64())
+                OP_EX_GROUPS -> {
+                    val n = r.u16()
+                    val list = ArrayList<com.xvan.unireader.shared.exercise.ExGroup>(n)
+                    var i = 0
+                    // 单条最短 7 字节（两条空 str + u16 + u8）
+                    while (i < n && r.remaining >= 7) {
+                        list.add(com.xvan.unireader.shared.exercise.ExGroup(r.str(), r.str(), r.u16(), r.u8()))
+                        i++
+                    }
+                    Msg.ExGroups(list)
+                }
+                OP_EX_DECK -> Msg.ExDeck(decodeExDeck(r))
+                OP_EX_INDEX -> Msg.ExIndex(r.str(), r.u16())
                 OP_NACK -> {
                     val n = r.u16()
                     val seqs = ArrayList<Long>(n)

@@ -70,6 +70,12 @@ class DocTabsBar(private val a: Activity) {
      */
     var canClose = true
 
+    /**
+     * 逐个标签地问带不带 ×（默认跟 [canClose] 走）。模式2 的标签都是 Mac 的、关不了，唯独平板自己开的
+     * 那个习题标签（`../EXERCISE-PLAN.md §10.4`）能关——它用这个开口。
+     */
+    var closable: (Int) -> Boolean = { canClose }
+
     private var wsName = ""
 
     private val wsChip = TextView(a).apply {
@@ -183,7 +189,7 @@ class DocTabsBar(private val a: Activity) {
                 LinearLayout.LayoutParams(-2, -2),
             )
             // 模式2 没有 ×，右侧补上与左侧对称的内边距，芯片才不会看着左重右轻
-            if (canClose) addView(closeButton(fg, index)) else setPadding(Ui.dp(a, 12), 0, Ui.dp(a, 12), 0)
+            if (closable(index)) addView(closeButton(fg, index)) else setPadding(Ui.dp(a, 12), 0, Ui.dp(a, 12), 0)
         }
     }
 

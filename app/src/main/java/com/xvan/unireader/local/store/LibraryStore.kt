@@ -727,6 +727,145 @@ class LibraryStore(private val db: Db) : Closeable {
         db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name)) { it.getString(0) }
             .isNotEmpty()
 
+    // ---------- 习题（exercise / exercise_attempt，v20；`../EXERCISE-PLAN.md §10.2`）----------
+    //
+    // SQL 逐条照抄 Mac `LibraryStore.swift` 的习题一节（含 ORDER BY）。本端只读题目、记作答、改收藏 / 错题本 / 章节；
+    // 导入与删除只在 Mac 做（删要先进回收站，安卓没有回收站）。只读连接上老库可能没这两张表 → 当没有题。
+
+    fun hasExerciseTables(): Boolean = hasTable("exercise") && hasTable("exercise_attempt")
+
+    /** 习题，按「文档 → 页 → 页内先后」排。`documentId` null = 整个工作区。payload 坏了 / 题型不认识的行跳过。 */
+    fun exercises(documentId: String? = null): List<com.xvan.unireader.local.exercise.Exercise> {
+        if (!hasExerciseTables()) return emptyList()
+        val rows = if (documentId != null) {
+            db.query("SELECT * FROM exercise WHERE document_id=? ORDER BY page, seq, created_at", arrayOf(documentId)) { exercise(it) }
+        } else {
+            db.query("SELECT * FROM exercise ORDER BY document_id, page, seq, created_at") { exercise(it) }
+        }
+        return rows.filterNotNull()
+    }
+
+    fun exercise(id: String): com.xvan.unireader.local.exercise.Exercise? {
+        if (!hasExerciseTables()) return null
+        return db.query("SELECT * FROM exercise WHERE id=?", arrayOf(id)) { exercise(it) }.firstOrNull()
+    }
+
+    /** 侧栏 / 抽屉要的数：总数 / 错题本 / 收藏 / 每篇几道 + 每篇每个章节几道（两条 GROUP BY，同 Mac）。 */
+    fun exerciseSummary(): com.xvan.unireader.local.exercise.ExSummary {
+        if (!hasExerciseTables()) return com.xvan.unireader.local.exercise.ExSummary()
+        var total = 0
+        var wrong = 0
+        var starred = 0
+        val byDoc = HashMap<String, Int>()
+        db.query(
+            "SELECT COALESCE(document_id, ''), COUNT(*), SUM(wrong), SUM(starred) FROM exercise GROUP BY document_id",
+        ) { Triple(it.getString(0) ?: "", it.getInt(1), it.getInt(2) to it.getInt(3)) }.forEach { (doc, n, ws) ->
+            total += n
+            wrong += ws.first
+            starred += ws.second
+            if (doc.isNotEmpty()) byDoc[doc] = n
+        }
+        val chapters = HashMap<String, MutableMap<List<String>, com.xvan.unireader.local.exercise.ExChapterStat>>()
+        db.query(
+            """
+            SELECT document_id, chapter, COUNT(*), MIN(page), SUM(wrong) FROM exercise WHERE document_id IS NOT NULL
+            GROUP BY document_id, chapter
+            """.trimIndent(),
+        ) {
+            val first = if (it.isNull(3)) Int.MAX_VALUE else it.getInt(3)
+            Triple(it.getString(0), com.xvan.unireader.local.exercise.ExChapter.parse(it.getString(1) ?: ""),
+                com.xvan.unireader.local.exercise.ExChapterStat(it.getInt(2), first, it.getInt(4)))
+        }.forEach { (doc, path, stat) -> chapters.getOrPut(doc) { HashMap() }[path] = stat }
+        return com.xvan.unireader.local.exercise.ExSummary(total, wrong, starred, byDoc, chapters)
+    }
+
+    /**
+     * 每道做过的题的作答统计（同 Mac `exerciseAttemptStats`：一条 GROUP BY + 书上的作答 + 最近一次 + App 里练的最近一次）。
+     * 没做过的题不在结果里。时间是 ISO 毫秒串，字典序 = 时间序。
+     */
+    fun exerciseAttemptStats(): Map<String, com.xvan.unireader.local.exercise.ExAttemptStats> {
+        if (!hasExerciseTables()) return emptyMap()
+        val out = HashMap<String, com.xvan.unireader.local.exercise.ExAttemptStats>()
+        db.query(
+            "SELECT exercise_id, COUNT(*), SUM(correct=1), SUM(correct=0) FROM exercise_attempt GROUP BY exercise_id",
+        ) { it.getString(0) to com.xvan.unireader.local.exercise.ExAttemptStats(it.getInt(1), it.getInt(2), it.getInt(3)) }
+            .forEach { (id, s) -> out[id] = s }
+        val mark = com.xvan.unireader.local.exercise.Exercise.MARK_SOURCE
+        db.query("SELECT exercise_id, answer, correct FROM exercise_attempt WHERE source=?", arrayOf(mark)) {
+            Triple(it.getString(0), it.getString(1) ?: "", if (it.isNull(2)) null else it.getInt(2) != 0)
+        }.forEach { (id, ans, c) -> out[id]?.let { out[id] = it.copy(markedAnswer = ans, markedCorrect = c) } }
+        db.query(
+            """
+            SELECT a.exercise_id, a.correct FROM exercise_attempt a
+            JOIN (SELECT exercise_id, MAX(created_at) AS t FROM exercise_attempt GROUP BY exercise_id) m
+              ON a.exercise_id = m.exercise_id AND a.created_at = m.t
+            """.trimIndent(),
+        ) { it.getString(0) to (if (it.isNull(1)) null else it.getInt(1) != 0) }
+            .forEach { (id, c) -> out[id]?.let { out[id] = it.copy(lastCorrect = c) } }
+        db.query(
+            """
+            SELECT a.exercise_id, a.answer, a.created_at FROM exercise_attempt a
+            JOIN (SELECT exercise_id, MAX(created_at) AS t FROM exercise_attempt WHERE source<>? GROUP BY exercise_id) m
+              ON a.exercise_id = m.exercise_id AND a.created_at = m.t AND a.source<>?
+            """.trimIndent(),
+            arrayOf(mark, mark),
+        ) { Triple(it.getString(0), it.getString(1) ?: "", it.getString(2) ?: "") }
+            .forEach { (id, ans, at) -> out[id]?.let { out[id] = it.copy(lastAnswer = ans, lastAt = at) } }
+        return out
+    }
+
+    /**
+     * 记一次作答；答错（`correct == false`）时同一个事务里把题放进错题本（拍板 ③：答错进、只能手动出，答对**不**动 `wrong`）。
+     * id 用大写 UUID（同 Mac `UUID().uuidString`）。
+     */
+    fun recordExerciseAttempt(exerciseId: String, answer: String, correct: Boolean?, elapsedMs: Long, at: String = nowIso()) {
+        db.transaction {
+            db.exec(
+                "INSERT INTO exercise_attempt(id,exercise_id,answer,correct,elapsed_ms,created_at,source) VALUES(?,?,?,?,?,?,?)",
+                arrayOf<Any?>(
+                    UUID.randomUUID().toString().uppercase(), exerciseId, answer,
+                    correct?.let { if (it) 1L else 0L }, maxOf(0L, elapsedMs), at, "",
+                ),
+            )
+            if (correct == false) {
+                db.exec("UPDATE exercise SET wrong=1, updated_at=? WHERE id=? AND wrong=0", arrayOf(at, exerciseId))
+            }
+        }
+    }
+
+    fun setExerciseStarred(id: String, on: Boolean, at: String = nowIso()) {
+        db.exec("UPDATE exercise SET starred=?, updated_at=? WHERE id=?", arrayOf<Any?>(if (on) 1L else 0L, at, id))
+    }
+
+    /** 移出 / 放回错题本（只有用户手动才会移出）。 */
+    fun setExerciseWrong(id: String, on: Boolean, at: String = nowIso()) {
+        db.exec("UPDATE exercise SET wrong=?, updated_at=? WHERE id=?", arrayOf<Any?>(if (on) 1L else 0L, at, id))
+    }
+
+    /** 改几道题的章节（列表「设置章节…」）。 */
+    fun setExerciseChapter(ids: List<String>, path: List<String>, at: String = nowIso()) {
+        val text = com.xvan.unireader.local.exercise.ExChapter.text(com.xvan.unireader.local.exercise.ExChapter.clean(path))
+        db.transaction {
+            for (id in ids) db.exec("UPDATE exercise SET chapter=?, updated_at=? WHERE id=?", arrayOf(text, at, id))
+        }
+    }
+
+    private fun exercise(c: android.database.Cursor): com.xvan.unireader.local.exercise.Exercise? {
+        val kind = c.int("kind")
+        if (kind != com.xvan.unireader.local.exercise.Exercise.KIND_SINGLE &&
+            kind != com.xvan.unireader.local.exercise.Exercise.KIND_MULTIPLE) return null   // 以后的新题型
+        val p = com.xvan.unireader.local.exercise.ExPayload.parse(c.blob("payload")) ?: return null
+        val pageIdx = c.getColumnIndex("page")
+        return com.xvan.unireader.local.exercise.Exercise(
+            id = c.str("id"), documentId = c.strOrNull("document_id"),
+            page = if (pageIdx < 0 || c.isNull(pageIdx)) null else c.getInt(pageIdx),
+            seq = c.int("seq"), kind = kind, number = c.str("number"), section = c.str("section"), payload = p,
+            starred = c.bool("starred"), wrong = c.bool("wrong"), source = c.str("source"),
+            createdAt = c.str("created_at"), updatedAt = c.str("updated_at"),
+            chapter = com.xvan.unireader.local.exercise.ExChapter.parse(c.str("chapter")),
+        )
+    }
+
     // ---------- 划字产物（选区注解 kind=0 / 高亮 kind=3） ----------
 
     /**

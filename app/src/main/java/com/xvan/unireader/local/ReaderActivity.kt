@@ -24,6 +24,7 @@ import android.widget.TextView
 import android.widget.Toast
 import com.xvan.unireader.Launcher
 import com.xvan.unireader.R
+import com.xvan.unireader.local.exercise.ExScope
 import com.xvan.unireader.local.store.BoardNote
 import com.xvan.unireader.local.store.Iso
 import com.xvan.unireader.local.store.LibDocument
@@ -143,6 +144,13 @@ class ReaderActivity : Activity() {
         val isBoard: Boolean get() = TabSet.isBoard(docId)
         val boardId: String get() = TabSet.boardIdOf(docId)
 
+        /**
+         * 习题标签（`../EXERCISE-PLAN.md §10.2`）：[docId] 存成 `ex:<范围键>`（公用）/ `exs:<范围键>`（单独开的），
+         * 同画板一样没有 [canvas]/[pdf]：整页是 [ExerciseController.screen]。
+         */
+        val isExercise: Boolean get() = TabSet.isExercise(docId)
+        val exerciseScope: ExScope? get() = ExScope.parse(TabSet.exerciseKeyOf(docId))
+
         var canvas: LocalCanvasView? = null
         var pdf: PdfSource? = null
 
@@ -224,6 +232,12 @@ class ReaderActivity : Activity() {
 
     /** 工作区的画板笔记列表（`board_note`，最近打开在前）：抽屉 / 「+」/ 标签标题都用它 */
     private var libBoards = listOf<BoardNote>()
+
+    /** 习题（`../EXERCISE-PLAN.md §10.2`）：习题标签激活时铺满内容区的那一页 + 抽屉分组 + 库读写 */
+    private lateinit var exercise: ExerciseController
+
+    /** 「到 PDF 原页」要跳的地方（文档 id、页、页内比例）：那篇还没装载完时先记着，几何就绪再跳 */
+    private var pendingJump: Triple<String, Int, Float>? = null
 
     /** 划字之后那条「四色高亮 / 批注 / 复制」的浮条（选字模式，见 [TextSelectBar]） */
     private val selectBar by lazy {
@@ -465,7 +479,7 @@ class ReaderActivity : Activity() {
             // 「目录 / 书库」与模式2 同一颗键、同一个位置、同一份抽屉（shared/ReaderDrawer）。
             // 开之前先刷一次书库（模式2 的 `library` 是 Mac 主动广播的，模式1 得自己去库里读）
             icon("toc", R.drawable.ic_list, "目录 / 书库") {
-                if (!drawer.isOpen) refreshDrawerLibrary()
+                if (!drawer.isOpen) { refreshDrawerLibrary(); exercise.refreshGroups() }
                 drawer.toggle()
             }
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { cur()?.turn(prev = true) }
@@ -587,6 +601,14 @@ class ReaderActivity : Activity() {
             onOpenBoard = { id -> openDoc(TabSet.boardKey(id)) }
             onAddBoard = { createBoard() }
             onBoardMore = { id -> showBoardMenu(id) }
+            // 习题（`../EXERCISE-PLAN.md §10.2`）：点一组 = 在公用习题标签里换；长按 = 「在新标签页中打开」（同 Mac 右键）
+            onOpenExercises = { key -> openExercises(key, newTab = false) }
+            onExercisesLongPress = { key -> showExerciseGroupMenu(key) }
+        }
+        exercise = ExerciseController(this).apply {
+            onGroups = { drawer.setExercises(it) }
+            onOpenSource = { docId, page, frac -> openExerciseSource(docId, page, frac) }
+            screen.view.visibility = View.GONE
         }
         // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）。
         // 面板改完即时生效（基类自己管），这里只负责把结果存下来——模式2 那两个回调是上行给 Mac 的，
@@ -669,6 +691,8 @@ class ReaderActivity : Activity() {
             addView(scratch.canvas, FrameLayout.LayoutParams(-1, -1))
             // 画板标签的整页画布：与草稿纸同一层级（chrome 之下，topMargin 同由 applyChromeHeight 给）
             addView(board.canvas, FrameLayout.LayoutParams(-1, -1))
+            // 习题标签的整页（同画板：chrome 之下，topMargin 由 applyChromeHeight 给）
+            addView(exercise.screen.view, FrameLayout.LayoutParams(-1, -1))
             addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(chrome, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
@@ -731,6 +755,10 @@ class ReaderActivity : Activity() {
             it.topMargin = h.toInt()
             board.canvas.layoutParams = it
         }
+        (exercise.screen.view.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = h.toInt()
+            exercise.screen.view.layoutParams = it
+        }
         // 浮着的工具组：没挪过的贴 chrome 下方，挪过的不许钻进 chrome（Toolbox.minTop 现读 chromeHeight）
         bar.tools.relayout()
     }
@@ -775,6 +803,10 @@ class ReaderActivity : Activity() {
         libDocs = o.docs
         libBoards = o.boards
         board.bind(q, dir)
+        // 习题：书名先给一份（恢复习题标签时要拿范围名），抽屉的分组随后从库里读
+        exercise.bind(q, dir)
+        exercise.setDocTitles(libTitles)
+        exercise.refreshGroups()
         pushDrawerLibrary()
         // 笔迹整理（转二进制、摘 JSON 点，`../BINARY-INK-PLAN.md §5`）：post 到本轮之后，排在开标签页的那几条读库后面
         window.decorView.post { compactInkPoints(q, LibraryStore.InkCompactCursor(0, ""), 0) }
@@ -902,6 +934,10 @@ class ReaderActivity : Activity() {
         scratch.bind(null, "", emptyList())
         board.bind(null, null)   // 画板同理（bind(null) 顺带收起）
         libBoards = emptyList()
+        exercise.close()
+        exercise.screen.view.visibility = View.GONE
+        exercise.bind(null, null)
+        pendingJump = null
         for (t in tabs) saveProgress(t)
         saveTabSet()
         for (t in tabs) unload(t)
@@ -1065,17 +1101,106 @@ class ReaderActivity : Activity() {
             showAlert("标签页太多了", "最多同时开 $MAX_TABS 篇，先关掉一个再开。")
             return
         }
-        tabs.add(Tab(docId, tabTitleOf(docId) ?: if (TabSet.isBoard(docId)) getString(R.string.board_untitled) else "文档"))
+        val fallback = when {
+            TabSet.isBoard(docId) -> getString(R.string.board_untitled)
+            TabSet.isExercise(docId) -> getString(R.string.ex_title)
+            else -> "文档"
+        }
+        tabs.add(Tab(docId, tabTitleOf(docId) ?: fallback))
         activate(tabs.size - 1)
     }
 
-    /** 标签页标题：文档按书库、画板按画板表；都查不到 = null（库里没有了） */
-    private fun tabTitleOf(docId: String): String? =
-        if (TabSet.isBoard(docId)) {
-            libBoards.firstOrNull { it.id == TabSet.boardIdOf(docId) }?.let { board.displayName(it) }
-        } else {
-            libTitles[docId]
+    /** 标签页标题：文档按书库、画板按画板表、习题按范围名；都查不到 = null（库里没有了） */
+    private fun tabTitleOf(docId: String): String? = when {
+        TabSet.isBoard(docId) -> libBoards.firstOrNull { it.id == TabSet.boardIdOf(docId) }?.let { board.displayName(it) }
+        TabSet.isExercise(docId) -> {
+            val sc = ExScope.parse(TabSet.exerciseKeyOf(docId))
+            // 某本书（或它某一章）的习题：那本书不在了 → 这个标签也不留（同 Mac `closeExercisesIfGone`）
+            if (sc == null || (sc.documentId != null && sc.documentId !in libTitles)) null else exercise.scopeTitle(sc)
         }
+        else -> libTitles[docId]
+    }
+
+    // ---------- 习题（`../EXERCISE-PLAN.md §10.2`，同 Mac `TabsModel.openExercises`） ----------
+
+    /**
+     * 开一组题。默认只用一个公用习题标签（错题本那一支另一个）：
+     * ① 已经有标签开着这一组 → 切过去（`newTab` 且它是公用的 → 就地改成单独开的，不开一个重复的）；
+     * ② 否则不要新标签 → 同一支的公用标签就地换成这一组；③ 都没有 → 新开（`newTab` = 单独开的）。
+     */
+    private fun openExercises(key: String, newTab: Boolean) {
+        val scope = ExScope.parse(key) ?: return
+        val i = tabs.indexOfFirst { it.isExercise && TabSet.exerciseKeyOf(it.docId) == key }
+        if (i >= 0) {
+            if (newTab && !TabSet.isSeparateExercise(tabs[i].docId)) replaceTab(i, TabSet.exerciseTab(key, separate = true))
+            if (i != active) activate(i) else saveTabSet()
+            return
+        }
+        if (!newTab) {
+            val j = tabs.indexOfFirst {
+                it.isExercise && !TabSet.isSeparateExercise(it.docId) && it.exerciseScope?.isMistakes == scope.isMistakes
+            }
+            if (j >= 0) {
+                val wasActive = j == active
+                if (wasActive) deactivate(tabs[j])
+                replaceTab(j, TabSet.exerciseTab(key, separate = false))
+                if (wasActive) active = -1
+                activate(j)
+                return
+            }
+        }
+        openDoc(TabSet.exerciseTab(key, separate = newTab))
+    }
+
+    /** 习题标签换一组 / 改成单独开的：标签对象整个换掉（习题标签没有画布状态要搬），位置不变。 */
+    private fun replaceTab(i: Int, docId: String) {
+        val old = tabs[i]
+        tabs[i] = Tab(docId, tabTitleOf(docId) ?: getString(R.string.ex_title)).also { it.usedAt = old.usedAt }
+        refreshTabsBar()
+        saveTabSet()
+    }
+
+    /** 抽屉里长按一组：「在新标签页中打开」（同 Mac 右键菜单；错题本那一行抽屉不会调过来）。 */
+    private fun showExerciseGroupMenu(key: String) {
+        var dlg: AlertDialog? = null
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.ex_open_new_tab)) {
+                dlg?.dismiss()
+                drawer.close()
+                openExercises(key, newTab = true)
+            },
+        )
+        val sc = ExScope.parse(key) ?: return
+        dlg = Sheet(this).title(exercise.scopeTitle(sc)).content(col).action(getString(R.string.common_cancel)).show()
+    }
+
+    /** 习题标签激活：铺开习题页、读那一组。 */
+    private fun activateExercise(t: Tab) {
+        val sc = t.exerciseScope ?: run { failToOpen(t, getString(R.string.ex_closed)); return }
+        hideOpening()
+        exercise.screen.view.visibility = View.VISIBLE
+        exercise.open(sc)
+        drawer.setExerciseCurrent(sc.key)
+        refreshHud()
+    }
+
+    /** 习题的「到 PDF 原页」：开（或切到）那一篇，几何就绪后跳到那一页那一处。 */
+    private fun openExerciseSource(docId: String, page: Int, frac: Float) {
+        if (docId !in libTitles) return
+        pendingJump = Triple(docId, page, frac)
+        openDoc(docId)
+        // 已经装载着（切过去就有画布）→ 当场跳；没装载的等 attachTab 的 onFirstGeometry
+        curTab()?.takeIf { it.docId == docId }?.canvas?.let { applyPendingJump(docId, it) }
+    }
+
+    private fun applyPendingJump(docId: String, c: LocalCanvasView) {
+        val j = pendingJump ?: return
+        if (j.first != docId) return
+        pendingJump = null
+        c.scrollToPageFrac(j.second, j.third)
+        refreshHud()
+    }
 
     // ---------- 画板笔记（`../BOARD-NOTE-PLAN.md §5`） ----------
 
@@ -1305,17 +1430,23 @@ class ReaderActivity : Activity() {
         if (prev != null && prev !== t) deactivate(prev)
         active = i
         t.usedAt = SystemClock.uptimeMillis()
-        if (t.isBoard) {
-            // 画板标签：没有 PDF、没有草稿纸（整页就是一张纸），草稿纸绑空（入口列不出别篇的纸）
+        if (t.isBoard || t.isExercise) {
+            // 画板 / 习题标签：没有 PDF、没有草稿纸，草稿纸绑空（入口列不出别篇的纸）
             scratch.bind(queue, "", emptyList())
             refreshTabsBar()
-            pushDrawerToc()      // 目录 / 书签清空（画板没有）
+            pushDrawerToc()      // 目录 / 书签清空（画板、习题都没有）
             pushDrawerLibrary()
             title = t.title
             saveTabSet()
-            activateBoard(t)
+            if (t.isBoard) {
+                drawer.setExerciseCurrent("")
+                activateBoard(t)
+            } else {
+                activateExercise(t)
+            }
             return
         }
+        drawer.setExerciseCurrent("")
         // 草稿纸立刻绑到这一篇（哪怕还没装载完：装载中 docId 就该是它的，否则入口会列出别篇的纸；
         // 装载完 attachTab 会带着读好的纸列表再绑一次）
         scratch.bind(queue, t.docId, t.pads, t.pdf, pageAspectOf(t))
@@ -1333,6 +1464,7 @@ class ReaderActivity : Activity() {
         t.pdf?.setForeground(true)
         c.refreshImages()   // 背景期间把位图丢了，这里补回来（见 PageCanvasView.refreshImages）
         hideOpening()
+        applyPendingJump(t.docId, c)   // 习题「到 PDF 原页」切过来的
         refreshHud()
         trimLive()
     }
@@ -1340,6 +1472,10 @@ class ReaderActivity : Activity() {
     /** 退到背景：进度先落库（随时可能被 LRU 卸掉），再把这一屏的位图与缓存额度让出来 */
     private fun deactivate(t: Tab) {
         if (t.isBoard) board.close()   // 画板标签切走即收（视口不落库，重开回中，三端契约）
+        if (t.isExercise) {
+            exercise.close()           // 练到哪了在 LocalExerciseDeck 里，切回来接着练
+            exercise.screen.view.visibility = View.GONE
+        }
         saveProgress(t)
         scratch.close()   // 草稿纸属于「当前这篇」：切走即关（视口不落库，重开回中，三端契约）
         selectBar.hide()  // 划字浮条同理：它指着的是刚切走那一篇的选区
@@ -1474,6 +1610,7 @@ class ReaderActivity : Activity() {
             c.applyHFrac(doc.readHFrac.toFloat())
             val ok = c.scrollToPageFrac(doc.readPage, doc.readFrac.toFloat())
             Log.i(TAG, "复原滚动 → 第 ${doc.readPage + 1} 页 ${"%.3f".format(doc.readFrac)} ok=$ok")
+            applyPendingJump(t.docId, c)   // 从习题「到 PDF 原页」打开的：复原之后再跳到题目那一处
             refreshHud()
         }
         // 画板模式（逐文档，库里的 canvas_mode）：**必须赶在几何首次就绪之前**定好页边宽度，
@@ -1607,6 +1744,10 @@ class ReaderActivity : Activity() {
         saveProgress(t)
         if (i == active) scratch.close()   // 正开着的草稿纸属于这篇，随它一起收
         if (i == active && t.isBoard) board.close()
+        if (i == active && t.isExercise) {
+            exercise.close()
+            exercise.screen.view.visibility = View.GONE
+        }
         unload(t)
         tabs.removeAt(i)
         return t
@@ -1762,9 +1903,18 @@ class ReaderActivity : Activity() {
         // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式 / 撤销重做——
         // 草稿纸那套画布在模式1 本来就没有撤销栈，画板照搬）
         val isBoard = curTab()?.isBoard == true
-        for (k in arrayOf("prev", "next", "scratch", "lock", "canvas", "undo", "redo")) bar.setVisible(k, !isBoard)
+        val isEx = curTab()?.isExercise == true
+        for (k in arrayOf("prev", "next", "scratch", "lock", "canvas", "undo", "redo")) bar.setVisible(k, !isBoard && !isEx)
         if (isBoard) {
             refreshBoardHud()
+            return
+        }
+        if (isEx) {
+            // 习题标签：没有页、没有笔——页码处一道横线，笔 / 剪贴板 / 胶囊都收起来
+            bar.setPageLabel("—", "")
+            bar.setVisible("pen", false)
+            for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, false)
+            capsules.visibility = View.GONE
             return
         }
         if (canvas == null) {

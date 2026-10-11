@@ -152,6 +152,25 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
+        // v20 习题（`../EXERCISE-PLAN.md §10.3`，2026-10-11 起同步，与 Mac 同序同列）。父表在前
+        // （`exercise_attempt.exercise_id` 指向它）。`exercise` 按 `updated_at` 取新（收藏 / 进出错题本 / 设章节都改它）；
+        // `exercise_attempt` 一次作答一行，两边各做的自然并起来，没有修改时间 → 冲突保留源盘。
+        TableSpec(
+            "exercise", "id",
+            listOf(
+                t("id"), t("document_id"), i("page"), i("seq"), i("kind"), t("number"), t("section"),
+                b("payload"), i("starred"), i("wrong"), t("source"), t("created_at"), t("updated_at"),
+                t("chapter"),
+            ),
+            lww = "updated_at",
+        ),
+        TableSpec(
+            "exercise_attempt", "id",
+            listOf(
+                t("id"), t("exercise_id"), t("answer"), i("correct"), i("elapsed_ms"), t("created_at"),
+                t("source"),
+            ),
+        ),
         TableSpec("meta", "key", listOf(t("key"), t("value"))),
     )
 

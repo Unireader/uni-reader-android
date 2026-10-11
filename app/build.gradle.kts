@@ -73,6 +73,12 @@ dependencies {
     // 直接失败（连 kotlin.Unit 都报 incompatible）。2.0.1 是 Kotlin 2.3.21，正好在可读范围内。
     // 要用 2.0.3 就得先把 Kotlin 编译器提到 2.4（换掉 AGP 内置 Kotlin），那是独立一件事。
     implementation("io.legere:pdfiumandroid:2.0.1")
+    // 习题的题干 / 选项 / 解析：Markdown + `$…$` 公式（`../EXERCISE-PLAN.md §10`，用户 2026-10-11 选的「安卓自带控件画」）。
+    // Markwon 把 Markdown 画成 TextView 的 Spannable；ext-latex 经 JLaTeXMath 把公式画成图嵌在行里（传递依赖
+    // ru.noties:jlatexmath-android）；inline-parser 是行内公式的前提。都是 Java 库，不受上面 Kotlin 元数据版本的限制。
+    implementation("io.noties.markwon:core:4.6.2")
+    implementation("io.noties.markwon:ext-latex:4.6.2")
+    implementation("io.noties.markwon:inline-parser:4.6.2")
     testImplementation("junit:junit:4.13.2")
     // 插桩测试（:app:connectedDebugAndroidTest）：数据层要在真 SQLite 上验，JVM 单测跑不了。
     // 这两条只影响 androidTest 变体，不进 APK、也不影响 :app:assembleDebug 的离线构建。

@@ -28,6 +28,8 @@
     <color name="accent_container">#FFDDEBFB</color>
 
     <color name="danger">#FFB3261E</color>
+    <!-- 答对（习题判完的勾，`../EXERCISE-PLAN.md §10`）：与 danger 那道红叉成对 -->
+    <color name="success">#FF1E7A3C</color>
 
     <!-- 书签缎带（../REQUIREMENTS.md §1.9）：与 Mac 页面上那面红缎带同色，三端一眼认得出是同一样东西。
          它与 danger 刻意分开——书签不是警告，只是恰好也用红。 -->

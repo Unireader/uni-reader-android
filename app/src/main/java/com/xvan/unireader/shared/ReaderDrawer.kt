@@ -38,6 +38,8 @@ class ReaderDrawer(private val a: Activity) {
         /** 打开时停在哪一页（[open] 的参数） */
         const val TAB_TOC = 0
         const val TAB_LIB = 1
+        /** 习题（`../EXERCISE-PLAN.md §10.1`）：工作区里有题才出现这一页 */
+        const val TAB_EX = 2
 
         private const val MAX_W = 340        // 面板最宽（dp）：平板上不让它占掉半屏
         private const val WIDTH_RATIO = 0.82f
@@ -82,8 +84,24 @@ class ReaderDrawer(private val a: Activity) {
     /** 画板那一行右侧的「更多」（改名 / 删除，由宿主弹） */
     var onBoardMore: (String) -> Unit = {}
 
+    // —— 习题（`../EXERCISE-PLAN.md §10.1`）：Mac 侧栏「习题」一段的同一份分组（全部 / 错题本 → 书 → 章 / 收藏 /
+    // 每本书 → 章节树），摊平成「一行一个范围 + 缩进层级」。模式1 本机算、模式2 是 Mac 的 `exGroups`。
+    // **空表 = 这一页不出现**（同 Mac：有题才有这一段）。
+    private var exGroups: List<com.xvan.unireader.shared.exercise.ExGroup> = emptyList()
+    /** 当前标签开着的那一组（高亮 + 自动展开它的上级）。 */
+    private var exCurrent = ""
+    private val exExpanded = HashSet<String>()
+
+    /** 点一组：范围键。 */
+    var onOpenExercises: (String) -> Unit = {}
+    /** 长按一组（模式1：「在新标签页中打开」）；null = 不支持长按。错题本那一行不会调（同 Mac 右键菜单）。 */
+    var onExercisesLongPress: ((String) -> Unit)? = null
+
     private val tocTab = tabButton("目录", R.drawable.ic_list) { switchTo(TAB_TOC) }
     private val libTab = tabButton("书库", R.drawable.ic_book) { switchTo(TAB_LIB) }
+    private val exTab = tabButton(a.getString(R.string.ex_title), R.drawable.ic_exercise) { switchTo(TAB_EX) }.apply {
+        visibility = View.GONE
+    }
 
     private val bodyBox = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
@@ -106,6 +124,7 @@ class ReaderDrawer(private val a: Activity) {
                 setPadding(a.dp(10), a.dp(8), a.dp(10), a.dp(8))
                 addView(tocTab)
                 addView(libTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
+                addView(exTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
                 addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))   // 把关闭键顶到最右
                 addView(Ui.iconButton(a, R.drawable.ic_close, "关闭", Ui.onSurface(a)) { close() })
             },
@@ -186,6 +205,21 @@ class ReaderDrawer(private val a: Activity) {
     fun setBoards(list: List<LibItem>?) {
         boards = list
         if (isOpen && tab == TAB_LIB) rebuild()
+    }
+
+    /** 习题分组（空 = 没有题，「习题」这一页收起来）。 */
+    fun setExercises(list: List<com.xvan.unireader.shared.exercise.ExGroup>) {
+        exGroups = list
+        exTab.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+        if (list.isEmpty() && tab == TAB_EX) tab = TAB_LIB
+        if (isOpen) rebuild()
+    }
+
+    /** 当前标签开着哪一组（空 = 不是习题标签）。 */
+    fun setExerciseCurrent(key: String) {
+        if (exCurrent == key) return
+        exCurrent = key
+        if (isOpen && tab == TAB_EX) rebuild()
     }
 
     /** 当前显示文档的内容哈希（`layout` 广播带来）：与目录的 docId 一致才敢渲染 */
@@ -282,11 +316,95 @@ class ReaderDrawer(private val a: Activity) {
     private fun rebuild() {
         tocTab.isSelected = tab == TAB_TOC
         libTab.isSelected = tab == TAB_LIB
+        exTab.isSelected = tab == TAB_EX
         paintTab(tocTab, tab == TAB_TOC)
         paintTab(libTab, tab == TAB_LIB)
+        paintTab(exTab, tab == TAB_EX)
         bodyBox.removeAllViews()
-        if (tab == TAB_TOC) buildToc() else buildLib()
+        when (tab) {
+            TAB_TOC -> buildToc()
+            TAB_EX -> buildExercises()
+            else -> buildLib()
+        }
     }
+
+    // ---------- 习题（`../EXERCISE-PLAN.md §10.1`） ----------
+
+    /**
+     * 分组树：按 depth 就地还原（同目录那一页的做法），有下级的行带折叠箭头（默认收起，同 Mac 侧栏），
+     * 当前那组高亮、它的上级自动展开。行尾是数（错题本那一支数的是错题）。
+     */
+    private fun buildExercises() {
+        val rows = exGroups
+        // 每行的上级（按 depth 还原）
+        val parents = ArrayList<List<String>>(rows.size)
+        val stack = ArrayList<String>()
+        for (g in rows) {
+            while (stack.size > g.depth) stack.removeAt(stack.size - 1)
+            parents += ArrayList(stack)
+            while (stack.size <= g.depth) stack.add("")
+            stack[g.depth] = g.key
+        }
+        val curIdx = rows.indexOfFirst { it.key == exCurrent }
+        if (curIdx >= 0) exExpanded.addAll(parents[curIdx])
+        for ((i, g) in rows.withIndex()) {
+            if (!parents[i].all { exExpanded.contains(it) }) continue
+            val kids = i + 1 < rows.size && rows[i + 1].depth > g.depth
+            bodyBox.addView(exRow(g, kids, i == curIdx), LinearLayout.LayoutParams(-1, -2))
+        }
+    }
+
+    private fun exRow(g: com.xvan.unireader.shared.exercise.ExGroup, kids: Boolean, isCur: Boolean): LinearLayout =
+        LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(g.depth * a.dp(14), 0, 0, 0)
+            addView(
+                if (kids) {
+                    Ui.iconButton(a, R.drawable.ic_chevron_right, "展开/折叠", Ui.onVariant(a)) {
+                        if (!exExpanded.remove(g.key)) exExpanded.add(g.key)
+                        rebuild()
+                    }.apply { rotation = if (exExpanded.contains(g.key)) 90f else 0f }
+                } else {
+                    View(a)
+                },
+                LinearLayout.LayoutParams(a.dp(30), a.dp(30)),
+            )
+            val label = TextView(a).apply {
+                text = g.title
+                textSize = 15f
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                setTextColor(if (isCur) Ui.accent(a) else Ui.onSurface(a))
+            }
+            val count = TextView(a).apply {
+                text = "${g.count}"
+                textSize = 12f
+                setTextColor(if (isCur) Ui.accent(a) else Ui.onVariant(a))
+            }
+            val hit = LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(a.dp(6), a.dp(9), a.dp(8), a.dp(9))
+                val face = if (isCur) Ui.round(Ui.col(a, R.color.accent_container), Ui.RADIUS, a) else null
+                background = Ui.rippleOver(a, face, Ui.RADIUS, Ui.onSurface(a))
+                isClickable = true
+                addView(label, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(count, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
+                setOnClickListener {
+                    onOpenExercises(g.key)
+                    close()
+                }
+                val lp = onExercisesLongPress
+                if (lp != null && g.key != "wrong") {
+                    setOnLongClickListener {
+                        lp(g.key)
+                        true
+                    }
+                }
+            }
+            addView(hit, LinearLayout.LayoutParams(0, -2, 1f))
+        }
 
     private fun buildToc() {
         // 「添加书签」常驻在最上面：没目录的书也得能加（落点 = 当前视口顶，与 Mac ⌘D 同口径）

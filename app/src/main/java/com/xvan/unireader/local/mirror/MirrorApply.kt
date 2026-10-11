@@ -135,15 +135,35 @@ object MirrorApply {
         return live
     }
 
+    /**
+     * 合并之后目标库里还活着的习题 id（同 [livingBoards]，给 `exercise_attempt` 的 upsert 过滤用；
+     * 同 Mac `MirrorApply.livingExercises`）。本批里因为「父文档已删」被跳过的题也不算活着——
+     * 否则它的作答照写、撞外键整次失败。表不存在 = 一道都没有。
+     */
+    fun livingExercises(db: Db, changes: List<MirrorDiff.Change>, liveDocs: Set<String>): Set<String> {
+        val live = if (MirrorStore.hasTable(db, "exercise")) {
+            db.query("SELECT id FROM exercise") { it.getString(0) }.toMutableSet()
+        } else {
+            HashSet()
+        }
+        for (c in changes.filter { it.table == "exercise" }) {
+            if (c.op == MirrorDiff.Op.DELETE) { live.remove(c.rowId); continue }
+            val doc = c.row?.get("document_id") as? String
+            if (doc != null && doc !in liveDocs) live.remove(c.rowId) else live.add(c.rowId)
+        }
+        return live
+    }
+
     /** 把一批改动写进一个库（**调用方负责包事务**） */
     fun write(db: Db, changes: List<MirrorDiff.Change>, result: Result, side: MirrorDiff.Side) {
-        // 有较新表（v15 md_doc / v16~17 画板）的改动要写、而目标库还没迁移过（只读打开过的老库）：
+        // 有较新表（v15 md_doc / v16~17 画板 / v20 习题）的改动要写、而目标库还没迁移过（只读打开过的老库）：
         // 先照 Mac 迁移一遍（补表补列，语句与 Mac 逐字相同，见 Schema.migrate）
-        if (changes.any { it.table == "md_doc" || it.table.startsWith("board_") }) {
+        if (changes.any { it.table == "md_doc" || it.table.startsWith("board_") || it.table.startsWith("exercise") }) {
             com.xvan.unireader.local.store.Schema.migrate(db)
         }
         val live = livingDocuments(db, changes)
         val liveBoards = livingBoards(db, changes)
+        val liveExercises = livingExercises(db, changes, live)
         val order = MirrorFp.specs.map { it.table }
 
         // ① 先删，后插。反过来会撞 `variant.content_hash` 的 UNIQUE：
@@ -174,6 +194,14 @@ object MirrorApply {
                 if (table == "board_item" || table == "board_page") {
                     val b = row["board_id"] as? String
                     if (b != null && b !in liveBoards) {
+                        result.orphansSkipped++
+                        continue
+                    }
+                }
+                // 作答同理（v20）：一边删了这道题（或它那本书）、另一边又做了它 → 那几次作答跳过并计数
+                if (table == "exercise_attempt") {
+                    val x = row["exercise_id"] as? String
+                    if (x != null && x !in liveExercises) {
                         result.orphansSkipped++
                         continue
                     }
