@@ -164,11 +164,12 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
+        // v21（`../EXERCISE-PLAN.md §11`）表尾多三列：手写 / 谁判的 / Agent 评语（与 Mac 同序）。
         TableSpec(
             "exercise_attempt", "id",
             listOf(
                 t("id"), t("exercise_id"), t("answer"), i("correct"), i("elapsed_ms"), t("created_at"),
-                t("source"),
+                t("source"), b("ink"), t("judged_by"), t("feedback"),
             ),
         ),
         TableSpec("meta", "key", listOf(t("key"), t("value"))),

@@ -140,6 +140,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private val historyNote = note()
     private val agentNote = note()
     private val markNote = note()
+    /** 填空 / 主观题：本轮平板上不能作答（`../EXERCISE-PLAN.md §11.6`）。 */
+    private val macOnlyNote = note()
     private val explanationTitle = TextView(a).apply {
         text = s(R.string.ex_explanation)
         textSize = 14f
@@ -179,6 +181,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(origImage, lp(top = 12))
         addView(origNote, lp(top = 8))
         addView(optionsBox, lp(top = 14))
+        addView(macOnlyNote, lp(top = 4))
         addView(submitBtn, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
         addView(resultRow, lp(top = 16))
         addView(historyNote, lp(top = 4).apply { marginStart = dp(30) })
@@ -208,9 +211,6 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         }
     })
 
-    private val practice = object : ScrollView(a) {
-        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-            if (flip.onTouchEvent(ev) && ev.actionMasked == MotionEvent.ACTION_UP) {
     /**
      * 上一题 / 下一题：钉在练习页底部、滚动区外面（同 Mac，用户 2026-10-27：「要固定位置，不能随着内容变化显示高度」——
      * 原先排在题目那一栏最后，每题高度不同，按钮跟着上下跳）。左右与题目那一栏对齐（同样限宽 760 居中）。
@@ -233,6 +233,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         )
     }
 
+    private val practice = object : ScrollView(a) {
+        override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+            if (flip.onTouchEvent(ev) && ev.actionMasked == MotionEvent.ACTION_UP) {
                 val c = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
                 super.dispatchTouchEvent(c)
                 c.recycle()
@@ -245,9 +248,6 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(columnHost, FrameLayout.LayoutParams(-1, -2))
     }
 
-    // ---------- 列表页 ----------
-
-    private var selecting = false
     /** 练习页 = 题目（滚动）+ 底部固定的上一题 / 下一题。 */
     private val practicePane = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
@@ -255,6 +255,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(navBar, LinearLayout.LayoutParams(-1, -2))
     }
 
+    // ---------- 列表页 ----------
+
+    private var selecting = false
     private val selected = LinkedHashSet<String>()
     private val adapter = ListAdapter()
     private val listView = ListView(a).apply {
@@ -381,18 +384,18 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val c = cur()
         if (c == null) {
             column.visibility = View.GONE
+            navBar.visibility = View.GONE
             emptyView.visibility = View.VISIBLE
             emptyView.text = if (deck.filter == 1) s(R.string.ex_empty_unanswered) else s(R.string.ex_empty)
             builtFor = null
-            navBar.visibility = View.GONE
             shownKey = ""
             return
         }
         column.visibility = View.VISIBLE
+        navBar.visibility = View.VISIBLE
         emptyView.visibility = View.GONE
         val key = c.id + "#" + c.judged
         if (key != shownKey) {
-        navBar.visibility = View.VISIBLE
             if (c.id != shownKey.substringBefore('#')) practice.scrollTo(0, 0)
             shownKey = key
             picked.clear()
@@ -411,7 +414,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val meta = arrayListOf(s(R.string.ex_meta_index, deck.index + 1, deck.cards.size))
         if (c.number.isNotEmpty()) meta += s(R.string.ex_meta_number, c.number)
         if (c.page > 0) meta += s(R.string.ex_meta_page, c.page)
-        meta += if (c.multiple) s(R.string.ex_multiple) else s(R.string.ex_single)
+        meta += kindLabel(c)
         if (c.section.isNotEmpty()) meta += c.section
         if (c.chapter.isNotEmpty()) {
             val last = c.chapter.substringAfterLast(" › ")
@@ -449,6 +452,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         submitBtn.visibility = if (!judged && c.multiple) View.VISIBLE else View.GONE
         submitBtn.isEnabled = picked.isNotEmpty()
         submitBtn.alpha = if (picked.isNotEmpty()) 1f else 0.4f
+        macOnlyNote.visibility = if (c.macOnly) View.VISIBLE else View.GONE
+        if (c.macOnly) macOnlyNote.text = s(R.string.ex_mac_only)
 
         resultRow.visibility = if (judged) View.VISIBLE else View.GONE
         if (judged) {
@@ -488,6 +493,14 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     /** 结果那行：这一轮刚答的 / 上次作答 / 书上的作答，各说各的（同 Mac `resultText`）。 */
+    /** 题型名（练习页那行与列表共用）。 */
+    private fun kindLabel(c: ExCard): String = when (c.kind) {
+        1 -> s(R.string.ex_multiple)
+        3 -> s(R.string.ex_fill)
+        4 -> s(R.string.ex_subjective)
+        else -> s(R.string.ex_single)
+    }
+
     private fun resultLine(c: ExCard): String {
         val mine = c.chosen
         val truth = c.answer
@@ -691,7 +704,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             val meta = arrayListOf<String>()
             if (c.chapter.isNotEmpty()) meta += c.chapter
             if (c.page > 0) meta += s(R.string.ex_meta_page, c.page)
-            meta += if (c.multiple) s(R.string.ex_multiple) else s(R.string.ex_single)
+            meta += kindLabel(c)
             if (c.tries > 0) meta += s(R.string.ex_tries_short, c.tries, c.rights)
             h.meta.text = meta.joinToString(" · ")
             h.mine.text = mineText(c)

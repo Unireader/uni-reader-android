@@ -27,9 +27,11 @@ object Schema {
      * 与 Mac `LibraryStore.schemaVersion` 同步。v13 `image`、v14 `page_align`、v15 `md_doc`（本端只建表不用）、
      * v16 `board_note`/`board_item`、v17 `board_page`——表都建上，写进去的版本号才不撒谎。
      * v18：`note` / `board_item` 加 `points BLOB` + `points_at TEXT`（笔迹点集二进制，`../BINARY-INK-PLAN.md`）。
-     * v20：`exercise` / `exercise_attempt`（习题，`../EXERCISE-PLAN.md §2`；本端只建表不用）。
+     * v20：`exercise` / `exercise_attempt`（习题，`../EXERCISE-PLAN.md §2`）。
+     * v21：`exercise_attempt` 加 `ink BLOB` / `judged_by` / `feedback`（填空 / 主观题的手写、谁判的、Agent 评语，
+     * `../EXERCISE-PLAN.md §11`；本端本轮只建列，作答在 Mac 上做）。
      */
-    const val VERSION = 20
+    const val VERSION = 21
 
     /**
      * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -145,7 +147,10 @@ object Schema {
           correct INTEGER,
           elapsed_ms INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL,
-          source TEXT NOT NULL DEFAULT ''
+          source TEXT NOT NULL DEFAULT '',
+          ink BLOB,
+          judged_by TEXT NOT NULL DEFAULT '',
+          feedback TEXT NOT NULL DEFAULT ''
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_exercise_attempt_ex ON exercise_attempt(exercise_id, created_at)",
@@ -266,6 +271,10 @@ object Schema {
         // v20 发布前补的两列（章节 + 书上作答，`../EXERCISE-PLAN.md §2.3/§2.4`），与 Mac 同序
         Triple("exercise", "chapter", "TEXT NOT NULL DEFAULT ''"),
         Triple("exercise_attempt", "source", "TEXT NOT NULL DEFAULT ''"),
+        // v21：填空 / 主观题的作答（手写 / 谁判的 / Agent 评语，`../EXERCISE-PLAN.md §11`），与 Mac 同序
+        Triple("exercise_attempt", "ink", "BLOB"),
+        Triple("exercise_attempt", "judged_by", "TEXT NOT NULL DEFAULT ''"),
+        Triple("exercise_attempt", "feedback", "TEXT NOT NULL DEFAULT ''"),
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =

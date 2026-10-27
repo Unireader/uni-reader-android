@@ -58,8 +58,12 @@ data class ExCard(
     /** 书上的作答（空 = 没有）。 */
     val marked: String,
     val markedCorrect: Int,
+    /** 题型（`exercise.kind`）：0 单选 · 1 多选 · 3 填空 · 4 主观题（`../EXERCISE-PLAN.md §11`）。 */
+    val kind: Int = if (multiple) 1 else 0,
 ) {
     val judged: Boolean get() = shown != ExShown.NONE
+    /** 填空 / 主观题：平板本轮不能作答，只显示题干，提示到 Mac 上作答（`../EXERCISE-PLAN.md §11.6`）。 */
+    val macOnly: Boolean get() = kind != 0 && kind != 1
     /** 列表里一行的题干：去掉换行、并掉连续空白。 */
     val plainStem: String get() = stem.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
 }

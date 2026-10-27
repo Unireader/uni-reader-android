@@ -201,6 +201,9 @@
     <string name="ex_meta_page">Page %1$d</string>
     <string name="ex_multiple">Multiple choice</string>
     <string name="ex_single">Single choice</string>
+    <string name="ex_fill">Fill in the blank</string>
+    <string name="ex_subjective">Subjective</string>
+    <string name="ex_mac_only">Answer fill-in-the-blank and subjective questions on the Mac for now.</string>
     <string name="ex_count">%1$d questions</string>
     <string name="ex_round">this round: %1$d done, %2$d right</string>
     <string name="ex_redo_all">Redo All</string>

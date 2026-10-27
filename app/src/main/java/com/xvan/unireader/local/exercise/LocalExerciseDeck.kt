@@ -132,7 +132,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
      */
     fun submit(id: String, chosen: Set<String>): Answer? {
         val e = items.firstOrNull { it.id == id } ?: return null
-        if (chosen.isEmpty()) return null
+        if (chosen.isEmpty() || !e.isChoice) return null   // 填空 / 主观题本端不能交（到 Mac 上作答）
         val a = Answer(chosen, e.judge(chosen), null)
         answers[id] = a
         redoing.remove(id)
@@ -185,8 +185,9 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             answer = e.payload.answer.joinToString(""), explanation = e.payload.explanation ?: "",
             shown = shown, chosen = a?.let { Exercise.answerString(it.chosen) } ?: "", correct = ExJudge.of(a?.correct),
             lastAt = lastAt, tries = st?.attempts ?: 0, rights = st?.correct ?: 0,
-            marked = st?.markedAnswer ?: "",
-            markedCorrect = if (st?.markedAnswer == null) ExJudge.NONE else ExJudge.of(st.markedCorrect),
+            marked = if (e.isChoice) st?.markedAnswer ?: "" else "",
+            markedCorrect = if (!e.isChoice || st?.markedAnswer == null) ExJudge.NONE else ExJudge.of(st.markedCorrect),
+            kind = e.kind,
         )
     }
 }

@@ -49,6 +49,21 @@ class ExerciseTest {
         assertNull(ExPayload.parse("{bad".toByteArray()))
     }
 
+    /** v21 填空 / 主观题（`../EXERCISE-PLAN.md §11.6`）：本端只显示题干，不判、不显示以前的作答、不收交卷。 */
+    @Test
+    fun freeKindsAreMacOnly() {
+        val fill = ex("f", kind = Exercise.KIND_FILL, answer = listOf("2", "4"))
+        val sub = ex("s", kind = Exercise.KIND_SUBJECTIVE, answer = listOf("反证法"))
+        assertFalse(fill.isChoice || sub.isChoice)
+        assertTrue(ex("c").isChoice && ex("m", kind = 1).isChoice)
+        assertNull(fill.judge(setOf("2")))
+        assertNull(sub.earlierAnswer(ExAttemptStats(attempts = 1, lastAnswer = "ABC")))   // 主观题写的「ABC」不是选项
+        val deck = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.All)
+        deck.applyFresh(LocalExerciseDeck.Fresh(listOf(ex("c"), fill), emptyMap(), emptyMap()))
+        assertNull(deck.submit("f", setOf("A")))
+        assertEquals(true, deck.submit("c", setOf("B"))?.correct)
+    }
+
     @Test
     fun judgeAndAnswerString() {
         val e = ex("e", answer = listOf("A", "C"), kind = 1)

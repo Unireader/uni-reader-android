@@ -852,8 +852,10 @@ class LibraryStore(private val db: Db) : Closeable {
 
     private fun exercise(c: android.database.Cursor): com.xvan.unireader.local.exercise.Exercise? {
         val kind = c.int("kind")
-        if (kind != com.xvan.unireader.local.exercise.Exercise.KIND_SINGLE &&
-            kind != com.xvan.unireader.local.exercise.Exercise.KIND_MULTIPLE) return null   // 以后的新题型
+        if (kind !in setOf(com.xvan.unireader.local.exercise.Exercise.KIND_SINGLE,
+                           com.xvan.unireader.local.exercise.Exercise.KIND_MULTIPLE,
+                           com.xvan.unireader.local.exercise.Exercise.KIND_FILL,
+                           com.xvan.unireader.local.exercise.Exercise.KIND_SUBJECTIVE)) return null   // 以后的新题型
         val p = com.xvan.unireader.local.exercise.ExPayload.parse(c.blob("payload")) ?: return null
         val pageIdx = c.getColumnIndex("page")
         return com.xvan.unireader.local.exercise.Exercise(

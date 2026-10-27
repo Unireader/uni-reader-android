@@ -92,17 +92,20 @@ data class Exercise(
     val chapter: List<String>,
 ) {
     val multiple: Boolean get() = kind == KIND_MULTIPLE
-    val hasAnswer: Boolean get() = payload.answer.isNotEmpty()
+    /** 选择题（单选 / 多选）。填空 / 主观题本端本轮只显示题干、提示到 Mac 上作答（`../EXERCISE-PLAN.md §11.6`）。 */
+    val isChoice: Boolean get() = kind == KIND_SINGLE || kind == KIND_MULTIPLE
+    val hasAnswer: Boolean get() = payload.answer.any { it.isNotEmpty() }
     val answerFromAgent: Boolean get() = hasAnswer && payload.answerSource == "agent"
 
-    /** 判题：选中的键与答案**完全相同**才算对。没有答案 → null（没法判）。 */
-    fun judge(chosen: Set<String>): Boolean? = if (!hasAnswer) null else chosen == payload.answer.toSet()
+    /** 判题：选中的键与答案**完全相同**才算对。没有答案 → null（没法判）。只管选择题。 */
+    fun judge(chosen: Set<String>): Boolean? = if (!isChoice || !hasAnswer) null else chosen == payload.answer.toSet()
 
     /**
      * 以前做过的那次（用户 2026-10-11 定：做过的题直接显示上次结果）：App 里练的最近一次优先，没练过再拿书上的作答。
-     * 对错按**现在的**答案现判。没做过 → null。
+     * 对错按**现在的**答案现判。没做过 → null。只管选择题（填空 / 主观题的作答串不是选项字母）。
      */
     fun earlierAnswer(s: ExAttemptStats?): Triple<Set<String>, Boolean?, ExEarlier>? {
+        if (!isChoice) return null
         fun keys(raw: String?): Set<String>? {
             val k = raw?.let(::parseAnswer) ?: return null
             return k.takeIf { it.isNotEmpty() }?.toSet()
@@ -118,6 +121,9 @@ data class Exercise(
     companion object {
         const val KIND_SINGLE = 0
         const val KIND_MULTIPLE = 1
+        /** v21（2026-10-13）：填空 / 主观题。2 留给以后的判断题；不认识的值整行跳过。 */
+        const val KIND_FILL = 3
+        const val KIND_SUBJECTIVE = 4
         /** 书上的作答那条的 `exercise_attempt.source`。 */
         const val MARK_SOURCE = "mark"
 

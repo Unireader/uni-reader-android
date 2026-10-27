@@ -776,6 +776,7 @@ object WireCodec {
                     chapter = chapter, section = section, stem = stem, options = options,
                     answer = answer, explanation = explanation, shown = shown, chosen = chosen, correct = correct,
                     lastAt = lastAt.toLong(), tries = tries, rights = rights, marked = marked, markedCorrect = markedCorrect,
+                    kind = kind,
                 ),
             )
         }

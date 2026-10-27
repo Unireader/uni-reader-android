@@ -97,9 +97,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
-  （`Schema.VERSION = 20`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
-  `CREATE … IF NOT EXISTS` 补齐到 v20 的全部表（含本端只建不用的 v15 `md_doc`；v20 习题两张表
-  `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条）+ 与 Mac 同序的 `ADD COLUMN` +
+  （`Schema.VERSION = 21`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  `CREATE … IF NOT EXISTS` 补齐到 v21 的全部表（含本端只建不用的 v15 `md_doc`；v20 习题两张表
+  `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
+  `ink` / `judged_by` / `feedback` 本端只建不用）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
   🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
   补表、`ADD COLUMN` 补列、写 `meta.schema_version`），也可以提出新的表 / 列。剩下的纪律只有一条——
@@ -230,7 +231,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   两边开着同一组时用的是 Mac 上**同一份**进度，作答 / 第几题 / 筛选天然同步。原题图 `GET /exercise.png?id=&w=`。
   · 题干 / 选项 / 解析的 Markdown + 公式：`shared/exercise/MathText`（Markwon + JLaTeXMath，依赖只在这一个文件；`$…$` 先改写成
   Markwon 认的 `$$…$$`，见 `normalize`）。**Markwon 默认会给文字挂上点链接的处理、把触摸吃掉**——bind 之后摘掉，否则点选项正文选不中。
-  · 离线镜像：两张表进 `MirrorFp.specs`（向量 #30/#31），`MirrorApply.livingExercises` 挡掉「题已删、作答还要写」的孤儿。
+  · 离线镜像：两张表进 `MirrorFp.specs`（向量 #30/#31，v21 加的三列见 #31 改 / #32），`MirrorApply.livingExercises` 挡掉「题已删、作答还要写」的孤儿。
+  · **填空 / 主观题（v21，2026-10-13，`../EXERCISE-PLAN.md §11.6`）本端本轮不能作答**：`kind` 3 / 4 读得出、`ExCard.kind` 带着，
+  练习页只显示题干 + 「请在 Mac 上作答」（`ExCard.macOnly`），`LocalExerciseDeck.submit` 挡掉；模式2 Mac 不发这两种题的选项 / 答案 / 作答。
+  做平板作答时先读 `../EXERCISE-PLAN.md §11`（作答格式 `ExerciseResponse`、手写 `ExerciseInk` 逻辑坐标、`judged_by` 后判为准）。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，

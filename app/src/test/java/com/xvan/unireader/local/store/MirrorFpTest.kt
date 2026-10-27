@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 31 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 33 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -125,6 +125,15 @@ class MirrorFpTest {
         "answer" to "AC", "correct" to null, "elapsed_ms" to 4200L,
         "created_at" to "2026-10-11T08:00:00.000Z", "source" to "",
     )
+    // v21 主观题作答（与 spike/mirror-fp-test.swift 的第二行 exercise_attempt 逐字段一致）：手写 + Agent 判了 + 评语
+    private val subjectiveAttemptRow: Map<String, Any?> = mapOf(
+        "id" to "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB",
+        "exercise_id" to "99999999-9999-4999-8999-999999999999",
+        "answer" to "设 ${'$'}\\sqrt2=p/q${'$'}", "correct" to 0L, "elapsed_ms" to 91000L,
+        "created_at" to "2026-10-13T08:00:00.000Z", "source" to "",
+        "ink" to """{"height":280,"strokes":[],"width":600}""".toByteArray(Charsets.UTF_8),
+        "judged_by" to "agent", "feedback" to "少了**互质**的假设",
+    )
 
     @Test
     fun valueVectors() {
@@ -228,14 +237,23 @@ class MirrorFpTest {
                     "30302e3030305a1f03323032362d31302d31315430383a30303a30302e3030305a1f035b22e7" +
                     "acace4ba8ce7aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d",
                 "7344ab9c504f7ca8"),
+            // v21 起按 10 列编码（新三列缺 = NULL，末尾 1f00 ×3），编码 / fp 随列规格变了（`../EXERCISE-PLAN.md §11.5`）
             R(31, "exercise_attempt", exerciseAttemptRow,
                 "0341414141414141412d414141412d344141412d384141412d4141414141414141414141411f" +
                     "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
                     "0341431f001f01343230301f03323032362d31302d31315430383a30303a30302e3030305a1f" +
-                    "03",
-                "47b5ec746dc2a008"),
+                    "031f001f001f00",
+                "c6e9c219493ea16a"),
+            R(32, "exercise_attempt", subjectiveAttemptRow,
+                "0342424242424242422d424242422d344242422d384242422d4242424242424242424242421f" +
+                    "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
+                    "03e8aebe20245c73717274323d702f71241f01301f0139313030301f03323032362d31302d31" +
+                    "335430383a30303a30302e3030305a1f031f047b22686569676874223a3238302c227374726f" +
+                    "6b6573223a5b5d2c227769647468223a3630307d1f036167656e741f03e5b091e4ba862a2ae4" +
+                    "ba92e8b4a82a2ae79a84e58187e8aebe",
+                "3bd6aba4f01a9dc0"),
         )
-        assertEquals(11, cases.size)
+        assertEquals(12, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -294,7 +312,8 @@ class MirrorFpTest {
         )
         assertEquals("updated_at", MirrorFp.spec("exercise")!!.lww)
         assertEquals(
-            listOf("id", "exercise_id", "answer", "correct", "elapsed_ms", "created_at", "source"),
+            listOf("id", "exercise_id", "answer", "correct", "elapsed_ms", "created_at", "source",
+                   "ink", "judged_by", "feedback"),
             MirrorFp.spec("exercise_attempt")!!.columns.map { it.name },
         )
         assertNull(MirrorFp.spec("exercise_attempt")!!.lww)

@@ -197,6 +197,9 @@
     <string name="ex_meta_page">第 %1$d 页</string>
     <string name="ex_multiple">多选</string>
     <string name="ex_single">单选</string>
+    <string name="ex_fill">填空</string>
+    <string name="ex_subjective">主观题</string>
+    <string name="ex_mac_only">填空题和主观题暂时请在 Mac 上作答。</string>
     <string name="ex_count">共 %1$d 题</string>
     <string name="ex_round">本轮已做 %1$d 题，对 %2$d 题</string>
     <string name="ex_redo_all">全部重做</string>
