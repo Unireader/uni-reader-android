@@ -161,6 +161,8 @@ object MirrorFp {
                 t("id"), t("document_id"), i("page"), i("seq"), i("kind"), t("number"), t("section"),
                 b("payload"), i("starred"), i("wrong"), t("source"), t("created_at"), t("updated_at"),
                 t("chapter"),
+                // v22 表尾：题目笔记（`../EXERCISE-PLAN.md §12`，写笔记也改 updated_at，照样按它取新；与 Mac 同序）
+                t("note"),
             ),
             lww = "updated_at",
         ),

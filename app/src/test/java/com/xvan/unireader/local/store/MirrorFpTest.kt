@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 33 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 34 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -134,6 +134,11 @@ class MirrorFpTest {
         "ink" to """{"height":280,"strokes":[],"width":600}""".toByteArray(Charsets.UTF_8),
         "judged_by" to "agent", "feedback" to "少了**互质**的假设",
     )
+    // v22 题目笔记（与 spike/mirror-fp-test.swift 末尾那行 exercise 逐字段一致）：同一道题写了笔记、更新时间跟着变
+    private val exerciseNoteRow: Map<String, Any?> = exerciseRow + mapOf(
+        "wrong" to 1L, "updated_at" to "2026-10-27T08:00:00.000Z",
+        "note" to "别忘了 ${'$'}f'(x)=2x${'$'}，**链式法则**",
+    )
 
     @Test
     fun valueVectors() {
@@ -228,6 +233,7 @@ class MirrorFpTest {
                     "03323032362d30392d32365430393a30303a30305a1f03323032362d30392d32365430393a30353a" +
                     "30305a",
                 "2b807960580dd994"),
+            // v22 起按 15 列编码（笔记缺 = NULL，末尾多一个 1f00），编码 / fp 随列规格变了（`../EXERCISE-PLAN.md §12`）
             R(30, "exercise", exerciseRow,
                 "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
                     "0331313131313131312d313131312d343131312d383131312d3131313131313131313131311f" +
@@ -235,8 +241,8 @@ class MirrorFpTest {
                     "41222c2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe202466287829" +
                     "3d785e3224227d1f01311f01301f036b696d691f03323032362d31302d31305430393a30303a" +
                     "30302e3030305a1f03323032362d31302d31315430383a30303a30302e3030305a1f035b22e7" +
-                    "acace4ba8ce7aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d",
-                "7344ab9c504f7ca8"),
+                    "acace4ba8ce7aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d1f00",
+                "05574ba10e907d07"),
             // v21 起按 10 列编码（新三列缺 = NULL，末尾 1f00 ×3），编码 / fp 随列规格变了（`../EXERCISE-PLAN.md §11.5`）
             R(31, "exercise_attempt", exerciseAttemptRow,
                 "0341414141414141412d414141412d344141412d384141412d4141414141414141414141411f" +
@@ -252,8 +258,19 @@ class MirrorFpTest {
                     "6b6573223a5b5d2c227769647468223a3630307d1f036167656e741f03e5b091e4ba862a2ae4" +
                     "ba92e8b4a82a2ae79a84e58187e8aebe",
                 "3bd6aba4f01a9dc0"),
+            R(33, "exercise", exerciseNoteRow,
+                "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
+                    "0331313131313131312d313131312d343131312d383131312d3131313131313131313131311f" +
+                    "0131311f01321f01311f03351f03e4b9a0e9a29820322d331f047b22616e73776572223a5b22" +
+                    "41222c2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe202466287829" +
+                    "3d785e3224227d1f01311f01311f036b696d691f03323032362d31302d31305430393a30303a" +
+                    "30302e3030305a1f03323032362d31302d32375430383a30303a30302e3030305a1f035b22e7" +
+                    "acace4ba8ce7aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d1f03" +
+                    "e588abe5bf98e4ba86202466272878293d327824efbc8c2a2ae993bee5bc8fe6b395e588992a" +
+                    "2a",
+                "c4bc4c6002e7b1c7"),
         )
-        assertEquals(12, cases.size)
+        assertEquals(13, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -306,7 +323,7 @@ class MirrorFpTest {
         assertEquals(
             listOf(
                 "id", "document_id", "page", "seq", "kind", "number", "section", "payload", "starred", "wrong",
-                "source", "created_at", "updated_at", "chapter",
+                "source", "created_at", "updated_at", "chapter", "note",
             ),
             MirrorFp.spec("exercise")!!.columns.map { it.name },
         )

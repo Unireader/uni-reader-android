@@ -30,8 +30,9 @@ object Schema {
      * v20：`exercise` / `exercise_attempt`（习题，`../EXERCISE-PLAN.md §2`）。
      * v21：`exercise_attempt` 加 `ink BLOB` / `judged_by` / `feedback`（填空 / 主观题的手写、谁判的、Agent 评语，
      * `../EXERCISE-PLAN.md §11`；本端本轮只建列，作答在 Mac 上做）。
+     * v22：`exercise` 加 `note`（题目笔记，`../EXERCISE-PLAN.md §12`；本端本轮只建列、随离线镜像同步，界面在 Mac 上）。
      */
-    const val VERSION = 21
+    const val VERSION = 22
 
     /**
      * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -135,7 +136,8 @@ object Schema {
           source TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
-          chapter TEXT NOT NULL DEFAULT ''
+          chapter TEXT NOT NULL DEFAULT '',
+          note TEXT NOT NULL DEFAULT ''
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_exercise_doc ON exercise(document_id, page, seq)",
@@ -275,6 +277,8 @@ object Schema {
         Triple("exercise_attempt", "ink", "BLOB"),
         Triple("exercise_attempt", "judged_by", "TEXT NOT NULL DEFAULT ''"),
         Triple("exercise_attempt", "feedback", "TEXT NOT NULL DEFAULT ''"),
+        // v22：题目笔记（`../EXERCISE-PLAN.md §12`），与 Mac 同序
+        Triple("exercise", "note", "TEXT NOT NULL DEFAULT ''"),
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =
