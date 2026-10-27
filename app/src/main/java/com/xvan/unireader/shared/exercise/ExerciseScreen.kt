@@ -163,7 +163,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
 
     private val column = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(20), dp(16), dp(20), dp(32))
+        setPadding(dp(20), dp(16), dp(20), dp(20))
         addView(
             LinearLayout(a).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -187,15 +187,6 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(explanationTitle, lp(top = 16))
         addView(explanationView, lp(top = 6))
         addView(actionsRow, lp(top = 16))
-        addView(
-            LinearLayout(a).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(prevBtn)
-                addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
-                addView(nextBtn)
-            },
-            lp(top = 28),
-        )
     }
 
     /** 正文那一栏限宽居中（平板横屏上一行太长不好读，同 Mac 760pt）。 */
@@ -220,6 +211,28 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private val practice = object : ScrollView(a) {
         override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
             if (flip.onTouchEvent(ev) && ev.actionMasked == MotionEvent.ACTION_UP) {
+    /**
+     * 上一题 / 下一题：钉在练习页底部、滚动区外面（同 Mac，用户 2026-10-27：「要固定位置，不能随着内容变化显示高度」——
+     * 原先排在题目那一栏最后，每题高度不同，按钮跟着上下跳）。左右与题目那一栏对齐（同样限宽 760 居中）。
+     */
+    private val navBar = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(Ui.divider(a))
+        addView(
+            CenterColumn(a, dp(760)).apply {
+                addView(LinearLayout(a).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(20), dp(8), dp(20), dp(8))
+                    addView(prevBtn)
+                    addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
+                    addView(nextBtn)
+                })
+            },
+            LinearLayout.LayoutParams(-1, -2),
+        )
+    }
+
                 val c = MotionEvent.obtain(ev).apply { action = MotionEvent.ACTION_CANCEL }
                 super.dispatchTouchEvent(c)
                 c.recycle()
@@ -235,6 +248,13 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     // ---------- 列表页 ----------
 
     private var selecting = false
+    /** 练习页 = 题目（滚动）+ 底部固定的上一题 / 下一题。 */
+    private val practicePane = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(practice, LinearLayout.LayoutParams(-1, 0, 1f))
+        addView(navBar, LinearLayout.LayoutParams(-1, -2))
+    }
+
     private val selected = LinkedHashSet<String>()
     private val adapter = ListAdapter()
     private val listView = ListView(a).apply {
@@ -283,7 +303,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(Ui.divider(a))
         addView(
             FrameLayout(a).apply {
-                addView(practice, FrameLayout.LayoutParams(-1, -1))
+                addView(practicePane, FrameLayout.LayoutParams(-1, -1))
                 addView(listPane, FrameLayout.LayoutParams(-1, -1))
             },
             LinearLayout.LayoutParams(-1, 0, 1f),
@@ -347,7 +367,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     private fun applyMode() {
-        practice.visibility = if (listMode) View.GONE else View.VISIBLE
+        practicePane.visibility = if (listMode) View.GONE else View.VISIBLE
         listPane.visibility = if (listMode) View.VISIBLE else View.GONE
         paintPill(practiceTab, !listMode)
         paintPill(listTab, listMode)
@@ -364,6 +384,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             emptyView.visibility = View.VISIBLE
             emptyView.text = if (deck.filter == 1) s(R.string.ex_empty_unanswered) else s(R.string.ex_empty)
             builtFor = null
+            navBar.visibility = View.GONE
             shownKey = ""
             return
         }
@@ -371,6 +392,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         emptyView.visibility = View.GONE
         val key = c.id + "#" + c.judged
         if (key != shownKey) {
+        navBar.visibility = View.VISIBLE
             if (c.id != shownKey.substringBefore('#')) practice.scrollTo(0, 0)
             shownKey = key
             picked.clear()
