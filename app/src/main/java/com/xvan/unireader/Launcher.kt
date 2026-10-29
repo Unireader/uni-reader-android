@@ -811,7 +811,9 @@ class Launcher : Activity() {
                         alert("打不开这个工作区", c.reason)
                     }
                     is Workspace.Check.OK -> {
-                        Workspace.remember(this, dir.absolutePath)
+                        // 路径被换成了 ext4 映射时，旧路径从最近列表里拿掉，只留能用的那条
+                        if (c.dir.absolutePath != dir.absolutePath) Workspace.forget(this, dir.absolutePath)
+                        Workspace.remember(this, c.dir.absolutePath)
                         refreshRecents()
                         refreshScan()
                         if (c.readOnly) {

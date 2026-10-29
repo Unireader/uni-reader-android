@@ -27,6 +27,8 @@ import java.util.ArrayDeque
  * 3. `Environment.getExternalStorageDirectory()`——内置那块，一定有。
  * 4. 直接列 `/storage` 与 `/mnt/media_rw`——**OTG U 盘**在部分 ROM 上前三条都给不到。
  *
+ * `/mnt/media_rw/<UUID>` 下的卷先过一道 [preferMirror]：有 ext4 映射（`内部存储/USB/<卷标>`）就换成映射。
+ *
  * 全程只读 + 每一步都打日志：「插了 U 盘却看不到」这类问题不打点就只能靠猜（同 [Workspace] 的口径）。
  */
 object StorageScan {
@@ -75,8 +77,9 @@ object StorageScan {
         val out = LinkedHashMap<String, Volume>()
         val primaryPath = canon(Environment.getExternalStorageDirectory())
 
-        fun add(label: String, dir: File?, primary: Boolean) {
-            if (dir == null) return
+        fun add(label: String, raw: File?, primary: Boolean) {
+            if (raw == null) return
+            val dir = preferMirror(raw, label)
             if (!dir.isDirectory) return
             if (!dir.canRead()) {
                 Log.i(TAG, "跳过不可读的卷：${dir.absolutePath}（没权限或没挂载）")
@@ -147,6 +150,61 @@ object StorageScan {
 
     /** 规范化路径：`/sdcard` 与 `/storage/emulated/0` 是同一块盘，不折算就会扫两遍 */
     private fun canon(f: File): String = runCatching { f.canonicalPath }.getOrElse { f.absolutePath }
+
+    // ---------- ext4 映射（Magisk 模块 usbext4） ----------
+
+    private const val MEDIA_RW = "/mnt/media_rw/"
+
+    /** 模块把盘映射到内部存储下的这个目录（模块配置 `EXP_NAME`，默认 USB） */
+    private const val MIRROR_DIR = "USB"
+
+    /**
+     * `/mnt/media_rw/<UUID>/…` 换成 ext4 映射里的同一个位置；不在那下面、或找不到映射就原样返回。
+     *
+     * **为什么要换**：有「所有文件访问权限」时 `StorageManager` 会把没对应用开放的 U 盘也列出来，给的却是
+     * `/mnt/media_rw/<UUID>`。PixelOS 上 SELinux 不让普通应用查看 `/mnt/media_rw` 本身，SQLite 开库时逐级
+     * `lstat` 路径就 `SQLITE_CANTOPEN`，写文件也不行；经内部存储的映射走，读写由存储服务代办才行
+     * （ext4 盘的映射与所有者处理见 `agents-home/usbext4-magisk`）。HyperOS 上 exFAT 盘直接走这条路径是能用的，
+     * 所以找不到映射时不改。
+     *
+     * @param label 卷标（`StorageVolume.getDescription`），不知道就传空。
+     */
+    fun preferMirror(dir: File, label: String = ""): File {
+        val path = dir.absolutePath
+        if (!path.startsWith(MEDIA_RW)) return dir
+        val uuid = path.removePrefix(MEDIA_RW).substringBefore('/')
+        if (uuid.isEmpty()) return dir
+        val rest = path.removePrefix(MEDIA_RW + uuid).trimStart('/')
+        val mirror = mirrorOf(File(MEDIA_RW + uuid), uuid, label) ?: return dir
+        val out = if (rest.isEmpty()) mirror else File(mirror, rest)
+        Log.i(TAG, "换成 ext4 映射：$path → ${out.absolutePath}")
+        return out
+    }
+
+    /**
+     * 找 [root]（`/mnt/media_rw/<UUID>`）的映射。模块的命名规则：卷标（`/`、空白、`\`、`|` 换成 `_`），
+     * 重名时加 `-<UUID 第一段>`，没卷标用 UUID。按这个顺序先猜名字，再退到 `USB/` 下的全部文件夹；
+     * 每个候选都要**根目录下的文件名与原卷一致**才算（挡掉没收干净的空目录、别的盘）。
+     * 原卷列不出来时没法比对，只认按名字猜中的。
+     */
+    private fun mirrorOf(root: File, uuid: String, label: String): File? {
+        val base = File(Environment.getExternalStorageDirectory(), MIRROR_DIR)
+        val name = label.replace(Regex("[/ \t\\\\|]"), "_")
+        val guessed = buildList {
+            if (name.isNotBlank()) {
+                add("$name-${uuid.substringBefore('-')}")
+                add(name)
+            }
+            add(uuid)
+        }.map { File(base, it) }
+        val want = topNames(root)
+        if (want == null) return guessed.firstOrNull { it.isDirectory && it.canRead() }
+        val others = base.listFiles()?.filter { it.isDirectory && it !in guessed }.orEmpty()
+        return (guessed + others).firstOrNull { it.isDirectory && topNames(it) == want }
+    }
+
+    /** 根目录下的文件名，不含点开头的（存储服务会藏掉一部分隐藏文件，两边不一定一样） */
+    private fun topNames(dir: File): Set<String>? = dir.list()?.filterNot { it.startsWith(".") }?.toSet()
 
     // ---------- 扫描 ----------
 

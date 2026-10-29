@@ -49,7 +49,12 @@ object Workspace {
         data class Bad(val reason: String) : Check()
     }
 
-    fun check(dir: File): Check {
+    /**
+     * 最近列表 / 扫描缓存里可能还存着 `/mnt/media_rw/<UUID>/…`（ext4 映射出现之前记下的），
+     * 先换成映射路径（[StorageScan.preferMirror]）；调用方打开、记入最近列表都用返回的 [Check.OK.dir]。
+     */
+    fun check(requested: File): Check {
+        val dir = StorageScan.preferMirror(requested)
         val path = dir.absolutePath
         if (!dir.exists()) {
             return bad(path, "路径不存在，U 盘或同步盘可能没挂载\n$path")

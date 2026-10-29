@@ -909,7 +909,9 @@ class ReaderActivity : Activity() {
                         showAlert("打不开这个工作区", c.reason)
                     }
                     is Workspace.Check.OK -> {
-                        Workspace.remember(this, dir.absolutePath)
+                        // 同 Launcher.openWorkspace：换成 ext4 映射时旧路径拿掉
+                        if (c.dir.absolutePath != dir.absolutePath) Workspace.forget(this, dir.absolutePath)
+                        Workspace.remember(this, c.dir.absolutePath)
                         if (c.readOnly) Log.w(TAG, "库文件只读：${c.db.absolutePath}")
                         closeWorkspace()
                         openWorkspace(c.dir, initialDoc)
