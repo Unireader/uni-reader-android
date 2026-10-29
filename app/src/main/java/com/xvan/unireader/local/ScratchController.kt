@@ -316,7 +316,7 @@ class ScratchController(private val a: Activity) {
         val did = docId
         val now = Iso.now()
         val pad = ScratchPad(
-            id = UUID.randomUUID().toString(), documentId = did, title = "",
+            id = UUID.randomUUID().toString().uppercase(), documentId = did, title = "",
             anchorPage = page, anchorX = nx.toDouble(), anchorY = ny.toDouble(),
             bg = ScratchPad.DEFAULT_BG, pattern = ScratchPad.DEFAULT_PATTERN,
             showPage = true,   // 在页面某处新建的纸，那一页就该在眼前（同 Mac；老纸迁移过来是关的）
@@ -458,7 +458,7 @@ class ScratchController(private val a: Activity) {
         val q = queue ?: return
         val pad = openPad ?: return
         val did = docId
-        val id = UUID.randomUUID().toString()
+        val id = UUID.randomUUID().toString().uppercase()
         canvas.addCommitted(Stroke(0, pen, pts, id, "", pad.id))
         q.submit("草稿纸落笔 点数=${pts.size}", { s ->
             runCatching { s.insertScratchStroke(did, pad.id, pen, pts, id) }

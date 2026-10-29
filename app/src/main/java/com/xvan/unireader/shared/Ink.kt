@@ -132,18 +132,44 @@ data class TextNote(
     val aw: Float = 0f,
     /** 笔记类型 id（payload 的 `type_id`）。图钉底色/图标按它查；null/未知 = 通用暖黄 */
     val typeId: String? = null,
+    /**
+     * 选区上的显式铺色（payload `color`，Mac `TextNote.color`，只取 rgb）；null = 按类型色 / 通用暖黄。
+     * 图钉仍按类型色（同 Mac）。模式2 线上没有这个字段，恒 null。
+     */
+    val color: IntArray? = null,
+    /** 选区上怎么画（[HL_FILL] / [HL_UNDERLINE] / [HL_BOX]，payload `style`）；点注解无行框，无意义 */
+    val style: Int = HL_FILL,
+    /** 被注解的原文（payload `quote`）；编辑器里显示。模式2 恒空 */
+    val quote: String = "",
+    /** 气泡卡片手动摆过的位置 / 大小（payload `card`，Mac `NoteCard`）；null = 自动规则。模式2 线上没有，恒 null */
+    val card: NoteCard? = null,
 )
+
+/**
+ * 用户在 Mac 上手动摆过的笔记卡片（Mac `NoteCard`，payload 键 `card: {dx, dy, w?, h?}`）：
+ * `dx`/`dy` = 卡片左上角相对图钉中心的偏移，`w` = 宽，`h` = 高度上限；单位是 Mac「固定尺寸口径」下的点，
+ * 本端按 [NoteBubbleGeom.REF_PAGE_W] 换算（见 [NoteBubbleGeom.layout]）。`w`/`h` 为 null = 那一维没动过。
+ */
+data class NoteCard(val dx: Float, val dy: Float, val w: Float?, val h: Float?)
 
 const val NOTE_TAP = 0
 const val NOTE_HOVER = 1
 const val NOTE_ALWAYS = 2
 
 /**
+ * 高亮 / 选区注解的画法（Mac `HighlightStyle`；payload 键 `style` 存 `fill`/`underline`/`box`，
+ * 缺键 = 铺色，零迁移）。本端只在内存里用这三个数，换算只在 `TextNotePayload`。
+ */
+const val HL_FILL = 0
+const val HL_UNDERLINE = 1
+const val HL_BOX = 2
+
+/**
  * 一片**文字铺色**：kind=3 高亮的荧光底，或 kind=0 选区注解的类型色底（`PageCellView` 的最底两层）。
  *
  * `rects` 是页内归一化的逐行框 `[x, y, w, h]`（与 payload 里的存法一致，不转对角点——转来转去
  * 迟早有一处漏乘）；`a` 是**最终绘制透明度**，已经含了 Mac 的 `Highlight.fillOpacity`/注解 0.32
- * 那层口径（见 `PadConst.FILL`），绘制方直接用即可。
+ * （画线 / 画框是 `Highlight.strokeOpacity` 0.9）那层口径（见 `PadConst.FILL`），绘制方直接用即可。
  *
  * 模式2 目前不用它（Mac 的页图是另一条管线，高亮画在 Mac 那边），列表恒空；放在这里是因为
  * 「页面上铺一层色」属于渲染层能力，不属于某一种模式。
@@ -161,6 +187,10 @@ data class TextFill(
      * 否则拖走的是图钉、底色留在原地。
      */
     val noteId: String = "",
+    /** 画法：[HL_FILL] 铺色 / [HL_UNDERLINE] 行框底边一条线 / [HL_BOX] 行框描边（同 Mac `PageMarksLayer`） */
+    val style: Int = HL_FILL,
+    /** 这片色是哪条**高亮**（kind=3）的；手指点中高亮弹操作面板靠它。注解的底色不填 */
+    val highlightId: String = "",
 )
 
 /** 一个笔迹图层（r/g/b 只是列表里的色点标识，与笔画墨色无关） */

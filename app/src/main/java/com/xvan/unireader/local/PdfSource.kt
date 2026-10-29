@@ -313,6 +313,43 @@ class PdfSource(
         return renderRaw(page, widthPx, h)
     }
 
+    /**
+     * 从页面上框出来的一块重新渲染成图（图片笔记的「PDF 节选」，Mac `PageSnip.render` 同一口径）：
+     * 倍率 = 长边 2000px ÷ 这块的长边（pt），夹在 1.5~4 倍；**按页重渲、不截屏**，与当前缩放无关。
+     * [rect] 是页内归一化 `[x, y, w, h]`（显示坐标——开着扫描页对齐时就是对齐后的页面）。**在后台线程调**。
+     */
+    fun renderRegion(page: Int, rect: FloatArray): Bitmap? {
+        val s = pageSizes.getOrNull(page) ?: return null
+        val ptW = rect[2] * s[0]
+        val ptH = rect[3] * s[1]
+        if (ptW <= 0f || ptH <= 0f) return null
+        val scale = (2000f / maxOf(ptW, ptH)).coerceIn(1.5f, 4f)
+        val outW = (ptW * scale).roundToInt().coerceAtLeast(1)
+        val outH = (ptH * scale).roundToInt().coerceAtLeast(1)
+        val pageW = (s[0] * scale).roundToInt().coerceAtLeast(1)
+        val pageH = pixelHeight(page, pageW)
+        val ox = (rect[0] * pageW).roundToInt()
+        val oy = (rect[1] * pageH).roundToInt()
+        // 开着对齐：整页按对齐出一张再裁（对齐的变换在整页上做）；没开：直接把整页按偏移画进这一块大小的图里
+        scanAlign?.page(page)?.let { a ->
+            val full = renderAligned(page, pageW, a) ?: return null
+            val out = Bitmap.createBitmap(
+                full, ox.coerceIn(0, full.width - 1), oy.coerceIn(0, full.height - 1),
+                outW.coerceAtMost(full.width - ox.coerceIn(0, full.width - 1)),
+                outH.coerceAtMost(full.height - oy.coerceIn(0, full.height - 1)),
+            )
+            if (out !== full) full.recycle()
+            return out
+        }
+        val bmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawColor(Color.WHITE)
+        synchronized(docLock) {
+            val p = doc.openPage(page) ?: run { bmp.recycle(); return null }
+            p.use { it.renderPageBitmap(bmp, -ox, -oy, pageW, pageH, true, false) }
+        }
+        return bmp
+    }
+
     /** 原页铺满 `w×h` 像素（白底）。没开对齐时就是成品；开着时是 [renderAligned] 的中间图 */
     private fun renderRaw(page: Int, w: Int, h: Int): Bitmap? {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -384,11 +421,21 @@ class PdfSource(
         for (i in 0 until pageCount) {
             val s = runCatching {
                 doc.openPage(i)?.use { p ->
-                    displaySize(
+                    val rot = runCatching { p.getPageRotation() }.getOrDefault(0)
+                    val own = displaySize(
                         crop = runCatching { p.getPageCropBox() }.getOrNull(),
                         media = runCatching { p.getPageMediaBox() }.getOrNull(),
-                        rotation = runCatching { p.getPageRotation() }.getOrDefault(0),
+                        rotation = rot,
                     )
+                    // 页框写在上级 Pages 节点、各页继承的 PDF（Mac「打印为 PDF」就是这样）：Pdfium 取页框的接口只看本页字典，
+                    // 读出来是 0 → 整页空白。这时改用 Pdfium 算出来的有效页框（会顺着继承找，= 媒体框与裁切框的交集，
+                    // 与 Mac「CropBox 有效用 CropBox、否则 MediaBox」同一个结果），再不行才用它的整数点尺寸。
+                    if (own[0] > 0f && own[1] > 0f) own
+                    else {
+                        val bb = displaySize(null, runCatching { p.getPageBoundingBox() }.getOrNull(), rot)
+                        if (bb[0] > 0f && bb[1] > 0f) bb
+                        else floatArrayOf(p.getPageWidthPoint().toFloat(), p.getPageHeightPoint().toFloat())
+                    }
                 }
             }.onFailure { Log.w(TAG, "第 $i 页取尺寸失败，按 0 记", it) }.getOrNull()
             out.add(s ?: floatArrayOf(0f, 0f))

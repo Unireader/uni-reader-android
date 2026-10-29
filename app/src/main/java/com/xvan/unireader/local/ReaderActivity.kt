@@ -32,7 +32,11 @@ import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.newBoardId
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.ScratchPad
+import com.xvan.unireader.local.store.NoteTypeDef
 import com.xvan.unireader.local.store.StoreQueue
+import org.json.JSONObject
+import com.xvan.unireader.local.store.LibImageNote
+import com.xvan.unireader.local.store.LibImage
 import com.xvan.unireader.local.store.toUiLayers
 import com.xvan.unireader.shared.BookmarkItem
 import com.xvan.unireader.shared.CanvasMargin
@@ -56,6 +60,7 @@ import com.xvan.unireader.shared.ScanAlignTable
 import com.xvan.unireader.shared.ScratchCanvas
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Stroke
+import com.xvan.unireader.shared.HL_FILL
 import com.xvan.unireader.shared.TextFill
 import com.xvan.unireader.shared.TextNote
 import com.xvan.unireader.shared.TocItem
@@ -149,6 +154,8 @@ class ReaderActivity : Activity() {
          * 同画板一样没有 [canvas]/[pdf]：整页是 [ExerciseController.screen]。
          */
         val isExercise: Boolean get() = TabSet.isExercise(docId)
+        /** Markdown 笔记标签（`md:<相对路径>`）：没有 [canvas]/[pdf]，整页是 [MdNoteController.view] */
+        val isMarkdown: Boolean get() = TabSet.isMarkdown(docId)
         val exerciseScope: ExScope? get() = ExScope.parse(TabSet.exerciseKeyOf(docId))
 
         var canvas: LocalCanvasView? = null
@@ -235,6 +242,7 @@ class ReaderActivity : Activity() {
 
     /** 习题（`../EXERCISE-PLAN.md §10.2`）：习题标签激活时铺满内容区的那一页 + 抽屉分组 + 库读写 */
     private lateinit var exercise: ExerciseController
+    private lateinit var md: MdNoteController
 
     /** 「到 PDF 原页」要跳的地方（文档 id、页、页内比例）：那篇还没装载完时先记着，几何就绪再跳 */
     private var pendingJump: Triple<String, Int, Float>? = null
@@ -242,7 +250,7 @@ class ReaderActivity : Activity() {
     /** 划字之后那条「四色高亮 / 批注 / 复制」的浮条（选字模式，见 [TextSelectBar]） */
     private val selectBar by lazy {
         TextSelectBar(this).apply {
-            onHighlight = { rgb -> cur()?.commitHighlight(rgb); hide() }
+            onHighlight = { rgb, style -> cur()?.commitHighlight(rgb, style); hide() }
             onAnnotate = { cur()?.beginSelectionNote(); hide() }
         }
     }
@@ -496,8 +504,13 @@ class ReaderActivity : Activity() {
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
             icon("ruler", R.drawable.ic_ruler, "尺子") { toolCanvas()?.toggleRuler(); refreshHud() }
             // 撤销/重做：模式1 本机就是真源，栈在 `LocalCanvasView`（**只管笔迹**，见那里的注释）
-            icon("undo", R.drawable.ic_undo, "撤销") { cur()?.requestUndo(redo = false) }
-            icon("redo", R.drawable.ic_redo, "重做") { cur()?.requestUndo(redo = true) }
+            // 画板标签有自己的撤销栈（BoardController.undo），PDF 标签走画布那条
+            icon("undo", R.drawable.ic_undo, "撤销") {
+                if (curTab()?.isBoard == true) board.undo(redo = false) else cur()?.requestUndo(redo = false)
+            }
+            icon("redo", R.drawable.ic_redo, "重做") {
+                if (curTab()?.isBoard == true) board.undo(redo = true) else cur()?.requestUndo(redo = true)
+            }
             // 剪贴板三件：只在框选模式下出现（对象就是选中集，见 refreshHud）。剪贴板是**进程级**的
             // （`InkClipLocal`），于是跨标签页、跨文档都能粘。
             // 画板标签 / 草稿纸开着时三键作用在那块画布上（画布坐标，见 InkClipLocal）
@@ -568,7 +581,15 @@ class ReaderActivity : Activity() {
                 cur() != null || (curTab()?.isBoard == true && board.pageCount > 0)   // 分页画板也能跳页
             }) { showGotoPage() }
             icon("openDoc", R.drawable.ic_book, getString(R.string.tools_open_doc), available = anyTab) { showDocPicker() }
+            // 图片笔记（`../IMAGE-NOTE-PLAN.md §4`）：从文件插入（落在视口中央）/ 在页面上框一块存成图
+            // 画板标签里是「往画板上插一张图」（BoardController.insertImage）
+            icon("imageNote", R.drawable.ic_image, getString(R.string.img_import), available = {
+                cur() != null || curTab()?.isBoard == true
+            }) { if (curTab()?.isBoard == true) board.insertImage() else importImageNote() }
+            icon("snipImage", R.drawable.ic_snip, getString(R.string.img_snip), available = pdf) { snipImageNote() }
             icon("workspace", R.drawable.ic_folder, getString(R.string.tools_workspace)) { showWorkspaceSwitcher() }
+            icon("trash", R.drawable.ic_delete, getString(R.string.trash_open)) { showTrash() }
+            icon("backups", R.drawable.ic_copy, getString(R.string.backup_open)) { showBackups() }
         }
         tabsBar = DocTabsBar(this).apply {
             onSwitchWorkspace = { showWorkspaceSwitcher() }
@@ -604,6 +625,14 @@ class ReaderActivity : Activity() {
             // 习题（`../EXERCISE-PLAN.md §10.2`）：点一组 = 在公用习题标签里换；长按 = 「在新标签页中打开」（同 Mac 右键）
             onOpenExercises = { key -> openExercises(key, newTab = false) }
             onExercisesLongPress = { key -> showExerciseGroupMenu(key) }
+            // Markdown 笔记（`../MARKDOWN-NOTES-PLAN.md`）：书库页「笔记」一组
+            onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
+            onAddNote = { newMdNote() }
+            onNoteMore = { rel -> showMdNoteMenu(rel) }
+        }
+        md = MdNoteController(this).apply {
+            onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
+            onTreeChanged = { pushDrawerLibrary(); refreshMdTitles() }
         }
         exercise = ExerciseController(this).apply {
             onGroups = { drawer.setExercises(it) }
@@ -693,6 +722,7 @@ class ReaderActivity : Activity() {
             addView(board.canvas, FrameLayout.LayoutParams(-1, -1))
             // 习题标签的整页（同画板：chrome 之下，topMargin 由 applyChromeHeight 给）
             addView(exercise.screen.view, FrameLayout.LayoutParams(-1, -1))
+            addView(md.view, FrameLayout.LayoutParams(-1, -1))   // Markdown 笔记标签的整页（同习题）
             addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(chrome, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
@@ -759,6 +789,10 @@ class ReaderActivity : Activity() {
             it.topMargin = h.toInt()
             exercise.screen.view.layoutParams = it
         }
+        (md.view.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = h.toInt()
+            md.view.layoutParams = it
+        }
         // 浮着的工具组：没挪过的贴 chrome 下方，挪过的不许钻进 chrome（Toolbox.minTop 现读 chromeHeight）
         bar.tools.relayout()
     }
@@ -805,11 +839,17 @@ class ReaderActivity : Activity() {
         board.bind(q, dir)
         // 习题：书名先给一份（恢复习题标签时要拿范围名），抽屉的分组随后从库里读
         exercise.bind(q, dir)
+        md.bind(q, dir)   // 扫 Notes/ + md_doc 对账，扫完刷抽屉
         exercise.setDocTitles(libTitles)
         exercise.refreshGroups()
         pushDrawerLibrary()
         // 笔迹整理（转二进制、摘 JSON 点，`../BINARY-INK-PLAN.md §5`）：post 到本轮之后，排在开标签页的那几条读库后面
         window.decorView.post { compactInkPoints(q, LibraryStore.InkCompactCursor(0, ""), 0) }
+        // 图片：开工作区时先对账再清掉待删除满 30 天的（同 Mac `WorkspaceManager.open`，`../IMAGE-NOTE-PLAN.md §3`）
+        window.decorView.post { purgeImages(q, dir) }
+        // 定时备份：8 秒后先来一份（别和开标签页抢那几秒），之后每 6 小时（节流 30 分钟）
+        handler.removeCallbacks(backupTick)
+        handler.postDelayed(backupTick, 8_000L)
 
         // 这个卷建不起 WAL（FAT32/exFAT 的 U 盘，§9.3）：不是错误，但得说一声——退出时的
         // checkpoint 会变成空操作，「搬运前先把 -wal 合并回主库」那层保险在这里没有。
@@ -856,6 +896,26 @@ class ReaderActivity : Activity() {
             return
         }
         activate(want)
+    }
+
+    private fun purgeImages(q: StoreQueue, dir: File) {
+        if (queue !== q) return
+        q.submit("图片对账清理", { s ->
+            runCatching {
+                // 回收站先清到期的（30 天），再算图片：还被回收站条目引用着的图一张都不删（方案 §2.6）
+                val trashGone = Trash.purgeExpired(s, dir)
+                if (trashGone > 0) Log.i(TAG, "回收站清掉到期条目 $trashGone 条")
+                s.reconcileImageOrphans()
+                val keep = Trash.protectedImages(dir)
+                val before = Iso.string(java.time.Instant.now().minus(java.time.Duration.ofDays(30)))
+                val gone = s.purgeableImages(before).filter { it.sha256 !in keep }
+                for (im in gone) {
+                    ImageAssets.remove(dir, im.sha256, im.ext)   // 文件不在也照删行（幂等）
+                    s.deleteImage(im.sha256)
+                }
+                if (gone.isNotEmpty()) Log.i(TAG, "清掉待删除满 30 天的图片 ${gone.size} 张")
+            }.onFailure { Log.w(TAG, "图片对账清理失败（下次打开再来）", it) }
+        })
     }
 
     /**
@@ -931,7 +991,7 @@ class ReaderActivity : Activity() {
      * 顺序不能乱：[saveTabSet] 必须在 [tabs] 清空之前（空列表等于把这个工作区的记录删掉），
      * 关库必须最后（它排在队尾，前面攒的写才落得下去，见 [StoreQueue.close]）。
      */
-    private fun closeWorkspace() {
+    private fun closeWorkspace(onClosed: (() -> Unit)? = null) {
         scratch.close()   // 开着的草稿纸属于这个工作区的文档，随它一起收
         scratch.bind(null, "", emptyList())
         board.bind(null, null)   // 画板同理（bind(null) 顺带收起）
@@ -939,6 +999,8 @@ class ReaderActivity : Activity() {
         exercise.close()
         exercise.screen.view.visibility = View.GONE
         exercise.bind(null, null)
+        md.close()
+        md.bind(null, null)
         pendingJump = null
         for (t in tabs) saveProgress(t)
         saveTabSet()
@@ -947,10 +1009,93 @@ class ReaderActivity : Activity() {
         active = -1
         libTitles = emptyMap()
         tabsBar.setTabs(emptyList(), -1)
-        queue?.close()
+        handler.removeCallbacks(backupTick)
+        val q = queue
         queue = null
         workspace = null
+        if (q != null) q.close(onClosed) else onClosed?.invoke()
         refreshHud()
+    }
+
+    // ---------- 工作区备份（`../BACKUP-PLAN.md §3`） ----------
+
+    /** 开着工作区时每 6 小时一份（节流 30 分钟），开工作区 8 秒后先来一份（同 Mac `scheduleOpenBackup`） */
+    private val backupTick = object : Runnable {
+        override fun run() {
+            backupNow(force = false)
+            handler.postDelayed(this, Backups.INTERVAL_MS)
+        }
+    }
+
+    private fun backupNow(force: Boolean, then: ((File?) -> Unit)? = null) {
+        val ws = workspace ?: return
+        val q = queue ?: return
+        q.submit("工作区备份", { s -> runCatching { Backups.run(s, ws, force) }.getOrNull() }, { f -> then?.invoke(f) })
+    }
+
+    private fun showBackups() {
+        val ws = workspace ?: return
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        var dlg: AlertDialog? = null
+        fun render() {
+            list.removeAllViews()
+            list.addView(Ui.tip(this, getString(R.string.backup_hint)))
+            val items = Backups.items(ws)
+            if (items.isEmpty()) list.addView(Ui.body(this, getString(R.string.backup_none)))
+            val fmt = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+            for (it in items) {
+                val label = fmt.format(it.date) + "　" + (it.bytes / 1024).let { kb -> if (kb >= 1024) "%.1f MB".format(kb / 1024.0) else "$kb KB" } +
+                    if (it.isRestorePoint) "　" + getString(R.string.backup_restore_point) else ""
+                list.addView(
+                    PadPanels.iconRow(this, R.drawable.ic_doc, label, trailing = Ui.textButton(this, getString(R.string.backup_restore)) {
+                        dlg?.dismiss()
+                        confirmRestore(it, fmt.format(it.date))
+                    }) {},
+                )
+            }
+        }
+        render()
+        dlg = Sheet(this).title(getString(R.string.backup_title)).content(list)
+            .action(getString(R.string.backup_now), dismiss = false) {
+                backupNow(force = true) { f ->
+                    Toast.makeText(this, getString(if (f != null) R.string.backup_done else R.string.backup_failed), Toast.LENGTH_SHORT).show()
+                    render()
+                }
+            }
+            .action(getString(R.string.act_done), primary = true)
+            .show()
+    }
+
+    /**
+     * 还原（低频高危，流程笨一点才安全，同 Mac）：当前库先存还原点 → 关掉这个工作区（等连接真关了）→
+     * 换库文件（连 `-wal` / `-shm`）→ 重新打开。Mac 是退出 App，本端关了再开就是同一个效果（全部状态重建）。
+     */
+    private fun confirmRestore(item: Backups.Item, label: String) {
+        Sheet(this).title(getString(R.string.backup_restore_confirm, label))
+            .subtitle(getString(R.string.backup_restore_msg))
+            .action(getString(R.string.act_cancel))
+            .action(getString(R.string.backup_restore), primary = true) {
+                val ws = workspace ?: return@action
+                val q = queue ?: return@action
+                q.submit("还原前存还原点", { s -> runCatching { Backups.saveRestorePoint(s, ws) }.getOrNull() }, { point ->
+                    if (point == null) {
+                        showAlert(getString(R.string.backup_title), getString(R.string.backup_failed))
+                        return@submit
+                    }
+                    val busy = Sheet(this).busy(getString(R.string.backup_restoring))
+                    closeWorkspace {
+                        Bg.submit("换库文件") {
+                            val err = runCatching { Backups.replaceLibrary(ws, item.file) }.exceptionOrNull()
+                            runOnUiThread {
+                                busy.dismiss()
+                                if (err != null) showAlert(getString(R.string.backup_title), err.message ?: "")
+                                openWorkspace(ws, null)
+                            }
+                        }
+                    }
+                })
+            }
+            .show()
     }
 
     /**
@@ -1090,6 +1235,95 @@ class ReaderActivity : Activity() {
         drawer.setBoards(
             libBoards.map { LibItem(it.id, board.displayName(it), opened.contains(TabSet.boardKey(it.id))) },
         )
+        if (queue != null) {
+            drawer.setNotes(
+                md.nodes(tabs.filter { it.isMarkdown }.map { TabSet.mdRelOf(it.docId) }.toSet()),
+                md.referenced,
+            )
+        } else {
+            drawer.setNotes(null)
+        }
+    }
+
+    // ---------- Markdown 笔记（`../MARKDOWN-NOTES-PLAN.md`） ----------
+
+    /** 扫完一遍后：已经不在的笔记标签收掉（Mac 上删了 / 改了名），在的刷一下标题 */
+    private fun refreshMdTitles() {
+        if (md.scan == null) return
+        var changed = false
+        for (i in tabs.indices.reversed()) {
+            val t = tabs[i]
+            if (!t.isMarkdown) continue
+            val rel = TabSet.mdRelOf(t.docId)
+            if (!md.exists(rel)) {
+                if (i == active) continue   // 正在看的那篇不硬关，编辑器那边会说「已经不在了」
+                dropTab(i)
+                if (active > i) active--
+                changed = true
+            } else if (t.title != md.titleOf(rel)) {
+                t.title = md.titleOf(rel)
+                changed = true
+            }
+        }
+        if (changed) { refreshTabsBar(); saveTabSet() }
+    }
+
+    private fun newMdNote() {
+        val edit = PadPanels.inputBox(this, getString(R.string.md_name_hint))
+        Sheet(this).title(getString(R.string.md_new_title)).content(edit)
+            .action(getString(R.string.act_cancel))
+            .action(getString(R.string.act_save), primary = true) {
+                md.create(edit.text.toString()) { rel -> openDoc(TabSet.mdKey(rel)) }
+            }
+            .show()
+    }
+
+    private fun showMdNoteMenu(rel: String) {
+        Sheet(this).title(md.titleOf(rel))
+            .action(getString(R.string.md_delete)) {
+                Sheet(this).title(getString(R.string.md_delete_confirm, md.titleOf(rel)))
+                    .subtitle(getString(R.string.md_delete_msg))
+                    .action(getString(R.string.act_cancel))
+                    .action(getString(R.string.act_delete), primary = true) {
+                        md.delete(rel) { ok ->
+                            if (!ok) return@delete
+                            val i = tabs.indexOfFirst { it.docId == TabSet.mdKey(rel) }
+                            if (i >= 0) closeTab(i)
+                            pushDrawerLibrary()
+                        }
+                    }
+                    .show()
+            }
+            .action(getString(R.string.act_cancel))
+            .action(getString(R.string.md_rename), primary = true) {
+                val edit = PadPanels.inputBox(this, getString(R.string.md_name_hint)).apply {
+                    setText(md.titleOf(rel))
+                    setSelection(text.length)
+                }
+                Sheet(this).title(getString(R.string.md_rename_title)).content(edit)
+                    .action(getString(R.string.act_cancel))
+                    .action(getString(R.string.act_save), primary = true) {
+                        md.rename(rel, edit.text.toString()) { newRel ->
+                            if (newRel == null || newRel == rel) return@rename
+                            // 开着的标签跟着换身份（路径就是身份）
+                            tabs.firstOrNull { it.docId == TabSet.mdKey(rel) }?.let { t ->
+                                val i = tabs.indexOf(t)
+                                tabs[i] = Tab(TabSet.mdKey(newRel), md.titleOf(newRel))
+                            }
+                            refreshTabsBar()
+                            saveTabSet()
+                            pushDrawerLibrary()
+                        }
+                    }
+                    .show()
+            }
+            .show()
+    }
+
+    private fun activateMarkdown(t: Tab) {
+        hideOpening()
+        md.open(TabSet.mdRelOf(t.docId))
+        refreshHud()
     }
 
     /** 打开（或切到）本工作区的某一篇（[docId] 为 `board:<id>` 时是画板笔记） */
@@ -1106,6 +1340,7 @@ class ReaderActivity : Activity() {
         val fallback = when {
             TabSet.isBoard(docId) -> getString(R.string.board_untitled)
             TabSet.isExercise(docId) -> getString(R.string.ex_title)
+            TabSet.isMarkdown(docId) -> md.titleOf(TabSet.mdRelOf(docId))
             else -> "文档"
         }
         tabs.add(Tab(docId, tabTitleOf(docId) ?: fallback))
@@ -1115,6 +1350,10 @@ class ReaderActivity : Activity() {
     /** 标签页标题：文档按书库、画板按画板表、习题按范围名；都查不到 = null（库里没有了） */
     private fun tabTitleOf(docId: String): String? = when {
         TabSet.isBoard(docId) -> libBoards.firstOrNull { it.id == TabSet.boardIdOf(docId) }?.let { board.displayName(it) }
+        // Markdown 笔记：还没扫完（刚开工作区恢复标签时）先按路径留着，扫完由 refreshMdTitles 收掉不在的
+        TabSet.isMarkdown(docId) -> TabSet.mdRelOf(docId).let { rel ->
+            if (md.scan == null || md.exists(rel)) md.titleOf(rel) else null
+        }
         TabSet.isExercise(docId) -> {
             val sc = ExScope.parse(TabSet.exerciseKeyOf(docId))
             // 某本书（或它某一章）的习题：那本书不在了 → 这个标签也不留（同 Mac `closeExercisesIfGone`）
@@ -1370,9 +1609,29 @@ class ReaderActivity : Activity() {
     private fun deleteBoard(id: String) {
         val key = TabSet.boardKey(id)
         val i = tabs.indexOfFirst { it.docId == key }
+        val ws = workspace ?: return
+        val b = libBoards.firstOrNull { it.id == id } ?: return
+        val name = board.displayName(b)
         // 关掉的若是最后一个标签，界面会退出；删库照样排进队列（队列在 onDestroy 里才关，排在它后面）
         if (i >= 0) closeTab(i)
-        writeBoard("删除画板 ${id.take(8)}") { s -> s.deleteBoard(id) }
+        // 先归档进回收站、成了才删（红线 11）；归档失败 = 什么都不删
+        writeBoard("删除画板 ${id.take(8)}") { s ->
+            runCatching { Trash.deleteBoard(s, ws, b, name) }.onFailure {
+                Log.e(TAG, "画板归档失败，没删", it)
+                runOnUiThread { Toast.makeText(this, getString(R.string.trash_failed), Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
+    /** 回收站面板（⋯ 里）：恢复 / 彻底删除走这条队列；恢复完把书库、画板、开着的标签刷一遍 */
+    private fun showTrash() {
+        val ws = workspace ?: return
+        val q = queue ?: return
+        TrashSheet(this, ws, { what, work, then -> q.submit(what, { st -> runCatching { work(st) }.getOrNull() }, then) }) {
+            refreshDrawerLibrary()
+            refreshBoards()
+            for (t in tabs) t.canvas?.let { c -> c.reloadStrokes(); c.reloadNotes(); c.reloadImageNotes() }
+        }.show()
     }
 
     /**
@@ -1432,19 +1691,18 @@ class ReaderActivity : Activity() {
         if (prev != null && prev !== t) deactivate(prev)
         active = i
         t.usedAt = SystemClock.uptimeMillis()
-        if (t.isBoard || t.isExercise) {
-            // 画板 / 习题标签：没有 PDF、没有草稿纸，草稿纸绑空（入口列不出别篇的纸）
+        if (t.isBoard || t.isExercise || t.isMarkdown) {
+            // 画板 / 习题 / Markdown 标签：没有 PDF、没有草稿纸，草稿纸绑空（入口列不出别篇的纸）
             scratch.bind(queue, "", emptyList())
             refreshTabsBar()
             pushDrawerToc()      // 目录 / 书签清空（画板、习题都没有）
             pushDrawerLibrary()
             title = t.title
             saveTabSet()
-            if (t.isBoard) {
-                drawer.setExerciseCurrent("")
-                activateBoard(t)
-            } else {
-                activateExercise(t)
+            when {
+                t.isBoard -> { drawer.setExerciseCurrent(""); activateBoard(t) }
+                t.isMarkdown -> { drawer.setExerciseCurrent(""); activateMarkdown(t) }
+                else -> activateExercise(t)
             }
             return
         }
@@ -1478,6 +1736,7 @@ class ReaderActivity : Activity() {
             exercise.close()           // 练到哪了在 LocalExerciseDeck 里，切回来接着练
             exercise.screen.view.visibility = View.GONE
         }
+        if (t.isMarkdown) md.close()   // 先存再收（停手 0.8 秒那次还没到也立即写）
         saveProgress(t)
         scratch.close()   // 草稿纸属于「当前这篇」：切走即关（视口不落库，重开回中，三端契约）
         selectBar.hide()  // 划字浮条同理：它指着的是刚切走那一篇的选区
@@ -1631,6 +1890,8 @@ class ReaderActivity : Activity() {
         // 图钉的底色/图标按笔记类型走（同 Mac）；SF Symbol 名 → 本端 ic_* 的映射见 NoteTypeIcons
         c.setNoteTypes(d.typeRgb, NoteTypeIcons.resolve(this, d.typeIcons))
         c.applyNotes(d.notes, d.fills)
+        c.workspace = workspace
+        c.reloadImageNotes()
         // 划字用的文本层（`ocr_page`，Mac 跑的 OCR 同步过来的）——整本一次读好，划字时零 I/O
         c.loadTextLayer(d.contentHash)
         scratch.bind(queue, t.docId, t.pads, src, pageAspectOf(t))   // 装载完成：纸列表到位，图钉上页
@@ -1674,20 +1935,32 @@ class ReaderActivity : Activity() {
         onLassoSelChanged = { if (curTab() === tab) refreshHud() }
         // 划字：选区一变就更新那条「四色高亮 / 批注 / 复制」的浮条（背景标签页不刷，同 onHud）
         onTextSelectionChanged = { sel -> if (curTab() === tab) selectBar.show(sel) }
-        // 划字「批注」：编辑器与点注解共用同一份（shared/PadPanels），保存了才真落库（同 Mac 两段式）
+        // 划字「批注」：保存了才真落库（同 Mac 两段式）。选区批注允许空正文（= 纯标记，同 Mac `commitNote`）
         onSelectionNote = { pending ->
-            PadPanels.showNoteEditor(
-                this@ReaderActivity, "", true, NOTE_TAP,
-                onSave = { s, d -> if (s.isNotEmpty()) tab.canvas?.saveSelectionNote(pending, s, d) },
-                onDelete = {},
-            )
+            withNoteTypes { types ->
+                NoteSheets.showEditor(
+                    this@ReaderActivity,
+                    NoteSheets.EditorCfg(
+                        isNew = true, text = "", quote = pending.quote, hasRects = true, display = NOTE_TAP,
+                        typeId = null, color = null, style = HL_FILL, types = types,
+                        onSave = { s, d, marks -> tab.canvas?.saveSelectionNote(pending, s, d, marks) },
+                        onDelete = null,
+                        onManageTypes = { done -> manageNoteTypes(done) },
+                    ),
+                )
+            }
         }
+        // 手指点中高亮：换色 / 换画法 / 转批注 / 删除（同 Mac 高亮气泡）
+        onHighlightTap = { f -> showHighlightPanel(tab, f) }
+        // 图片笔记：点缩略图看大图、点图钉（非点击展开的两种）进编辑器
+        onImageNoteView = { n -> viewImageNote(tab, n) }
+        onImageNoteEdit = { n -> editImageNote(tab, n) }
         // 图钉拖动松手：只挪锚点（页不变），落库由 ScratchController 走 StoreQueue
         onPinMove = { padId, nx, ny -> scratch.movePadAnchor(padId, nx, ny) }
         // 环形盘新扇区：盘心即锚点（等价「在当前位置新建」，只是位置用长按那一处）
         onRadialScratchAdd = { page, nx, ny -> scratch.createAt(page, nx, ny) }
         onRadialTextNote = { page, nx, ny ->
-            editNote(tab, java.util.UUID.randomUUID().toString(), page, nx, ny, "", true, NOTE_TAP)
+            editNote(tab, java.util.UUID.randomUUID().toString().uppercase(), page, nx, ny, "", true, NOTE_TAP)
         }
     }
 
@@ -1750,6 +2023,7 @@ class ReaderActivity : Activity() {
             exercise.close()
             exercise.screen.view.visibility = View.GONE
         }
+        if (i == active && t.isMarkdown) md.close()
         unload(t)
         tabs.removeAt(i)
         return t
@@ -1902,11 +2176,12 @@ class ReaderActivity : Activity() {
         val canvas = cur()
         bar.setActive("scratch", scratch.isOpen)
         PalmSettings.setActive(bar)
-        // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式 / 撤销重做——
-        // 草稿纸那套画布在模式1 本来就没有撤销栈，画板照搬）
+        // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式）；
+        // 撤销重做画板也有（BoardController 自己一条栈），只有习题 / Markdown 标签收起来
         val isBoard = curTab()?.isBoard == true
-        val isEx = curTab()?.isExercise == true
-        for (k in arrayOf("prev", "next", "scratch", "lock", "canvas", "undo", "redo")) bar.setVisible(k, !isBoard && !isEx)
+        val isEx = curTab()?.isExercise == true || curTab()?.isMarkdown == true
+        for (k in arrayOf("prev", "next", "scratch", "lock", "canvas")) bar.setVisible(k, !isBoard && !isEx)
+        for (k in arrayOf("undo", "redo")) bar.setVisible(k, !isEx)   // 画板也能撤销（2026-10-29）
         if (isBoard) {
             refreshBoardHud()
             return
@@ -2028,7 +2303,7 @@ class ReaderActivity : Activity() {
     }
 
     private fun hiddenLayerIds(t: Tab): Set<String> =
-        t.layers.filter { !it.visible }.map { it.id }.toSet()
+        t.layers.filter { !it.visible }.map { it.id.uppercase() }.toSet()   // 大写：比较不分大小写（见 LocalCanvasView.applyStrokes）
 
     /**
      * 模式2 里这三件事只是「请求」，由 Mac 判定后广播权威状态回来；模式1 的真源就在进程内，
@@ -2105,14 +2380,179 @@ class ReaderActivity : Activity() {
     private fun editNote(
         t: Tab, id: String, page: Int, nx: Float, ny: Float, text: String, isNew: Boolean, display: Int,
     ) {
-        PadPanels.showNoteEditor(
-            this, text, isNew, display,
-            onSave = { s, d ->
-                if (s.isEmpty()) { if (!isNew) t.canvas?.deleteNote(id, page, nx, ny) }
-                else t.canvas?.upsertNote(id, page, nx, ny, s, d)
-            },
-            onDelete = { t.canvas?.deleteNote(id, page, nx, ny) },
-        )
+        val n = if (isNew) null else t.canvas?.noteFor(id)
+        val hasRects = (n?.aw ?: 0f) > 0f
+        withNoteTypes { types ->
+            NoteSheets.showEditor(
+                this,
+                NoteSheets.EditorCfg(
+                    isNew = isNew, text = text, quote = n?.quote.orEmpty(), hasRects = hasRects, display = display,
+                    typeId = n?.typeId, color = n?.color, style = n?.style ?: HL_FILL, types = types,
+                    onSave = { s, d, marks ->
+                        // 点注解空正文 = 删除（同 Mac 丢弃空点注解）；选区注解空正文照存（= 纯标记）
+                        if (s.isEmpty() && !hasRects) { if (!isNew) t.canvas?.deleteNote(id, page, nx, ny) }
+                        else t.canvas?.upsertNoteFull(id, page, nx, ny, s, d, marks)
+                    },
+                    onDelete = if (isNew) null else ({ t.canvas?.deleteNote(id, page, nx, ny) }),
+                    onManageTypes = { done -> manageNoteTypes(done) },
+                ),
+            )
+        }
+    }
+
+    /** 读一次工作区笔记类型再干活（类型是工作区级的，可能刚在别的标签页里改过，现读最稳） */
+    private fun withNoteTypes(then: (List<NoteTypeDef>) -> Unit) {
+        val q = queue ?: return then(emptyList())
+        q.submit("读笔记类型", { s -> s.noteTypes() }, then)
+    }
+
+    /**
+     * 「管理类型…」：改一次存一次（整表写回 `meta.note_types`，同 Mac `saveNoteTypes`），存完把所有开着的
+     * 标签页的图钉配色 / 图标 / 选区底色刷一遍（类型色会变），再把新列表交给编辑器（[done]）。
+     */
+    private fun manageNoteTypes(done: (List<NoteTypeDef>) -> Unit) {
+        withNoteTypes { types ->
+            NoteSheets.showTypeManager(
+                this, types,
+                usage = { id, cb -> queue?.submit("笔记类型用量", { s -> s.noteTypeUsage(id) }, cb) },
+                onChange = { list ->
+                    queue?.submit(
+                        "存笔记类型 ${list.size} 个",
+                        { s -> s.saveNoteTypes(list); s.noteTypeColors() to s.noteTypeIcons() },
+                        { (rgb, icons) ->
+                            val drawables = NoteTypeIcons.resolve(this, icons)
+                            for (tab in tabs) tab.canvas?.let { c -> c.setNoteTypes(rgb, drawables); c.reloadNotes() }
+                            done(list)
+                        },
+                    )
+                },
+            )
+        }
+    }
+
+    // ---------- 图片笔记（`../IMAGE-NOTE-PLAN.md`） ----------
+
+    /** 「插入图片…」：挑一张图，落在当前视口中央（点锚，同 Mac ⌘V 不在页面上时的落点） */
+    private fun importImageNote() {
+        val t = curTab() ?: return
+        val c = t.canvas ?: return
+        FileBrowser(this, FileBrowser.Mode.IMAGE, getString(R.string.img_import)) { f ->
+            val (page, nx, ny) = c.viewportCenterAnchor()
+            addImageNote(t, page, floatArrayOf(nx, ny, 0f, 0f), JSONObject().put("kind", "file").put("name", f.name)) {
+                ImageAssets.prepare(f.readBytes())
+            }
+        }.show()
+    }
+
+    /** 「截取为图片笔记」：在页面上拖一个框，按页重渲染那一块（不截屏）存成 PNG（Mac ⌥⇧ 拖） */
+    private fun snipImageNote() {
+        val t = curTab() ?: return
+        val c = t.canvas ?: return
+        Toast.makeText(this, getString(R.string.img_snip_hint), Toast.LENGTH_SHORT).show()
+        c.beginSnip { page, rect ->
+            val src = t.pdf ?: return@beginSnip
+            val source = JSONObject().put("kind", "pdf").put("page", page).put("pages", 1)
+                .put("rect", org.json.JSONArray().put(rect[0].toDouble()).put(rect[1].toDouble()).put(rect[2].toDouble()).put(rect[3].toDouble()))
+            addImageNote(t, page, rect, source, failText = R.string.img_snip_failed) {
+                src.renderRegion(page, rect)?.let { bmp -> ImageAssets.prepare(bmp).also { bmp.recycle() } }
+            }
+        }
+    }
+
+    /**
+     * 建一条图片笔记：后台把图整理好落进 `Images/`（[prepare]），再经库队列登记 `image` 行 + 写 note。
+     * 新 id 用大写 UUID（Mac 按 UUID 解析后以 `uuidString` 写回）。
+     */
+    private fun addImageNote(
+        t: Tab, page: Int, anchor: FloatArray, source: JSONObject, failText: Int = R.string.img_not_image,
+        prepare: () -> ImageAssets.Prepared?,
+    ) {
+        val ws = workspace ?: return
+        val q = queue ?: return
+        Bg.submit("整理图片") {
+            val p = runCatching { prepare()?.also { ImageAssets.write(it, ws) } }
+                .onFailure { Log.w(TAG, "整理图片失败", it) }.getOrNull()
+            runOnUiThread {
+                if (p == null) {
+                    Toast.makeText(this, getString(failText), Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                t.canvas?.pushNoteUndo()   // 新建也能撤（撤掉 = 那张图没人引用了，进待删除）
+                q.submit("新建图片笔记", { s ->
+                    s.insertImageIfAbsent(LibImage(p.sha256, p.ext, p.width, p.height, p.data.size.toLong(), Iso.now(), null))
+                    s.insertImageNote(t.docId, newBoardId(), page, anchor, p.sha256, "", NOTE_TAP, source)
+                    Log.i(TAG, "图片笔记 ${p.sha256.take(8)}.${p.ext} ${p.width}×${p.height} → 第 ${page + 1} 页")
+                }, { t.canvas?.reloadImageNotes() })
+            }
+        }
+    }
+
+    private fun imageSourceLabel(n: LibImageNote): String =
+        if (n.sourceKind == "pdf") getString(R.string.img_from_page, n.sourcePage + 1) else n.sourceName
+
+    /** 在后台读一张图（看大图 / 编辑器缩略图），读好回主线程 */
+    private fun loadImage(n: LibImageNote, maxSide: Int, then: (android.graphics.Bitmap?) -> Unit) {
+        val ws = workspace ?: return then(null)
+        val q = queue ?: return then(null)
+        q.submit("查图片扩展名", { s -> s.imageExt(n.image) }, { ext ->
+            Bg.submit("读图片 ${n.image.take(8)}") {
+                val bmp = ImageAssets.find(ws, n.image, ext)?.let { ImageAssets.load(it, maxSide) }
+                runOnUiThread { then(bmp) }
+            }
+        })
+    }
+
+    private fun viewImageNote(t: Tab, n: LibImageNote) {
+        loadImage(n, 2048) { bmp ->
+            NoteSheets.showImageViewer(
+                this, bmp, imageSourceLabel(n),
+                onEdit = { editImageNote(t, n) },
+                onDelete = { t.canvas?.deleteImageNote(n.id) },
+            )
+        }
+    }
+
+    private fun editImageNote(t: Tab, n: LibImageNote) {
+        loadImage(n, 720) { bmp ->
+            NoteSheets.showImageEditor(
+                this, bmp, n.caption, n.display,
+                onSave = { cap, d -> t.canvas?.updateImageNote(n.id, cap, d) },
+                onDelete = { t.canvas?.deleteImageNote(n.id) },
+            )
+        }
+    }
+
+    /** 点中高亮的操作面板：原文要从库里读（铺色只带了行框与颜色） */
+    private fun showHighlightPanel(t: Tab, f: TextFill) {
+        val q = queue ?: return
+        val id = f.highlightId
+        q.submit("读高亮", { s -> s.noteById(id) }, { row ->
+            row ?: return@submit
+            val p = com.xvan.unireader.local.store.TextNotePayload.parse(row.payload) ?: return@submit
+            val rgb = intArrayOf(f.r, f.g, f.b)
+            NoteSheets.showHighlight(
+                this, p.quote, row.page, rgb, f.style,
+                onColor = { c -> t.canvas?.updateHighlight(id, c, null) },
+                onStyle = { st -> t.canvas?.updateHighlight(id, null, st) },
+                onAddNote = {
+                    // 高亮转批注：编辑器按了保存才换（同 Mac `beginNoteFromHighlight`，取消什么都不动）。
+                    // 颜色 / 画法带过去——转完页面上看着一样，只是多了一枚图钉
+                    withNoteTypes { types ->
+                        NoteSheets.showEditor(
+                            this,
+                            NoteSheets.EditorCfg(
+                                isNew = true, text = "", quote = p.quote, hasRects = true, display = NOTE_TAP,
+                                typeId = null, color = rgb, style = f.style, types = types,
+                                onSave = { s, d, marks -> t.canvas?.highlightToNote(id, s, d, marks) },
+                                onDelete = null,
+                                onManageTypes = { done -> manageNoteTypes(done) },
+                            ),
+                        )
+                    }
+                },
+                onDelete = { t.canvas?.deleteHighlight(id) },
+            )
+        })
     }
 
     /**
@@ -2189,6 +2629,8 @@ class ReaderActivity : Activity() {
         // 顶栏切的夜间、环形盘/切笔键换的笔——都在这一刻存下来（面板改的已经即时存过了）
         toolCanvas()?.let { ToolPrefs.save(this, it) }
         board.flushViewportSave()   // 画板视口同理：节流中的那次立即写一次，没开画板时空操作
+        md.flush()                  // Markdown 笔记：没存的输入立即写盘（同 Mac「App 退出」那条）
+        backupNow(force = false)    // 退到后台也备份一次（节流 30 分钟；同 Mac「退出前」那条）
     }
 
     /**
@@ -2242,6 +2684,10 @@ class ReaderActivity : Activity() {
         }
         if (scratch.isOpen) {
             scratch.close()
+            return
+        }
+        if (cur()?.snipping == true) {   // 正在框一块存图片笔记：返回 = 不框了
+            cur()?.cancelSnip()
             return
         }
         super.onBackPressed()

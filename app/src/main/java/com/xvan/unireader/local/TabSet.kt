@@ -38,6 +38,12 @@ object TabSet {
      * 习题标签（`../EXERCISE-PLAN.md §10.2`，同 Mac `StoredTab`）：`ex:<范围键>` = 公用的那个（抽屉里点哪组都在它里面换，
      * 错题本那一支另一个），`exs:<范围键>` = 长按「在新标签页中打开」单独开的。范围键见 `ExScope.key`。
      */
+    /** Markdown 笔记标签：`md:<Notes/ 内相对路径>`（`../MARKDOWN-NOTES-PLAN.md`；身份 = 路径，同 Mac `NoteRef`） */
+    const val MD_PREFIX = "md:"
+    fun isMarkdown(docId: String): Boolean = docId.startsWith(MD_PREFIX)
+    fun mdRelOf(docId: String): String = docId.removePrefix(MD_PREFIX)
+    fun mdKey(rel: String): String = MD_PREFIX + rel
+
     const val EX_PREFIX = "ex:"
     const val EXS_PREFIX = "exs:"
 

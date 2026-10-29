@@ -637,7 +637,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             onAddBookmark = { title ->
                 val p = padView.topVisiblePage()
                 client?.send(WireCodec.encodeBookmarkEdit(
-                    WireCodec.BM_ADD, java.util.UUID.randomUUID().toString(),
+                    WireCodec.BM_ADD, java.util.UUID.randomUUID().toString().uppercase(),
                     p.toLong(), padView.topFrac(), title,
                 ))
             }
@@ -1658,7 +1658,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         val p = page.toInt()
         if (p !in 0 until padView.pageCountOrZero()) return@runOnUiThread
         if (p != padView.topVisiblePage()) padView.scrollToPageFrac(p, ny)
-        onOpenNoteEditor(java.util.UUID.randomUUID().toString(), p, nx, ny, "", true, NOTE_TAP)
+        onOpenNoteEditor(java.util.UUID.randomUUID().toString().uppercase(), p, nx, ny, "", true, NOTE_TAP)
     }
 
     // ---------- PadView.Listener（主线程） ----------

@@ -62,6 +62,9 @@ class FileBrowser(
 
         /** 列出 `.pdf` 文件，点一个 = 加进来；**不关窗**，好接着加下一本 */
         PDF,
+
+        /** 列出图片文件（[ImageAssets.PICKABLE]），点一个 = 选中并关掉浏览器（插入图片笔记） */
+        IMAGE,
     }
 
     companion object {
@@ -189,10 +192,11 @@ class FileBrowser(
         val all = dir.listFiles()
         return Listing(
             dirs = all?.filter { it.isDirectory }?.sortedBy { it.name.lowercase() },
-            files = if (mode != Mode.PDF) {
-                emptyList()
-            } else {
-                all?.filter { PdfImport.looksLikePdf(it) }?.sortedBy { it.name.lowercase() }.orEmpty()
+            files = when (mode) {
+                Mode.PDF -> all?.filter { PdfImport.looksLikePdf(it) }?.sortedBy { it.name.lowercase() }.orEmpty()
+                Mode.IMAGE -> all?.filter { it.isFile && it.extension.lowercase() in ImageAssets.PICKABLE }
+                    ?.sortedBy { it.name.lowercase() }.orEmpty()
+                else -> emptyList()
             },
             stray = mode == Mode.WORKSPACE &&
                 !Workspace.looksLikeWorkspace(dir) && File(dir, Workspace.DB_REL).isFile,
@@ -209,7 +213,15 @@ class FileBrowser(
             return
         }
         if (l.dirs.isEmpty() && l.files.isEmpty()) {
-            list.addView(hint(if (mode == Mode.PDF) "（这里没有子文件夹，也没有 PDF）" else "（没有子文件夹）"))
+            list.addView(
+                hint(
+                    when (mode) {
+                        Mode.PDF -> "（这里没有子文件夹，也没有 PDF）"
+                        Mode.IMAGE -> "（这里没有子文件夹，也没有图片）"
+                        else -> "（没有子文件夹）"
+                    },
+                ),
+            )
         }
         for (d in l.dirs) list.addView(dirRow(d))
         for (f in l.files) list.addView(fileRow(f))
@@ -240,12 +252,16 @@ class FileBrowser(
         val note = fileNote?.invoke(f)
         val row = PadPanels.iconRow(
             a,
-            R.drawable.ic_doc,
+            if (mode == Mode.IMAGE) R.drawable.ic_image else R.drawable.ic_doc,
             f.name,
             if (note == null) Ui.accent(a) else Ui.outline(a),
             trailing = tailText(note ?: sizeText(f.length()), Ui.onVariant(a)),
         ) {
-            if (note == null) onPick(f) else Log.i(TAG, "${f.name} 已处理过，忽略这次点击")
+            if (note != null) Log.i(TAG, "${f.name} 已处理过，忽略这次点击")
+            else {
+                if (mode == Mode.IMAGE) dlg?.dismiss()   // 挑图是一次一张，选中即关
+                onPick(f)
+            }
         }
         if (note != null) row.isClickable = false
         return row

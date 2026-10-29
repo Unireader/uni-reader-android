@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  标签（tag）：吊牌 + 穿孔
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M3.6,3.6 L11.4,3.6 L20.4,12.6 L12.6,20.4 L3.6,11.4 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M6.4,7.8 A1.4,1.4 0 1 1 9.2,7.8 A1.4,1.4 0 1 1 6.4,7.8 Z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

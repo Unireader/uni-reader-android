@@ -66,6 +66,8 @@ class LibraryActivity : Activity() {
         /** 这个工作区是不是离线副本（换角标、换「打不开」的文案、换右上那颗键的动作） */
         val isMirror: Boolean,
         val boards: List<BoardRow>,
+        /** 工作区 Markdown 笔记（`Notes/` 里的相对路径 → 是否已在标签页里），按路径排 */
+        val notes: List<Pair<String, Boolean>> = emptyList(),
     )
 
     private lateinit var list: LinearLayout
@@ -185,6 +187,8 @@ class LibraryActivity : Activity() {
                 name = store.workspaceName().ifEmpty { ws.name },
                 isMirror = mirror,
                 boards = boards,
+                // 只扫目录不读正文（同 Mac 侧栏）；md_doc 对账留给阅读界面那条可写连接
+                notes = MdNotes.scan(ws).notes.map { it.relPath to (TabSet.mdKey(it.relPath) in opened) },
                 info = buildString {
                     append("${docs.size} 个文档")
                     if (opened.isNotEmpty()) append("　${opened.size} 个在标签页里")
@@ -231,6 +235,28 @@ class LibraryActivity : Activity() {
             )
         }
         renderBoards(ws, snap.boards)
+        renderNotes(ws, snap.notes)
+    }
+
+    /** 「笔记」一组（`../MARKDOWN-NOTES-PLAN.md`）：每篇一行，次行是所在目录；点开 = 在阅读界面的标签页里打开 */
+    private fun renderNotes(ws: File, notes: List<Pair<String, Boolean>>) {
+        if (notes.isEmpty()) return
+        list.addView(Ui.groupTitle(this, getString(R.string.md_group), top = 24))
+        for ((i, n) in notes.withIndex()) {
+            val (rel, opened) = n
+            if (i > 0) list.addView(Ui.divider(this))
+            val item = MdNotes.Item(rel)
+            val col = Ui.row(this) { ReaderActivity.start(this, ws, TabSet.mdKey(rel)) }
+            col.addView(
+                Ui.title(this, item.title, 17f).apply { if (opened) setTextColor(Ui.accent(this@LibraryActivity)) },
+            )
+            val sub = buildString {
+                append(item.folder.ifEmpty { MdNotes.DIR })
+                if (opened) append("　已在标签页里")
+            }
+            col.addView(Ui.body(this, sub).apply { setPadding(0, dp(4), 0, 0) })
+            list.addView(col)
+        }
     }
 
     // ---------- 画板笔记（`../BOARD-NOTE-PLAN.md §5`） ----------
@@ -313,7 +339,8 @@ class LibraryActivity : Activity() {
                     .action(getString(R.string.common_cancel))
                     .action(getString(R.string.common_delete), primary = true) {
                         // 删 board_note 行，board_item 随外键 CASCADE 一起走（foreign_keys=ON 在 Db.open 里开着）
-                        writeBoard(ws, "删除画板", body = { s -> s.deleteBoard(b.id) })
+                        // 先归档进回收站、成了才删（红线 11）；归档失败会抛出 → writeBoard 弹「写不进去」，什么都没删
+                        writeBoard(ws, "删除画板", body = { s -> Trash.deleteBoard(s, ws, b, boardName(b)) })
                     }
                     .show()
             },
@@ -377,6 +404,7 @@ class LibraryActivity : Activity() {
      */
     private fun row(d: LibDocument, inkCount: Int, pdfOk: Boolean, opened: Boolean, isMirror: Boolean): View {
         val col = Ui.row(this, if (pdfOk) ({ workspace?.let { ReaderActivity.start(this, it, d.id) } }) else null)
+        col.setOnLongClickListener { workspace?.let { showDocMenu(it, d) }; true }
         col.addView(
             Ui.title(this, d.title, 17f).apply {
                 if (!pdfOk) setTextColor(Ui.onVariant(this@LibraryActivity))
@@ -505,8 +533,56 @@ class LibraryActivity : Activity() {
             sheet.subtitle("复制一份到内部存储，拔了盘也能看和写")
             sheet.action("做成离线副本…", primary = true) { MirrorUi.makeMirror(this, ws) { reload() } }
         }
+        sheet.action(getString(R.string.trash_open)) { showTrash(ws) }
         sheet.action("取消")
         sheet.show()
+    }
+
+    /** 回收站：每个操作临时开一条可写连接（书库页平时只开只读的） */
+    private fun showTrash(ws: File) {
+        TrashSheet(this, ws, { what, work, then ->
+            runInBackground(
+                what = what,
+                work = { LibraryStore.open(ws, readOnly = false).use { work(it) } },
+                ok = { then(it) },
+                fail = { e -> Log.e(TAG, "$what 失败", e); then(null) },
+            )
+        }) { reload() }.show()
+    }
+
+    /** 长按一本书：删除（进回收站）。确认框里说清有多少条会一起进去 */
+    private fun showDocMenu(ws: File, d: LibDocument) {
+        Sheet(this).title(d.title)
+            .action(getString(R.string.act_cancel))
+            .action(getString(R.string.doc_delete), primary = true) {
+                // 确认框里的数 = 这篇全部笔记行（笔迹 / 文字笔记 / 高亮 / 书签 / 图片…），不只是笔迹
+                runInBackground(
+                    what = "数这篇的笔记",
+                    work = { LibraryStore.open(ws, readOnly = true).use { it.notes(d.id).size } },
+                    ok = { n -> confirmDeleteDoc(ws, d, n) },
+                    fail = { confirmDeleteDoc(ws, d, 0) },
+                )
+            }
+            .show()
+    }
+
+    private fun confirmDeleteDoc(ws: File, d: LibDocument, total: Int) {
+                Sheet(this).title(getString(R.string.doc_delete_confirm, d.title))
+                    .subtitle(getString(R.string.doc_delete_msg, total))
+                    .action(getString(R.string.act_cancel))
+                    .action(getString(R.string.act_delete), primary = true) {
+                        runInBackground(
+                            what = "删除文档《${d.title}》",
+                            work = { LibraryStore.open(ws, readOnly = false).use { Trash.deleteDocument(it, ws, d) } },
+                            ok = { reload() },
+                            fail = { e ->
+                                Log.e(TAG, "文档归档失败，没删", e)
+                                alert(getString(R.string.trash_title), getString(R.string.trash_failed))
+                                reload()
+                            },
+                        )
+                    }
+                    .show()
     }
 
     private fun alert(title: String, msg: String) = showAlert(title, msg)

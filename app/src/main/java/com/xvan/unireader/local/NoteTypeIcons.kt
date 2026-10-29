@@ -10,26 +10,34 @@ import com.xvan.unireader.R
  * 候选集见 Mac `NoteType.iconCandidates`），本端把它映射成自己的 `ic_*`。
  *
  * 🔴 **图标是生成物**：本端的 `ic_*` 全部由 `tools/icons/gen.py` 一份几何源码生成，
- * 不许手写 XML。所以这张表只在**已经有对应图标**时才映射，其余一律回落通用
- * （画布上画成 `PadOverlays` 里那个手绘的笔记图标，等同 Mac 的 `note.text`）。
- *
- * 还没有对应图标的 SF Symbol（`exclamationmark.triangle` / `questionmark.circle` / `flag` /
- * `star` / `play.rectangle` / `lightbulb` / `flame` / `quote.bubble` / `tag`）记在 `../TODO.md`：
- * 它们只影响**在 Mac 上给笔记设过自定义类型**的那些图钉长什么样（底色仍然按类型走，是对的），
- * 平板上新建的笔记一律是通用类型，看不到差别。
+ * 不许手写 XML。16 个候选（`NoteTypeDef.ICONS`）2026-10-29 起全有对应图标。
+ * 图钉上的通用类型仍由画布自己画（`PadOverlays` 那个手绘的笔记图标，等同 Mac 的 `note.text`），
+ * 类型管理面板里的通用图标用 `ic_note`（[drawableFor]）。
  */
 object NoteTypeIcons {
 
-    /** SF Symbol 名 → 本端 drawable。表里没有的返回 null = 用通用图标 */
+    /** SF Symbol 名 → 本端 drawable（顺序同 `NoteTypeDef.ICONS`） */
     private val MAP = mapOf(
-        "note.text" to null,                       // 通用：画布自己画（与 Mac 的默认图标同形）
+        "note.text" to R.drawable.ic_note,
+        "exclamationmark.triangle" to R.drawable.ic_warn,
+        "questionmark.circle" to R.drawable.ic_question,
         "bookmark" to R.drawable.ic_bookmark,
-        "book" to R.drawable.ic_book,
-        "eye" to R.drawable.ic_eye,
+        "flag" to R.drawable.ic_flag,
+        "star" to R.drawable.ic_star,
+        "play.rectangle" to R.drawable.ic_play_rect,
+        "lightbulb" to R.drawable.ic_bulb,
+        "flame" to R.drawable.ic_flame,
         "checkmark.circle" to R.drawable.ic_check,
-        "pencil.line" to R.drawable.ic_pen,
         "xmark.octagon" to R.drawable.ic_close,
+        "quote.bubble" to R.drawable.ic_quote,
+        "book" to R.drawable.ic_book,
+        "tag" to R.drawable.ic_tag,
+        "pencil.line" to R.drawable.ic_pen,
+        "eye" to R.drawable.ic_eye,
     )
+
+    /** 列表 / 网格里画一个类型图标用（未知名回落通用 `ic_note`，同 Mac `NoteType.icon`） */
+    fun drawableFor(symbol: String): Int = MAP[symbol] ?: R.drawable.ic_note
 
     /**
      * `type_id（大写） → SF Symbol 名` 转成 `type_id（大写） → Drawable`。
@@ -39,6 +47,8 @@ object NoteTypeIcons {
         if (byType.isEmpty()) return emptyMap()
         val out = HashMap<String, Drawable>(byType.size)
         for ((typeId, symbol) in byType) {
+            // 通用图标不进结果：图钉上的通用图标由画布自己画（与没设类型的笔记长得一样）
+            if (symbol == "note.text") continue
             val res = MAP[symbol] ?: continue
             // mutate()：图钉画之前会 setTint，不 mutate 会把同一份共享 ConstantState 染给别处
             val d = ContextCompat.getDrawable(ctx, res)?.mutate() ?: continue

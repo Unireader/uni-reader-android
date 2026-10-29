@@ -37,3 +37,11 @@ data class BookmarkItem(val id: String, val page: Int, val frac: Float, val titl
  * 模式1 = 已在某个标签页里）。
  */
 data class LibItem(val id: String, val title: String, val open: Boolean)
+
+/**
+ * 抽屉「笔记」一组的一行（工作区 Markdown 笔记，`../MARKDOWN-NOTES-PLAN.md`；模式1 专属，模式2 不设 = 不显示）。
+ * 整棵目录树**先序摊平**传过来（目录在前、笔记在后），[depth] 是缩进层级；目录的展开 / 收起由抽屉自己记。
+ * [path] = 源内相对路径（目录 `数学` / 笔记 `数学/极限.md`），原样回传给宿主。
+ */
+data class NoteNode(val path: String, val title: String, val depth: Int, val isFolder: Boolean, val open: Boolean)
+

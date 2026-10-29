@@ -115,25 +115,11 @@ class PadOverlays(private val density: Float) {
      *
      * 尺寸/位置由 [NoteBubbleGeom] 算好（页宽的比例，三端同一套数），这里只负责画。
      */
-    fun drawNoteBubble(c: Canvas, b: NoteBubbleGeom.Box) {
-        rect.set(b.x, b.y, b.x + b.w, b.y + b.h)
-        val rad = min(b.fs * NoteBubbleGeom.RADIUS, min(b.w, b.h) / 2f)
-        p.style = Paint.Style.FILL
-        p.color = Color.argb(247, 255, 253, 242)
-        c.drawRoundRect(rect, rad, rad, p)
-        p.style = Paint.Style.STROKE
-        p.strokeWidth = dp(1f)
-        p.color = Color.argb(46, 0, 0, 0)
-        c.drawRoundRect(rect, rad, rad, p)
+    fun drawNoteBubble(c: Canvas, b: NoteBubbleGeom.Box, text: android.text.StaticLayout) {
+        drawBubbleFrame(c, b)
 
-        textPaint.textAlign = Paint.Align.LEFT
-        textPaint.textSize = b.fs
-        textPaint.color = Color.rgb(31, 31, 33)
-        val fm = textPaint.fontMetrics
-        for (i in b.lines.indices) {
-            val top = b.y + b.pad + i * b.fs * NoteBubbleGeom.LINE_H
-            c.drawText(b.lines[i], b.x + b.pad, top - fm.ascent, textPaint)
-        }
+        // 正文：Markdown 渲染好的排版（见 NoteBubbleText），裁在内边距以内
+        NoteBubbleText.draw(c, text, b.x + b.pad, b.y + b.pad, b.fs, b.h - b.pad * 2f)
         if (b.edit > 0f) {   // 右上角「编辑」图标（热区 = 这块方形，见 PageCanvasView.noteEditHit）
             val s = b.edit * NoteBubbleGeom.ICON
             drawEditIcon(
@@ -143,7 +129,19 @@ class PadOverlays(private val density: Float) {
                 s,
             )
         }
-        textPaint.textAlign = Paint.Align.CENTER
+    }
+
+    /** 气泡外框：浅纸色底 + 一圈淡描边（文字气泡与图片气泡共用） */
+    fun drawBubbleFrame(c: Canvas, b: NoteBubbleGeom.Box) {
+        rect.set(b.x, b.y, b.x + b.w, b.y + b.h)
+        val rad = min(b.fs * NoteBubbleGeom.RADIUS, min(b.w, b.h) / 2f)
+        p.style = Paint.Style.FILL
+        p.color = Color.argb(247, 255, 253, 242)
+        c.drawRoundRect(rect, rad, rad, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = dp(1f)
+        p.color = Color.argb(46, 0, 0, 0)
+        c.drawRoundRect(rect, rad, rad, p)
     }
 
     /**
@@ -192,14 +190,6 @@ class PadOverlays(private val density: Float) {
         c.drawPath(path, p)
     }
 
-    /** 折行用的量字回调（[NoteBubbleGeom.layout] 要按气泡字号量宽度） */
-    fun measureNoteText(text: String, fontSize: Float): Float {
-        textPaint.textAlign = Paint.Align.LEFT
-        textPaint.textSize = fontSize
-        val w = textPaint.measureText(text)
-        textPaint.textAlign = Paint.Align.CENTER
-        return w
-    }
 
     // ---------- 文字铺色（高亮 kind=3 / 选区注解 kind=0 的底色） ----------
 
@@ -207,12 +197,34 @@ class PadOverlays(private val density: Float) {
      * 铺一行选区色。**画在页图之上、墨迹之下**，与 Mac `PageCellView` 的层序一致——
      * 反过来的话荧光色会盖住自己写的笔记。圆角 2dp 同 Mac 的 `fillNorm`。
      */
-    fun drawTextFill(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float, color: Int) {
+    fun drawTextFill(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float, color: Int, style: Int = HL_FILL) {
         rect.set(min(x0, x1), min(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
-        p.style = Paint.Style.FILL
         p.color = color
         val r = dp(2f)
-        c.drawRoundRect(rect, r, r, p)
+        val pt = dp(1f)   // Mac 那几个量是「屏幕点」，这里换成 dp（同样不随缩放变）
+        when (style) {
+            // 画线：行框底边一条圆头线，线宽 max(1.5pt, 行高×0.07)，两头各外伸 1pt（同 Mac `PageMarksLayer`）
+            HL_UNDERLINE -> {
+                val w = maxOf(1.5f * pt, rect.height() * 0.07f)
+                val y = rect.bottom + w * 0.5f
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = w
+                p.strokeCap = Paint.Cap.ROUND
+                c.drawLine(rect.left - pt, y, rect.right + pt, y, p)
+                p.strokeCap = Paint.Cap.BUTT
+            }
+            // 画框：行框外扩 (1.5pt, 1pt)，1.5pt 描边、圆角 2pt
+            HL_BOX -> {
+                rect.inset(-1.5f * pt, -pt)
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = 1.5f * pt
+                c.drawRoundRect(rect, r, r, p)
+            }
+            else -> {
+                p.style = Paint.Style.FILL
+                c.drawRoundRect(rect, r, r, p)
+            }
+        }
     }
 
     // ---------- 橡皮尺寸圆环 ----------

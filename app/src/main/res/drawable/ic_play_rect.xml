@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  视频 / 演示（play.rectangle）：横框 + 播放三角
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M5,5.2 L19,5.2 A2.2,2.2 0 0 1 21.2,7.4 L21.2,16.6 A2.2,2.2 0 0 1 19,18.8 L5,18.8 A2.2,2.2 0 0 1 2.8,16.6 L2.8,7.4 A2.2,2.2 0 0 1 5,5.2 Z M10.2,8.8 L15.4,12 L10.2,15.2 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

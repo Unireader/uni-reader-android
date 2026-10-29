@@ -90,15 +90,18 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   **模式2 只发帧**（`undo` 0x4F / `clip` 0x51，栈与剪贴板都在 Mac）；**模式1 本机就是真源**：
   `LocalCanvasView` 自带一条撤销栈 + 进程级剪贴板 `local/InkClipLocal.kt`。
   模式1 的栈存**整份可见笔迹的快照**而不是 id 级增量——`Stroke` 不可变，一份快照只是一串引用；
-  恢复直接走既有的 `reconcileStrokes`（擦除在用的那条），「隐藏图层一条都不碰」的规矩一并继承。
-  **模式1 只管笔迹**：注解的增删改不进栈（与 Mac 端有差距，记在 `../TODO.md`）。
+  🔴 恢复走 `LibraryStore.restoreStrokes`（删多的、**按原 id 插回**少的、改写挪过的），**别用擦除那条 `reconcileStrokes`**：
+  它只会删 / 切短，撤销整条擦除、撤销框选移动（点数没变）都做不到（2026-10-29 修过）。「隐藏图层一条都不碰」照旧。
+  **注解也进栈**（2026-10-29）：文字笔记 / 高亮 / 图片笔记的库行整行拍一份（`UndoStep.rows`，`LibraryStore.undoNoteRows` /
+  `restoreUndoNoteRows`），拍在**库队列上、紧挨着那次写之前**（队列先进先出 = 拍到的一定是动手之前）。新加一种注解写口要先
+  `pushNoteUndo()`。画板另有一条栈（`BoardController.undo`：笔迹快照 + 图片行，页操作清栈）。
   选中集有无变化经 `onLassoSelChanged` 回调给顶栏（灰掉/亮起剪切与复制）——它写在
   `lassoSelection` 的 setter 里，那个字段有七八处赋值点，逐个补调用迟早漏一处。
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
   （`Schema.VERSION = 22`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
-  `CREATE … IF NOT EXISTS` 补齐到 v22 的全部表（含本端只建不用的 v15 `md_doc`；v20 习题两张表
+  `CREATE … IF NOT EXISTS` 补齐到 v22 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
   `ink` / `judged_by` / `feedback`、v22 `exercise.note`（题目笔记）本端只建不用）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
@@ -149,7 +152,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 模式2：`boards`(0x52) / `boardImages`(0x55) 下行、`boardOpen`(0x53) / `boardAdd`(0x54) 上行；笔迹仍走草稿纸
   那几条（画板会话里那张纸永远开着）。`PadScratch.boardMode` 收起关闭 / 页面底图 / 其它草稿纸 / 删除；
   kind=1 时盖一层「Mac 正在看 Markdown 笔记」。图片按 `GET /image?h=<sha>` 取（`pad/BoardImageFetcher`）。
-  · 图片（kind=2）两模式都**只显示不编辑**，画在底纹之上、笔迹之下（`ScratchCanvas.setPics`）。
+  · 图片（kind=2）画在底纹之上、笔迹之下（`ScratchCanvas.setPics`）。**模式1 能编辑**（`ScratchCanvas.picsEditable`，2026-10-29）：
+  随框选一起挪 / 缩放（`LassoEdit.picsAfter` → `updateBoardImageRect`，分页按上沿重新归页）、长按一张 → 看原图 / 删除、⋯「插入图片…」
+  （最长边 400 画布点，同 Mac）；模式2 仍只显示（线格式没有改图片的消息）。分页画板手指长按某一页 = 那一页的页菜单（`onPageLongPress`）。
   · **分页画板（v17，`../BOARD-NOTE-PLAN.md §9`）**：有 `board_page` 行 = 分页。契约（布局 `(-W/2, i×(H+24), W, H)`、
   模板 u8 与几何、尺寸预设）只在 `shared/BoardPaging.kt`（↔ Mac `BoardModel.swift`，`BoardPagingTest` ↔ `spike/board-store-test.swift`）；
   画法与视口（页宽适配 / 横向夹页宽 / 到底上拉加页 / 页码）只在 `ScratchCanvas.setPages` 那一份，两模式共用。
@@ -225,7 +230,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 模式1 = `local/ExerciseController`：纯逻辑 `local/exercise/Exercise.kt`（逐条照抄 Mac `Exercise.swift`，JVM 单测 `ExerciseTest`）+
   一组题的进度 `LocalExerciseDeck`（照 Mac `ExerciseDeck`：快照、这一轮的作答、再做一次、筛选）+ `LibraryStore` 的习题一节（SQL 照抄 Mac）。
   标签页 docId 存 `ex:<范围键>`（公用，错题本一支另一个）/ `exs:<范围键>`（长按「在新标签页中打开」），同 Mac `StoredTab`。
-  看原题 = 本机 Pdfium 出整页再裁框；设章节读 `PdfSource.toc`。**不做删除**（安卓没有回收站，删只在 Mac 上做）。
+  看原题 = 本机 Pdfium 出整页再裁框；设章节读 `PdfSource.toc`。删除界面还没做（回收站已有 `trashArchiveExercises`，见「回收站」）。
   · 模式2 = `pad/RemoteExHost`：题目与作答只在 Mac，操作编成 `exAct` / `exIndex` 发过去，Mac 回 `exDeck`（`../PROTOCOL.md §4.9`）。
   平板可以自己开一组（标签栏末尾一个能关的标签，`DocTabsBar.closable`），Mac 不跟着换；Mac 当前标签是习题（`boards.kind = 3`）时跟随显示。
   两边开着同一组时用的是 Mac 上**同一份**进度，作答 / 第几题 / 筛选天然同步。原题图 `GET /exercise.png?id=&w=`。
@@ -238,6 +243,27 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · **题目笔记 + 重做上次做错的（v22，2026-10-27，`../EXERCISE-PLAN.md §12`）本端本轮没做**（用户定先只做 Mac）：`exercise.note`
   只建列、随离线镜像同步；`exDeck.filter` 可能收到 `4`（Mac 开着「重做上次做错的」），按「只看没做过」没开显示。
   补做时：笔记判完才显示（同解析）、挑题规则照抄 Mac `Exercise.lastResultWrong`（最近一次是错的；没判的不算）。
+- **笔记对齐 Mac（2026-10-29，`../TODO.md` 差距清单 A 组）**：
+  · 高亮 / 选区注解三种画法 `HL_FILL/UNDERLINE/BOX`（payload `style`）+ 注解显式颜色，画法只在 `PadOverlays.drawTextFill`；
+  手指点中高亮 → `local/NoteSheets.showHighlight`（换色 / 换画法 / 转批注 / 删除，`PageCanvasView.onFingerTapLate` 排在笔记图钉之后）。
+  · 模式1 的笔记编辑器 = `local/NoteSheets.showEditor`（类型 / 标记色 / 画法 / 展开方式）+ 类型管理（`meta.note_types` 整表写回，
+  键 `id/name/color_key/icon_name`，新 id 大写）；模式2 仍用 `PadPanels.showNoteEditor`。图钉图标 16 个全在 `NoteTypeIcons`。
+  · 气泡正文 = `shared/NoteBubbleText`（Markwon + 公式画到画布上，两模式共用）：在固定参考字号下排版再整体缩放（宽字比不随缩放变，捏合不重排）。
+  🔴 公式一律在 `MathText` 那**一条**线程上排：Markwon 默认线程池并发，JLaTeXMath 首次静态初始化不是线程安全的，一屏两条公式会抢着初始化、输的回落成源码。
+  · 卡片（payload `card`，Mac `NoteCard`）：`NoteBubbleGeom.layout(card=…)`，存的数 × 页宽÷`REF_PAGE_W`(933) 换算，压住图钉就挪开。平板上拖卡片还没做。
+  · 图片笔记（kind=6，`../IMAGE-NOTE-PLAN.md`）：存图 `local/ImageAssets`（同 Mac：四种格式原样、其它 / 超 4096 转 PNG、EXIF 转正）、
+  画在 `LocalCanvasView`（图钉 + 气泡 + 缩略图缓存）、截取 = `beginSnip` 拖框 → `PdfSource.renderRegion`（按页重渲染，不截屏）。
+  引用计数数 note kind=6 + board_item kind=2（本端解 payload，不用 `json_extract`），开工作区对账 + 清 30 天（回收站引用着的不清）。
+- **Markdown 笔记（2026-10-29，`../MARKDOWN-NOTES-PLAN.md`）**：只做内建 `Notes/`（Mac 引用的外部目录存的是 Mac 绝对路径，只在抽屉里提一句）。
+  纯逻辑 `local/MdNotes`（扫描跳过 `.` 开头与 `trash`、多级树、`[[…]]` 解析次序同 Mac `NoteIndex`、显示用转换：`[[目标|别名]]` →
+  `[别名](uniwiki:目标)`，单独一行的 `![[图]]` 画成图）；界面 `local/MdNoteController`（阅读 / 编辑两态，停手 0.8 秒 / 切走 / 退后台存）；
+  标签 docId = `md:<相对路径>`（`TabSet.MD_PREFIX`）；`md_doc` 只当扫描缓存对账。🔴 **只写用户在编辑框里改的**（红线 9），文件已不在就不存；
+  删除 = 挪进 `Notes/.trash/`（Obsidian 的回收站目录，两端扫描都跳过），不进 `Trash/`（Mac 不认那种条目）。
+- **回收站 + 定时备份（2026-10-29，`../BACKUP-PLAN.md`）**：`local/Trash`（目录名 / manifest 键 / 时间格式与 Mac 同，Mac 代码实测能恢复本端建的条目）
+  + `local/store/TrashStore`（快照**单独开库**逐行复制，不用 ATTACH——本端主库 WAL 连接池里 ATTACH 只挂在一条连接上）+ `local/TrashSheet`。
+  🔴 先归档再删（红线 11）：删画板、删文档（书库页长按）都走 `Trash.delete*`，归档失败就什么都不删。
+  备份 `local/Backups`：`library-yyyyMMdd-HHmmss.sqlite`（本地时间）、稀释规则逐条照抄 Mac（`BackupsTest` ↔ `../spike/backup-retention-test.swift`）；
+  还原 = 存还原点 → `closeWorkspace { … }` 等连接真关（`StoreQueue.close(then)`）→ 换库连 `-wal/-shm` → 重新打开。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，
@@ -253,6 +279,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 
 - **页面尺寸口径必须与 Mac 一致**：CropBox 有效则 CropBox、否则 MediaBox。取错了 Mac 上写的笔迹在平板上
   整体漂移/缩放，且是那种「看着差一点点、说不清哪错了」的 bug（`../ANDROID-STANDALONE-PLAN.md §9.1`）。
+  pdfiumandroid 取页框的接口**只看本页字典、不认继承**（页框写在上级 Pages 节点的 PDF——Mac「打印为 PDF」就是这样——会读成 0、整页空白），
+  读不到时退到 `getPageBoundingBox()`（Pdfium 的有效页框，顺着继承找；2026-10-29 修）。
+- 🔴 **新建任何行的 id 一律大写 UUID**（`UUID.randomUUID().toString().uppercase()` / `newBoardId()`）：Mac 把 id 解析成 `UUID`、
+  按 `uuidString`（大写）写回和删除。2026-10-29 之前本端建的笔迹 / 笔记 / 高亮 / 书签 / 草稿纸 / 图层是小写——库里不改，
+  Mac 那边 `LibraryStore.storedID` 记下原样换回去；本端凡是拿 id 去和 Mac 写的值（如笔迹的 `layerId`）比，一律不分大小写。
 - **同款算法多份实现，改一边必须同步其余端**：`shared/InkEdit.kt`（局部擦除切段/平移/框选缩放/多边形命中/尺子吸附）↔ Mac
   `Sources/App/InkEdit.swift` ↔ web 版；`pad/WireCodec.kt` ↔ `Sources/Resources/wire.js` ↔ `WireCodec.swift`；
   `shared/NoteBubbleGeom.kt`（文字笔记展开气泡的比例常数与位置规则）↔ Mac `Sources/Views/NoteBubbleView.swift`

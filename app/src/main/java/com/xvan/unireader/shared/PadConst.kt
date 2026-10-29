@@ -117,6 +117,8 @@ object PadConst {
     object FILL {
         const val HIGHLIGHT_A = 0.38f
         const val NOTE_A = 0.32f
+        /** 画线 / 画框的描边透明度（Mac `Highlight.strokeOpacity`，高亮与注解共用） */
+        const val STROKE_A = 0.9f
         val NOTE_RGB = intArrayOf(255, 209, 38)
     }
 

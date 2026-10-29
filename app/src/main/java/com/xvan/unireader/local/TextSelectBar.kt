@@ -7,30 +7,42 @@ import android.graphics.Color
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.Toast
+import com.xvan.unireader.R
+import com.xvan.unireader.shared.HL_BOX
+import com.xvan.unireader.shared.HL_FILL
+import com.xvan.unireader.shared.HL_UNDERLINE
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.TextSelection
 import com.xvan.unireader.shared.Ui
+import com.xvan.unireader.shared.Ui.setActive
 import com.xvan.unireader.shared.Ui.setBackgroundKeepPadding
 
 /**
- * 划字之后浮出来的那条动作条：**四色高亮 + 批注 + 复制**。
+ * 划字之后浮出来的那条动作条：**三种画法 + 四色高亮 + 批注 + 复制**。
  *
- * 对应 Mac 的阅读区右键菜单（`ReaderSurface.readerContextMenu` 的选区分支：Add Note / Highlight
- * 子菜单 / Copy）——平板上没有右键，选完直接把这三件事摆出来。
+ * 对应 Mac 的阅读区右键菜单（`ReaderView.readerContextMenu` 的选区分支：Add Note / 每种画法一个
+ * Highlight 子菜单 / Copy）——平板上没有右键，选完直接把这几件事摆出来。画法是一个三选一开关，
+ * 色点按当前画法落（同 Mac 的「按画法分子菜单再挑颜色」）；选过的画法记在本机，下次还是它。
  *
  * **贴屏幕底部居中，不跟着选区跑**：跟着选区的话，一边拖一边它就在指头底下乱窜，
  * 还会挡住正在划的那几行；而这条只在松手之后才有用。
  */
 class TextSelectBar(private val ctx: Context) {
 
-    /** 点了某个荧光色 */
-    var onHighlight: (IntArray) -> Unit = {}
+    /** 点了某个荧光色（第二个参数 = 当前画法 HL_*） */
+    var onHighlight: (IntArray, Int) -> Unit = { _, _ -> }
     /** 点了「批注」 */
     var onAnnotate: () -> Unit = {}
 
     private var selection: TextSelection? = null
+
+    private val prefs = ctx.getSharedPreferences("textSelect", Context.MODE_PRIVATE)
+    /** 当前画法（本机偏好，同 Mac `quickHighlightColor` 那种「记住上次」） */
+    private var style = prefs.getInt("hlStyle", HL_FILL).takeIf { it in HL_FILL..HL_BOX } ?: HL_FILL
+    private val styleButtons = ArrayList<Pair<Int, ImageButton>>(3)
 
     /**
      * 这条浮条的视图。**由宿主自己 addView 定 z 序**（同 `ScratchController.barView` 的做法）——
@@ -58,6 +70,17 @@ class TextSelectBar(private val ctx: Context) {
         val pad = Ui.dp(ctx, 8)
         setPadding(pad, pad, pad, pad)
         setBackgroundKeepPadding(Ui.round(Ui.container(ctx), 14, ctx, Ui.outline(ctx)))
+        for ((st, icon, desc) in listOf(
+            Triple(HL_FILL, R.drawable.ic_hl_fill, "铺色"),
+            Triple(HL_UNDERLINE, R.drawable.ic_hl_underline, "画线"),
+            Triple(HL_BOX, R.drawable.ic_hl_box, "画框"),
+        )) {
+            val b = Ui.iconButton(ctx, icon, desc) { pickStyle(st) }
+            styleButtons.add(st to b)
+            addView(b)
+        }
+        syncStyles()
+        addView(View(ctx), LinearLayout.LayoutParams(Ui.dp(ctx, 8), 1))
         for ((name, rgb) in PadConst.HIGHLIGHT_PALETTE) addView(swatch(name, rgb))
         addView(Ui.textButton(ctx, "批注", primary = true) { onAnnotate() })
         addView(Ui.textButton(ctx, "复制") { copy() })
@@ -69,7 +92,17 @@ class TextSelectBar(private val ctx: Context) {
         layoutParams = LinearLayout.LayoutParams(d, d).apply { marginEnd = Ui.dp(ctx, 6) }
         background = Ui.round(Color.rgb(rgb[0], rgb[1], rgb[2]), 14, ctx, Ui.outline(ctx))
         contentDescription = "高亮：$name"
-        setOnClickListener { onHighlight(rgb) }
+        setOnClickListener { onHighlight(rgb, style) }
+    }
+
+    private fun pickStyle(st: Int) {
+        style = st
+        prefs.edit().putInt("hlStyle", st).apply()
+        syncStyles()
+    }
+
+    private fun syncStyles() {
+        for ((st, b) in styleButtons) b.setActive(st == style, Ui.onSurface(ctx), Ui.accent(ctx))
     }
 
     private fun copy() {

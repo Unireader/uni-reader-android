@@ -133,11 +133,22 @@ class BoardController(private val a: Activity) {
         canvas.visibility = View.GONE
         canvas.emptyHintTitle = a.getString(R.string.board_empty_hint)
         canvas.pullHintText = a.getString(R.string.board_pull_hint)
-        canvas.onStrokeEnd = { pen, pts -> commitInk(pen, pts) }
+        canvas.onStrokeEnd = { pen, pts -> pushUndo(); commitInk(pen, pts) }
+        canvas.onEraseBegin = { before -> pushUndo(before) }
         canvas.onEraseFinish = { snapshot -> commitErase(snapshot) }
-        canvas.onLassoEdit = { e -> commitLassoEdit(e.after) }
+        // 框选生效时画布上已经是新位置：撤销要的是改之前的那份 = 现状里把改过的几条换回 before
+        canvas.onLassoEdit = { e ->
+            val back = e.before.associateBy { it.id }
+            pushUndo(canvas.strokeList().map { back[it.id] ?: it })
+            if (e.after.isNotEmpty()) commitLassoEdit(e.after)
+            if (e.picsAfter.isNotEmpty()) commitPicEdit(e.picsAfter)
+        }
+        // 图片（模式1）：跟笔迹一起被框选挪 / 缩放；长按一张 → 看大图 / 删除（同 Mac 双击看大图、右键删）
+        canvas.picsEditable = true
+        canvas.onPicLongPress = { p -> showPicMenu(p) }
         canvas.onViewportChanged = { updateBar(); scheduleViewportSave() }
         canvas.onPullAddPage = { appendPages(1) }
+        canvas.onPageLongPress = { i -> showPagesPanel(i) }   // 在页上长按 = 这一页的菜单（同 Mac 右键）
         canvas.tools = { toolsProvider?.invoke() }
         canvas.picSource = ScratchCanvas.BoardPicSource { key, cb -> loadImage(key, cb) }
 
@@ -203,6 +214,7 @@ class BoardController(private val a: Activity) {
     fun open(b: BoardNote, pages: List<BoardPage>) {
         val q = queue ?: return
         val same = board?.id == b.id
+        if (!same) { undoStack.clear(); redoStack.clear() }   // 撤销栈属于「这一篇」
         board = b
         canvas.setPaper(b.bg, b.pattern)
         canvas.visibility = View.VISIBLE
@@ -462,10 +474,11 @@ class BoardController(private val a: Activity) {
 
     // ---------- 页面弹层（分页画板：当前页 = 视口中心所在页） ----------
 
-    fun showPagesPanel() {
+    /** [at] = 哪一页（长按在那页上）；null = 视口中心那页（工具条「页面」键） */
+    fun showPagesPanel(at: Int? = null) {
         if (!pageSet.paged) return
         val pages = pageSet.pages
-        val i = canvas.currentPageIndex().coerceIn(0, pages.size - 1)
+        val i = (at ?: canvas.currentPageIndex()).coerceIn(0, pages.size - 1)
         val cur = pages[i]
         val root = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         var dlg: AlertDialog? = null
@@ -701,6 +714,9 @@ class BoardController(private val a: Activity) {
      * 写失败回退到库里的样子（重读照样做）。
      */
     private fun pageOp(what: String, op: (LibraryStore, BoardNote, List<BoardPage>) -> Unit) {
+        // 页结构一变，栈里那些画布坐标的快照就对不上新布局了（归页会错）：清掉，不撤到错的地方去
+        undoStack.clear()
+        redoStack.clear()
         val q = queue ?: return
         val b = board ?: return
         if (!pageSet.paged) return
@@ -771,12 +787,148 @@ class BoardController(private val a: Activity) {
         })
     }
 
+    // ---------- 撤销 / 重做（画板，同 Mac 画板会话的撤销栈；做法同模式1 页面那条：整份笔迹快照） ----------
+    //
+    // 一步 = 动手之前画布上的全部笔迹（`Stroke` 不可变，一份快照只是一串引用）。恢复走
+    // `LibraryStore.restoreBoardStrokes`（删多的、按原 id 插回少的、改写挪过的），再按库重读。
+    // 图片（kind=2 行）也进这条栈：每步在库队列上、紧挨着那次写之前拍一份图片行（同页面那条栈的注解行做法）。
+    // 页操作（插页 / 删页 / 改尺寸）不进（Mac 那边页操作也不进），做了页操作就清栈（见 [pageOp]）。
+
+    private class BoardStep(val strokes: List<Stroke>) {
+        @Volatile var images: List<BoardItem>? = null
+    }
+
+    private val undoStack = ArrayDeque<BoardStep>()
+    private val redoStack = ArrayDeque<BoardStep>()
+
+    private fun pushUndo(before: List<Stroke> = ArrayList(canvas.strokeList())) {
+        val step = BoardStep(before)
+        val b = board
+        if (b != null) queue?.submit("记画板撤销：图片") { s -> step.images = s.boardImageRows(b.id) }
+        undoStack.addLast(step)
+        while (undoStack.size > 40) undoStack.removeFirst()
+        redoStack.clear()
+        updateBar()
+    }
+
+    val canUndo: Boolean get() = undoStack.isNotEmpty()
+    val canRedo: Boolean get() = redoStack.isNotEmpty()
+
+    /** 顶栏撤销 / 重做在画板标签里走这里 */
+    fun undo(redo: Boolean) {
+        val q = queue ?: return
+        val b = board ?: return
+        val from = if (redo) redoStack else undoStack
+        val target = from.removeLastOrNull() ?: return
+        val back = BoardStep(ArrayList(canvas.strokeList()))
+        (if (redo) undoStack else redoStack).addLast(back)
+        val ps = pageSet
+        q.submit("画板${if (redo) "重做" else "撤销"}", { s ->
+            runCatching { s.restoreBoardStrokes(b.id, target.strokes, ps) }
+                .onSuccess { Log.i(TAG, "画板${if (redo) "重做" else "撤销"}：删 ${it.deleted} 改 ${it.updated} 插回 ${it.inserted}") }
+                .onFailure { Log.e(TAG, "画板撤销写库失败，回退到库里的状态", it) }
+            back.images = s.boardImageRows(b.id)
+            target.images?.let { rows ->
+                runCatching { s.restoreBoardImageRows(b.id, rows) }.onFailure { Log.e(TAG, "画板图片恢复失败", it) }
+            }
+            readContents(s, b.id, BoardPageSet(s.boardPages(b.id)))
+        }, { c ->
+            if (board?.id == b.id) applyContents(c)
+            updateBar()
+        })
+    }
+
+    // ---------- 图片（kind=2） ----------
+
+    /** 框选挪 / 缩放过的图写回（画布坐标；分页画板按新位置重新归页），写完以库为准重读 */
+    private fun commitPicEdit(after: List<ScratchCanvas.BoardPic>) {
+        val q = queue ?: return
+        val b = board ?: return
+        val ps = pageSet
+        q.submit("画板图片落库 ${after.size} 张", { s ->
+            runCatching { s.transaction { for (p in after) s.updateBoardImageRect(p.id, p.x, p.y, p.w, p.h, ps) } }
+                .onFailure { Log.e(TAG, "画板图片写库失败，回退到库里的状态", it) }
+            readContents(s, b.id, BoardPageSet(s.boardPages(b.id)))
+        }, { c -> if (board?.id == b.id) applyContents(c) })
+    }
+
+    /**
+     * 「插入图片…」：挑一张图，摆在视口正中（最长边 400 画布点，同 Mac `BoardImage.placed`）。
+     * 存图规则同图片笔记（`ImageAssets`：按内容寻址、超 4096 缩小 / 转 PNG）。
+     */
+    fun insertImage() {
+        val b = board ?: return
+        val ws = workspace ?: return
+        FileBrowser(a, FileBrowser.Mode.IMAGE, a.getString(R.string.img_import)) { f ->
+            val center = canvas.viewportCenterCanvas()
+            com.xvan.unireader.shared.Bg.submit("整理画板图片") {
+                val p = runCatching { ImageAssets.prepare(f.readBytes())?.also { ImageAssets.write(it, ws) } }
+                    .onFailure { Log.w(TAG, "整理图片失败", it) }.getOrNull()
+                a.runOnUiThread {
+                    if (p == null) {
+                        android.widget.Toast.makeText(a, a.getString(R.string.img_not_image), android.widget.Toast.LENGTH_SHORT).show()
+                        return@runOnUiThread
+                    }
+                    if (board?.id != b.id) return@runOnUiThread
+                    val sc = minOf(1f, 400f / maxOf(p.width, p.height, 1))
+                    val w = p.width * sc
+                    val h = p.height * sc
+                    val ps = pageSet
+                    pushUndo()
+                    queue?.submit("画板插图", { s ->
+                        s.insertImageIfAbsent(
+                            com.xvan.unireader.local.store.LibImage(p.sha256, p.ext, p.width, p.height, p.data.size.toLong(), com.xvan.unireader.local.store.Iso.now(), null),
+                        )
+                        s.insertBoardImage(b.id, newBoardId(), p.sha256, center[0] - w / 2, center[1] - h / 2, w, h, f.name, ps)
+                        readContents(s, b.id, BoardPageSet(s.boardPages(b.id)))
+                    }, { c -> if (board?.id == b.id) applyContents(c) })
+                }
+            }
+        }.show()
+    }
+
+    /** 长按一张图：看大图 / 删除 */
+    private fun showPicMenu(p: ScratchCanvas.BoardPic) {
+        Sheet(a).title(a.getString(R.string.board_image))
+            .action(a.getString(R.string.act_delete)) { deletePic(p) }
+            .action(a.getString(R.string.board_view_image)) { viewPic(p) }
+            .action(a.getString(R.string.act_done), primary = true)
+            .show()
+    }
+
+    private fun viewPic(p: ScratchCanvas.BoardPic) {
+        val ws = workspace ?: return
+        val ext = imageExts[p.key]
+        com.xvan.unireader.shared.Bg.submit("读画板大图") {
+            val bmp = ImageAssets.find(ws, p.key, ext)?.let { ImageAssets.load(it, 2048) }
+            a.runOnUiThread {
+                val root = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+                if (bmp != null) root.addView(android.widget.ImageView(a).apply { setImageBitmap(bmp); adjustViewBounds = true })
+                else root.addView(Ui.body(a, a.getString(R.string.img_missing)))
+                Sheet(a).size(720, 0.8f).title(a.getString(R.string.board_image)).content(root)
+                    .action(a.getString(R.string.act_done), primary = true).show()
+            }
+        }
+    }
+
+    private fun deletePic(p: ScratchCanvas.BoardPic) {
+        val q = queue ?: return
+        val b = board ?: return
+        canvas.clearLasso()
+        pushUndo()
+        q.submit("删画板图片", { s ->
+            runCatching { s.deleteBoardImage(p.id) }.onFailure { Log.e(TAG, "删画板图片失败", it) }
+            readContents(s, b.id, BoardPageSet(s.boardPages(b.id)))
+        }, { c -> if (board?.id == b.id) applyContents(c) })
+    }
+
     /** 顶栏「剪切 / 复制」在画板上：选中的笔迹进本机剪贴板（画布坐标）；剪切连带删除并落库 */
     fun clipCopy(cut: Boolean) {
         val sel = canvas.lassoSelectedStrokes()
         if (sel.isEmpty()) return
         InkClipLocal.putCanvas(sel)
         if (!cut) return
+        pushUndo()
         canvas.deleteLassoSelection()
         commitErase(ArrayList(canvas.strokeList()))   // 期望状态少了这几条 → reconcile 删行
     }
@@ -785,7 +937,10 @@ class BoardController(private val a: Activity) {
     fun clipPaste() {
         if (board == null) return
         val c = canvas.viewportCenterCanvas()
-        for (st in InkClipLocal.takeCanvas(c[0], c[1])) commitInk(st.pen, st.pts)
+        val list = InkClipLocal.takeCanvas(c[0], c[1])
+        if (list.isEmpty()) return
+        pushUndo()   // 一次粘贴一步（不是每条一步）
+        for (st in list) commitInk(st.pen, st.pts)
     }
 
     /** 一次擦除手势收尾：期望状态交给队列 reconcile（同 ScratchController.commitErase） */

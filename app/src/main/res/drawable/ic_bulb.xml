@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  想法（lightbulb）：灯泡 + 两道灯座
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M9.4,15.6 L9.4,14.4 C9.4,13 6.2,11.6 6.2,8.8 A5.8,5.8 0 0 1 17.8,8.8 C17.8,11.6 14.6,13 14.6,14.4 L14.6,15.6 Z M9.6,18.2 L14.4,18.2 M10.6,20.6 L13.4,20.6"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

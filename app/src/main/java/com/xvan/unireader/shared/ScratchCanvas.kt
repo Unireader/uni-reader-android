@@ -77,6 +77,36 @@ class ScratchCanvas @JvmOverloads constructor(
     /** 擦除途经点（画布坐标）。本地乐观擦除画布自己做，这个钩子是给模式2 上线的 */
     var onEraseAt: ((x: Float, y: Float) -> Unit)? = null
 
+    /**
+     * 分页画板：手指在某一页上**长按**（不动、0.5 秒）→ 那一页的页菜单（插页 / 背景 / 删页），同 Mac 在页上点右键。
+     * 参数是页下标（0 起）。不设 = 不认长按（模式2 / 草稿纸）。
+     */
+    var onPageLongPress: ((page: Int) -> Unit)? = null
+    private var longPressFired = false
+    private val longPress = Runnable {
+        if (panId < 0 || touchOrder.size != 1 || penActive) return@Runnable
+        val c = toCanvas(gestureX0, gestureY0)
+        // 长按在一张图上（模式1）：图的菜单优先（最上面那张，后加的叠在上面）
+        if (picsEditable) {
+            pics.lastOrNull { c[0] >= it.x && c[0] <= it.x + it.w && c[1] >= it.y && c[1] <= it.y + it.h }?.let { pic ->
+                longPressFired = true
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                onPicLongPress?.invoke(pic)
+                return@Runnable
+            }
+        }
+        val l = pageLayout ?: return@Runnable
+        if (onPageLongPress == null) return@Runnable
+        val i = l.indexForY(c[1])
+        if (i !in 0 until l.count) return@Runnable
+        longPressFired = true
+        performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        onPageLongPress?.invoke(i)
+    }
+
+    /** 一次擦除手势开头：擦之前的全量快照（模式1 画板的撤销栈压它；模式2 不设） */
+    var onEraseBegin: ((strokes: List<Stroke>) -> Unit)? = null
+
     /** 一次擦除手势收尾：期望状态（带 id 的全量快照，切段沿用原 id）。模式1 据此 reconcile 落库 */
     var onEraseFinish: ((strokes: List<Stroke>) -> Unit)? = null
 
@@ -95,6 +125,9 @@ class ScratchCanvas @JvmOverloads constructor(
         val scale: FloatArray?,
         val before: List<Stroke>,
         val after: List<Stroke>,
+        /** 一起被挪的图（模式1，[picsEditable]）；模式2 恒空 */
+        val picsBefore: List<BoardPic> = emptyList(),
+        val picsAfter: List<BoardPic> = emptyList(),
     )
 
     var onLassoEdit: ((LassoEdit) -> Unit)? = null
@@ -255,7 +288,8 @@ class ScratchCanvas @JvmOverloads constructor(
     // 只有画板笔记有图（草稿纸没有）。位置由宿主给画布坐标矩形（左上原点），**图从哪来**走 [picSource]
     // （模式1 = 本机 `Images/<sha>.<ext>`，模式2 = HTTP 找 Mac 要 `/image?h=`），本类不知道自己在哪种模式下。
     // 层序：纸色 → 底纹 →（页面底图）→ **图片** → 笔迹（笔迹永远能写在图上）。叠放序 = 列表顺序。
-    // 本轮两端都只显示不编辑：图片不参与擦除 / 落笔命中。
+    // 图片不参与擦除 / 落笔命中。**模式1 能编辑**（[picsEditable]，2026-10-29，同 Mac：图片跟笔迹一起被框选、移动、缩放；
+    // 长按一张图 → 看大图 / 删除），模式2 仍只显示（线格式里没有改图片的消息）。
 
     /** 画板上的一张图。[key] = 取图的键（图片内容的 sha256），同一张图出现几次只取一次 */
     class BoardPic(val id: String, val key: String, val x: Float, val y: Float, val w: Float, val h: Float)
@@ -277,8 +311,15 @@ class ScratchCanvas @JvmOverloads constructor(
      * 列表里不再出现的 key 放掉。**[openSession] 不清图片**：图片与笔迹是两条消息，先后没有保证，
      * 由宿主在离开画板时显式传空表。
      */
+    /** 模式1 画板：图片可被框选（移动 / 缩放）、可长按。模式2 恒 false */
+    var picsEditable = false
+
+    /** 手指长按一张图（模式1：看大图 / 删除）。不设 = 不认 */
+    var onPicLongPress: ((BoardPic) -> Unit)? = null
+
     fun setPics(list: List<BoardPic>) {
         pics = list
+        if (lassoDrag == null) selPoly?.let { hitTest(it) }   // 选中集按多边形重判（图挪了 / 删了）
         val keys = list.map { it.key }.toHashSet()
         picBmps.keys.retainAll(keys)
         picFails.keys.retainAll(keys)
@@ -924,9 +965,14 @@ class ScratchCanvas @JvmOverloads constructor(
                         pinching && touchOrder.size >= 2 -> pinchMove()
                         // 双指滚动模式：单指划动不平移（防误触，同页内 PageCanvasView.panMove）
                         // 写字时暂停单指滚动（手指落下那一刻定，见 PenProximity.writePaused）：同上
+                        // 长按已经弹了页菜单：这次手势不再平移
+                        longPressFired -> Unit
                         panId >= 0 && !twoFingerScroll && !gestureWritePaused -> {
                             val pi = e.findPointerIndex(panId)
-                            if (pi >= 0) panTo(e.getX(pi), e.getY(pi))
+                            if (pi >= 0) {
+                                if (hypot(e.getX(pi) - gestureX0, e.getY(pi) - gestureY0) > dp(PadConst.DEAD)) removeCallbacks(longPress)
+                                panTo(e.getX(pi), e.getY(pi))
+                            }
                         }
                         // 单指被挡下（双指滚动模式 / 刚写过字）：划过死区才提示，轻点不打扰
                         panId >= 0 -> {
@@ -956,6 +1002,14 @@ class ScratchCanvas @JvmOverloads constructor(
                     return true
                 }
                 fingerGate.release()   // 手全部离屏：「不能用」再算一会儿就恢复
+                removeCallbacks(longPress)
+                if (longPressFired) {   // 长按弹过菜单：松手不甩惯性
+                    longPressFired = false
+                    touches.clear(); touchOrder.clear()
+                    pinching = false; panId = -1; miniDrag = false
+                    endPull()
+                    return true
+                }
                 pinchSplit.logEnd("画布")
                 // 松手前是不是在平移（单指 / 双指滚动 / 笔在翻页·框选模式下拖）：是就甩出去
                 // （双指滚动模式下两指先后抬起，最后一指抬起时已不在 pinching：交给 startMomentum 的「80ms 内还在动」判断）
@@ -1073,7 +1127,13 @@ class ScratchCanvas @JvmOverloads constructor(
         } else {
             panId = id
             lastPanX = x; lastPanY = y
+            longPressFired = false
+            removeCallbacks(longPress)
+            if ((paged && onPageLongPress != null) || (picsEditable && onPicLongPress != null && pics.isNotEmpty())) {
+                postDelayed(longPress, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+            }
         }
+        if (touchOrder.size >= 2) removeCallbacks(longPress)   // 第二指落下：是捏合，不是长按
     }
 
     private fun endTouch(id: Int) {
@@ -1171,6 +1231,7 @@ class ScratchCanvas @JvmOverloads constructor(
             }
             t.eraseTool -> {
                 penKind = 2
+                onEraseBegin?.invoke(ArrayList(strokes))   // 擦之前的整份（画板撤销栈要它）
                 eraseAt(c[0], c[1])
                 onEraseAt?.invoke(c[0], c[1])
                 if (t.eraserRing) { ringX = x; ringY = y; ringOn = true }
@@ -1315,6 +1376,7 @@ class ScratchCanvas @JvmOverloads constructor(
     private val lassoDeadPx = dp(PadConst.LASSO_DEAD)
     private var selPoly: FloatArray? = null          // 选区多边形（画布坐标，扁平 x,y…）
     private var selIdx = IntArray(0)                  // 命中的笔迹在 [strokes] 里的下标（随 [selPoly] 重判）
+    private var selPics: Set<String> = emptySet()     // 命中的图片 id（只在 [picsEditable] 时有）
     private var hasSel = false
         set(v) {
             if (field != v) { field = v; onLassoSelChanged?.invoke(v) }
@@ -1334,8 +1396,8 @@ class ScratchCanvas @JvmOverloads constructor(
     private var lassoDy = 0f
     private val lassoOpp = intArrayOf(3, 2, 1, 0, 5, 4, 7, 6)   // 对侧手柄（同 PageCanvasView）
 
-    /** 拖动中从 [strokes] 里拿出来的那几条（下标升序 + 原对象）：单独画在变换后的位置，松手放回 */
-    private class LassoDrag(val idx: IntArray, val orig: List<Stroke>)
+    /** 拖动中从 [strokes] 里拿出来的那几条（下标升序 + 原对象）+ 选中的图（原样）：单独画在变换后的位置，松手放回 */
+    private class LassoDrag(val idx: IntArray, val orig: List<Stroke>, val pics: List<BoardPic> = emptyList())
     private var lassoDrag: LassoDrag? = null
 
     private val boxTmp = FloatArray(4)
@@ -1359,6 +1421,7 @@ class ScratchCanvas @JvmOverloads constructor(
         if (lassoDrag != null) abortLassoDrag()
         selPoly = null
         selIdx = IntArray(0)
+        selPics = emptySet()
         hasSel = false
         lassoMode = 0
         lassoMoved = false
@@ -1409,16 +1472,35 @@ class ScratchCanvas @JvmOverloads constructor(
             hits.add(i)
             for (p in s.pts) { x0 = min(x0, p.x); y0 = min(y0, p.y); x1 = max(x1, p.x); y1 = max(y1, p.y) }
         }
+        // 图片（模式1）：四角 / 中心任一点落在多边形里，或多边形的任一点落在图里（同 Mac `refreshLasso` 的图片那半）
+        val picHits = HashSet<String>()
+        if (picsEditable) {
+            for (p in pics) {
+                val probes = floatArrayOf(p.x, p.y, p.x + p.w, p.y, p.x, p.y + p.h, p.x + p.w, p.y + p.h, p.x + p.w / 2, p.y + p.h / 2)
+                var hit = false
+                for (k in probes.indices step 2) if (InkEdit.pointInPolygon(probes[k], probes[k + 1], poly)) { hit = true; break }
+                if (!hit) {
+                    for (k in poly.indices step 2) {
+                        if (poly[k] >= p.x && poly[k] <= p.x + p.w && poly[k + 1] >= p.y && poly[k + 1] <= p.y + p.h) { hit = true; break }
+                    }
+                }
+                if (!hit) continue
+                picHits.add(p.id)
+                x0 = min(x0, p.x); y0 = min(y0, p.y); x1 = max(x1, p.x + p.w); y1 = max(y1, p.y + p.h)
+            }
+        }
         lassoLog("框选判定 ${android.os.SystemClock.uptimeMillis() - t0}ms：全集 ${strokes.size} 条、" +
-            "粗筛后 $tested 条、命中 ${hits.size} 条，多边形 ${poly.size / 2} 点")
-        if (hits.isEmpty()) {
+            "粗筛后 $tested 条、命中 ${hits.size} 条 + 图 ${picHits.size} 张，多边形 ${poly.size / 2} 点")
+        if (hits.isEmpty() && picHits.isEmpty()) {
             selPoly = null
             selIdx = IntArray(0)
+            selPics = emptySet()
             hasSel = false
             return
         }
         selPoly = poly
         selIdx = hits.toIntArray()
+        selPics = picHits
         selBox[0] = x0; selBox[1] = y0; selBox[2] = x1; selBox[3] = y1
         hasSel = true
     }
@@ -1484,6 +1566,7 @@ class ScratchCanvas @JvmOverloads constructor(
             if (m == 1) {
                 selPoly = null
                 selIdx = IntArray(0)
+                selPics = emptySet()
                 hasSel = false
                 lassoPath.clear()
                 val c = toCanvas(lassoDownX, lassoDownY)
@@ -1541,14 +1624,28 @@ class ScratchCanvas @JvmOverloads constructor(
         val orig = idx.map { strokes[it] }
         for (i in idx.indices.reversed()) strokes.removeAt(idx[i])
         strokesChanged(orig, emptyList())
-        lassoDrag = LassoDrag(idx, orig)
+        val dragPics = pics.filter { it.id in selPics }
+        if (dragPics.isNotEmpty()) pics = pics.filter { it.id !in selPics }
+        lassoDrag = LassoDrag(idx, orig, dragPics)
         lassoLog("开始拖动（${if (lassoMode == 3) "缩放" else "移动"}）${orig.size} 条，拿出来 ${android.os.SystemClock.uptimeMillis() - t0}ms")
     }
 
     /** 把拿出来的放回原位（[list] 与 [LassoDrag.idx] 一一对应，升序插回 = 原来的叠放次序） */
-    private fun putBack(d: LassoDrag, list: List<Stroke>) {
+    private fun putBack(d: LassoDrag, list: List<Stroke>, picsBack: List<BoardPic> = d.pics) {
         for (k in d.idx.indices) strokes.add(min(d.idx[k], strokes.size), list[k])
         strokesChanged(emptyList(), list)
+        if (picsBack.isNotEmpty()) pics = pics + picsBack   // 叠放次序：拖过的图放到最上（同 Mac 移动后仍可见）
+    }
+
+    private fun movedPic(p: BoardPic, dx: Float, dy: Float) = BoardPic(p.id, p.key, p.x + dx, p.y + dy, p.w, p.h)
+
+    /** 缩放图：矩形两个对角各自变换再取包围盒（同 Mac `transformed`） */
+    private fun scaledPic(p: BoardPic, ax: Float, ay: Float, sx: Float, sy: Float): BoardPic {
+        val x0 = ax + (p.x - ax) * sx
+        val y0 = ay + (p.y - ay) * sy
+        val x1 = ax + (p.x + p.w - ax) * sx
+        val y1 = ay + (p.y + p.h - ay) * sy
+        return BoardPic(p.id, p.key, min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
     }
 
     /** 拖动作废：原样放回 */
@@ -1614,7 +1711,10 @@ class ScratchCanvas @JvmOverloads constructor(
         val after = d.orig.map {
             if (isScale) scaledStroke(it, lassoAx, lassoAy, lassoSx, lassoSy) else movedStroke(it, lassoDx, lassoDy)
         }
-        putBack(d, after)
+        val picsAfter = d.pics.map {
+            if (isScale) scaledPic(it, lassoAx, lassoAy, lassoSx, lassoSy) else movedPic(it, lassoDx, lassoDy)
+        }
+        putBack(d, after, picsAfter)
         lastCommitAt = android.os.SystemClock.uptimeMillis()
         lastCommitBefore = HashSet(d.orig)
         lassoLog("松手提交（${if (isScale) "缩放" else "移动"}）${after.size} 条，放回 ${lastCommitAt - t0}ms")
@@ -1624,7 +1724,7 @@ class ScratchCanvas @JvmOverloads constructor(
             LassoEdit(
                 poly = poly, dx = lassoDx, dy = lassoDy,
                 scale = if (isScale) floatArrayOf(lassoAx, lassoAy, lassoSx, lassoSy) else null,
-                before = d.orig, after = after,
+                before = d.orig, after = after, picsBefore = d.pics, picsAfter = picsAfter,
             ),
         )
     }
@@ -1643,6 +1743,11 @@ class ScratchCanvas @JvmOverloads constructor(
         val d = lassoDrag ?: return
         val t0 = android.os.SystemClock.uptimeMillis()
         val z = zoom
+        // 拖动中的图：画在变换后的位置（压在笔迹上面，拖的时候看得见就行）
+        for (p in d.pics) {
+            val q = if (lassoMode == 3) scaledPic(p, lassoAx, lassoAy, lassoSx, lassoSy) else movedPic(p, lassoDx, lassoDy)
+            drawOnePic(c, q)
+        }
         if (lassoMode == 3) {
             c.save()
             c.scale(lassoSx, lassoSy, vx(lassoAx), vy(lassoAy))
@@ -1684,6 +1789,11 @@ class ScratchCanvas @JvmOverloads constructor(
         val aVx = vx(lassoAx); val aVy = vy(lassoAy)
         fun gx(v: Float) = if (scaling) aVx + (v - aVx) * lassoSx else v + gdx
         fun gy(v: Float) = if (scaling) aVy + (v - aVy) * lassoSy else v + gdy
+        // 选中的图：各描一圈（拖动中描变换后的位置）
+        val selPicList = drag?.pics ?: pics.filter { it.id in selPics }
+        for (p in selPicList) {
+            overlays.drawLassoSelection(c, gx(vx(p.x)), gy(vy(p.y)), gx(vx(p.x + p.w)), gy(vy(p.y + p.h)))
+        }
         // 光晕：拖动中画那几条的变换后位置，平时画表里的
         val sel = drag?.orig ?: selIdx.map { strokes[it] }
         for (s in sel) {
@@ -1814,25 +1924,26 @@ class ScratchCanvas @JvmOverloads constructor(
      * （免得看起来像图丢了）；视口外的整张跳过，也不去取。
      */
     private fun drawPics(c: Canvas) {
-        if (pics.isEmpty()) return
+        for (p in pics) drawOnePic(c, p)
+    }
+
+    private fun drawOnePic(c: Canvas, p: BoardPic) {
         val z = zoom
-        for (p in pics) {
-            val left = (p.x - ox) * z * density
-            val top = (p.y - oy) * z * density
-            val right = left + p.w * z * density
-            val bottom = top + p.h * z * density
-            if (right < 0 || bottom < 0 || left > width || top > height) continue
-            val bmp = picBmps[p.key]
-            if (bmp != null && !bmp.isRecycled) {
-                pageDst.set(left, top, right, bottom)
-                c.drawBitmap(bmp, null, pageDst, pageBmpPaint)
-            } else {
-                ensurePic(p.key)
-                pagePaint.style = Paint.Style.STROKE
-                pagePaint.strokeWidth = 1f
-                pagePaint.color = withAlpha(inkColor, 0.25f)
-                c.drawRect(left, top, right, bottom, pagePaint)
-            }
+        val left = (p.x - ox) * z * density
+        val top = (p.y - oy) * z * density
+        val right = left + p.w * z * density
+        val bottom = top + p.h * z * density
+        if (right < 0 || bottom < 0 || left > width || top > height) return
+        val bmp = picBmps[p.key]
+        if (bmp != null && !bmp.isRecycled) {
+            pageDst.set(left, top, right, bottom)
+            c.drawBitmap(bmp, null, pageDst, pageBmpPaint)
+        } else {
+            ensurePic(p.key)
+            pagePaint.style = Paint.Style.STROKE
+            pagePaint.strokeWidth = 1f
+            pagePaint.color = withAlpha(inkColor, 0.25f)
+            c.drawRect(left, top, right, bottom, pagePaint)
         }
     }
 

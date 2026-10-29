@@ -2,6 +2,7 @@ package com.xvan.unireader.local.store
 
 import android.util.Log
 import com.xvan.unireader.local.Workspace
+import com.xvan.unireader.shared.HL_FILL
 import com.xvan.unireader.shared.InkEdit
 import com.xvan.unireader.shared.Layer
 import com.xvan.unireader.shared.NOTE_TAP
@@ -98,6 +99,17 @@ class LibraryStore(private val db: Db) : Closeable {
      */
     fun mirrorSnapshot(): com.xvan.unireader.local.mirror.MirrorSnapshot =
         com.xvan.unireader.local.mirror.MirrorStore.snapshot(db)
+
+    // ---------- 回收站的窄口子（`../BACKUP-PLAN.md §2`，搬运全在 [TrashStore]） ----------
+
+    fun trashArchiveDocument(documentId: String, path: File) = TrashStore.archiveDocument(db, documentId, path)
+    fun trashArchiveBoard(boardId: String, path: File) = TrashStore.archiveBoard(db, boardId, path)
+    fun trashArchiveExercises(ids: List<String>, path: File) = TrashStore.archiveExercises(db, ids, path)
+    fun trashMergeTarget(path: File): String? = TrashStore.mergeTarget(db, path)
+    fun trashRestore(path: File, remapDocumentId: String?): Int = TrashStore.restore(db, path, remapDocumentId)
+
+    /** 删一篇文档（库行；`note` / `ink_layer` / `scratch_pad` / 习题随外键级联删）。**调用方必须先归档**（红线 11） */
+    fun deleteDocument(id: String) = db.exec("DELETE FROM document WHERE id=?", arrayOf(id))
 
     /** 本库 `ocr_page` 的全部键（纯 additive 表，不进基线，见 `MirrorStore.ocrKeys`） */
     fun mirrorOcrKeys(): Set<com.xvan.unireader.local.mirror.MirrorDiff.OcrKey> =
@@ -228,7 +240,7 @@ class LibraryStore(private val db: Db) : Closeable {
         db.exec(
             "INSERT INTO location(id,variant_id,path,is_valid,last_validated_at,in_workspace,is_relative) " +
                 "VALUES(?,?,?,1,?,?,0)",
-            arrayOf(UUID.randomUUID().toString(), variantId, path, nowIso(), if (inWorkspace) 1 else 0),
+            arrayOf(UUID.randomUUID().toString().uppercase(), variantId, path, nowIso(), if (inWorkspace) 1 else 0),
         )
     }
 
@@ -277,14 +289,14 @@ class LibraryStore(private val db: Db) : Closeable {
                 db.exec(
                     "INSERT INTO location(id,variant_id,path,is_valid,last_validated_at,in_workspace,is_relative) " +
                         "VALUES(?,?,?,1,?,?,0)",
-                    arrayOf(UUID.randomUUID().toString(), existing.id, path, now, if (inWorkspace) 1 else 0),
+                    arrayOf(UUID.randomUUID().toString().uppercase(), existing.id, path, now, if (inWorkspace) 1 else 0),
                 )
             }
             return document(existing.documentId)
                 ?: throw IllegalStateException("variant 指向的 document 缺失：${existing.documentId}")
         }
-        val docId = UUID.randomUUID().toString()
-        val varId = UUID.randomUUID().toString()
+        val docId = UUID.randomUUID().toString().uppercase()
+        val varId = UUID.randomUUID().toString().uppercase()
         db.transaction {
             db.exec(
                 "INSERT INTO document(id,title,page_count,added_at,last_opened_at,sort_order) VALUES(?,?,?,?,?,0)",
@@ -297,7 +309,7 @@ class LibraryStore(private val db: Db) : Closeable {
             db.exec(
                 "INSERT INTO location(id,variant_id,path,is_valid,last_validated_at,in_workspace,is_relative) " +
                     "VALUES(?,?,?,1,?,?,0)",
-                arrayOf(UUID.randomUUID().toString(), varId, path, now, if (inWorkspace) 1 else 0),
+                arrayOf(UUID.randomUUID().toString().uppercase(), varId, path, now, if (inWorkspace) 1 else 0),
             )
         }
         Log.i(TAG, "入库《$title》$pageCount 页 → $path")
@@ -429,6 +441,8 @@ class LibraryStore(private val db: Db) : Closeable {
                     n.id, n.page.toLong(), n.anchorX.toFloat(), n.anchorY.toFloat(), p.text, p.display,
                     // anchor 宽 > 0 = 选区注解：图钉要挪到行末右侧（同 Mac `markerPos`）
                     aw = n.anchorW.toFloat(), typeId = p.typeId,
+                    color = p.color()?.let { c -> intArrayOf(c[0].toInt(), c[1].toInt(), c[2].toInt()) },
+                    style = p.style, quote = p.quote, card = p.card,
                 ),
             )
         }
@@ -442,6 +456,9 @@ class LibraryStore(private val db: Db) : Closeable {
      *   ——平板上编辑一条选区注解不该把它退化成点注解，那是不可逆的丢数据。
      * - 不存在：建一条零尺寸 anchor 的点注解（anchor=落点，quote/rects 空）。
      * - 空文本等价删除（同 Mac 丢弃空点注解的语义），调用方也可直接调 [deleteNote]。
+     *
+     * [marks] 非 null（模式1 的完整编辑器）时连类型 / 显式颜色 / 画法一起改（同 Mac `updateNote`）；
+     * null = 老行为，这三样原样留着。
      */
     fun upsertTextNote(
         documentId: String,
@@ -451,24 +468,104 @@ class LibraryStore(private val db: Db) : Closeable {
         ny: Float,
         text: String,
         display: Int = NOTE_TAP,
+        marks: NoteMarks? = null,
     ) {
-        if (text.isBlank()) { deleteNote(id); return }
         val old = db.query("SELECT * FROM note WHERE id=?", arrayOf(id)) { note(it) }.firstOrNull()
+        // 空正文：点注解 = 删除；选区注解（有行框）只在完整编辑器里允许留着当纯标记（同 Mac `updateNote`）
+        if (text.isBlank() && (marks == null || old == null || old.anchorW <= 0.0)) { deleteNote(id); return }
         val now = nowIso()
         if (old != null && old.kind == NoteKind.TEXT) {
             val p = TextNotePayload.parse(old.payload)
                 ?: TextNotePayload.ofPointNote(text, display = display)
-            upsertNote(old.copy(payload = p.withText(text).withDisplay(display).bytes(), updatedAt = now))
+            p.withText(text).withDisplay(display)
+            if (marks != null) p.withTypeId(marks.typeId).withColor(marks.color).withStyle(marks.style)
+            upsertNote(old.copy(payload = p.bytes(), updatedAt = now))
             return
         }
         upsertNote(
             LibNote(
                 id = id, documentId = documentId, kind = NoteKind.TEXT, page = page,
                 anchorX = nx.toDouble(), anchorY = ny.toDouble(), anchorW = 0.0, anchorH = 0.0,
-                payload = TextNotePayload.ofPointNote(text, display = display).bytes(),
+                payload = TextNotePayload.ofPointNote(text, marks?.typeId, display).bytes(),
                 createdAt = now, updatedAt = now,
             ),
         )
+    }
+
+    // ---------- 撤销栈要的注解快照（模式1，`LocalCanvasView` 的撤销 / 重做） ----------
+
+    /** 撤销栈管的注解种类：文字笔记、高亮、图片笔记（笔迹另有一条按可见笔迹对齐的路，见 [reconcileStrokes]） */
+    private val undoKinds = arrayOf(NoteKind.TEXT, NoteKind.HIGHLIGHT, NoteKind.IMAGE)
+
+    /** 这篇文档此刻的注解行（整行，含 payload），动手之前拍一份 */
+    fun undoNoteRows(documentId: String): List<LibNote> = db.query(
+        "SELECT * FROM note WHERE document_id=? AND kind IN (?,?,?)",
+        arrayOf(documentId, *undoKinds),
+    ) { note(it) }
+
+    /**
+     * 把注解行恢复成 [rows] 那一份：多出来的删、少了的补、变了的整行写回（原样，含原来的时间戳）。**一个事务**。
+     * 涉及的图片顺手对账（撤销删除 = 引用回来，待删除清零；撤销新建 = 没人引用了，进待删除）。返回改了几行。
+     */
+    fun restoreUndoNoteRows(documentId: String, rows: List<LibNote>): Int {
+        val cur = undoNoteRows(documentId).associateBy { it.id }
+        val want = rows.associateBy { it.id }
+        val shas = HashSet<String>()
+        fun sha(n: LibNote) { if (n.kind == NoteKind.IMAGE) ImageNotePayload.parse(n.payload)?.image?.let { shas.add(it) } }
+        var n = 0
+        transaction {
+            for ((id, old) in cur) if (id !in want) { deleteNote(id); sha(old); n++ }
+            for ((id, w) in want) {
+                val c = cur[id]
+                if (c != null && c.page == w.page && c.payload.contentEquals(w.payload) && c.anchorX == w.anchorX &&
+                    c.anchorY == w.anchorY && c.anchorW == w.anchorW && c.anchorH == w.anchorH
+                ) continue
+                upsertNote(w)
+                sha(w)
+                c?.let { sha(it) }
+                n++
+            }
+            if (shas.isNotEmpty()) reconcileImageOrphans(shas)
+        }
+        return n
+    }
+
+    /** 一行 note（任何 kind）；没有返回 null */
+    fun noteById(id: String): LibNote? =
+        db.query("SELECT * FROM note WHERE id=?", arrayOf(id)) { note(it) }.firstOrNull()
+
+    /**
+     * 高亮换色 / 换画法（Mac `recolorHighlight` / `restyleHighlight`）：只动 payload 的 `color` / `style`，
+     * 其余键原样留着。传 null 的那一样不动。不是高亮（或已被删）时什么都不做。
+     */
+    fun updateHighlight(id: String, rgb: IntArray?, style: Int?) {
+        val old = noteById(id)?.takeIf { it.kind == NoteKind.HIGHLIGHT } ?: return
+        val p = TextNotePayload.parse(old.payload) ?: return
+        if (rgb != null) p.withColor(rgb)
+        if (style != null) p.withStyle(style)
+        upsertNote(old.copy(payload = p.bytes(), updatedAt = nowIso()))
+    }
+
+    /**
+     * 高亮转文字笔记（Mac `beginNoteFromHighlight` → `commitNote(replacesHighlight:)`）：用高亮的页 / 锚点 / 原文 /
+     * 行框落一条选区注解，再删掉原高亮。**一个事务**——转一半（笔记建了、高亮还在）会在页面上叠两层色。
+     */
+    fun highlightToNote(
+        highlightId: String, noteId: String, text: String, display: Int, marks: NoteMarks,
+    ): Boolean {
+        val h = noteById(highlightId)?.takeIf { it.kind == NoteKind.HIGHLIGHT } ?: return false
+        val hp = TextNotePayload.parse(h.payload) ?: return false
+        transaction {
+            insertSelectionNote(
+                h.documentId, noteId, h.page,
+                floatArrayOf(h.anchorX.toFloat(), h.anchorY.toFloat(), h.anchorW.toFloat(), h.anchorH.toFloat()),
+                hp.quote,
+                hp.rects().map { floatArrayOf(it[0].toFloat(), it[1].toFloat(), it[2].toFloat(), it[3].toFloat()) },
+                text, marks.typeId, display, marks.color, marks.style,
+            )
+            deleteNote(highlightId)
+        }
+        return true
     }
 
     // ---------- 书签（note kind=5，`../REQUIREMENTS.md §1.9`） ----------
@@ -498,7 +595,7 @@ class LibraryStore(private val db: Db) : Closeable {
     fun insertBookmark(documentId: String, page: Int, frac: Float, title: String): String? {
         val t = title.trim()
         if (t.isEmpty()) return null
-        val id = java.util.UUID.randomUUID().toString()
+        val id = java.util.UUID.randomUUID().toString().uppercase()
         val now = nowIso()
         upsertNote(
             LibNote(
@@ -596,15 +693,23 @@ class LibraryStore(private val db: Db) : Closeable {
                     val rs = p.rects()
                     if (rs.isEmpty()) continue
                     val c = p.color() ?: doubleArrayOf(255.0, 214.0, 40.0, 1.0)   // 同 Mac 默认荧光黄
-                    hi.add(fillOf(n.page, rs, c[0].toInt(), c[1].toInt(), c[2].toInt(), PadConst.FILL.HIGHLIGHT_A))
+                    val st = p.style
+                    val a = if (st == HL_FILL) PadConst.FILL.HIGHLIGHT_A else PadConst.FILL.STROKE_A
+                    hi.add(
+                        fillOf(n.page, rs, c[0].toInt(), c[1].toInt(), c[2].toInt(), a, style = st, highlightId = n.id),
+                    )
                 }
                 NoteKind.TEXT -> {
                     val p = TextNotePayload.parse(n.payload) ?: continue
                     val rs = p.rects()
                     if (rs.isEmpty()) continue   // 点注解只有图钉，没有底色
-                    val rgb = types[p.typeId?.uppercase()] ?: PadConst.FILL.NOTE_RGB
+                    // 显式颜色优先，其次类型色，再次通用暖黄（同 Mac `ReaderView+Marks`；图钉仍按类型色）
+                    val rgb = p.color()?.let { intArrayOf(it[0].toInt(), it[1].toInt(), it[2].toInt()) }
+                        ?: types[p.typeId?.uppercase()] ?: PadConst.FILL.NOTE_RGB
+                    val st = p.style
+                    val a = if (st == HL_FILL) PadConst.FILL.NOTE_A else PadConst.FILL.STROKE_A
                     // 带上 note.id：框选拖动时底色要跟着图钉走（高亮不参与移动，故不填）
-                    nt.add(fillOf(n.page, rs, rgb[0], rgb[1], rgb[2], PadConst.FILL.NOTE_A, n.id))
+                    nt.add(fillOf(n.page, rs, rgb[0], rgb[1], rgb[2], a, n.id, style = st))
                 }
             }
         }
@@ -619,11 +724,13 @@ class LibraryStore(private val db: Db) : Closeable {
         b: Int,
         a: Float,
         noteId: String = "",
+        style: Int = HL_FILL,
+        highlightId: String = "",
     ) = TextFill(
         page = page.toLong(),
         rects = rs.map { floatArrayOf(it[0].toFloat(), it[1].toFloat(), it[2].toFloat(), it[3].toFloat()) },
         r = r.coerceIn(0, 255), g = g.coerceIn(0, 255), b = b.coerceIn(0, 255), a = a,
-        noteId = noteId,
+        noteId = noteId, style = style, highlightId = highlightId,
     )
 
     /**
@@ -887,9 +994,12 @@ class LibraryStore(private val db: Db) : Closeable {
         text: String,
         typeId: String? = null,
         display: Int = NOTE_TAP,
+        color: IntArray? = null,
+        style: Int = HL_FILL,
     ) {
         val now = nowIso()
         val p = TextNotePayload.ofPointNote(text, typeId, display)
+        p.withColor(color).withStyle(style)
         p.raw.put("quote", quote)
         p.withRects(rects.map { doubleArrayOf(it[0].toDouble(), it[1].toDouble(), it[2].toDouble(), it[3].toDouble()) })
         upsertNote(
@@ -914,6 +1024,7 @@ class LibraryStore(private val db: Db) : Closeable {
         quote: String,
         rects: List<FloatArray>,
         rgb: IntArray,
+        style: Int = HL_FILL,
     ) {
         val now = nowIso()
         val o = JSONObject()
@@ -928,6 +1039,7 @@ class LibraryStore(private val db: Db) : Closeable {
         o.put("rects", arr)
         // 存**基色**（a=1），渲染时统一降透明——与 Mac `Highlight.fillOpacity` 同一口径
         o.put("color", JSONObject().put("r", rgb[0]).put("g", rgb[1]).put("b", rgb[2]).put("a", 1.0))
+        o.put("style", TextNotePayload.styleKey(style))   // Mac 的 payload 每条都写 style（含 fill）
         upsertNote(
             LibNote(
                 id = id, documentId = documentId, kind = NoteKind.HIGHLIGHT, page = page,
@@ -937,6 +1049,47 @@ class LibraryStore(private val db: Db) : Closeable {
                 createdAt = now, updatedAt = now,
             ),
         )
+    }
+
+    /** 工作区自定义笔记类型的完整列表（坏掉 / 缺失 = 空；通用 id 剔掉，同 Mac `WorkspaceManager.noteTypes`） */
+    fun noteTypes(): List<NoteTypeDef> {
+        val raw = meta("note_types") ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id").ifEmpty { return@mapNotNull null }
+                if (id == NoteTypeDef.GENERAL_ID) return@mapNotNull null
+                NoteTypeDef(id, o.optString("name"), o.optString("color_key"), o.optString("icon_name"))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "meta.note_types 解析失败，当作没有自定义类型", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * 整体重写工作区笔记类型（Mac `saveNoteTypes`：管理面板增删改后整表写回）。删掉的类型**不去改**笔记的
+     * `type_id`——读的时候找不到就按通用（`NoteTypeDef.resolve`），同 Mac「N 条笔记会恢复为通用」。
+     */
+    fun saveNoteTypes(types: List<NoteTypeDef>) {
+        val arr = JSONArray()
+        for (t in types) {
+            if (t.id == NoteTypeDef.GENERAL_ID) continue
+            arr.put(
+                JSONObject().put("id", t.id).put("name", t.name)
+                    .put("color_key", t.colorKey).put("icon_name", t.iconName),
+            )
+        }
+        setMeta("note_types", arr.toString())
+    }
+
+    /** 用着某个类型的文字笔记有几条（全工作区；删类型前的提示用，同 Mac `usageCount`） */
+    fun noteTypeUsage(typeId: String): Int {
+        var n = 0
+        db.query("SELECT payload FROM note WHERE kind=?", arrayOf(NoteKind.TEXT)) { it.blob("payload") }
+            .forEach { b -> if (TextNotePayload.parse(b)?.typeId?.equals(typeId, ignoreCase = true) == true) n++ }
+        return n
     }
 
     fun noteTypeColors(): Map<String, IntArray> {
@@ -1004,7 +1157,7 @@ class LibraryStore(private val db: Db) : Closeable {
         pen: Pen,
         pts: List<Pt3>,
         layerId: String = LibInkLayer.DEFAULT_ID,
-        id: String = UUID.randomUUID().toString(),
+        id: String = UUID.randomUUID().toString().uppercase(),
     ): String? {
         if (pts.isEmpty()) return null   // 空笔画不落库（同 Mac `toNote` 的 guard）
         val b = boundsOf(pts)
@@ -1044,10 +1197,11 @@ class LibraryStore(private val db: Db) : Closeable {
         var deleted = 0
         var updated = 0
         var inserted = 0
-        val hidden = inkLayers(documentId).filter { !it.visible }.map { it.id }.toSet()
+        // id 比较不分大小写：Mac 写的 layerId 是大写，安卓老版本建的图层行是小写
+        val hidden = inkLayers(documentId).filter { !it.visible }.map { it.id.uppercase() }.toSet()
         transaction {
             for (old in strokes(documentId)) {
-                if (old.layerId in hidden) continue
+                if (old.layerId.uppercase() in hidden) continue
                 val segs = local[old.id]
                 if (segs == null) {
                     deleteNote(old.id)
@@ -1062,6 +1216,42 @@ class LibraryStore(private val db: Db) : Closeable {
                     insertStroke(documentId, seg.page.toInt(), seg.pen, seg.pts, seg.layerId)
                     inserted++
                 }
+            }
+        }
+        return InkDiff(deleted, updated, inserted)
+    }
+
+    /**
+     * **撤销 / 重做**用的对齐：把库里（可见图层上）的笔迹整份恢复成 [want]。与 [reconcileStrokes] 不同——
+     * 那条是给擦除用的，只会删 / 切短（「点数没变 = 没擦到」），撤销一次整条擦除（要把那条**原样插回来**）、
+     * 一次框选移动（点数没变但位置变了）它都做不到。这里：
+     * - 库里有、[want] 里没有 → 删；
+     * - [want] 里有、库里没有 → **按原 id 插回**（原笔、原图层、原页）；
+     * - 两边都有但点集或笔宽不一样 → 改写点集与笔宽（id 不变）。
+     * 隐藏图层上的一条不碰（同 [reconcileStrokes]）。整批一个事务。
+     */
+    fun restoreStrokes(documentId: String, want: List<Stroke>): InkDiff {
+        var deleted = 0
+        var updated = 0
+        var inserted = 0
+        // id 比较不分大小写：Mac 写的 layerId 是大写，安卓老版本建的图层行是小写
+        val hidden = inkLayers(documentId).filter { !it.visible }.map { it.id.uppercase() }.toSet()
+        val byId = want.filter { it.id.isNotEmpty() }.associateBy { it.id }
+        transaction {
+            val have = HashSet<String>()
+            for (old in strokes(documentId)) {
+                if (old.layerId.uppercase() in hidden) continue
+                have.add(old.id)
+                val w = byId[old.id]
+                if (w == null) { deleteNote(old.id); deleted++; continue }
+                if (w.pts == old.pts && w.pen.w == old.pen.w) continue
+                updateStrokePoints(old.id, w.pts, w.pen.w)
+                updated++
+            }
+            for ((id, w) in byId) {
+                if (id in have || w.layerId.uppercase() in hidden) continue
+                insertStroke(documentId, w.page.toInt(), w.pen, w.pts, w.layerId.ifEmpty { LibInkLayer.DEFAULT_ID }, id)
+                inserted++
             }
         }
         return InkDiff(deleted, updated, inserted)
@@ -1219,7 +1409,7 @@ class LibraryStore(private val db: Db) : Closeable {
         padId: String,
         pen: Pen,
         pts: List<Pt3>,
-        id: String = UUID.randomUUID().toString(),
+        id: String = UUID.randomUUID().toString().uppercase(),
     ): String? {
         if (pts.isEmpty()) return null   // 空笔画不落库（同 insertStroke 的 guard）
         val b = boundsOf(pts)
@@ -1536,6 +1726,291 @@ class LibraryStore(private val db: Db) : Closeable {
         return InkDiff(deleted, updated, inserted)
     }
 
+    // ---------- 画板上的图片（board_item kind=2，Mac `BoardImage`；模式1 2026-10-29 起能加 / 挪 / 缩放 / 删） ----------
+
+    /**
+     * 新加一张图。payload `{image, caption, source:{kind:"file", name}, page?}`（同 Mac `BoardImage.toItem`）；
+     * [x]/[y]/[w]/[h] 是画布坐标。分页画板按图的**上沿**所在页归页、存页内坐标（同笔迹的「第一个点」规则）。
+     * id 由调用方给（大写 UUID）。顺带对这张图对账（再引用 = 待删除清零）。
+     */
+    fun insertBoardImage(
+        boardId: String, id: String, sha: String, x: Float, y: Float, w: Float, h: Float, name: String,
+        ps: BoardPageSet = BoardPageSet.NONE,
+    ) {
+        val ref = ps.refForY(y)
+        val o = JSONObject().put("image", sha).put("caption", "")
+            .put("source", JSONObject().put("kind", "file").put("name", name))
+        if (ref != null) o.put("page", ref.id)
+        val now = nowIso()
+        upsertBoardItem(
+            BoardItem(
+                id = id, boardId = boardId, kind = BoardItem.KIND_IMAGE,
+                x = (x - (ref?.ox ?: 0f)).toDouble(), y = (y - (ref?.oy ?: 0f)).toDouble(), w = w.toDouble(), h = h.toDouble(),
+                payload = o.toString().toByteArray(StandardCharsets.UTF_8), createdAt = now, updatedAt = now,
+            ),
+        )
+        reconcileImageOrphans(setOf(sha))
+    }
+
+    /** 挪 / 缩放一张图（画布坐标；分页画板按新的上沿重新归页，payload 其余键原样留着） */
+    fun updateBoardImageRect(id: String, x: Float, y: Float, w: Float, h: Float, ps: BoardPageSet = BoardPageSet.NONE) {
+        val it = db.query("SELECT * FROM board_item WHERE id=?", arrayOf(id)) { boardItem(it) }.firstOrNull() ?: return
+        if (it.kind != BoardItem.KIND_IMAGE) return
+        val o = runCatching { JSONObject(String(it.payload, StandardCharsets.UTF_8)) }.getOrNull() ?: return
+        val ref = ps.refForY(y)
+        if (ref != null) o.put("page", ref.id) else o.remove("page")
+        upsertBoardItem(
+            it.copy(
+                x = (x - (ref?.ox ?: 0f)).toDouble(), y = (y - (ref?.oy ?: 0f)).toDouble(), w = w.toDouble(), h = h.toDouble(),
+                payload = o.toString().toByteArray(StandardCharsets.UTF_8), updatedAt = nowIso(),
+            ),
+        )
+    }
+
+    /** 删一张图，再对它指向的那张图对账（画板上的图也算引用，没人用了才进待删除） */
+    fun deleteBoardImage(id: String) {
+        val it = db.query("SELECT * FROM board_item WHERE id=?", arrayOf(id)) { boardItem(it) }.firstOrNull() ?: return
+        val sha = runCatching { JSONObject(String(it.payload, StandardCharsets.UTF_8)).optString("image") }.getOrNull()
+        deleteBoardItem(id)
+        if (!sha.isNullOrEmpty()) reconcileImageOrphans(setOf(sha))
+    }
+
+    /** 画板撤销栈要的：这篇画板此刻的图片行（整行） */
+    fun boardImageRows(boardId: String): List<BoardItem> =
+        boardItems(boardId).filter { it.kind == BoardItem.KIND_IMAGE }
+
+    /** 把画板的图片行恢复成 [rows] 那一份（同 [restoreUndoNoteRows]：删多的、补少的、变了的整行写回，再对账图片） */
+    fun restoreBoardImageRows(boardId: String, rows: List<BoardItem>): Int {
+        val cur = boardImageRows(boardId).associateBy { it.id }
+        val want = rows.associateBy { it.id }
+        val shas = HashSet<String>()
+        fun sha(i: BoardItem) {
+            runCatching { JSONObject(String(i.payload, StandardCharsets.UTF_8)).optString("image") }.getOrNull()
+                ?.takeIf { it.isNotEmpty() }?.let { shas.add(it) }
+        }
+        var n = 0
+        transaction {
+            for ((id, old) in cur) if (id !in want) { deleteBoardItem(id); sha(old); n++ }
+            for ((id, w) in want) {
+                val c = cur[id]
+                if (c != null && c.x == w.x && c.y == w.y && c.w == w.w && c.h == w.h && c.payload.contentEquals(w.payload)) continue
+                upsertBoardItem(w)
+                sha(w)
+                n++
+            }
+            if (shas.isNotEmpty()) reconcileImageOrphans(shas)
+        }
+        return n
+    }
+
+    /** 画板撤销 / 重做的对齐：同 [restoreStrokes]（删多的、按原 id 插回少的、改写变了的），没有图层过滤 */
+    fun restoreBoardStrokes(boardId: String, want: List<Stroke>, ps: BoardPageSet = BoardPageSet.NONE): InkDiff {
+        var deleted = 0
+        var updated = 0
+        var inserted = 0
+        val byId = want.filter { it.id.isNotEmpty() }.associateBy { it.id }
+        transaction {
+            val have = HashSet<String>()
+            for (old in boardStrokes(boardId, ps)) {
+                have.add(old.id)
+                val w = byId[old.id]
+                if (w == null) { deleteBoardItem(old.id); deleted++; continue }
+                if (w.pts == old.pts && w.pen.w == old.pen.w) continue
+                updateBoardStrokePoints(old.id, w.pts, ps, w.pen.w)
+                updated++
+            }
+            for ((id, w) in byId) {
+                if (id in have) continue
+                insertBoardStroke(boardId, w.pen, w.pts, id, ps)
+                inserted++
+            }
+        }
+        return InkDiff(deleted, updated, inserted)
+    }
+
+    // ---------- Markdown 笔记的扫描缓存（md_doc，v15），`../MARKDOWN-NOTES-PLAN.md §2` ----------
+
+    fun allMdDocs(): List<LibMdDoc> {
+        if (!hasTable("md_doc")) return emptyList()
+        return db.query("SELECT * FROM md_doc ORDER BY rel_path ASC") { c ->
+            LibMdDoc(
+                c.str("id"), c.str("title"), c.str("rel_path"),
+                c.str("created_at"), c.str("updated_at"), c.str("last_opened_at"),
+            )
+        }
+    }
+
+    /** 补一行（id 大写 UUID，同 Mac `UUID().uuidString`）；同路径已有就不动（`rel_path` 有唯一索引） */
+    fun addMdDoc(title: String, relPath: String) {
+        val now = nowIso()
+        db.exec(
+            """
+            INSERT OR IGNORE INTO md_doc(id,title,rel_path,group_name,sort_order,created_at,updated_at,last_opened_at)
+            VALUES(?,?,?,'',0,?,?,?)
+            """.trimIndent(),
+            arrayOf<Any?>(UUID.randomUUID().toString().uppercase(), title, relPath, now, now, now),
+        )
+    }
+
+    fun deleteMdDoc(id: String) = db.exec("DELETE FROM md_doc WHERE id=?", arrayOf(id))
+
+    /** 正文存盘后打时间戳（离线镜像按它取新，同 Mac `touchMarkdownDoc`） */
+    fun touchMdDoc(relPath: String) =
+        db.exec("UPDATE md_doc SET updated_at=? WHERE rel_path=?", arrayOf(nowIso(), relPath))
+
+    fun mdDocOpened(relPath: String) =
+        db.exec("UPDATE md_doc SET last_opened_at=? WHERE rel_path=?", arrayOf(nowIso(), relPath))
+
+    /**
+     * 与目录对账（Mac `refreshNotes` 里那段）：文件多了补行、没了删行；`last_opened_at` 保留。
+     * [live] = 扫出来的全部 (源内相对路径 → 标题)。
+     */
+    fun reconcileMdDocs(live: Map<String, String>) {
+        if (!hasTable("md_doc")) return
+        val rows = allMdDocs()
+        val have = rows.map { it.relPath }.toSet()
+        transaction {
+            for ((rel, title) in live) if (rel !in have) addMdDoc(title, rel)
+            for (r in rows) if (r.relPath !in live) deleteMdDoc(r.id)
+        }
+    }
+
+    // ---------- 图片本体（image，v13）与图片笔记（note kind=6），`../IMAGE-NOTE-PLAN.md` ----------
+
+    fun images(): List<LibImage> {
+        if (!hasTable("image")) return emptyList()
+        return db.query("SELECT * FROM image ORDER BY created_at ASC") { libImage(it) }
+    }
+
+    fun image(sha256: String): LibImage? {
+        if (!hasTable("image")) return null
+        return db.query("SELECT * FROM image WHERE sha256=?", arrayOf(sha256)) { libImage(it) }.firstOrNull()
+    }
+
+    /** 登记一张图（已在就不动——同图只有一行，`orphaned_at` 由对账管；同 Mac `insertImageIfAbsent`） */
+    fun insertImageIfAbsent(im: LibImage) {
+        db.exec(
+            "INSERT OR IGNORE INTO image(sha256,ext,width,height,bytes,created_at,orphaned_at) VALUES(?,?,?,?,?,?,?)",
+            arrayOf<Any?>(im.sha256, im.ext, im.width, im.height, im.bytes, im.createdAt, im.orphanedAt),
+        )
+    }
+
+    /** 只删行，**文件由调用方删**（`ImageAssets.remove`）——同 Mac：DAO 不碰文件系统 */
+    fun deleteImage(sha256: String) = db.exec("DELETE FROM image WHERE sha256=?", arrayOf(sha256))
+
+    /**
+     * 每张图当前被引用几次（**数出来的**：note kind=6 + board_item kind=2 的 payload `image` 键，同 Mac `imageRefCounts`）。
+     * 🔴 画板上的图必须一起数，否则会被当成没人用、30 天后删掉。本端不用 SQL 的 `json_extract`
+     * （API 26 不保证有 JSON1），在这里逐行解 payload——图片条目几十条顶天。
+     */
+    fun imageRefCounts(): Map<String, Int> {
+        val out = HashMap<String, Int>()
+        fun count(b: ByteArray) {
+            val sha = runCatching { JSONObject(String(b, StandardCharsets.UTF_8)).optString("image") }.getOrNull()
+            if (!sha.isNullOrEmpty()) out[sha] = (out[sha] ?: 0) + 1
+        }
+        db.query("SELECT payload FROM note WHERE kind=?", arrayOf(NoteKind.IMAGE)) { it.blob("payload") }.forEach(::count)
+        if (hasTable("board_item")) {
+            db.query("SELECT payload FROM board_item WHERE kind=?", arrayOf(BoardItem.KIND_IMAGE)) { it.blob("payload") }
+                .forEach(::count)
+        }
+        return out
+    }
+
+    /**
+     * 对账 `orphaned_at`（方案 §3 规则 1，同 Mac `reconcileImageOrphans`）：有引用 → 清空；无引用且此前为空 → 记下现在。
+     * **已经非空的不重置**——否则「删了又恢复又删」把 30 天越拖越长。[only] 非 null 时只看那几张。返回状态变了的 sha。
+     */
+    fun reconcileImageOrphans(only: Set<String>? = null): List<String> {
+        if (!hasTable("image")) return emptyList()
+        val refs = imageRefCounts()
+        val now = nowIso()
+        val changed = ArrayList<String>()
+        for (im in images()) {
+            if (only != null && im.sha256 !in only) continue
+            val referenced = (refs[im.sha256] ?: 0) > 0
+            if (referenced && im.orphanedAt != null) {
+                db.exec("UPDATE image SET orphaned_at=NULL WHERE sha256=?", arrayOf(im.sha256))
+                changed.add(im.sha256)
+            } else if (!referenced && im.orphanedAt == null) {
+                db.exec("UPDATE image SET orphaned_at=? WHERE sha256=?", arrayOf(now, im.sha256))
+                changed.add(im.sha256)
+            }
+        }
+        return changed
+    }
+
+    /** 待删除且已到期的图（`orphaned_at < before`，ISO 串按字典序比，三位毫秒定长所以成立）。调用方删文件 + [deleteImage] */
+    fun purgeableImages(before: String): List<LibImage> {
+        if (!hasTable("image")) return emptyList()
+        return db.query("SELECT * FROM image WHERE orphaned_at IS NOT NULL AND orphaned_at < ?", arrayOf(before)) { libImage(it) }
+    }
+
+    private fun libImage(c: android.database.Cursor) = LibImage(
+        sha256 = c.str("sha256"), ext = c.str("ext"), width = c.int("width"), height = c.int("height"),
+        bytes = c.long("bytes"), createdAt = c.str("created_at"), orphanedAt = c.strOrNull("orphaned_at"),
+    )
+
+    /** 一篇文档的全部图片笔记（坏 payload 单条跳过，同 [textNotes]） */
+    fun imageNotes(documentId: String): List<LibImageNote> {
+        val out = ArrayList<LibImageNote>()
+        for (n in notes(documentId)) {
+            if (n.kind != NoteKind.IMAGE) continue
+            ImageNotePayload.parse(n.payload)?.let { p ->
+                val sp = p.source
+                out.add(
+                    LibImageNote(
+                        id = n.id, page = n.page,
+                        anchor = floatArrayOf(n.anchorX.toFloat(), n.anchorY.toFloat(), n.anchorW.toFloat(), n.anchorH.toFloat()),
+                        image = p.image, caption = p.caption, display = p.display,
+                        sourceKind = sp?.optString("kind").orEmpty(), sourcePage = sp?.optInt("page", n.page) ?: n.page,
+                        sourceRect = sp?.optJSONArray("rect")?.let { a ->
+                            if (a.length() < 4) null else FloatArray(4) { a.optDouble(it, 0.0).toFloat() }
+                        },
+                        sourcePages = sp?.optInt("pages", 1) ?: 1, sourceName = sp?.optString("name").orEmpty(),
+                        card = p.card,
+                    ),
+                )
+            }
+        }
+        return out
+    }
+
+    /** 新建一条图片笔记（id 由调用方给，**大写 UUID**：Mac 按 UUID 解析后以 `uuidString` 写回） */
+    fun insertImageNote(
+        documentId: String, id: String, page: Int, anchor: FloatArray, image: String, caption: String,
+        display: Int, source: JSONObject,
+    ) {
+        val now = nowIso()
+        val o = JSONObject().put("image", image).put("caption", caption)
+            .put("display", TextNotePayload.displayKey(display)).put("source", source)
+        upsertNote(
+            LibNote(
+                id = id, documentId = documentId, kind = NoteKind.IMAGE, page = page,
+                anchorX = anchor[0].toDouble(), anchorY = anchor[1].toDouble(),
+                anchorW = anchor[2].toDouble(), anchorH = anchor[3].toDouble(),
+                payload = o.toString().toByteArray(StandardCharsets.UTF_8), createdAt = now, updatedAt = now,
+            ),
+        )
+        reconcileImageOrphans(setOf(image))   // 撤销删除 / 再引用同一张图时把「待删除」清掉
+    }
+
+    /** 改说明 / 展开方式（其余键原样留着） */
+    fun updateImageNote(id: String, caption: String, display: Int) {
+        val old = noteById(id)?.takeIf { it.kind == NoteKind.IMAGE } ?: return
+        val o = runCatching { JSONObject(String(old.payload, StandardCharsets.UTF_8)) }.getOrNull() ?: return
+        o.put("caption", caption).put("display", TextNotePayload.displayKey(display))
+        upsertNote(old.copy(payload = o.toString().toByteArray(StandardCharsets.UTF_8), updatedAt = nowIso()))
+    }
+
+    /** 删一条图片笔记，并对它指向的那张图单独对账（没人引用了就进待删除，同 Mac `deleteImageNote`） */
+    fun deleteImageNote(id: String) {
+        val old = noteById(id) ?: return
+        val sha = ImageNotePayload.parse(old.payload)?.image
+        deleteNote(id)
+        if (!sha.isNullOrEmpty()) reconcileImageOrphans(setOf(sha))
+    }
+
     /** `image` 表里这张图的扩展名（表不存在 / 没登记 → null，调用方按常见扩展名去试） */
     fun imageExt(sha256: String): String? {
         if (!hasTable("image")) return null
@@ -1573,7 +2048,7 @@ class LibraryStore(private val db: Db) : Closeable {
     fun addInkLayer(documentId: String): LibInkLayer {
         val existing = inkLayers(documentId)
         val l = LibInkLayer(
-            id = UUID.randomUUID().toString(),
+            id = UUID.randomUUID().toString().uppercase(),
             documentId = documentId,
             name = "Layer ${existing.size + 1}",
             colorKey = Palette.rotatingKey(existing.size),

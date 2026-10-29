@@ -195,6 +195,12 @@ open class PageCanvasView @JvmOverloads constructor(
     /// 返回 true = 这一下被子类吃掉了（点开了草稿纸）；false 时基类接着判文字笔记（[tapNote]）。
     protected open fun onFingerTap(x: Float, y: Float): Boolean = false
 
+    /**
+     * 手指单击、且**笔记标记没接住**之后再问一次（模式1：点中高亮弹操作面板）。排在笔记之后，
+     * 是因为选区注解的图钉常常就压在高亮上——高亮抢先的话图钉就点不开了。返回 true = 吃掉。
+     */
+    protected open fun onFingerTapLate(x: Float, y: Float): Boolean = false
+
     // —— 图钉拖动（草稿纸图钉页内挪锚点；手指专用，同 onFingerTap 的只认手指决策） ——
     //
     // 手势复用单指平移的死区：落点在图钉热区内（[fingerPinHit] 命中）且**拖过死区**才开始拖图钉，
@@ -1484,14 +1490,14 @@ open class PageCanvasView @JvmOverloads constructor(
                         canvas,
                         viewX(page, sr[0].toFloat()), viewY(page, sr[1].toFloat()),
                         viewX(page, (sr[0] + sr[2]).toFloat()), viewY(page, (sr[1] + sr[3]).toFloat()),
-                        color,
+                        color, f.style,
                     )
                 } else {
                     overlays.drawTextFill(
                         canvas,
                         viewX(page, r[0] + ox), viewY(page, r[1] + oy),
                         viewX(page, r[0] + r[2] + ox), viewY(page, r[1] + r[3] + oy),
-                        color,
+                        color, f.style,
                     )
                 }
             }
@@ -1594,18 +1600,19 @@ open class PageCanvasView @JvmOverloads constructor(
         val page = n.page.toInt()
         val top = barH + offY[page] - scrollY
         return NoteBubbleGeom.layout(
-            n.text, pw(), pos[0], pos[1], noteMarkerRadius(),
+            pw(), pos[0], pos[1], noteMarkerRadius(),
             contentLeft(), top, contentLeft() + pw(), top + dispH[page],
-            NoteBubbleGeom.sticky(n, noteExpanded),
-        ) { s, fs -> overlays.measureNoteText(s, fs) }
+            NoteBubbleGeom.sticky(n, noteExpanded), n.card,
+        ) { cw, fs, lines -> NoteBubbleText.height(context, n.text, cw, fs, lines) }
     }
 
     protected fun drawNoteBubbles(canvas: Canvas, sel: LassoSelection?) {
         if (notes.isEmpty()) return
+        NoteBubbleText.register(this)
         for (i in notes.indices) {
             val b = noteBubbleBox(i, sel) ?: continue
             if (b.y > height || b.y + b.h < barH) continue
-            overlays.drawNoteBubble(canvas, b)
+            overlays.drawNoteBubble(canvas, b, NoteBubbleText.layout(context, notes[i].text, b.contentW, b.fs, b.maxLines))
         }
     }
 
@@ -2514,7 +2521,9 @@ open class PageCanvasView @JvmOverloads constructor(
                         // （与 Mac 同语义）。**次序不能反**——反了在选字模式下就点不开图钉了。
                         tap -> bookmarkHit(tx, ty)?.let { onBookmarkTap(it) }
                             ?: run {
-                                if (!onFingerTap(tx, ty) && !tapNote(tx, ty) && mode == MODE_TEXT) {
+                                if (!onFingerTap(tx, ty) && !tapNote(tx, ty) && !onFingerTapLate(tx, ty) &&
+                                    mode == MODE_TEXT
+                                ) {
                                     tapTextSelect(tx, ty)
                                 }
                             }
@@ -2778,7 +2787,7 @@ open class PageCanvasView @JvmOverloads constructor(
                     onOpenNoteEditor(hit.id, hit.page.toInt(), hit.nx, hit.ny, hit.text, false, hit.display)
                 } else {
                     onOpenNoteEditor(
-                        UUID.randomUUID().toString(), loc.page, loc.nx, loc.ny, "", true, NOTE_TAP
+                        UUID.randomUUID().toString().uppercase(), loc.page, loc.nx, loc.ny, "", true, NOTE_TAP
                     )
                 }
             }

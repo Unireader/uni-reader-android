@@ -84,6 +84,16 @@ class ReaderDrawer(private val a: Activity) {
     /** 画板那一行右侧的「更多」（改名 / 删除，由宿主弹） */
     var onBoardMore: (String) -> Unit = {}
 
+    // —— Markdown 笔记（`../MARKDOWN-NOTES-PLAN.md`，模式1）：null = 不显示这一组 ——
+    private var notes: List<NoteNode>? = null
+    /** Mac 上引用的外部目录的名字（平板上打不开，只列出来说一声） */
+    private var noteRefs: List<String> = emptyList()
+    private val noteCollapsed = HashSet<String>()
+    var onOpenNote: (String) -> Unit = {}
+    var onAddNote: () -> Unit = {}
+    /** 笔记那一行右侧的「更多」（改名…，由宿主弹） */
+    var onNoteMore: (String) -> Unit = {}
+
     // —— 习题（`../EXERCISE-PLAN.md §10.1`）：Mac 侧栏「习题」一段的同一份分组（全部 / 错题本 → 书 → 章 / 收藏 /
     // 每本书 → 章节树），摊平成「一行一个范围 + 缩进层级」。模式1 本机算、模式2 是 Mac 的 `exGroups`。
     // **空表 = 这一页不出现**（同 Mac：有题才有这一段）。
@@ -137,6 +147,9 @@ class ReaderDrawer(private val a: Activity) {
         // （数据全在、行也建好了，只是没地方画；那片"空白"其实是 outline 色的分隔线本身）。
         addView(Ui.divider(a))
         addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        // 避开系统栏（edge-to-edge，见 Insets.kt）：页签那一行压在状态栏下面的话点不着——系统栏会吃掉那块的点击。
+        // 模式2 整屏沉浸时 inset 是 0，不受影响
+        onSystemBarInsets { top, bottom -> setPadding(0, top, 0, bottom) }
     }
 
     /** 整个覆盖层：遮罩 + 面板。加进 Activity 的 root，初始隐藏。 */
@@ -204,6 +217,13 @@ class ReaderDrawer(private val a: Activity) {
     /** 画板笔记一组（null = 不显示这一组） */
     fun setBoards(list: List<LibItem>?) {
         boards = list
+        if (isOpen && tab == TAB_LIB) rebuild()
+    }
+
+    /** 笔记树（先序摊平）+ Mac 引用目录名；null = 不显示「笔记」这一组 */
+    fun setNotes(list: List<NoteNode>?, referenced: List<String> = emptyList()) {
+        notes = list
+        noteRefs = referenced
         if (isOpen && tab == TAB_LIB) rebuild()
     }
 
@@ -578,6 +598,53 @@ class ReaderDrawer(private val a: Activity) {
         }
         for (d in lib) bodyBox.addView(libRow(d, openBadge(d.open)))
         buildBoards()
+        buildNotes()
+    }
+
+    /** 笔记一组：按目录层级缩进，目录点一下展开 / 收起；笔记点开、右侧「更多」；末尾「新建」 */
+    private fun buildNotes() {
+        val list = notes ?: return
+        bodyBox.addView(Ui.groupTitle(a, a.getString(R.string.md_group)))
+        var hideBelow = Int.MAX_VALUE   // 收起的目录：比它深的行都跳过
+        for (n in list) {
+            if (n.depth > hideBelow) continue
+            hideBelow = Int.MAX_VALUE
+            val collapsed = n.isFolder && n.path in noteCollapsed
+            if (collapsed) hideBelow = n.depth
+            val row = if (n.isFolder) {
+                PadPanels.iconRow(
+                    a, if (collapsed) R.drawable.ic_chevron_right else R.drawable.ic_chevron_down, n.title, Ui.onVariant(a),
+                ) {
+                    if (!noteCollapsed.remove(n.path)) noteCollapsed.add(n.path)
+                    rebuild()
+                }
+            } else {
+                val trailing = LinearLayout(a).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    openBadge(n.open)?.let { addView(it) }
+                    addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.md_more), Ui.onVariant(a)) {
+                        onNoteMore(n.path)
+                    })
+                }
+                PadPanels.iconRow(a, R.drawable.ic_note, n.title, Ui.onSurface(a), trailing) {
+                    onOpenNote(n.path)
+                    close()
+                }
+            }
+            row.setPadding(row.paddingLeft + a.dp(16) * n.depth, row.paddingTop, row.paddingRight, row.paddingBottom)
+            bodyBox.addView(row)
+        }
+        if (list.isEmpty()) bodyBox.addView(Ui.body(a, a.getString(R.string.md_none)))
+        bodyBox.addView(
+            PadPanels.iconRow(a, R.drawable.ic_plus, a.getString(R.string.md_new)) {
+                close()
+                onAddNote()
+            },
+        )
+        if (noteRefs.isNotEmpty()) {
+            bodyBox.addView(Ui.tip(a, a.getString(R.string.md_refs_elsewhere, noteRefs.joinToString("、"))))
+        }
     }
 
     /** 「已打开」小标（文档与画板两组共用） */

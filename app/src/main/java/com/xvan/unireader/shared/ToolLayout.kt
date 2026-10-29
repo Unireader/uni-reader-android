@@ -112,7 +112,7 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
         /** 默认收在 ⋯ 里的（原先就只在菜单里的那些） */
         val MENU_KEYS = listOf(
             "boardList", "night", "showPage", "twoFinger", "flingGuard", "writePause", "palmZone", "leftHand", "hLock", "relativeInk", "layers", "gotoPage",
-            "openDoc", "workspace", "hideBar", "conn",
+            "openDoc", "imageNote", "snipImage", "workspace", "trash", "backups", "hideBar", "conn",
         )
 
         fun fromJson(s: String?): ToolLayout? {

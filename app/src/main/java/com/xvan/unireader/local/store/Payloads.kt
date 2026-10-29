@@ -1,9 +1,13 @@
 package com.xvan.unireader.local.store
 
 import android.util.Log
+import com.xvan.unireader.shared.HL_BOX
+import com.xvan.unireader.shared.HL_FILL
+import com.xvan.unireader.shared.HL_UNDERLINE
 import com.xvan.unireader.shared.NOTE_ALWAYS
 import com.xvan.unireader.shared.NOTE_HOVER
 import com.xvan.unireader.shared.NOTE_TAP
+import com.xvan.unireader.shared.NoteCard
 import com.xvan.unireader.shared.Pen
 import com.xvan.unireader.shared.Pt3
 import com.xvan.unireader.shared.Stroke
@@ -371,6 +375,41 @@ class TextNotePayload(val raw: JSONObject) {
         return this
     }
 
+    /** 气泡卡片手动摆过的位置 / 大小（JSON 键 `card: {dx, dy, w?, h?}`，Mac `NoteCard`）；缺键 / 坏掉 → null */
+    val card: NoteCard? get() {
+        val o = raw.optJSONObject("card") ?: return null
+        if (!o.has("dx") || !o.has("dy")) return null
+        fun opt(k: String): Float? = if (o.has(k) && !o.isNull(k)) o.optDouble(k).toFloat().takeIf { !it.isNaN() } else null
+        val dx = opt("dx") ?: return null
+        val dy = opt("dy") ?: return null
+        return NoteCard(dx, dy, opt("w"), opt("h"))
+    }
+
+    /** 画法（JSON 键 `style`：Mac `HighlightStyle.rawValue`）；缺键 / 未知值 → 铺色（零迁移） */
+    val style: Int get() = when (raw.optString("style")) {
+        "underline" -> HL_UNDERLINE
+        "box" -> HL_BOX
+        else -> HL_FILL
+    }
+
+    fun withStyle(s: Int): TextNotePayload {
+        raw.put("style", styleKey(s))
+        return this
+    }
+
+    /** 显式铺色：null = 去掉 `color` 键（按类型色 / 通用暖黄，同 Mac 编码 nil 时不写这个键）；存基色 a=1 */
+    fun withColor(rgb: IntArray?): TextNotePayload {
+        if (rgb == null) raw.remove("color")
+        else raw.put("color", JSONObject().put("r", rgb[0]).put("g", rgb[1]).put("b", rgb[2]).put("a", 1.0))
+        return this
+    }
+
+    /** 笔记类型：null = 通用（去掉 `type_id` 键，同 Mac 编码 nil 时不写） */
+    fun withTypeId(id: String?): TextNotePayload {
+        if (id.isNullOrEmpty()) raw.remove("type_id") else raw.put("type_id", id)
+        return this
+    }
+
     /** 选区逐行归一化框 `[x, y, w, h]`（渲染精确高亮用） */
     fun rects(): List<DoubleArray> {
         val arr = raw.optJSONArray("rects") ?: return emptyList()
@@ -436,6 +475,13 @@ class TextNotePayload(val raw: JSONObject) {
             NOTE_ALWAYS -> "always"
             else -> "tap"
         }
+
+        /** 画法 → payload 里的串（Mac `HighlightStyle.rawValue`） */
+        fun styleKey(s: Int): String = when (s) {
+            HL_UNDERLINE -> "underline"
+            HL_BOX -> "box"
+            else -> "fill"
+        }
     }
 }
 
@@ -484,3 +530,28 @@ object OcrPagePayload {
 
 /** 供 [LibraryStore] 写入时统一取「现在」 */
 internal fun nowIso(): String = Iso.string(Instant.now())
+
+/**
+ * 图片笔记 payload（note kind=6，Mac `ImageNotePayload`）：`{image, caption, display, source, card?}`。
+ * 只读这几个键；写回时整份 JSON 原样留着别的键（见 `LibraryStore.updateImageNote`）。
+ */
+class ImageNotePayload(val raw: JSONObject) {
+    val image: String get() = raw.optString("image")
+    val caption: String get() = raw.optString("caption")
+    val display: Int get() = when (raw.optString("display")) {
+        "hover" -> NOTE_HOVER
+        "always" -> NOTE_ALWAYS
+        else -> NOTE_TAP
+    }
+    val source: JSONObject? get() = raw.optJSONObject("source")
+    val card: NoteCard? get() = TextNotePayload(raw).card
+
+    companion object {
+        fun parse(bytes: ByteArray): ImageNotePayload? = try {
+            ImageNotePayload(JSONObject(String(bytes, StandardCharsets.UTF_8))).takeIf { it.image.isNotEmpty() }
+        } catch (e: Exception) {
+            Log.w(InkPayload.TAG, "图片笔记 payload 解析失败（${bytes.size}B），跳过该条", e)
+            null
+        }
+    }
+}

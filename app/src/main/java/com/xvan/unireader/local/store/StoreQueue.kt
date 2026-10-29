@@ -101,13 +101,17 @@ class StoreQueue(private val store: LibraryStore) : Closeable {
      *
      * 置位 [closed] 之后新提交一律丢弃、已在飞的回调也不再送回主线程（界面已经没了）。
      */
-    override fun close() {
+    override fun close() = close(null)
+
+    /** 同 [close]；[then] 在库**真正关掉之后**回主线程调（还原备份要等连接全关了才能换库文件） */
+    fun close(then: (() -> Unit)?) {
         if (closed) return
         closed = true
         try {
             exec.execute {
                 runCatching { store.close() }.onFailure { Log.w(TAG, "关库失败", it) }
                 Log.i(TAG, "库已关，队列结束")
+                if (then != null) main.post(then)
             }
         } catch (e: RejectedExecutionException) {
             Log.w(TAG, "队列已停，关库没能排进去", e)

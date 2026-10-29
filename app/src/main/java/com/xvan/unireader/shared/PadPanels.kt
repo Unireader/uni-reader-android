@@ -55,7 +55,7 @@ object PadPanels {
         Color.argb((p.a * 255).roundToInt().coerceIn(0, 255), p.r, p.g, p.b)
 
     /** 一行控件的通用容器（横排、垂直居中、上下留一点气口） */
-    private fun row(a: Activity): LinearLayout = LinearLayout(a).apply {
+    internal fun row(a: Activity): LinearLayout = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(0, a.dp(4), 0, a.dp(4))

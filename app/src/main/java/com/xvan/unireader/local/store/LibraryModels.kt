@@ -140,6 +140,59 @@ object NoteKind {
      * **表结构一个字没改**，故不升 schema 版本——只是多一个 kind 值。
      */
     const val BOOKMARK = 5
+
+    /**
+     * 图片笔记（`../IMAGE-NOTE-PLAN.md §2.2`）：挂在「某页某处」、正文是一张图（`image` 表 + `Images/<sha>.<ext>`）。
+     * payload = `{image, caption, display, source, card?}`；PDF 节选的 anchor = 框出来的那块，导入的 = 点锚。
+     */
+    const val IMAGE = 6
+}
+
+/**
+ * `md_doc` 一行（v15，Mac `LibMarkdownDoc`）：内建 `Notes/` 源的**扫描缓存 + 记「上次打开」**，以文件为准。
+ * `relPath` 是源内相对路径（`数学/极限.md`，不带 `Notes/`），`title` = 文件名去扩展名。
+ */
+data class LibMdDoc(
+    val id: String,
+    val title: String,
+    val relPath: String,
+    val createdAt: String,
+    val updatedAt: String,
+    val lastOpenedAt: String,
+)
+
+/** `image` 表一行（v13，Mac `LibImage`）：图片本体按内容寻址，`orphanedAt` 非空 = 没人引用了（待删除） */
+data class LibImage(
+    val sha256: String,
+    val ext: String,
+    val width: Int,
+    val height: Int,
+    val bytes: Long,
+    val createdAt: String,
+    val orphanedAt: String?,
+)
+
+/**
+ * 一条图片笔记（note kind=6，Mac `ImageNote`）。`sourceKind` = `"pdf"`（从页面上框出来的，带页 / 框 / 跨几页）
+ * 或 `"file"`（外部导入，带原文件名，纯展示）。
+ */
+data class LibImageNote(
+    val id: String,
+    val page: Int,
+    /** 页内归一化 [x, y, w, h]；导入的 w = h = 0（点锚） */
+    val anchor: FloatArray,
+    val image: String,
+    val caption: String,
+    val display: Int,
+    val sourceKind: String,
+    val sourcePage: Int,
+    val sourceRect: FloatArray?,
+    val sourcePages: Int,
+    val sourceName: String,
+    val card: com.xvan.unireader.shared.NoteCard?,
+) {
+    /** 有框（PDF 节选）→ 图钉落在框右上角外侧；点锚 → 落在锚点（Mac `imagePinCenter`） */
+    val boxed: Boolean get() = anchor[2] > 0f || anchor[3] > 0f
 }
 
 /**
@@ -320,6 +373,45 @@ data class LibInkLayer(
 fun List<LibInkLayer>.toUiLayers(): List<Layer> = map {
     val rgb = Palette.rgb(it.colorKey)
     Layer(rgb[0], rgb[1], rgb[2], it.visible, it.name)
+}
+
+/**
+ * 编辑器改出来的「这条笔记怎么标」：类型（null = 通用）+ 显式铺色（null = 跟类型色）+ 画法。
+ * 只有模式1 的完整编辑器给它；老路径传 null = 这三样原样不动（见 `LibraryStore.upsertTextNote`）。
+ */
+class NoteMarks(val typeId: String?, val color: IntArray?, val style: Int)
+
+/**
+ * 工作区自定义的笔记类型（Mac `NoteType`）：落 `meta(key='note_types')` 的 JSON 数组，
+ * 键 `id` / `name` / `color_key` / `icon_name`（snake_case，跨平台契约）。「通用」是内置兜底，
+ * **不在这个列表里、不落库**（Mac `NoteType.generalID` = 全 0）。
+ *
+ * `id` 原样保留读到的大小写（Mac 写大写 UUID），比较一律 `equals(ignoreCase = true)`；
+ * 本端新建的一律大写（Mac 按 `UUID.uuidString` 写回，小写会对不上）。
+ */
+data class NoteTypeDef(val id: String, val name: String, val colorKey: String, val iconName: String) {
+    val rgb: IntArray get() = Palette.rgb(colorKey)
+
+    companion object {
+        const val GENERAL_ID = "00000000-0000-0000-0000-000000000000"
+
+        /** 图标候选（Mac `NoteType.iconCandidates` 逐项同序）；新建类型默认取第一个 */
+        val ICONS = listOf(
+            "note.text", "exclamationmark.triangle", "questionmark.circle", "bookmark",
+            "flag", "star", "play.rectangle", "lightbulb",
+            "flame", "checkmark.circle", "xmark.octagon", "quote.bubble",
+            "book", "tag", "pencil.line", "eye",
+        )
+
+        /** 合法化图标名：候选集外回落通用图标（同 Mac `NoteType.icon`） */
+        fun icon(raw: String): String = if (raw in ICONS) raw else ICONS[0]
+
+        /** typeId → 类型；null / 通用 id / 找不到 → null（= 通用），同 Mac `NoteType.resolve` */
+        fun resolve(typeId: String?, types: List<NoteTypeDef>): NoteTypeDef? {
+            if (typeId.isNullOrEmpty() || typeId == GENERAL_ID) return null
+            return types.firstOrNull { it.id.equals(typeId, ignoreCase = true) }
+        }
+    }
 }
 
 /**

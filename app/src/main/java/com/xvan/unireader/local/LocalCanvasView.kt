@@ -7,14 +7,24 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.util.Log
+import com.xvan.unireader.R
+import com.xvan.unireader.local.store.LibImage
+import com.xvan.unireader.local.store.LibImageNote
 import com.xvan.unireader.local.store.LibInkLayer
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteAnchor
+import com.xvan.unireader.local.store.NoteMarks
 import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.shared.CLIP_CUT
 import com.xvan.unireader.shared.CLIP_PASTE
+import com.xvan.unireader.shared.Bg
 import com.xvan.unireader.shared.CanvasMargin
+import com.xvan.unireader.shared.HL_FILL
 import com.xvan.unireader.shared.InkEdit
+import com.xvan.unireader.shared.NOTE_ALWAYS
+import com.xvan.unireader.shared.NOTE_TAP
+import com.xvan.unireader.shared.NoteBubbleGeom
+import com.xvan.unireader.shared.NoteBubbleText
 import com.xvan.unireader.shared.OcrWatermark
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PageCanvasView
@@ -163,7 +173,7 @@ class LocalCanvasView @JvmOverloads constructor(
         val pts = ArrayList(pending)
         val page = pendingPage
         val layer = activeLayerId
-        val id = UUID.randomUUID().toString()
+        val id = UUID.randomUUID().toString().uppercase()
         pending.clear()
         pendingPen = null
         // 乐观落地：这一笔立刻并入 strokes（同擦除/框选移动既有的乐观预览套路），不等落库回读。
@@ -242,7 +252,7 @@ class LocalCanvasView @JvmOverloads constructor(
 
     private fun inkSnapshot(s: LibraryStore) = InkSnapshot(
         s.strokes(documentId),
-        s.inkLayers(documentId).filter { !it.visible }.map { it.id }.toSet(),
+        s.inkLayers(documentId).filter { !it.visible }.map { it.id.uppercase() }.toSet(),
     )
 
     private fun noteSnapshot(s: LibraryStore) =
@@ -259,7 +269,8 @@ class LocalCanvasView @JvmOverloads constructor(
      * 笔迹和图层可见性是和页尺寸表一起在后台读出来的（§9.5——首屏不能有读库 I/O）。
      */
     fun applyStrokes(all: List<Stroke>, hiddenLayerIds: Set<String>) {
-        val shown = if (hiddenLayerIds.isEmpty()) all else all.filter { it.layerId !in hiddenLayerIds }
+        // 不分大小写比（隐藏集已是大写）：Mac 写的 layerId 是大写，安卓老版本建的图层 id 是小写
+        val shown = if (hiddenLayerIds.isEmpty()) all else all.filter { it.layerId.uppercase() !in hiddenLayerIds }
         // 「笔迹少了几笔」这类问题不打点就只能靠猜：可见/总数分开记，一眼看出是没读到还是被图层滤掉了
         Log.i(TAG, "回推笔迹 可见=${shown.size}/${all.size} 隐藏图层=${hiddenLayerIds.size}")
         setStrokes(shown)
@@ -274,25 +285,39 @@ class LocalCanvasView @JvmOverloads constructor(
     //    再实现一套 id 级增量便宜得多；
     //  · 恢复直接走既有的 `reconcileStrokes`——它本来就是「把库对齐到这份期望状态」的（擦除在用），
     //    连带「隐藏图层一条都不碰」的规矩也一起继承了（快照取的正是画布上可见那些）。
-    // **只管笔迹**：文字注解的增删改不进这条栈（模式1 的注解走另一套读改写路径），
-    // 与 Mac 端「注解也可撤」有差距，记在 `../TODO.md`。
+    // **注解也进这条栈**（2026-10-29，对齐 Mac `InkPatch.notes` / `.images`）：文字笔记、高亮、图片笔记的库行
+    // 整行拍一份（见 [UndoStep.rows]）。拍的时机是**在库队列上、紧挨着那次写之前**——队列先进先出，
+    // 所以拍到的一定是「动手之前」；恢复也在队列上做，读到的永远是拍好了的那份。
 
-    /** 每步**之前**的可见笔迹整份。深度够用即可——再深也只是让很久以前那一步可撤。 */
-    private val undoStack = ArrayDeque<List<Stroke>>()
-    private val redoStack = ArrayDeque<List<Stroke>>()
+    /**
+     * 一步撤销：动手之前的可见笔迹整份（null = 这一步没动笔迹）+ 注解行（[notes] 为真时由库队列补上）。
+     */
+    private class UndoStep(val strokes: List<Stroke>?, val notes: Boolean) {
+        @Volatile var rows: List<com.xvan.unireader.local.store.LibNote>? = null
+    }
+
+    /** 每步**之前**的状态。深度够用即可——再深也只是让很久以前那一步可撤。 */
+    private val undoStack = ArrayDeque<UndoStep>()
+    private val redoStack = ArrayDeque<UndoStep>()
 
     /**
      * 编辑**动手之前**叫一次：把现状压进撤销栈并作废重做链（标准语义）。
-     * 落笔/擦除/框选移动/框选缩放/剪切/粘贴六处调用，一次拖动只压一次（擦除靠 [onEraseBegin]）。
+     * 笔迹：落笔/擦除/框选移动/框选缩放/剪切/粘贴六处调用，一次拖动只压一次（擦除靠 [onEraseBegin]）。
+     * 注解：增删改各处调 [pushNoteUndo]；框选移动 / 缩放两样都动（注解跟着笔迹一起挪）。
      */
-    private fun pushUndo() {
-        undoStack.addLast(ArrayList(strokes))
+    private fun pushUndo(ink: Boolean = true, notes: Boolean = false) {
+        val step = UndoStep(if (ink) ArrayList(strokes) else null, notes)
+        if (notes) store?.submit("记撤销：注解") { s -> step.rows = s.undoNoteRows(documentId) }
+        undoStack.addLast(step)
         while (undoStack.size > UNDO_DEPTH) undoStack.removeFirst()
         redoStack.clear()
     }
 
+    /** 文字笔记 / 高亮 / 图片笔记要改了：先压一步（宿主建图片笔记也走这里） */
+    fun pushNoteUndo() = pushUndo(ink = false, notes = true)
+
     /**
-     * 撤销/重做一步：把快照当作**期望状态**交给库对齐（同擦除那条路），再按库里的结果回推。
+     * 撤销/重做一步：笔迹快照当作**期望状态**交给库对齐（同擦除那条路），注解行整份恢复，再按库里的结果回推。
      * 不做乐观预览——一步要么整个成立要么不动，抢先改了再被真源纠正是最难看的一种闪烁。
      */
     override fun onUndoRequested(redo: Boolean) {
@@ -302,19 +327,37 @@ class LocalCanvasView @JvmOverloads constructor(
             Log.i(TAG, if (redo) "无可重做" else "无可撤销")
             return
         }
-        (if (redo) undoStack else redoStack).addLast(ArrayList(strokes))
-        val expect = target.filter { it.id.isNotEmpty() }.groupBy { it.id }
+        // 反方向那一步：同样的范围，拍「此刻」（注解行在下面的队列任务里、恢复之前拍）
+        val back = UndoStep(if (target.strokes != null) ArrayList(strokes) else null, target.notes)
+        (if (redo) undoStack else redoStack).addLast(back)
         // 快照里可能有「粘贴出来还没落库」的空 id 笔迹（插入作业排在队列里）——它们不进对账，
         // 由那条插入作业自己收尾；这里只对齐已经有身份的那些。
-        Log.i(TAG, "${if (redo) "重做" else "撤销"}：目标 ${target.size} 条")
+        val expect = target.strokes?.filter { it.id.isNotEmpty() }
+        val doc = documentId
+        Log.i(TAG, "${if (redo) "重做" else "撤销"}：笔迹 ${target.strokes?.size ?: "不动"} 条，注解 ${if (target.notes) "恢复" else "不动"}")
         q.submit(
             "撤销落库",
             { s ->
-                runCatching { s.reconcileStrokes(documentId, expect) }
-                    .onFailure { Log.e(TAG, "撤销写库失败，回退到库里的状态", it) }
-                inkSnapshot(s)
+                if (expect != null) {
+                    // 不走擦除那条 reconcile：它插不回整条擦掉的、也认不出平移过的（点数没变）
+                    runCatching { s.restoreStrokes(doc, expect) }
+                        .onSuccess { Log.i(TAG, "笔迹恢复：删 ${it.deleted} 改 ${it.updated} 插回 ${it.inserted}") }
+                        .onFailure { Log.e(TAG, "撤销写库失败，回退到库里的状态", it) }
+                }
+                if (target.notes) {
+                    back.rows = s.undoNoteRows(doc)
+                    target.rows?.let { rows ->
+                        runCatching { s.restoreUndoNoteRows(doc, rows) }
+                            .onSuccess { Log.i(TAG, "注解恢复 $it 行") }
+                            .onFailure { Log.e(TAG, "注解恢复失败", it) }
+                    }
+                }
+                Pair(if (expect != null) inkSnapshot(s) else null, if (target.notes) noteSnapshot(s) else null)
             },
-            { snap -> applyStrokes(snap.all, snap.hidden) },
+            { (ink, notes) ->
+                ink?.let { applyStrokes(it.all, it.hidden) }
+                notes?.let { applyNotes(it.notes, it.fills); reloadImageNotes() }
+            },
         )
     }
 
@@ -331,7 +374,7 @@ class LocalCanvasView @JvmOverloads constructor(
             if (pasted.isEmpty()) { Log.i(TAG, "粘贴：剪贴板空"); return }
             pushUndo()
             // 乐观落地 + 逐条插库（同 onInkEnd 的分工：id 在主线程先生成，作业只管写）
-            val withIds = pasted.map { it.copy(id = UUID.randomUUID().toString()) }
+            val withIds = pasted.map { it.copy(id = UUID.randomUUID().toString().uppercase()) }
             strokes.addAll(withIds)
             refreshCanvasMargin()
             invalidate()
@@ -418,7 +461,7 @@ class LocalCanvasView @JvmOverloads constructor(
     override fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {
         val q = store ?: return
         if (dx == 0f && dy == 0f) return
-        pushUndo()
+        pushUndo(ink = true, notes = true)   // 选中集里的文字注解也跟着挪
         // 画板模式下页边笔迹可以在页外平移（队列线程用，先在主线程取好）。用**硬上限**而非当前那档
         // 软边界：理由见 [cmarginMax]（拿旧档位卡着 = 撞边界被逐点 clamp 压扁）。
         val xm = cmarginMax()
@@ -485,8 +528,8 @@ class LocalCanvasView @JvmOverloads constructor(
         page: Int, box: FloatArray, ax: Float, ay: Float, sx: Float, sy: Float, poly: FloatArray,
     ) {
         val q = store ?: return
-        pushUndo()
         if (sx <= 0f || sy <= 0f || (sx == 1f && sy == 1f)) return
+        pushUndo(ink = true, notes = true)
         // 缩放后的新点集/新笔宽在主线程一次算好再定格（同移动的理由：`Stroke` 不可变可跨线程）
         val hits = strokes.filter { st ->
             st.id.isNotEmpty() && st.page.toInt() == page &&
@@ -554,6 +597,7 @@ class LocalCanvasView @JvmOverloads constructor(
      */
     override fun onNoteUpsert(id: String, page: Int, nx: Float, ny: Float, text: String, display: Int) {
         val q = store ?: return
+        pushNoteUndo()
         q.submit(
             "文字注解落库 page=$page",
             { s ->
@@ -566,8 +610,79 @@ class LocalCanvasView @JvmOverloads constructor(
         )
     }
 
+    /**
+     * 模式1 完整编辑器的保存：正文 / 展开方式 + 类型 / 显式颜色 / 画法（同 Mac `updateNote` / `commitNote`）。
+     * 乐观先改内存那条（图钉立刻换类型色），落库后整表重读回推为准。
+     */
+    fun upsertNoteFull(id: String, page: Int, nx: Float, ny: Float, text: String, display: Int, marks: NoteMarks) {
+        val i = notes.indexOfFirst { it.id == id }
+        val old = notes.getOrNull(i)
+        val rec = (old ?: TextNote(id, page.toLong(), nx, ny, text)).copy(
+            text = text, display = display, typeId = marks.typeId, color = marks.color, style = marks.style,
+        )
+        if (i >= 0) notes[i] = rec else notes.add(rec)
+        invalidate()
+        val q = store ?: return
+        pushNoteUndo()
+        q.submit(
+            "文字注解落库 page=$page",
+            { s ->
+                runCatching { s.upsertTextNote(documentId, id, page, nx, ny, text, display, marks) }
+                    .onSuccess { Log.i(TAG, "文字注解落库 page=$page id=${id.take(8)} 字数=${text.length} 类型=${marks.typeId?.take(8)}") }
+                    .onFailure { Log.e(TAG, "文字注解写库失败", it) }
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
+    }
+
+    /** 高亮换色 / 换画法（null 的那一样不动），写完重读 */
+    fun updateHighlight(id: String, rgb: IntArray?, style: Int?) {
+        val q = store ?: return
+        pushNoteUndo()
+        q.submit(
+            "高亮改样式",
+            { s ->
+                runCatching { s.updateHighlight(id, rgb, style) }.onFailure { Log.e(TAG, "高亮改样式失败", it) }
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
+    }
+
+    fun deleteHighlight(id: String) {
+        val q = store ?: return
+        pushNoteUndo()
+        q.submit(
+            "删高亮",
+            { s ->
+                runCatching { s.deleteNote(id) }.onFailure { Log.e(TAG, "删高亮失败", it) }
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
+    }
+
+    /** 高亮转文字笔记：编辑器按了保存才调（两段式，同 Mac `beginNoteFromHighlight`） */
+    fun highlightToNote(highlightId: String, text: String, display: Int, marks: NoteMarks) {
+        val q = store ?: return
+        pushNoteUndo()
+        val id = UUID.randomUUID().toString().uppercase()
+        q.submit(
+            "高亮转笔记",
+            { s ->
+                runCatching { s.highlightToNote(highlightId, id, text, display, marks) }
+                    .onSuccess { ok -> Log.i(TAG, "高亮转笔记 ${highlightId.take(8)} → ${id.take(8)} ok=$ok") }
+                    .onFailure { Log.e(TAG, "高亮转笔记失败", it) }
+                noteSnapshot(s)
+            },
+            { applyNotes(it.notes, it.fills) },
+        )
+    }
+
     override fun onNoteDelete(id: String, page: Int, nx: Float, ny: Float) {
         val q = store ?: return
+        pushNoteUndo()
         q.submit(
             "文字注解删除 page=$page",
             { s ->
@@ -615,7 +730,7 @@ class LocalCanvasView @JvmOverloads constructor(
      * 把当前选区落成一条**高亮**（kind=3）。跨页选区**逐页各落一条**（每页自己的行框），
      * 与 Mac `addHighlight` 完全同构。
      */
-    fun commitHighlight(rgb: IntArray) {
+    fun commitHighlight(rgb: IntArray, style: Int = HL_FILL) {
         val sel = textSelection ?: return
         val q = store ?: return
         val doc = documentId
@@ -627,12 +742,13 @@ class LocalCanvasView @JvmOverloads constructor(
         if (items.isEmpty()) return
         val quote = sel.text
         clearTextSelection()
+        pushNoteUndo()
         q.submit(
             "高亮落库 ${items.size} 页",
             { s ->
                 s.transaction {
                     for ((page, box, rects) in items) {
-                        s.insertHighlight(doc, UUID.randomUUID().toString(), page, box, quote, rects, rgb)
+                        s.insertHighlight(doc, UUID.randomUUID().toString().uppercase(), page, box, quote, rects, rgb, style)
                     }
                 }
                 Log.i(TAG, "高亮落库 ${items.size} 页，引文 ${quote.length} 字")
@@ -673,15 +789,19 @@ class LocalCanvasView @JvmOverloads constructor(
     }
 
     /** 编辑器保存：把那条选区注解真的落进 `note`（kind=0，带 quote/rects） */
-    fun saveSelectionNote(p: PendingNote, text: String, display: Int) {
+    fun saveSelectionNote(p: PendingNote, text: String, display: Int, marks: NoteMarks? = null) {
         val q = store ?: return
+        pushNoteUndo()
         val doc = documentId
-        val id = UUID.randomUUID().toString()
+        val id = UUID.randomUUID().toString().uppercase()
         q.submit(
             "选区注解落库 page=${p.page}",
             { s ->
                 runCatching {
-                    s.insertSelectionNote(doc, id, p.page, p.anchor, p.quote, p.rects, text, display = display)
+                    s.insertSelectionNote(
+                        doc, id, p.page, p.anchor, p.quote, p.rects, text,
+                        marks?.typeId, display, marks?.color, marks?.style ?: HL_FILL,
+                    )
                 }
                     .onSuccess { Log.i(TAG, "选区注解落库 page=${p.page} 引文=${p.quote.length}字 正文=${text.length}字") }
                     .onFailure { Log.e(TAG, "选区注解写库失败", it) }
@@ -746,10 +866,39 @@ class LocalCanvasView @JvmOverloads constructor(
     }
 
     override fun onFingerTap(x: Float, y: Float): Boolean {
+        if (tapImageNote(x, y)) return true
         val pin = pinAt(x, y) ?: return false
         onPinTap?.invoke(pin.padId)
         return true
     }
+
+    /** 手指点中一条高亮（宿主弹「换色 / 换画法 / 转笔记 / 删除」，同 Mac `showHighlightPopover`） */
+    var onHighlightTap: ((TextFill) -> Unit)? = null
+
+    /**
+     * 点中高亮：落点在它某一行框里（上下各放宽 3dp，行框本身很矮）。有划字选区时不接——
+     * 那时单击的意思是「收起选区」（同 Mac）。后画的压在上面，倒着找。
+     */
+    override fun onFingerTapLate(x: Float, y: Float): Boolean {
+        if (onHighlightTap == null || textSelection?.isEmpty == false) return false
+        val loc = locate(x, y) ?: return false
+        val slop = dp(3f) / max(1f, dispH.getOrElse(loc.page) { 1f })
+        for (i in fills.indices.reversed()) {
+            val f = fills[i]
+            if (f.highlightId.isEmpty() || f.page.toInt() != loc.page) continue
+            val hit = f.rects.any { r ->
+                loc.nx >= r[0] && loc.nx <= r[0] + r[2] && loc.ny >= r[1] - slop && loc.ny <= r[1] + r[3] + slop
+            }
+            if (hit) {
+                onHighlightTap?.invoke(f)
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 当前内存里的那条文字笔记（编辑器要它的类型 / 颜色 / 画法 / 原文） */
+    fun noteFor(id: String): TextNote? = notes.firstOrNull { it.id == id }
 
     // ---------- 图钉拖动（同页内挪锚点：本地乐观移动，松手落库，重读回推为权威） ----------
 
@@ -795,6 +944,8 @@ class LocalCanvasView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        drawImageNotes(canvas)
+        drawSnip(canvas)
         if (pins.isEmpty()) return
         val r = dp(pinRadiusDp())
         val corner = r * 0.34f
@@ -821,4 +972,251 @@ class LocalCanvasView @JvmOverloads constructor(
 
     private val pinPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pinRect = RectF()
+
+    // ---------- 图片笔记（note kind=6，`../IMAGE-NOTE-PLAN.md §5`；模式1 专属：线格式里没有它） ----------
+    //
+    // 同文字笔记一套壳：图钉 + 气泡 + 三种展开方式。气泡里是缩略图 + 说明（最多 3 行），**没有铅笔**
+    // （压在图上很突兀，同 Mac）：点缩略图看大图，看大图那页里再进编辑 / 删除。
+
+    /** 工作区文件夹（读 `Images/` 用）；没设 = 图片一律当作不在 */
+    var workspace: java.io.File? = null
+
+    private var imageNotes = listOf<LibImageNote>()
+    private var imageInfo = mapOf<String, LibImage>()
+
+    /** 点图片图钉（非「点击展开」的那两种）→ 进编辑器 */
+    var onImageNoteEdit: ((LibImageNote) -> Unit)? = null
+    /** 点气泡里的缩略图 → 看大图 */
+    var onImageNoteView: ((LibImageNote) -> Unit)? = null
+
+    /** 重读这篇的图片笔记与它们指向的图（尺寸 / 扩展名）并重画 */
+    fun reloadImageNotes() {
+        val q = store ?: return
+        q.submit(
+            "重读图片笔记",
+            { s -> s.imageNotes(documentId) to s.images().associateBy { it.sha256 } },
+            { (list, info) ->
+                imageNotes = list
+                imageInfo = info
+                invalidate()
+            },
+        )
+    }
+
+    fun imageNoteFor(id: String): LibImageNote? = imageNotes.firstOrNull { it.id == id }
+
+    fun updateImageNote(id: String, caption: String, display: Int) {
+        val q = store ?: return
+        pushNoteUndo()
+        q.submit("改图片笔记", { s -> runCatching { s.updateImageNote(id, caption, display) } }, { reloadImageNotes() })
+    }
+
+    /** 删一条图片笔记（库层顺带对那张图对账：没人引用了进待删除，30 天后清掉） */
+    fun deleteImageNote(id: String) {
+        val q = store ?: return
+        noteExpanded.remove(id)
+        pushNoteUndo()
+        q.submit("删图片笔记", { s -> runCatching { s.deleteImageNote(id) } }, { reloadImageNotes() })
+    }
+
+    /** 图钉中心（Mac `imagePinCenter`：有框落在框右上角外侧 +9/+7，点锚落在锚点；钳进页内 12/10） */
+    private fun imagePinPos(n: LibImageNote, out: FloatArray): Boolean {
+        val page = n.page
+        if (page !in 0 until pageCount) return false
+        val a = n.anchor
+        var x = if (n.boxed) viewX(page, a[0] + a[2]) + dp(9f) else viewX(page, a[0])
+        var y = if (n.boxed) viewY(page, a[1]) + dp(7f) else viewY(page, a[1])
+        val left = contentLeft()
+        val right = left + pw()
+        val top = barH + offY[page] - scrollY
+        val bottom = top + dispH[page]
+        x = x.coerceIn(left + dp(12f), max(left + dp(12f), right - dp(12f)))
+        y = y.coerceIn(top + dp(10f), max(top + dp(10f), bottom - dp(10f)))
+        out[0] = x
+        out[1] = y
+        return true
+    }
+
+    private fun imageVisible(n: LibImageNote) = n.display == NOTE_ALWAYS || noteExpanded.contains(n.id)
+
+    private fun imageBox(n: LibImageNote): NoteBubbleGeom.ImageBox? {
+        if (!imageVisible(n)) return null
+        val pos = FloatArray(2)
+        if (!imagePinPos(n, pos)) return null
+        val page = n.page
+        val top = barH + offY[page] - scrollY
+        val info = imageInfo[n.image]
+        val missing = workspace?.let { ImageAssets.find(it, n.image, info?.ext) } == null
+        return NoteBubbleGeom.imageLayout(
+            pw(), pos[0], pos[1], dp(PadConst.PIN.R), contentLeft(), top, contentLeft() + pw(), top + dispH[page],
+            n.card, info?.width ?: 0, info?.height ?: 0, missing, n.caption.isNotEmpty(),
+        ) { cw, fs, lines -> NoteBubbleText.height(context, n.caption, cw, fs, lines) }
+    }
+
+    private val imagePinRgb = intArrayOf(163, 224, 204)   // Mac `ReaderMarkColors.imageMarker`（0.64, 0.88, 0.80）
+    private val imagePinIcon by lazy { androidx.core.content.ContextCompat.getDrawable(context, R.drawable.ic_image)?.mutate() }
+    private val thumbRect = RectF()
+    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+    private fun drawImageNotes(canvas: Canvas) {
+        if (imageNotes.isEmpty()) return
+        val pos = FloatArray(2)
+        val r = dp(PadConst.PIN.R)
+        for (n in imageNotes) {
+            val b = imageBox(n) ?: continue
+            val box = b.box
+            if (box.y > height || box.y + box.h < barH) continue
+            overlays.drawBubbleFrame(canvas, box)
+            thumbRect.set(b.tx, b.ty, b.tx + b.tw, b.ty + b.th)
+            canvas.save()
+            canvas.clipRect(box.x, box.y, box.x + box.w, box.y + box.h)
+            val bmp = thumb(n.image)
+            if (bmp != null) {
+                canvas.drawBitmap(bmp, null, thumbRect, thumbPaint)
+            } else {
+                // 图不在 / 还在解：淡底 + 图标占位
+                thumbPaint.color = Color.argb(20, 0, 0, 0)
+                canvas.drawRect(thumbRect, thumbPaint)
+                thumbPaint.color = Color.BLACK
+            }
+            if (n.caption.isNotEmpty()) {
+                val l = NoteBubbleText.layout(context, n.caption, box.contentW, box.fs, NoteBubbleGeom.IMG_CAPTION_LINES)
+                val cy = b.ty + b.th + box.fs * NoteBubbleGeom.IMG_CAPTION_GAP
+                NoteBubbleText.draw(canvas, l, box.x + box.pad, cy, box.fs, box.y + box.h - box.pad - cy)
+            }
+            canvas.restore()
+        }
+        for (n in imageNotes) {
+            if (!imagePinPos(n, pos)) continue
+            if (pos[1] < barH - r || pos[1] > height + r) continue
+            overlays.drawNoteMarker(canvas, pos[0], pos[1], r, imagePinRgb, imagePinIcon)
+        }
+    }
+
+    /** 点中图片笔记：先看展开着的气泡（看大图），再看图钉（展开 / 收起，或进编辑器） */
+    private fun tapImageNote(x: Float, y: Float): Boolean {
+        if (imageNotes.isEmpty()) return false
+        for (n in imageNotes.asReversed()) {
+            val b = imageBox(n)?.box ?: continue
+            if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+                onImageNoteView?.invoke(n)
+                return true
+            }
+        }
+        val pos = FloatArray(2)
+        val hot = maxOf(dp(PadConst.PIN.R) + dp(6f), dp(22f))
+        for (n in imageNotes.asReversed()) {
+            if (!imagePinPos(n, pos)) continue
+            if (abs(x - pos[0]) > hot || abs(y - pos[1]) > hot) continue
+            if (n.display == NOTE_TAP) {
+                if (!noteExpanded.remove(n.id)) noteExpanded.add(n.id)
+                invalidate()
+            } else {
+                onImageNoteEdit?.invoke(n)
+            }
+            return true
+        }
+        return false
+    }
+
+    /** 缩略图：后台解码（长边 ≤ 1024），解好了重画；同一张图多处用共享一份 */
+    private fun thumb(sha: String): android.graphics.Bitmap? {
+        thumbs.get(sha)?.let { return it }
+        val ws = workspace ?: return null
+        if (!thumbLoading.add(sha)) return null
+        val ext = imageInfo[sha]?.ext
+        Bg.submit("解图片笔记缩略图 ${sha.take(8)}") {
+            val bmp = ImageAssets.find(ws, sha, ext)?.let { ImageAssets.load(it, 1024) }
+            post {
+                thumbLoading.remove(sha)
+                if (bmp != null) { thumbs.put(sha, bmp); invalidate() }
+            }
+        }
+        return null
+    }
+
+    // ---------- 从页面上框一块存成图片笔记（PDF 节选，Mac ⌥⇧ 拖） ----------
+
+    private var snipDone: ((page: Int, rect: FloatArray) -> Unit)? = null
+    private var snipPage = -1
+    private val snipA = FloatArray(2)
+    private val snipB = FloatArray(2)
+    private var snipDragging = false
+    private val snipPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /** 进入「框一块」：下一次拖动（手指或笔）画矩形，松手交给 [done]（页 + 页内归一化框）。返回键 / [cancelSnip] 取消 */
+    fun beginSnip(done: (page: Int, rect: FloatArray) -> Unit) {
+        snipDone = done
+        snipDragging = false
+        invalidate()
+    }
+
+    fun cancelSnip() {
+        snipDone = null
+        snipDragging = false
+        invalidate()
+    }
+
+    val snipping: Boolean get() = snipDone != null
+
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        val done = snipDone ?: return super.onTouchEvent(e)
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                val loc = locate(e.x, e.y)
+                if (loc == null) { cancelSnip(); return true }
+                snipPage = loc.page
+                snipA[0] = loc.nx; snipA[1] = loc.ny
+                snipB[0] = loc.nx; snipB[1] = loc.ny
+                snipDragging = true
+            }
+            android.view.MotionEvent.ACTION_MOVE -> if (snipDragging) {
+                pageLocClamped(e.x, e.y, snipPage, snipB)
+                invalidate()
+            }
+            android.view.MotionEvent.ACTION_UP -> if (snipDragging) {
+                pageLocClamped(e.x, e.y, snipPage, snipB)
+                val x0 = minOf(snipA[0], snipB[0]).coerceIn(0f, 1f)
+                val y0 = minOf(snipA[1], snipB[1]).coerceIn(0f, 1f)
+                val x1 = maxOf(snipA[0], snipB[0]).coerceIn(0f, 1f)
+                val y1 = maxOf(snipA[1], snipB[1]).coerceIn(0f, 1f)
+                val page = snipPage
+                cancelSnip()
+                // 太小的一下当没框（误点）：屏上不到 12dp
+                if ((x1 - x0) * pw() >= dp(12f) && (y1 - y0) * dispH[page] >= dp(12f)) {
+                    done(page, floatArrayOf(x0, y0, x1 - x0, y1 - y0))
+                }
+            }
+            android.view.MotionEvent.ACTION_CANCEL -> cancelSnip()
+        }
+        return true
+    }
+
+    private fun drawSnip(canvas: Canvas) {
+        if (snipDone == null) return
+        // 框选中：整屏压一层淡灰，框出来的那块是透明的 + accent 描边（同 Mac 截取覆盖层）
+        snipPaint.style = Paint.Style.FILL
+        snipPaint.color = Color.argb(46, 0, 0, 0)
+        if (!snipDragging) { canvas.drawRect(0f, barH, width.toFloat(), height.toFloat(), snipPaint); return }
+        val l = viewX(snipPage, minOf(snipA[0], snipB[0]))
+        val r = viewX(snipPage, maxOf(snipA[0], snipB[0]))
+        val t = viewY(snipPage, minOf(snipA[1], snipB[1]))
+        val b = viewY(snipPage, maxOf(snipA[1], snipB[1]))
+        canvas.drawRect(0f, barH, width.toFloat(), t, snipPaint)
+        canvas.drawRect(0f, b, width.toFloat(), height.toFloat(), snipPaint)
+        canvas.drawRect(0f, t, l, b, snipPaint)
+        canvas.drawRect(r, t, width.toFloat(), b, snipPaint)
+        snipPaint.style = Paint.Style.STROKE
+        snipPaint.strokeWidth = dp(1.5f)
+        snipPaint.color = com.xvan.unireader.shared.Ui.accent(context)
+        canvas.drawRect(l, t, r, b, snipPaint)
+    }
+
+    private companion object {
+        /** 图片笔记缩略图（按字节数计，48MB；同一工作区的几十张图放得下） */
+        val thumbs = object : android.util.LruCache<String, android.graphics.Bitmap>(48 shl 20) {
+            override fun sizeOf(key: String, value: android.graphics.Bitmap) = value.byteCount
+        }
+        val thumbLoading = HashSet<String>()
+    }
 }
