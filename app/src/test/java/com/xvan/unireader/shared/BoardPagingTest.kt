@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 分页画板的布局 / 模板契约（`../BOARD-NOTE-PLAN.md §9.2~9.3`）。
+ * 分页画板的布局 / 模板契约（`../docs/BOARD-NOTE-PLAN.md §9.2~9.3`）。
  * 断言逐条对应 Mac `spike/board-store-test.swift` 里「BoardLayout / BoardTemplateGeometry / BoardTemplate」那几项。
  */
 class BoardPagingTest {

@@ -6,7 +6,7 @@ import java.net.URLEncoder
 import java.text.Normalizer
 
 /**
- * 工作区 Markdown 笔记的纯逻辑（`../MARKDOWN-NOTES-PLAN.md`，Mac `NoteTree` / `MarkdownLink` / `MarkdownImport` 的同款规则）：
+ * 工作区 Markdown 笔记的纯逻辑（`../docs/MARKDOWN-NOTES-PLAN.md`，Mac `NoteTree` / `MarkdownLink` / `MarkdownImport` 的同款规则）：
  * 扫 `<工作区>/Notes/`、建多级目录树、`[[…]]` 按名字解析、显示用的 Markdown 转换。
  *
  * 🔴 **任何自动维护都不改笔记正文**（红线 9）：这里的转换只产生**显示用的副本**，写回文件的永远是用户自己编辑的原文。

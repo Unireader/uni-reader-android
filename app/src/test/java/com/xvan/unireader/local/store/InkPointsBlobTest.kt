@@ -9,7 +9,7 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 笔迹点集二进制（schema v18，`../BINARY-INK-PLAN.md §2`）的跨端一致性：逐条读主仓库的
+ * 笔迹点集二进制（schema v18，`../docs/BINARY-INK-PLAN.md §2`）的跨端一致性：逐条读主仓库的
  * `spike/ink-blob-vectors.txt`（Mac `spike/ink-blob-test.swift` 读同一份），编码逐字节相同、解码逐位相同。
  * 两端差一个字节，Mac 写的笔迹在平板上就是另一副样子（或解不出、退回 JSON）。
  */

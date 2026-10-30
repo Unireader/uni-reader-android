@@ -4,7 +4,7 @@ import com.xvan.unireader.local.store.MirrorFp
 import java.io.ByteArrayOutputStream
 
 /**
- * 连接服务器的同步线格式（`../PROTOCOL.md §9`）：push / pull 的 HTTP 请求体与响应体。
+ * 连接服务器的同步线格式（`../docs/PROTOCOL.md §9`）：push / pull 的 HTTP 请求体与响应体。
  *
  * 🔴 **跨端契约**：与 Mac / 服务器共用的 `../Sources/Sync/SyncWire.swift` 字节一致。跨端向量
  * `../spike/sync-wire-vectors.txt`（Mac `spike/sync-wire-test.swift` 生成），本端 `SyncWireTest` 逐字节比对。

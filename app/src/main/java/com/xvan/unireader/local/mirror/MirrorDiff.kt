@@ -14,7 +14,7 @@ typealias MirrorBase = Map<String, Map<String, String>>
 
 /**
  * 离线镜像的**三方合并**：算出「哪些行要写进源盘、哪些要拉回镜像、哪些冲突」。
- * 方案 `../OFFLINE-MIRROR-PLAN.md` §3.1 的判定表 + §6 的冲突规则。
+ * 方案 `../docs/OFFLINE-MIRROR-PLAN.md` §3.1 的判定表 + §6 的冲突规则。
  *
  * 🔴 **本文件只算不写。** 应用合并是 M5 的事（单事务 + 合并前备份源库）。
  * 分开的理由不是洁癖：干跑预览是这个功能唯一的安全闸，它必须能在**完全不碰任何库**的前提下
@@ -105,7 +105,7 @@ object MirrorDiff {
         val ocrToSource: List<OcrKey> = emptyList(),
         val ocrToMirror: List<OcrKey> = emptyList(),
         /**
-         * 扫描页对齐参数（`page_align`，`../SCAN-ALIGN-PLAN.md §5`）要整行覆盖到对面的那些（content_hash）：
+         * 扫描页对齐参数（`page_align`，`../docs/SCAN-ALIGN-PLAN.md §5`）要整行覆盖到对面的那些（content_hash）：
          * 按内容 hash 对，一侧缺 → 补；两侧 `updated_at` 不同 → 较新的覆盖较旧的。不进基线、删除不传播。
          * ⚠️ 与 OCR 不同，它**改的是用户设置**（开关）而且决定页面坐标，所以写入硬盘那个方向
          * 与普通改动一样**要人工确认**（计入 [pendingToSource]、挡 [isCleanPushToMirror]）。
@@ -142,7 +142,7 @@ object MirrorDiff {
     enum class RowState { ADDED, DELETED, UNCHANGED, MODIFIED, ABSENT }
 
     /**
-     * `page_align` 那条通道（`../SCAN-ALIGN-PLAN.md §5`）：纯函数，两侧 `content_hash → updated_at`，
+     * `page_align` 那条通道（`../docs/SCAN-ALIGN-PLAN.md §5`）：纯函数，两侧 `content_hash → updated_at`，
      * 返回（写入硬盘的，拉回本机的），各自按 hash 排好序。
      *
      * `updated_at` **直接比字符串**（同 [resolveBoth] 的口径：两端同一 ISO 格式，字典序即时间序）。

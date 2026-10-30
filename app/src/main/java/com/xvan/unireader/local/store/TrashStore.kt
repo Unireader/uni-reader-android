@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets
 import org.json.JSONObject
 
 /**
- * 回收站的 SQLite 一侧（`../BACKUP-PLAN.md §2`，Mac `Sources/Store/TrashStore.swift` 的同款产物）：
+ * 回收站的 SQLite 一侧（`../docs/BACKUP-PLAN.md §2`，Mac `Sources/Store/TrashStore.swift` 的同款产物）：
  * 把「要删掉的那些行」原样搬进一个独立的小库（`snapshot.sqlite`），以及把它们搬回来。
  *
  * 🔴 **schema 一个字不改**：删除对三端仍是硬删；回收站纯粹是删之前多存一份快照文件。

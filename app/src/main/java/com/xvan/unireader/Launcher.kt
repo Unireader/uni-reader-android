@@ -82,7 +82,7 @@ class Launcher : Activity() {
     private lateinit var permBtn: TextView
     private lateinit var permCard: LinearLayout
     private lateinit var recentBox: LinearLayout
-    /** 每台连上的服务器一段（`../SERVER-MODE-PLAN.md §2`，2026-10-29 用户定放在本页、最近打开下面） */
+    /** 每台连上的服务器一段（`../docs/SERVER-MODE-PLAN.md §2`，2026-10-29 用户定放在本页、最近打开下面） */
     private lateinit var serverBox: LinearLayout
     private lateinit var scanBox: LinearLayout
     private lateinit var scanBtn: TextView
@@ -290,7 +290,7 @@ class Launcher : Activity() {
         return col
     }
 
-    // ---------- 局域网发现（MacDiscovery，../PROTOCOL.md §8） ----------
+    // ---------- 局域网发现（MacDiscovery，../docs/PROTOCOL.md §8） ----------
 
     private var resumed = false
     private var discovery: MacDiscovery? = null
@@ -485,7 +485,7 @@ class Launcher : Activity() {
         }
     }
 
-    // ---------- 服务器（../SERVER-MODE-PLAN.md §2「安卓模式1」） ----------
+    // ---------- 服务器（../docs/SERVER-MODE-PLAN.md §2「安卓模式1」） ----------
 
     /** 只认最后一次 [refreshServers] 发出去的那批查询（onResume 连着触发时别让旧结果盖掉新的） */
     private var serverToken: Any? = null

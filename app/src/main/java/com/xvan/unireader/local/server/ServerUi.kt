@@ -29,7 +29,7 @@ import java.util.UUID
 import javax.net.ssl.SSLException
 
 /**
- * 连接服务器的几块界面（方案 `../SERVER-MODE-PLAN.md §2「安卓模式1」`）：连接面板、从服务器打开、上传、变回本地、下载 PDF、
+ * 连接服务器的几块界面（方案 `../docs/SERVER-MODE-PLAN.md §2「安卓模式1」`）：连接面板、从服务器打开、上传、变回本地、下载 PDF、
  * 状态一行字。启动页 / 书库页 / 阅读界面都从这里调，界面只用 [Sheet] 与 [Ui]（同其它弹层）。
  */
 object ServerUi {

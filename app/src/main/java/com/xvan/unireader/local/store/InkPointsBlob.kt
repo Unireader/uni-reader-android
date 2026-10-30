@@ -5,7 +5,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * 笔迹点集的二进制形态（schema v18，`../BINARY-INK-PLAN.md §2`）：`note.points` / `board_item.points` 列。
+ * 笔迹点集的二进制形态（schema v18，`../docs/BINARY-INK-PLAN.md §2`）：`note.points` / `board_item.points` 列。
  *
  * 格式：`u8 版本 = 1` + n ×（`f32 x` `f32 y` `f32 z`），**小端**；n = (长度 − 1) / 12。
  * 坐标系与 payload 里的 JSON `points` 完全相同，只换编码。

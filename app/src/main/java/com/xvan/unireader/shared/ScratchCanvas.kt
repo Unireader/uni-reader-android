@@ -116,7 +116,7 @@ class ScratchCanvas @JvmOverloads constructor(
     /**
      * 一次框选移动 / 缩放已经在本地生效（画布坐标）。[poly] 是**变换前**的选区多边形（真源拿它复判命中），
      * [scale] = `[ax, ay, sx, sy]`（缩放）或 null（移动，用 [dx]/[dy]）；[before]/[after] 是被改的那几条的新旧版本
-     * （id 不变）。模式1 据此落库，模式2 发 `lassoMove` / `lassoScale`（`../PROTOCOL.md §4.4`）。
+     * （id 不变）。模式1 据此落库，模式2 发 `lassoMove` / `lassoScale`（`../docs/PROTOCOL.md §4.4`）。
      */
     class LassoEdit(
         val poly: FloatArray,
@@ -215,7 +215,7 @@ class ScratchCanvas @JvmOverloads constructor(
         invalidate()
     }
 
-    // ---------- 页面底图（v10；契约见 ../PROTOCOL.md §4.4 与 [ScratchGeom.PAGE_REF_W]） ----------
+    // ---------- 页面底图（v10；契约见 ../docs/PROTOCOL.md §4.4 与 [ScratchGeom.PAGE_REF_W]） ----------
     //
     // 「这张纸挂在哪一页」以前只有页面上那枚图钉知道；开了这个开关，那一页就垫在纸下面当参照。
     // 位置/大小由宿主按契约算好（[setPageUnder] 收画布坐标矩形），**图从哪来**照旧走
@@ -283,7 +283,7 @@ class ScratchCanvas @JvmOverloads constructor(
         }
     }
 
-    // ---------- 画板笔记的图片（v16；契约见 ../PROTOCOL.md §4.8 / ../BOARD-NOTE-PLAN.md §2.3） ----------
+    // ---------- 画板笔记的图片（v16；契约见 ../docs/PROTOCOL.md §4.8 / ../docs/BOARD-NOTE-PLAN.md §2.3） ----------
     //
     // 只有画板笔记有图（草稿纸没有）。位置由宿主给画布坐标矩形（左上原点），**图从哪来**走 [picSource]
     // （模式1 = 本机 `Images/<sha>.<ext>`，模式2 = HTTP 找 Mac 要 `/image?h=`），本类不知道自己在哪种模式下。
@@ -349,7 +349,7 @@ class ScratchCanvas @JvmOverloads constructor(
         }
     }
 
-    // ---------- 分页画板（v17；契约见 [BoardPaging] / ../BOARD-NOTE-PLAN.md §9） ----------
+    // ---------- 分页画板（v17；契约见 [BoardPaging] / ../docs/BOARD-NOTE-PLAN.md §9） ----------
     //
     // 有页 = 分页模式：页竖排、水平居中于画布 x = 0（第 i 页 = (-W/2, i×(H+24), W, H)），每页纸色底 + 背景模板，
     // 页外是界面底色；视口竖向滚动、横向夹在页宽内，打开时按页宽适配停在第一页顶；到底后继续上拉一段 → 加一页。
@@ -411,7 +411,7 @@ class ScratchCanvas @JvmOverloads constructor(
         placePageTop(i)
     }
 
-    // ---------- 分页画板同步滚动（模式2 与 Mac，`../PROTOCOL.md §4.8`「分页画板同步滚动」） ----------
+    // ---------- 分页画板同步滚动（模式2 与 Mac，`../docs/PROTOCOL.md §4.8`「分页画板同步滚动」） ----------
 
     /**
      * 同步位置：锚线（页顶该摆的那条线，视图顶下 [PAGED_TOP]，与 Mac 的 `topInset + 56` 同义）落在画布的 y，

@@ -9,7 +9,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 工作区定时备份（`../BACKUP-PLAN.md §3`，Mac `BackupRetention` / `BackupFile` / `BackupService` 的同款）：
+ * 工作区定时备份（`../docs/BACKUP-PLAN.md §3`，Mac `BackupRetention` / `BackupFile` / `BackupService` 的同款）：
  * `<工作区>/UniReader/Backups/library-yyyyMMdd-HHmmss.sqlite`（本地时间），还原点多一个 `-before-restore` 尾巴。
  *
  * - **只备份 `library.sqlite`**：`VACUUM INTO` 到临时名再改名（天生一致，半截文件不会被当成一份备份）；

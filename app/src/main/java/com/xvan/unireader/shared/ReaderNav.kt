@@ -11,7 +11,7 @@ package com.xvan.unireader.shared
 
 /**
  * 目录一项，**先序拍平 + depth**（树结构在 [ReaderDrawer] 里按 depth 就地重建：
- * 前一项 depth 更小者即父）。线格式本来就是这么发的（`../PROTOCOL.md §4.2` 的 `toc`），
+ * 前一项 depth 更小者即父）。线格式本来就是这么发的（`../docs/PROTOCOL.md §4.2` 的 `toc`），
  * 模式1 从 Pdfium 的嵌套书签递归拍平成同一形状。
  *
  * @param page 0-based 目标页；**-1 = 坏书签**（destination 解不出目标页，真实 PDF 里很常见），
@@ -22,7 +22,7 @@ package com.xvan.unireader.shared
 data class TocItem(val depth: Int, val page: Int, val frac: Float, val label: String)
 
 /**
- * 一枚**书签**（`../REQUIREMENTS.md §1.9`）：用户自己加的、带名字的定位记录。
+ * 一枚**书签**（`../docs/REQUIREMENTS.md §1.9`）：用户自己加的、带名字的定位记录。
  * 与 PDF 自带目录是两回事，但显示时与目录**合并成同一棵树**（规则见 [TocMerge]）。
  *
  * 来源同样按模式分：模式2 从 Mac 的 `bookmarks` 广播解出来，模式1 从工作区 SQLite 的
@@ -32,14 +32,14 @@ data class BookmarkItem(val id: String, val page: Int, val frac: Float, val titl
 
 /**
  * 书库一项。[id] 的含义**由各模式自定**，[ReaderDrawer] 只负责原样回传给 `onOpenDoc`：
- * 模式2 是**库文档 id**（`library`/`openDoc` 那个 id 空间，见 `../PROTOCOL.md §4.1` 的警告块），
+ * 模式2 是**库文档 id**（`library`/`openDoc` 那个 id 空间，见 `../docs/PROTOCOL.md §4.1` 的警告块），
  * 模式1 是本机 `library.sqlite` 的 `document.id`。[open] = 已经开着（模式2 = Mac 某个窗口里开着，
  * 模式1 = 已在某个标签页里）。
  */
 data class LibItem(val id: String, val title: String, val open: Boolean)
 
 /**
- * 抽屉「笔记」一组的一行（工作区 Markdown 笔记，`../MARKDOWN-NOTES-PLAN.md`；模式1 专属，模式2 不设 = 不显示）。
+ * 抽屉「笔记」一组的一行（工作区 Markdown 笔记，`../docs/MARKDOWN-NOTES-PLAN.md`；模式1 专属，模式2 不设 = 不显示）。
  * 整棵目录树**先序摊平**传过来（目录在前、笔记在后），[depth] 是缩进层级；目录的展开 / 收起由抽屉自己记。
  * [path] = 源内相对路径（目录 `数学` / 笔记 `数学/极限.md`），原样回传给宿主。
  */

@@ -100,7 +100,7 @@ class LibraryStore(private val db: Db) : Closeable {
     fun mirrorSnapshot(): com.xvan.unireader.local.mirror.MirrorSnapshot =
         com.xvan.unireader.local.mirror.MirrorStore.snapshot(db)
 
-    // ---------- 回收站的窄口子（`../BACKUP-PLAN.md §2`，搬运全在 [TrashStore]） ----------
+    // ---------- 回收站的窄口子（`../docs/BACKUP-PLAN.md §2`，搬运全在 [TrashStore]） ----------
 
     fun trashArchiveDocument(documentId: String, path: File) = TrashStore.archiveDocument(db, documentId, path)
     fun trashArchiveBoard(boardId: String, path: File) = TrashStore.archiveBoard(db, boardId, path)
@@ -154,7 +154,7 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /**
-     * 工作区的**稳定身份**（离线镜像用，见 `../OFFLINE-MIRROR-PLAN.md` §5.1）。没有返回 null。
+     * 工作区的**稳定身份**（离线镜像用，见 `../docs/OFFLINE-MIRROR-PLAN.md` §5.1）。没有返回 null。
      *
      * 为什么不能拿 `workspace_name` 或路径当身份：名字会被改、路径换台设备/换挂载点必变，
      * 而镜像要靠它认出「我的源盘是哪一个」——插上任意一块盘都能自动匹配，靠路径就得让用户手指。
@@ -351,7 +351,7 @@ class LibraryStore(private val db: Db) : Closeable {
         )
     }
 
-    // ---------- 笔迹点集二进制（v18，`../BINARY-INK-PLAN.md`；Mac `LibraryStore` 同名一节） ----------
+    // ---------- 笔迹点集二进制（v18，`../docs/BINARY-INK-PLAN.md`；Mac `LibraryStore` 同名一节） ----------
 
     /** 写库前的笔迹 payload：这一行带二进制 → JSON 点摘成 `[]`（点只存二进制）。所有写口都经这里 */
     private fun inkPayloadForWrite(payload: ByteArray, points: ByteArray?): ByteArray {
@@ -568,7 +568,7 @@ class LibraryStore(private val db: Db) : Closeable {
         return true
     }
 
-    // ---------- 书签（note kind=5，`../REQUIREMENTS.md §1.9`） ----------
+    // ---------- 书签（note kind=5，`../docs/REQUIREMENTS.md §1.9`） ----------
 
     /**
      * 读出一篇文档的全部书签，**按「页 → 页内位置 → 建立时刻」排好**——与 Mac 的
@@ -774,7 +774,7 @@ class LibraryStore(private val db: Db) : Closeable {
         return out
     }
 
-    // ---------- 扫描页对齐（page_align，v14，只读，`../SCAN-ALIGN-PLAN.md §3`） ----------
+    // ---------- 扫描页对齐（page_align，v14，只读，`../docs/SCAN-ALIGN-PLAN.md §3`） ----------
 
     /**
      * 某份内容**正在生效**的对齐参数表：有行、`enabled=1`、payload 解得开且页数与 `page_count` 列对得上，
@@ -834,7 +834,7 @@ class LibraryStore(private val db: Db) : Closeable {
         db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name)) { it.getString(0) }
             .isNotEmpty()
 
-    // ---------- 习题（exercise / exercise_attempt，v20；`../EXERCISE-PLAN.md §10.2`）----------
+    // ---------- 习题（exercise / exercise_attempt，v20；`../docs/EXERCISE-PLAN.md §10.2`）----------
     //
     // SQL 逐条照抄 Mac `LibraryStore.swift` 的习题一节（含 ORDER BY）。本端只读题目、记作答、改收藏 / 错题本 / 章节；
     // 导入与删除只在 Mac 做（删要先进回收站，安卓没有回收站）。只读连接上老库可能没这两张表 → 当没有题。
@@ -1464,7 +1464,7 @@ class LibraryStore(private val db: Db) : Closeable {
         return InkDiff(deleted, updated, inserted)
     }
 
-    // ---------- 画板笔记（board_note / board_item，v16；`../BOARD-NOTE-PLAN.md §2`） ----------
+    // ---------- 画板笔记（board_note / board_item，v16；`../docs/BOARD-NOTE-PLAN.md §2`） ----------
     //
     // SQL 照抄 Mac `LibraryStore.swift` 的「画板笔记」一节（含 ORDER BY）。表不存在（没被新版 Mac
     // 打开过、且是只读连接没补建上的库）一律当「没有画板」处理，绝不让它把书库/开档流程炸掉。
@@ -1828,7 +1828,7 @@ class LibraryStore(private val db: Db) : Closeable {
         return InkDiff(deleted, updated, inserted)
     }
 
-    // ---------- Markdown 笔记的扫描缓存（md_doc，v15），`../MARKDOWN-NOTES-PLAN.md §2` ----------
+    // ---------- Markdown 笔记的扫描缓存（md_doc，v15），`../docs/MARKDOWN-NOTES-PLAN.md §2` ----------
 
     fun allMdDocs(): List<LibMdDoc> {
         if (!hasTable("md_doc")) return emptyList()
@@ -1875,7 +1875,7 @@ class LibraryStore(private val db: Db) : Closeable {
         }
     }
 
-    // ---------- 图片本体（image，v13）与图片笔记（note kind=6），`../IMAGE-NOTE-PLAN.md` ----------
+    // ---------- 图片本体（image，v13）与图片笔记（note kind=6），`../docs/IMAGE-NOTE-PLAN.md` ----------
 
     fun images(): List<LibImage> {
         if (!hasTable("image")) return emptyList()

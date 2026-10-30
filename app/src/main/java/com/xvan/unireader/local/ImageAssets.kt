@@ -12,7 +12,7 @@ import java.security.MessageDigest
 import kotlin.math.max
 
 /**
- * 工作区里的图片本体（`../IMAGE-NOTE-PLAN.md §2.1`，Mac `Sources/Store/ImageAssets.swift` 的同款规则）：
+ * 工作区里的图片本体（`../docs/IMAGE-NOTE-PLAN.md §2.1`，Mac `Sources/Store/ImageAssets.swift` 的同款规则）：
  * `<工作区>/Images/<sha256>.<ext>`，**按内容寻址**（同一张图导两次只落一个文件）。
  *
  * - png / jpg / gif / webp 且长边 ≤ 4096 → **原字节原样**存（sha 就是原文件的 sha）；

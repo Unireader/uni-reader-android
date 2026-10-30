@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 三方合并判定表（[MirrorDiff]）+ 报告（[MirrorReport]）。方案 `../OFFLINE-MIRROR-PLAN.md` §3.1/§6。
+ * 三方合并判定表（[MirrorDiff]）+ 报告（[MirrorReport]）。方案 `../docs/OFFLINE-MIRROR-PLAN.md` §3.1/§6。
  *
  * 与 Mac `spike/mirror-diff-test.swift` 的 ①~④ 段**一一对应**——同一份判定表的两端实现，
  * 判错一格的后果不是"某个功能不好用"，是**静默丢笔迹**。
@@ -291,7 +291,7 @@ class MirrorDiffTest {
     }
 
     /**
-     * 扫描页对齐（`page_align`）那条通道：按 `updated_at` 取新、一侧缺就补（`../SCAN-ALIGN-PLAN.md §5`）。
+     * 扫描页对齐（`page_align`）那条通道：按 `updated_at` 取新、一侧缺就补（`../docs/SCAN-ALIGN-PLAN.md §5`）。
      * 与 Mac `spike/mirror-align-test.swift` ①② 段逐条对应。
      */
     @Test

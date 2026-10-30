@@ -3,9 +3,9 @@ package com.xvan.unireader.shared.exercise
 import android.graphics.Bitmap
 
 /*
- * 习题界面（两模式共用，`../EXERCISE-PLAN.md §10.1`）只认这一份中立数据：
+ * 习题界面（两模式共用，`../docs/EXERCISE-PLAN.md §10.1`）只认这一份中立数据：
  * 模式1 由本机按 Mac 同一套规则算出来（`local/exercise/LocalExerciseDeck`），模式2 是 Mac 算好经 `exDeck` 发来的。
- * 字段与线上 `exDeck` 的一道题一一对应（`../PROTOCOL.md §4.9`）。**本文件一行都不许认识 WireCodec。**
+ * 字段与线上 `exDeck` 的一道题一一对应（`../docs/PROTOCOL.md §4.9`）。**本文件一行都不许认识 WireCodec。**
  */
 
 /** 一道题现在该显示哪次作答（`exDeck` 的 `shown`）。 */
@@ -58,11 +58,11 @@ data class ExCard(
     /** 书上的作答（空 = 没有）。 */
     val marked: String,
     val markedCorrect: Int,
-    /** 题型（`exercise.kind`）：0 单选 · 1 多选 · 3 填空 · 4 主观题（`../EXERCISE-PLAN.md §11`）。 */
+    /** 题型（`exercise.kind`）：0 单选 · 1 多选 · 3 填空 · 4 主观题（`../docs/EXERCISE-PLAN.md §11`）。 */
     val kind: Int = if (multiple) 1 else 0,
 ) {
     val judged: Boolean get() = shown != ExShown.NONE
-    /** 填空 / 主观题：平板本轮不能作答，只显示题干，提示到 Mac 上作答（`../EXERCISE-PLAN.md §11.6`）。 */
+    /** 填空 / 主观题：平板本轮不能作答，只显示题干，提示到 Mac 上作答（`../docs/EXERCISE-PLAN.md §11.6`）。 */
     val macOnly: Boolean get() = kind != 0 && kind != 1
     /** 列表里一行的题干：去掉换行、并掉连续空白。 */
     val plainStem: String get() = stem.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")

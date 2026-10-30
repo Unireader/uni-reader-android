@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 模式1 与 Mac 对齐的笔记功能（`../TODO.md` 差距清单 A1~A6）的库层插桩测试：
+ * 模式1 与 Mac 对齐的笔记功能（`../docs/TODO.md` 差距清单 A1~A6）的库层插桩测试：
  * 高亮画法 / 换色 / 转批注、笔记的类型 / 颜色 / 画法 / 卡片、笔记类型整表存取、图片引用计数 / 待删除 / 清理、`md_doc` 对账。
  * 键名与取值逐条对 Mac 的 payload 契约（`HighlightModel` / `TextNoteModel` / `NoteTypeModel` / `ImageNoteModel`）。
  *

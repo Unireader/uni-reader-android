@@ -125,7 +125,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private var libItems = listOf<LibItem>()
 
     /**
-     * 参考窗（只读小窗，`../../../../../../../REF-WINDOW-PLAN.md`）。模式2 的三件事都走 Mac：
+     * 参考窗（只读小窗，`../../../../../../../docs/REF-WINDOW-PLAN.md`）。模式2 的三件事都走 Mac：
      * 文档列表 = `library` 镜像、元信息 = `GET /docmeta?d=`、页图 = `/page.png?d=`。
      * 都是**本端私有的只读显示**，线格式一个字节没加。
      */
@@ -224,7 +224,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 草稿纸（模式2 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板；真源在 Mac，这里只发请求 */
     private lateinit var scratch: PadScratch
 
-    // —— 画板笔记（`../PROTOCOL.md §4.8`）：Mac 的 `boards` 全量镜像 ——
+    // —— 画板笔记（`../docs/PROTOCOL.md §4.8`）：Mac 的 `boards` 全量镜像 ——
     /** 被跟随会话是什么：0 = PDF（或空标签）、1 = Markdown 笔记、2 = 画板笔记 */
     private var boardKind = WireCodec.BOARD_KIND_PDF
 
@@ -240,7 +240,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 「Mac 正在看 Markdown 笔记」的空状态（kind=1 时盖住页面视图，不停在上一篇 PDF 上） */
     private lateinit var mdEmpty: LinearLayout
 
-    // —— 习题（`../EXERCISE-PLAN.md §10.4`，协议 `../PROTOCOL.md §4.9`）——
+    // —— 习题（`../docs/EXERCISE-PLAN.md §10.4`，协议 `../docs/PROTOCOL.md §4.9`）——
     // 用户 2026-10-11 定：「mac 和 pad 同步，但是 tab 页可以不一样」。平板可以自己开一组题（标签栏末尾一个、能关），
     // Mac 不跟着换；Mac 当前标签是习题（boards.kind = 3）时平板跟随显示那一组。数据只在 Mac。
     /** 抽屉「习题」一段（Mac 下发的被跟随会话所在工作区的分组） */
@@ -506,13 +506,13 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 「切换笔」只在笔模式下出现且染当前笔色（refresh() 维护），其余模式占位纯属误导
             icon("pen", R.drawable.ic_pen, "切换笔") { padView.cyclePen() }
             icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
-            // 撤销/重做：栈在 Mac（`../PROTOCOL.md §4.1`），这里只发意图。常亮——本端不知道
+            // 撤销/重做：栈在 Mac（`../docs/PROTOCOL.md §4.1`），这里只发意图。常亮——本端不知道
             // Mac 那边还有没有得撤，为此再加一条 S→C 广播不值当，点了没得撤就是个空操作。
             icon("undo", R.drawable.ic_undo, "撤销") { padView.requestUndo(redo = false) }
             icon("redo", R.drawable.ic_redo, "重做") { padView.requestUndo(redo = true) }
             // 剪贴板三件：只在框选模式下出现（对象就是选中集，见 refreshHud 的 setVisible）。
             // 剪贴板本身是 Mac 的系统剪贴板 → 平板复制的东西能在 Mac 上粘、也能粘进另一篇文档。
-            // 草稿纸 / 画板开着时三键作用在纸上（画布坐标，`../PROTOCOL.md §4.4`）
+            // 草稿纸 / 画板开着时三键作用在纸上（画布坐标，`../docs/PROTOCOL.md §4.4`）
             icon("clipCut", R.drawable.ic_cut, "剪切选中笔迹") {
                 if (scratch.isOpen) scratch.clipCopy(cut = true) else padView.requestClipCopy(cut = true)
             }
@@ -571,7 +571,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 padView.toggleHLock(); refresh()
             }
             // 书写锁定：锁定后模式键只在 笔记/擦除 间来回，长按环形盘也只剩这两项（Mac 判定，
-            // 见 `../PROTOCOL.md` `lock` 0x59）；这里只发意图，`onLockChanged` 上行给 Mac
+            // 见 `../docs/PROTOCOL.md` `lock` 0x59）；这里只发意图，`onLockChanged` 上行给 Mac
             icon("writeLock", R.drawable.ic_write_lock, getString(R.string.tools_write_lock), toggle = true) {
                 padView.toggleWritingLock(); refresh()
             }
@@ -647,7 +647,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             onDeleteBookmark = { id ->
                 client?.send(WireCodec.encodeBookmarkEdit(WireCodec.BM_DELETE, id))
             }
-            // 画板笔记（`../PROTOCOL.md §4.8`）：书库页列出 Mac 这个工作区的画板；点开 / 新建都只是请求，
+            // 画板笔记（`../docs/PROTOCOL.md §4.8`）：书库页列出 Mac 这个工作区的画板；点开 / 新建都只是请求，
             // Mac 在被跟随的窗口里开好标签后照常回推 boards / scratchpads / scratchStrokes / boardImages。
             boardMoreEnabled = false
             onOpenBoard = { id ->
@@ -1322,7 +1322,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         tabsBar.setTabs(titles, active)
     }
 
-    // ---------- 习题（`../EXERCISE-PLAN.md §10.4`） ----------
+    // ---------- 习题（`../docs/EXERCISE-PLAN.md §10.4`） ----------
 
     /** 此刻该显示哪一组：自己的习题标签开着就是它，否则 Mac 当前标签是习题就跟随那一组，都不是 = 不在习题上。 */
     private fun visibleExercises(): String = when {
@@ -1539,7 +1539,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     }
 
     /**
-     * 收 `boards`（`../PROTOCOL.md §4.8`）：被跟随会话的类型 + 画板列表。
+     * 收 `boards`（`../docs/PROTOCOL.md §4.8`）：被跟随会话的类型 + 画板列表。
      * - kind=2：整屏是草稿纸画布（笔迹走 scratchpads/scratchStrokes，画板那张纸永远开着），页面视图藏起来；
      * - kind=1：显示「Mac 正在看 Markdown 笔记」，不停在上一篇 PDF 上；
      * - kind=0：一切照旧。

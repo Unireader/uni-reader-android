@@ -25,7 +25,7 @@ object TabSet {
     const val TAG = "UniReader/Tabs"
 
     /**
-     * 画板笔记标签的 docId 前缀（`../BOARD-NOTE-PLAN.md §5`）：标签页组里存 `board:<board_note.id>`，
+     * 画板笔记标签的 docId 前缀（`../docs/BOARD-NOTE-PLAN.md §5`）：标签页组里存 `board:<board_note.id>`，
      * 与文档 id（UUID）天然不撞，存取格式一个字不用改。
      */
     const val BOARD_PREFIX = "board:"
@@ -35,10 +35,10 @@ object TabSet {
     fun boardKey(boardId: String): String = BOARD_PREFIX + boardId
 
     /**
-     * 习题标签（`../EXERCISE-PLAN.md §10.2`，同 Mac `StoredTab`）：`ex:<范围键>` = 公用的那个（抽屉里点哪组都在它里面换，
+     * 习题标签（`../docs/EXERCISE-PLAN.md §10.2`，同 Mac `StoredTab`）：`ex:<范围键>` = 公用的那个（抽屉里点哪组都在它里面换，
      * 错题本那一支另一个），`exs:<范围键>` = 长按「在新标签页中打开」单独开的。范围键见 `ExScope.key`。
      */
-    /** Markdown 笔记标签：`md:<Notes/ 内相对路径>`（`../MARKDOWN-NOTES-PLAN.md`；身份 = 路径，同 Mac `NoteRef`） */
+    /** Markdown 笔记标签：`md:<Notes/ 内相对路径>`（`../docs/MARKDOWN-NOTES-PLAN.md`；身份 = 路径，同 Mac `NoteRef`） */
     const val MD_PREFIX = "md:"
     fun isMarkdown(docId: String): Boolean = docId.startsWith(MD_PREFIX)
     fun mdRelOf(docId: String): String = docId.removePrefix(MD_PREFIX)

@@ -6,7 +6,7 @@ import org.junit.Assert.assertSame
 import org.junit.Test
 
 /**
- * 局域网发现的纯函数层（`../PROTOCOL.md §8`）。配对码指纹是**跨端契约**：Mac 侧
+ * 局域网发现的纯函数层（`../docs/PROTOCOL.md §8`）。配对码指纹是**跨端契约**：Mac 侧
  * `Pairing.fingerprint` 算出来广播，这里算本机存的码去比——差一个字节，连过的 Mac 永远显示「码已重置」。
  */
 class MacDiscoveryTest {

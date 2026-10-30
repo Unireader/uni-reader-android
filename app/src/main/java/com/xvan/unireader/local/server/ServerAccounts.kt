@@ -19,7 +19,7 @@ data class ServerAccount(
 }
 
 /**
- * 连过的服务器（同 Mac `ServerAccounts`；方案 `../SERVER-MODE-PLAN.md §2`）。存在本机私有的 SharedPreferences
+ * 连过的服务器（同 Mac `ServerAccounts`；方案 `../docs/SERVER-MODE-PLAN.md §2`）。存在本机私有的 SharedPreferences
  * （同「连过的 Mac」那份配对码，`pad/KnownMacs`）；断开 = 只删这一条，不删本机缓存。
  *
  * 找账号**先按身份、再按地址**（§3.7）：服务器换了 IP、这里改了地址之后，缓存里记的旧地址照样认得出是哪台。

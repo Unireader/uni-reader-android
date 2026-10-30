@@ -26,16 +26,16 @@ object Schema {
     /**
      * 与 Mac `LibraryStore.schemaVersion` 同步。v13 `image`、v14 `page_align`、v15 `md_doc`（本端只建表不用）、
      * v16 `board_note`/`board_item`、v17 `board_page`——表都建上，写进去的版本号才不撒谎。
-     * v18：`note` / `board_item` 加 `points BLOB` + `points_at TEXT`（笔迹点集二进制，`../BINARY-INK-PLAN.md`）。
-     * v20：`exercise` / `exercise_attempt`（习题，`../EXERCISE-PLAN.md §2`）。
+     * v18：`note` / `board_item` 加 `points BLOB` + `points_at TEXT`（笔迹点集二进制，`../docs/BINARY-INK-PLAN.md`）。
+     * v20：`exercise` / `exercise_attempt`（习题，`../docs/EXERCISE-PLAN.md §2`）。
      * v21：`exercise_attempt` 加 `ink BLOB` / `judged_by` / `feedback`（填空 / 主观题的手写、谁判的、Agent 评语，
-     * `../EXERCISE-PLAN.md §11`；本端本轮只建列，作答在 Mac 上做）。
-     * v22：`exercise` 加 `note`（题目笔记，`../EXERCISE-PLAN.md §12`；本端本轮只建列、随离线镜像同步，界面在 Mac 上）。
+     * `../docs/EXERCISE-PLAN.md §11`；本端本轮只建列，作答在 Mac 上做）。
+     * v22：`exercise` 加 `note`（题目笔记，`../docs/EXERCISE-PLAN.md §12`；本端本轮只建列、随离线镜像同步，界面在 Mac 上）。
      */
     const val VERSION = 22
 
     /**
-     * v14 `page_align`（`../SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
+     * v14 `page_align`（`../docs/SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
      * 要往**可能没有这张表**的库里整行覆盖（只读打开、没迁移过的老库），那边要先 `CREATE TABLE IF NOT EXISTS`
      * ——语句仍只在这一处（见 `MirrorApply.fillAlign` / `LibraryStore.copyPageAlignTo`）。
      */
@@ -50,7 +50,7 @@ object Schema {
         )
         """
 
-    /** v15 Markdown 笔记的元数据表（`../MARKDOWN-NOTES-PLAN.md §2`）。本端没有 Markdown 笔记，只建表不读写 */
+    /** v15 Markdown 笔记的元数据表（`../docs/MARKDOWN-NOTES-PLAN.md §2`）。本端没有 Markdown 笔记，只建表不读写 */
     private val MD_DOC_DDL = listOf(
         """
         CREATE TABLE IF NOT EXISTS md_doc (
@@ -68,7 +68,7 @@ object Schema {
     )
 
     /**
-     * v16 画板笔记两张表 + 索引（`../BOARD-NOTE-PLAN.md §2`）+ v17 分页画板的页（§9），
+     * v16 画板笔记两张表 + 索引（`../docs/BOARD-NOTE-PLAN.md §2`）+ v17 分页画板的页（§9），
      * 与 Mac `migrate()` 里那三段**逐字相同**。改这里必须与 Mac `LibraryStore.swift` 同步。
      */
     val BOARD_DDL = listOf(
@@ -117,7 +117,7 @@ object Schema {
     )
 
     /**
-     * v20 习题两张表 + 索引（`../EXERCISE-PLAN.md §2`），与 Mac `migrate()` 里那段**逐字相同**。
+     * v20 习题两张表 + 索引（`../docs/EXERCISE-PLAN.md §2`），与 Mac `migrate()` 里那段**逐字相同**。
      * 本端这一轮只建表不读写（平板练习放下一轮）；改这里必须与 Mac `LibraryStore.swift` 同步。
      */
     private val EXERCISE_DDL = listOf(
@@ -261,7 +261,7 @@ object Schema {
         Triple("scratch_pad", "show_page", "INTEGER NOT NULL DEFAULT 0"),
         Triple("document", "group_name", "TEXT NOT NULL DEFAULT ''"),
         Triple("document", "canvas_mode", "INTEGER NOT NULL DEFAULT 0"),
-        // v18：笔迹点集二进制（`../BINARY-INK-PLAN.md`），与 Mac 同序
+        // v18：笔迹点集二进制（`../docs/BINARY-INK-PLAN.md`），与 Mac 同序
         Triple("note", "points", "BLOB"),
         Triple("note", "points_at", "TEXT"),
         Triple("board_item", "points", "BLOB"),
@@ -270,14 +270,14 @@ object Schema {
         Triple("board_note", "viewport_x", "REAL NOT NULL DEFAULT 0"),
         Triple("board_note", "viewport_y", "REAL NOT NULL DEFAULT 0"),
         Triple("board_note", "viewport_zoom", "REAL NOT NULL DEFAULT 0"),
-        // v20 发布前补的两列（章节 + 书上作答，`../EXERCISE-PLAN.md §2.3/§2.4`），与 Mac 同序
+        // v20 发布前补的两列（章节 + 书上作答，`../docs/EXERCISE-PLAN.md §2.3/§2.4`），与 Mac 同序
         Triple("exercise", "chapter", "TEXT NOT NULL DEFAULT ''"),
         Triple("exercise_attempt", "source", "TEXT NOT NULL DEFAULT ''"),
-        // v21：填空 / 主观题的作答（手写 / 谁判的 / Agent 评语，`../EXERCISE-PLAN.md §11`），与 Mac 同序
+        // v21：填空 / 主观题的作答（手写 / 谁判的 / Agent 评语，`../docs/EXERCISE-PLAN.md §11`），与 Mac 同序
         Triple("exercise_attempt", "ink", "BLOB"),
         Triple("exercise_attempt", "judged_by", "TEXT NOT NULL DEFAULT ''"),
         Triple("exercise_attempt", "feedback", "TEXT NOT NULL DEFAULT ''"),
-        // v22：题目笔记（`../EXERCISE-PLAN.md §12`），与 Mac 同序
+        // v22：题目笔记（`../docs/EXERCISE-PLAN.md §12`），与 Mac 同序
         Triple("exercise", "note", "TEXT NOT NULL DEFAULT ''"),
     )
 

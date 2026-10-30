@@ -11,7 +11,7 @@ import java.io.File
 import java.util.UUID
 
 /**
- * 建离线镜像：把一个工作区整份复制到本机内部存储（方案 `../OFFLINE-MIRROR-PLAN.md` §8.1）。
+ * 建离线镜像：把一个工作区整份复制到本机内部存储（方案 `../docs/OFFLINE-MIRROR-PLAN.md` §8.1）。
  *
  * **库全量、PDF 选择性**（§7）：平板内部存储装不下一块几十 GB 的硬盘，但 `library.sqlite`
  * 只有几十 MB。于是镜像里**所有书都看得见、所有笔记都在**，只是部分书没带 PDF，打开时提示

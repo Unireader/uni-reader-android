@@ -28,7 +28,7 @@ import com.xvan.unireader.shared.exercise.MathText
 import java.io.File
 
 /**
- * Markdown 笔记标签页的整页（`../MARKDOWN-NOTES-PLAN.md`，模式1；同 [ExerciseController] 那样铺在 chrome 之下）。
+ * Markdown 笔记标签页的整页（`../docs/MARKDOWN-NOTES-PLAN.md`，模式1；同 [ExerciseController] 那样铺在 chrome 之下）。
  *
  * - **阅读**：Markwon 渲染（公式同气泡 / 习题），`[[…]]` 可点（按名字解析，见 [MdNotes.Index]）、单独一行的
  *   `![[图]]` 画成图；**编辑**：原文输入框，停手 0.8 秒自动保存、切走 / 退到后台立即保存（同 Mac 三条）。

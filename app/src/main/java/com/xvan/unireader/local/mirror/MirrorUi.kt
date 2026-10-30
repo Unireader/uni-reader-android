@@ -15,7 +15,7 @@ import com.xvan.unireader.shared.showAlert
 import java.io.File
 
 /**
- * 离线镜像的两条界面流程：**做成离线副本** 与 **同步预览**（方案 `../OFFLINE-MIRROR-PLAN.md` §8）。
+ * 离线镜像的两条界面流程：**做成离线副本** 与 **同步预览**（方案 `../docs/OFFLINE-MIRROR-PLAN.md` §8）。
  *
  * 放一处而不是散进 `LibraryActivity`：两条流程都要「开连接 → 后台跑 → 关连接 → 刷界面」这一套，
  * 抄两遍必然有一遍忘了关连接（那会让 U 盘拔不掉、WAL 一直挂着）。

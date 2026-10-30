@@ -12,7 +12,7 @@ import android.widget.TextView
 import com.xvan.unireader.R
 
 /**
- * 新建画板笔记（`../BOARD-NOTE-PLAN.md §9.4`）：先选模式——无限画布 / 分页；分页再选页面大小（含横竖）、
+ * 新建画板笔记（`../docs/BOARD-NOTE-PLAN.md §9.4`）：先选模式——无限画布 / 分页；分页再选页面大小（含横竖）、
  * 背景模板、初始页数（1~100）。模式建好之后不再转换（同 Mac `NewBoardSheetController`）。
  *
  * 两模式共用这一份界面，只差「按下创建之后做什么」：模式1 写库（`board_note` + `board_page`），

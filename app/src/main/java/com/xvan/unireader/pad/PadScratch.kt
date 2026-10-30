@@ -257,7 +257,7 @@ class PadScratch(private val a: Activity) {
     private val listBtn: ImageButton
     private val closeBtn: ImageButton
 
-    // ---------- 画板笔记（v16，`../PROTOCOL.md §4.8`） ----------
+    // ---------- 画板笔记（v16，`../docs/PROTOCOL.md §4.8`） ----------
     //
     // 被跟随会话是画板标签时，Mac 把它当成「一张永远开着的草稿纸」发过来（open=0、list 只有这一张），
     // 笔迹 / 橡皮 / 纸样 / 改名的线路一个字节没变。本端要做的只是**把草稿纸特有的那几样收起来**：
@@ -376,7 +376,7 @@ class PadScratch(private val a: Activity) {
         }
         canvas.onViewportChanged = { updateBar(); scheduleViewportSave(); reportBoardScroll() }
         canvas.tools = { toolsProvider?.invoke() }
-        // 框选：画布上已经本地生效，这里只把提交发给 Mac 复判执行（画布坐标、page 填 0，`../PROTOCOL.md §4.4`）；
+        // 框选：画布上已经本地生效，这里只把提交发给 Mac 复判执行（画布坐标、page 填 0，`../docs/PROTOCOL.md §4.4`）；
         // Mac 零命中也回推 scratchStrokes，本地以回推为准
         canvas.onLassoEdit = { e ->
             val b = polyBox(e.poly)
@@ -761,7 +761,7 @@ class PadScratch(private val a: Activity) {
         }
     }
 
-    // ---------- 分页画板（v17，`../PROTOCOL.md §4.8` 末尾「分页画板」） ----------
+    // ---------- 分页画板（v17，`../docs/PROTOCOL.md §4.8` 末尾「分页画板」） ----------
     //
     // Mac 发 `boardPages` 全量镜像（n=0 = 不是分页画板）；本端按布局契约排页、画背景（`ScratchCanvas.setPages`，
     // 与模式1 同一份画法），笔迹 / 图片仍是 Mac 换算好的画布坐标。平板上能做的只有两样：
@@ -819,7 +819,7 @@ class PadScratch(private val a: Activity) {
             .show()
     }
 
-    // ---------- 画板视口（v19，`../PROTOCOL.md §4.8` 末尾「画板视口」、`../BOARD-NOTE-PLAN.md §10.1`） ----------
+    // ---------- 画板视口（v19，`../docs/PROTOCOL.md §4.8` 末尾「画板视口」、`../docs/BOARD-NOTE-PLAN.md §10.1`） ----------
     //
     // 「记住上次滚动位置」：位置存在 Mac 的工作区库里（与 Mac、模式1 同一份）。Mac 每次发 `boards` 都紧跟一条
     // `boardViewport`；本端只在刚打开那一篇、用户还没动过视口时复位一次。用户动过之后停手 0.6s 回传，
@@ -869,7 +869,7 @@ class PadScratch(private val a: Activity) {
         sendCtl?.invoke(WireCodec.encodeBoardViewport(id, v[0], v[1], v[2]))
     }
 
-    // ---------- 分页画板同步滚动（`../PROTOCOL.md §4.8`「分页画板同步滚动」、`../BOARD-NOTE-PLAN.md §12`） ----------
+    // ---------- 分页画板同步滚动（`../docs/PROTOCOL.md §4.8`「分页画板同步滚动」、`../docs/BOARD-NOTE-PLAN.md §12`） ----------
     //
     // 同 PDF 的 scroll / viewport：谁在滚谁领头，另一端跟随；只同步竖向位置（页 + 页内比例），两端缩放各自独立。
     // 本端用户动过视口之后的每次变化发一条（Mac 平滑跟随、不回发）；Mac 本机滚动时广播过来，用户没碰着画布就跟过去。

@@ -30,7 +30,7 @@ object PadConst {
     /**
      * 工具模式标签，下标 = MODE_*（0 笔记 / 1 擦除 / 2 翻页 / 3 框选）。
      *
-     * 🔴 **这张表就是线上契约**（`../PROTOCOL.md §4.1` 的 `mode` u8）。**不许往这里加**——
+     * 🔴 **这张表就是线上契约**（`../docs/PROTOCOL.md §4.1` 的 `mode` u8）。**不许往这里加**——
      * 加一档，模式2 的模式键就会循环到一个 Mac 不认识的值发过去。模式1 本机多出来的档
      * 放 [LOCAL_MODE_LABELS]。
      */
@@ -62,7 +62,7 @@ object PadConst {
     }
 
     /**
-     * 页面上的书签缎带（`../REQUIREMENTS.md §1.9`）：贴页右缘的一面小旗，右端切 V 口。
+     * 页面上的书签缎带（`../docs/REQUIREMENTS.md §1.9`）：贴页右缘的一面小旗，右端切 V 口。
      * 尺寸与 Mac 的 `PageCellView.ribbonW/H`（26×15 pt）同数——两端看到的是同一面旗。
      */
     object BM {

@@ -240,7 +240,7 @@ class PadOverlays(private val density: Float) {
         c.drawCircle(x, y, r, p)
     }
 
-    // ---------- 书签缎带（`../REQUIREMENTS.md §1.9`） ----------
+    // ---------- 书签缎带（`../docs/REQUIREMENTS.md §1.9`） ----------
 
     /**
      * 贴页右缘的一面小红旗，右端切一个 V 口（真书里夹出来的那条丝带的样子）。

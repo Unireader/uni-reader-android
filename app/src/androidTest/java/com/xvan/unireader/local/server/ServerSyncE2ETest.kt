@@ -17,7 +17,7 @@ import java.io.File
 import java.security.MessageDigest
 
 /**
- * 安卓客户端对着**真服务器**的端到端（`../SERVER-MODE-PLAN.md` S3；Mac 那边是 `../spike/server-client-test.swift`）。
+ * 安卓客户端对着**真服务器**的端到端（`../docs/SERVER-MODE-PLAN.md` S3；Mac 那边是 `../spike/server-client-test.swift`）。
  * 平板扮演两台设备（A = 上传的原件，B = 从服务器建的缓存），走：配对 → 上传 → 建缓存 → 补图片 / 下 PDF →
  * 两边各改一处后完整同步 → 删除传播 → 开着时只推（记基线）→ 变回本地。
  *

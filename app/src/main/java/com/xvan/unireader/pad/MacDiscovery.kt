@@ -12,7 +12,7 @@ import java.net.Inet4Address
 import java.security.MessageDigest
 
 /**
- * 局域网里开着平板服务的 Mac（Bonjour 发现，契约见 `../PROTOCOL.md §8`）。
+ * 局域网里开着平板服务的 Mac（Bonjour 发现，契约见 `../docs/PROTOCOL.md §8`）。
  *
  * Mac 的平板服务一开就在 HTTP 端口（8770）上广播 [SERVICE_TYPE]，TXT 里只有配对码的**指纹** `tk`，
  * 没有配对码本身（2026-10-10 用户定）：没配过的平板看得到、连不上，仍要扫码。

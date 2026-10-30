@@ -14,7 +14,7 @@ import com.xvan.unireader.R
 
 /**
  * 标签页栏，**模式1 与模式2 共用这一份**：`[工作区名 ⌄] │ 文档A ×│ 文档B ×│ +`
- * （`../ANDROID-STANDALONE-PLAN.md §13`）。
+ * （`../docs/ANDROID-STANDALONE-PLAN.md §13`）。
  *
  * 它原先只有模式1 有（住在 `local/`），因为模式2「开哪一篇」由 Mac 决定。2026-08-28 用户要
  * 「模式2 也对齐模式1 的 tab」——**但真源仍在 Mac**：模式2 的这条栏是 Mac 已打开窗口
@@ -26,7 +26,7 @@ import com.xvan.unireader.R
  * 三块从左到右固定语义——
  * - **工作区芯片**（最左，不随标签横滑）：当前工作区名 + `⌄`，**两模式都是点它切工作区**
  *   （2026-09-06 起；此前模式2 点它是开书库）。可切的范围按模式分：模式1 = 本机最近打开与扫到的
- *   `.unrd`，模式2 = **Mac 上已经开着的那几个**（`docs` 广播按 `ws` 分组，见 `../PROTOCOL.md §4.2`）。
+ *   `.unrd`，模式2 = **Mac 上已经开着的那几个**（`docs` 广播按 `ws` 分组，见 `../docs/PROTOCOL.md §4.2`）。
  *   它**必须常驻可见**，不能跟着标签一起滑走。
  * - **标签区**（中间，可横滑）：一篇一个芯片，当前那篇是 accent 底 + accent 字；模式1 每个芯片右侧一个 ×。
  * - **加号**（最右，不随标签横滑）：在本工作区里再开一篇。
@@ -72,7 +72,7 @@ class DocTabsBar(private val a: Activity) {
 
     /**
      * 逐个标签地问带不带 ×（默认跟 [canClose] 走）。模式2 的标签都是 Mac 的、关不了，唯独平板自己开的
-     * 那个习题标签（`../EXERCISE-PLAN.md §10.4`）能关——它用这个开口。
+     * 那个习题标签（`../docs/EXERCISE-PLAN.md §10.4`）能关——它用这个开口。
      */
     var closable: (Int) -> Boolean = { canClose }
 

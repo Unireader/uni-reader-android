@@ -19,7 +19,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * 建离线镜像（[MirrorBuilder] + [MirrorStore]）的插桩测试。方案 `../OFFLINE-MIRROR-PLAN.md` §8.1。
+ * 建离线镜像（[MirrorBuilder] + [MirrorStore]）的插桩测试。方案 `../docs/OFFLINE-MIRROR-PLAN.md` §8.1。
  *
  * **为什么在 androidTest 而不是 JVM 单测**：`android.database.sqlite` 在 JVM 里是空壳，
  * 而这一整套的要害全在库上（VACUUM INTO / sync_base / 血缘 meta）。`org.json` 同理。

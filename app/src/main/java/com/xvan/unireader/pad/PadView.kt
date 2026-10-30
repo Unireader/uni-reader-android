@@ -93,7 +93,7 @@ class PadView @JvmOverloads constructor(
         )
     }
 
-    /** 撤销/重做：只发意图，栈在 Mac（`../PROTOCOL.md §4.1`） */
+    /** 撤销/重做：只发意图，栈在 Mac（`../docs/PROTOCOL.md §4.1`） */
     override fun onUndoRequested(redo: Boolean) {
         listener?.sendCtl(WireCodec.encodeUndo(redo))
     }

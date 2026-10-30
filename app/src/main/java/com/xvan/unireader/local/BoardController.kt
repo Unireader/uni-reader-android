@@ -40,7 +40,7 @@ import kotlin.math.abs
 import org.json.JSONObject
 
 /**
- * 模式1 的画板笔记（`../BOARD-NOTE-PLAN.md §5`）：`ScratchCanvas`（几何/输入/渲染）↔ `LibraryStore`
+ * 模式1 的画板笔记（`../docs/BOARD-NOTE-PLAN.md §5`）：`ScratchCanvas`（几何/输入/渲染）↔ `LibraryStore`
  * 的 `board_note` / `board_item` / `board_page` 三张表。照 [ScratchController] 写，差别只在：
  *
  * - **整页就是这张纸**：画板标签激活时画布铺满内容区，没有「关闭」、没有页面底图、没有图钉；

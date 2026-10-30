@@ -145,7 +145,7 @@ class ReaderActivity : Activity() {
      */
     private class Tab(val docId: String, var title: String) {
         /**
-         * 画板笔记标签（`../BOARD-NOTE-PLAN.md §5`）：[docId] 存成 `board:<id>`（[TabSet.BOARD_PREFIX]），
+         * 画板笔记标签（`../docs/BOARD-NOTE-PLAN.md §5`）：[docId] 存成 `board:<id>`（[TabSet.BOARD_PREFIX]），
          * 于是标签页组的存取、「已打开」判定这些按 docId 走的地方一行不改就认得它，也不会与文档 id 撞。
          * 画板标签**没有** [canvas]/[pdf]：整页是 [BoardController] 那块 `ScratchCanvas`。
          */
@@ -153,7 +153,7 @@ class ReaderActivity : Activity() {
         val boardId: String get() = TabSet.boardIdOf(docId)
 
         /**
-         * 习题标签（`../EXERCISE-PLAN.md §10.2`）：[docId] 存成 `ex:<范围键>`（公用）/ `exs:<范围键>`（单独开的），
+         * 习题标签（`../docs/EXERCISE-PLAN.md §10.2`）：[docId] 存成 `ex:<范围键>`（公用）/ `exs:<范围键>`（单独开的），
          * 同画板一样没有 [canvas]/[pdf]：整页是 [ExerciseController.screen]。
          */
         val isExercise: Boolean get() = TabSet.isExercise(docId)
@@ -196,7 +196,7 @@ class ReaderActivity : Activity() {
          * 没有可打开的版本时空串
          */
         val contentHash: String = "",
-        /** 这份内容开着的扫描页对齐参数（`../SCAN-ALIGN-PLAN.md`）；没开 / 解不开 = null */
+        /** 这份内容开着的扫描页对齐参数（`../docs/SCAN-ALIGN-PLAN.md`）；没开 / 解不开 = null */
         val align: ScanAlignTable? = null,
         /** 笔记类型的图钉配色与图标名（`meta.note_types`），key = 大写 type_id */
         val typeRgb: Map<String, IntArray> = emptyMap(),
@@ -215,7 +215,7 @@ class ReaderActivity : Activity() {
         val name: String,
         val docs: List<LibDocument>,
         val boards: List<BoardNote>,
-        /** 服务器工作区（`meta.srv_url`，`../SERVER-MODE-PLAN.md`）：开着时定时推送、关掉后同步一轮 */
+        /** 服务器工作区（`meta.srv_url`，`../docs/SERVER-MODE-PLAN.md`）：开着时定时推送、关掉后同步一轮 */
         val onServer: Boolean = false,
     )
 
@@ -236,7 +236,7 @@ class ReaderActivity : Activity() {
     /** 草稿纸（模式1 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板 + 库读写 */
     private lateinit var scratch: ScratchController
 
-    /** 画板笔记（`../BOARD-NOTE-PLAN.md §5`）：画板标签激活时铺满内容区的那块画布 + 浮条 + 库读写 */
+    /** 画板笔记（`../docs/BOARD-NOTE-PLAN.md §5`）：画板标签激活时铺满内容区的那块画布 + 浮条 + 库读写 */
     private lateinit var board: BoardController
 
     /**
@@ -250,7 +250,7 @@ class ReaderActivity : Activity() {
     /** 工作区的画板笔记列表（`board_note`，最近打开在前）：抽屉 / 「+」/ 标签标题都用它 */
     private var libBoards = listOf<BoardNote>()
 
-    /** 习题（`../EXERCISE-PLAN.md §10.2`）：习题标签激活时铺满内容区的那一页 + 抽屉分组 + 库读写 */
+    /** 习题（`../docs/EXERCISE-PLAN.md §10.2`）：习题标签激活时铺满内容区的那一页 + 抽屉分组 + 库读写 */
     private lateinit var exercise: ExerciseController
     private lateinit var md: MdNoteController
 
@@ -278,7 +278,7 @@ class ReaderActivity : Activity() {
     private var refSource: PdfSource? = null
 
     /**
-     * 参考窗（只读小窗，`../../../../../../../REF-WINDOW-PLAN.md`）。模式1 三件事全在本机：
+     * 参考窗（只读小窗，`../../../../../../../docs/REF-WINDOW-PLAN.md`）。模式1 三件事全在本机：
      * 文档列表 = 工作区书库、进度 = 库里的 read_page/read_frac、页图 = 第二个 `PdfSource`。
      */
     private val refWin by lazy {
@@ -596,7 +596,7 @@ class ReaderActivity : Activity() {
                 cur() != null || (curTab()?.isBoard == true && board.pageCount > 0)   // 分页画板也能跳页
             }) { showGotoPage() }
             icon("openDoc", R.drawable.ic_book, getString(R.string.tools_open_doc), available = anyTab) { showDocPicker() }
-            // 图片笔记（`../IMAGE-NOTE-PLAN.md §4`）：从文件插入（落在视口中央）/ 在页面上框一块存成图
+            // 图片笔记（`../docs/IMAGE-NOTE-PLAN.md §4`）：从文件插入（落在视口中央）/ 在页面上框一块存成图
             // 画板标签里是「往画板上插一张图」（BoardController.insertImage）
             icon("imageNote", R.drawable.ic_image, getString(R.string.img_import), available = {
                 cur() != null || curTab()?.isBoard == true
@@ -621,7 +621,7 @@ class ReaderActivity : Activity() {
                 refreshHud()
             }
             onOpenDoc = { id -> openDoc(id) }
-            // 书签（`../REQUIREMENTS.md §1.9`）：模式1 的真源就是本机库，写完读回来再喂抽屉
+            // 书签（`../docs/REQUIREMENTS.md §1.9`）：模式1 的真源就是本机库，写完读回来再喂抽屉
             // （模式2 那边是 Mac 落库后广播回推——两模式都是「不乐观改本地表」）。
             // 落点 = 当前视口顶那一页那一处，与 Mac 的 ⌘D 同口径。
             onAddBookmark = { title ->
@@ -637,10 +637,10 @@ class ReaderActivity : Activity() {
             onOpenBoard = { id -> openDoc(TabSet.boardKey(id)) }
             onAddBoard = { createBoard() }
             onBoardMore = { id -> showBoardMenu(id) }
-            // 习题（`../EXERCISE-PLAN.md §10.2`）：点一组 = 在公用习题标签里换；长按 = 「在新标签页中打开」（同 Mac 右键）
+            // 习题（`../docs/EXERCISE-PLAN.md §10.2`）：点一组 = 在公用习题标签里换；长按 = 「在新标签页中打开」（同 Mac 右键）
             onOpenExercises = { key -> openExercises(key, newTab = false) }
             onExercisesLongPress = { key -> showExerciseGroupMenu(key) }
-            // Markdown 笔记（`../MARKDOWN-NOTES-PLAN.md`）：书库页「笔记」一组
+            // Markdown 笔记（`../docs/MARKDOWN-NOTES-PLAN.md`）：书库页「笔记」一组
             onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
             onAddNote = { newMdNote() }
             onNoteMore = { rel -> showMdNoteMenu(rel) }
@@ -865,9 +865,9 @@ class ReaderActivity : Activity() {
         exercise.setDocTitles(libTitles)
         exercise.refreshGroups()
         pushDrawerLibrary()
-        // 笔迹整理（转二进制、摘 JSON 点，`../BINARY-INK-PLAN.md §5`）：post 到本轮之后，排在开标签页的那几条读库后面
+        // 笔迹整理（转二进制、摘 JSON 点，`../docs/BINARY-INK-PLAN.md §5`）：post 到本轮之后，排在开标签页的那几条读库后面
         window.decorView.post { compactInkPoints(q, LibraryStore.InkCompactCursor(0, ""), 0) }
-        // 图片：开工作区时先对账再清掉待删除满 30 天的（同 Mac `WorkspaceManager.open`，`../IMAGE-NOTE-PLAN.md §3`）
+        // 图片：开工作区时先对账再清掉待删除满 30 天的（同 Mac `WorkspaceManager.open`，`../docs/IMAGE-NOTE-PLAN.md §3`）
         window.decorView.post { purgeImages(q, dir) }
         // 定时备份：8 秒后先来一份（别和开标签页抢那几秒），之后每 6 小时（节流 30 分钟）
         handler.removeCallbacks(backupTick)
@@ -1064,7 +1064,7 @@ class ReaderActivity : Activity() {
         refreshHud()
     }
 
-    // ---------- 工作区备份（`../BACKUP-PLAN.md §3`） ----------
+    // ---------- 工作区备份（`../docs/BACKUP-PLAN.md §3`） ----------
 
     /** 开着工作区时每 6 小时一份（节流 30 分钟），开工作区 8 秒后先来一份（同 Mac `scheduleOpenBackup`） */
     private val backupTick = object : Runnable {
@@ -1292,7 +1292,7 @@ class ReaderActivity : Activity() {
         }
     }
 
-    // ---------- Markdown 笔记（`../MARKDOWN-NOTES-PLAN.md`） ----------
+    // ---------- Markdown 笔记（`../docs/MARKDOWN-NOTES-PLAN.md`） ----------
 
     /** 扫完一遍后：已经不在的笔记标签收掉（Mac 上删了 / 改了名），在的刷一下标题 */
     private fun refreshMdTitles() {
@@ -1409,7 +1409,7 @@ class ReaderActivity : Activity() {
         else -> libTitles[docId]
     }
 
-    // ---------- 习题（`../EXERCISE-PLAN.md §10.2`，同 Mac `TabsModel.openExercises`） ----------
+    // ---------- 习题（`../docs/EXERCISE-PLAN.md §10.2`，同 Mac `TabsModel.openExercises`） ----------
 
     /**
      * 开一组题。默认只用一个公用习题标签（错题本那一支另一个）：
@@ -1490,7 +1490,7 @@ class ReaderActivity : Activity() {
         refreshHud()
     }
 
-    // ---------- 画板笔记（`../BOARD-NOTE-PLAN.md §5`） ----------
+    // ---------- 画板笔记（`../docs/BOARD-NOTE-PLAN.md §5`） ----------
 
     /** 重读画板列表，刷新抽屉与标签标题（增删改之后都走这里，本地列表不自己推算） */
     private fun refreshBoards(then: (() -> Unit)? = null) {
@@ -1568,7 +1568,7 @@ class ReaderActivity : Activity() {
     }
 
     /**
-     * 新建一篇画板并在新标签里打开：先选模式（无限画布 / 分页，`../BOARD-NOTE-PLAN.md §9.4`），
+     * 新建一篇画板并在新标签里打开：先选模式（无限画布 / 分页，`../docs/BOARD-NOTE-PLAN.md §9.4`），
      * 分页连初始页一起写（表不存在且补不上 = 建不了，说一句）。
      */
     private fun createBoard() {
@@ -2182,7 +2182,7 @@ class ReaderActivity : Activity() {
                 },
             )
         }
-        // 画板笔记一组：与文档平级，在标签页里打开（`../BOARD-NOTE-PLAN.md §5`）
+        // 画板笔记一组：与文档平级，在标签页里打开（`../docs/BOARD-NOTE-PLAN.md §5`）
         list.addView(Ui.groupTitle(this, getString(R.string.board_group)))
         for (b in libBoards) {
             val opened = tabs.any { it.docId == TabSet.boardKey(b.id) }
@@ -2488,7 +2488,7 @@ class ReaderActivity : Activity() {
         }
     }
 
-    // ---------- 图片笔记（`../IMAGE-NOTE-PLAN.md`） ----------
+    // ---------- 图片笔记（`../docs/IMAGE-NOTE-PLAN.md`） ----------
 
     /** 「插入图片…」：挑一张图，落在当前视口中央（点锚，同 Mac ⌘V 不在页面上时的落点） */
     private fun importImageNote() {

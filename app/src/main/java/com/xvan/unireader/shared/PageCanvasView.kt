@@ -73,7 +73,7 @@ open class PageCanvasView @JvmOverloads constructor(
 
     /**
      * 框选移动提交：box 为归一化 x0,y0,x1,y1、poly 为自由框选路径（扁平数组，≥3 点）——
-     * 真源侧要拿它们重新判定命中（多边形优先，见 ../PROTOCOL.md `lassoMove`），不信本地下标
+     * 真源侧要拿它们重新判定命中（多边形优先，见 ../docs/PROTOCOL.md `lassoMove`），不信本地下标
      */
     protected open fun onLassoMoveCommit(page: Int, box: FloatArray, dx: Float, dy: Float, poly: FloatArray) {}
 
@@ -93,7 +93,7 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * 撤销 / 重做。**模式2 只发意图**（栈在 Mac，见 `../PROTOCOL.md §4.1`），
+     * 撤销 / 重做。**模式2 只发意图**（栈在 Mac，见 `../docs/PROTOCOL.md §4.1`），
      * **模式1 本机就是真源**（自己一份栈）。两边都不做乐观预览：撤销要么整步成立要么不动。
      */
     protected open fun onUndoRequested(redo: Boolean) {}
@@ -135,7 +135,7 @@ open class PageCanvasView @JvmOverloads constructor(
         display: Int = NOTE_TAP,
     ) {}
 
-    // —— 书签缎带（`../REQUIREMENTS.md §1.9`）：贴页右缘、纵向落在书签自己的页内位置上 ——
+    // —— 书签缎带（`../docs/REQUIREMENTS.md §1.9`）：贴页右缘、纵向落在书签自己的页内位置上 ——
     //
     // 两模式共用这一份：书签的身份两边都是 UUID 串（草稿纸图钉那边模式2 用列表下标、模式1 用
     // 库 id，所以那个只能各写各的）。**只认手指不认笔**——笔是用来写字的，让笔点标记必然会在
@@ -329,7 +329,7 @@ open class PageCanvasView @JvmOverloads constructor(
         protected set
 
     /**
-     * 书写锁定（用户 2026-09-26 提，09-27 改口径：锁的是**切笔本身**；`../PROTOCOL.md` `lock` 0x59）：
+     * 书写锁定（用户 2026-09-26 提，09-27 改口径：锁的是**切笔本身**；`../docs/PROTOCOL.md` `lock` 0x59）：
      * 锁定后只能在「当前这支笔 ↔ 橡皮」之间来回——[cyclePen] 在笔记档不再轮替、[selectPen] 只认当前笔，
      * [cycleMode] 只在笔记/擦除两档来回、[setModeLocal] 也拦下切到其它档（翻页/框选/选字）。本机专属状态（同 `zoomLocked` 那一批），模式1 存 `ToolPrefs`；
      * 模式2 额外把改动上行给 Mac、也接受 Mac 广播下来的改动（[onLockChanged]）。
@@ -354,7 +354,7 @@ open class PageCanvasView @JvmOverloads constructor(
     protected open fun onLockChanged(locked: Boolean) {}
 
     /**
-     * 相对粗细模式（用户 2026-09-26 提；`../PROTOCOL.md` `relInk` 0x5A）：开着时落笔那一刻按**本机**当前
+     * 相对粗细模式（用户 2026-09-26 提；`../docs/PROTOCOL.md` `relInk` 0x5A）：开着时落笔那一刻按**本机**当前
      * [zoom] 把预设粗细折算细（[strokePen]），放大写的字缩回原尺寸看就是当初视觉粗细的缩影；关着是绝对粗细。
      * 折算在本端做：模式1 直接落库，模式2 上行的 `pen.w` 已是折算后的值（Mac 拿不到 pad 的缩放，原样用）。
      * 草稿纸 / 画板的笔迹经 `ScratchCanvas.Tools.relativeInk` 按画布自己的缩放折算。模式1 存 `ToolPrefs`，
@@ -597,7 +597,7 @@ open class PageCanvasView @JvmOverloads constructor(
 
     protected fun pw() = vw * zoom                                   // 页宽
 
-    // —— 画板模式（../PROTOCOL.md `canvas`）：页面两侧的空白也可书写，内容因此比页面宽 ——
+    // —— 画板模式（../docs/PROTOCOL.md `canvas`）：页面两侧的空白也可书写，内容因此比页面宽 ——
     // 页边笔迹仍是页内笔迹，只是归一化 x 越出 0…1。模式2 由 Mac 下发 `canvas` 设定（唯一真源），
     // 模式1 自己从库里的 canvas_mode + 笔迹越界量算（`CanvasMargin`）。
     // 关着时 cmargin()==0，下面几个函数全部退化成画板模式之前的老式子。

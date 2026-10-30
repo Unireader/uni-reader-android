@@ -176,7 +176,7 @@ class WireCodecTest {
             // #110~#111 分页画板同步滚动（双向）：页中 / 顶上留白（frac 为负）
             110 to WireCodec.encodeBoardScroll("B-1", 3, 0.25f, 123456.5),
             111 to WireCodec.encodeBoardScroll("B-1", 0, -0.0625f, 0.0),
-            // #114~#115 习题（`../PROTOCOL.md §4.9`）：exOpen 开一章 / 关掉（空串）
+            // #114~#115 习题（`../docs/PROTOCOL.md §4.9`）：exOpen 开一章 / 关掉（空串）
             114 to WireCodec.encodeExOpen("chap:D-1:[\"第二章 导数\"]"),
             115 to WireCodec.encodeExOpen(""),
             // #118 exIndex（双向，C→S 形态与 S→C 同字节）
@@ -766,7 +766,7 @@ class WireCodecTest {
             // #85 strokesAppend（0x4C）：与 #52 的 strokes 除首字节外**逐字节相同**
             "4c7856341201000000010000001414140000803f000020410302000000003f0000803e" +
                 "0000003f0000403f0000003e0000803f",
-            // #86~#90 书签（`../REQUIREMENTS.md §1.9`）：bookmarks(0x4D) 空表 / 两条；
+            // #86~#90 书签（`../docs/REQUIREMENTS.md §1.9`）：bookmarks(0x4D) 空表 / 两条；
             // bookmarkEdit(0x4E) add / rename / delete
             "4d020048310000",
             "4d0200483102000200423100000000000000000600e5bc80e5a4b402004232290000000000003f" +
@@ -781,7 +781,7 @@ class WireCodecTest {
             "51000300000000000000000000000300cdcccc3dcdcc4c3e9a99993ecdcccc3e0000003f9a99193f",
             "5101000000000000000000000000",
             "5102290000000000803e0000403f",
-            // #96~#102 画板笔记（v16，`../PROTOCOL.md §4.8`）：boards(0x52) 三态 / boardOpen(0x53) /
+            // #96~#102 画板笔记（v16，`../docs/PROTOCOL.md §4.8`）：boards(0x52) 三态 / boardOpen(0x53) /
             // boardAdd(0x54) / boardImages(0x55) 空表 / 一张
             "520000000000",
             "52020300422d3102000300422d310c00e69e81e99990e88d89e7a8bf0300422d320800556e7469746c6564",
@@ -790,22 +790,22 @@ class WireCodecTest {
             "54",
             "550000",
             "5501000200493106006162636465660000f1c2000021420000c84300009643",
-            // #103~#107 分页画板（v17，`../BOARD-NOTE-PLAN.md §9.5`）：boardPages(0x56) 空 / 三页；
+            // #103~#107 分页画板（v17，`../docs/BOARD-NOTE-PLAN.md §9.5`）：boardPages(0x56) 空 / 三页；
             // boardPageAdd(0x57)；boardPageTemplate(0x58)；boardAdd(0x54) 带分页尾部
             "5600c01444008052440000",
             "5600c01444008052440300020050310002005032040200503305",
             "570100",
             "58020001",
             "54010080524400c01444040a00",
-            // #108~#109 画板视口（v19，`../BOARD-NOTE-PLAN.md §10.1`）：boardViewport(0x5B) 存过的 / 没存过
+            // #108~#109 画板视口（v19，`../docs/BOARD-NOTE-PLAN.md §10.1`）：boardViewport(0x5B) 存过的 / 没存过
             "5b0300422d310000f1c20008d3440000c03f",
             "5b0300422d32000000000000000000000000",
-            // #110~#111 分页画板同步滚动（`../PROTOCOL.md §4.8`）：boardScroll(0x5C) 页中 / 顶上留白
+            // #110~#111 分页画板同步滚动（`../docs/PROTOCOL.md §4.8`）：boardScroll(0x5C) 页中 / 顶上留白
             "5c0300422d31030000000000803e000000000824fe40",
             "5c0300422d3100000000000080bd0000000000000000",
-            // #112 草稿纸 / 画板笔迹追加（`../PROTOCOL.md §4.4`）：scratchStrokesAppend(0x5D)，与 #59 同一份 list
+            // #112 草稿纸 / 画板笔迹追加（`../docs/PROTOCOL.md §4.4`）：scratchStrokesAppend(0x5D)，与 #59 同一份 list
             "5d07000000010000001414140000803f000020410302000000f1c2008080420000003f00000044000002c10000803f",
-            // #113~#120 习题（`../PROTOCOL.md §4.9`）：exGroups(0x5E) / exOpen(0x5F) 一章、关掉 /
+            // #113~#120 习题（`../docs/PROTOCOL.md §4.9`）：exGroups(0x5E) / exOpen(0x5F) 一章、关掉 /
             // exDeck(0x60) 两道题（只看没做过）、空 / exIndex(0x61) / exAct(0x62) 交卷、重做
             // （2026-10-11 起 exDeck 尾部多一个 noFilter 字节：#116 / #117 末尾的 00）
             "5e04000300616c6c0c00e585a8e983a8e4b9a0e9a2980c0000050077726f6e670900e99499e9a298e69cac0300000d00" +

@@ -16,7 +16,7 @@ import io.noties.markwon.image.AsyncDrawableSpan
 import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 
 /**
- * 习题的题干 / 选项 / 解析：Markdown + 公式画进普通 [TextView]（`../EXERCISE-PLAN.md §10`，用户选的「安卓自带控件画」）。
+ * 习题的题干 / 选项 / 解析：Markdown + 公式画进普通 [TextView]（`../docs/EXERCISE-PLAN.md §10`，用户选的「安卓自带控件画」）。
  *
  * 写法同 Mac 引擎（MCP 说明里的「Math in notes」）：`$…$` 行内、单独成行的 `$$…$$` 成块。Markwon 的公式插件只认
  * `$$`（行内也是 `$$…$$`），所以先把单个 `$` 包的改写成 `$$`（[normalize]），块公式拆成「`$$` / 内容 / `$$`」三行。

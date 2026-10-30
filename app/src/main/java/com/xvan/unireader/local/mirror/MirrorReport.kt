@@ -89,7 +89,7 @@ object MirrorReport {
             if (plan.ocrToMirror.isNotEmpty()) bits.add("拉回本机 ${plan.ocrToMirror.size} 页")
             out.add(Line(also("补齐文字识别结果：" + bits.joinToString("、")), ocrBreakdown(plan, hashTitles)))
         }
-        // 扫描页对齐：开关 / 参数整行按较新的那边覆盖（`../SCAN-ALIGN-PLAN.md §5`），措辞同 Mac
+        // 扫描页对齐：开关 / 参数整行按较新的那边覆盖（`../docs/SCAN-ALIGN-PLAN.md §5`），措辞同 Mac
         if (plan.alignToSource.isNotEmpty() || plan.alignToMirror.isNotEmpty()) {
             val bits = ArrayList<String>()
             if (plan.alignToSource.isNotEmpty()) bits.add("写入硬盘 ${plan.alignToSource.size} 本")

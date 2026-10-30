@@ -9,7 +9,7 @@ import com.xvan.unireader.local.store.Schema
 import java.io.File
 
 /**
- * 客户端这一侧的同步算法（`../SERVER-MODE-PLAN.md §4.2`）：找本地改动、处理推送结果、应用拉下来的行。
+ * 客户端这一侧的同步算法（`../docs/SERVER-MODE-PLAN.md §4.2`）：找本地改动、处理推送结果、应用拉下来的行。
  * 🔴 逐条照 Mac `../Sources/Sync/SyncClient.swift`（服务器的测试就是对着那份写的），改一边同步另一边。
  *
  * 只碰一个工作区库（[Db]）和它的文件夹；网络、文件上传下载、界面都不在这里。基线沿用离线镜像那张 `sync_base`

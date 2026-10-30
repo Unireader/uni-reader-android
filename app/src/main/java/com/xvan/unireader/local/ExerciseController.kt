@@ -32,7 +32,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * 模式1 的习题（`../EXERCISE-PLAN.md §10.2`）：抽屉「习题」一段的分组、一个习题标签里那一组题、把界面的操作落进本机库。
+ * 模式1 的习题（`../docs/EXERCISE-PLAN.md §10.2`）：抽屉「习题」一段的分组、一个习题标签里那一组题、把界面的操作落进本机库。
  * 照 [BoardController] 的分工：数据读写全在这里，`ReaderActivity` 只接线（标签页、抽屉、到 PDF 原页）。
  *
  * 界面是两模式共用的 [ExerciseScreen]；这里实现它的 [ExHost]：作答 / 收藏 / 移出错题本 / 设章节写库（经 [StoreQueue]），

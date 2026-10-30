@@ -13,7 +13,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * 服务器工作区的同步调度（`../SERVER-MODE-PLAN.md §4.3` 的 S2 档，照 Mac `ServerSyncCoordinator`）。
+ * 服务器工作区的同步调度（`../docs/SERVER-MODE-PLAN.md §4.3` 的 S2 档，照 Mac `ServerSyncCoordinator`）。
  * IO 在 [ServerSyncIO]，这里管时机与状态。
  *
  * | 时机 | 做什么 | 用哪条连接 |

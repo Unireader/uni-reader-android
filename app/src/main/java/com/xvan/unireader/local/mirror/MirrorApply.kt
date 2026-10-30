@@ -11,7 +11,7 @@ import java.io.File
 import java.util.UUID
 
 /**
- * **应用**三方合并的结果（方案 `../OFFLINE-MIRROR-PLAN.md` §8.3 第 4~5 步）。
+ * **应用**三方合并的结果（方案 `../docs/OFFLINE-MIRROR-PLAN.md` §8.3 第 4~5 步）。
  * 算是 [MirrorDiff] 的事，这里只负责把算好的 Plan 落到两边的库和文件上。
  *
  * 🔴 这是整个功能里**唯一会大批量改用户数据**的一段。四道保险：
@@ -343,7 +343,7 @@ object MirrorApply {
     // ---------- 扫描页对齐参数 ----------
 
     /**
-     * 把 [keys] 这些内容的 `page_align` 行从 [from] 整行覆盖到 [to]（`../SCAN-ALIGN-PLAN.md §5`，
+     * 把 [keys] 这些内容的 `page_align` 行从 [from] 整行覆盖到 [to]（`../docs/SCAN-ALIGN-PLAN.md §5`，
      * 谁新谁赢已在 plan 里算好）。事务外、幂等：再跑一次两侧 `updated_at` 已相等，plan 里就不会再有它。
      *
      * [to] 可能没有这张表（本端早于 v14 建的库）——`copyPageAlign` 会先补建。

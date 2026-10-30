@@ -10,7 +10,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 习题纯逻辑（模式1，`../EXERCISE-PLAN.md §10.2`）：与 Mac `spike/exercise-test.swift` 的同名几段逐条对应——
+ * 习题纯逻辑（模式1，`../docs/EXERCISE-PLAN.md §10.2`）：与 Mac `spike/exercise-test.swift` 的同名几段逐条对应——
  * 判题、做过的题显示哪一次、范围键与 includes、侧栏的数、章节树与分组、目录查章节；外加本端的一组题进度
  * （[LocalExerciseDeck]，照 Mac `ExerciseDeck`）与公式写法改写（[MathText.normalize]）。
  */
@@ -49,7 +49,7 @@ class ExerciseTest {
         assertNull(ExPayload.parse("{bad".toByteArray()))
     }
 
-    /** v21 填空 / 主观题（`../EXERCISE-PLAN.md §11.6`）：本端只显示题干，不判、不显示以前的作答、不收交卷。 */
+    /** v21 填空 / 主观题（`../docs/EXERCISE-PLAN.md §11.6`）：本端只显示题干，不判、不显示以前的作答、不收交卷。 */
     @Test
     fun freeKindsAreMacOnly() {
         val fill = ex("f", kind = Exercise.KIND_FILL, answer = listOf("2", "4"))

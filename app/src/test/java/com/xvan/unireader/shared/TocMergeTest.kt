@@ -5,7 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 目录 + 书签合并规则（`../REQUIREMENTS.md §1.9`）。
+ * 目录 + 书签合并规则（`../docs/REQUIREMENTS.md §1.9`）。
  * 用例与 Mac 的 `spike/toc-merge-test.swift` **逐条对应**——那份是参照实现，
  * 这里跑的是它的 Kotlin 移植，两边结论必须一样。
  */

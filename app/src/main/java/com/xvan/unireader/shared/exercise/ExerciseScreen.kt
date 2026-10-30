@@ -27,7 +27,7 @@ import kotlin.math.abs
 import kotlin.math.min
 
 /**
- * 一个习题标签的样子（两模式共用，`../EXERCISE-PLAN.md §10.1`；对应 Mac `ExerciseTabView` + 练习页 + 列表页）：
+ * 一个习题标签的样子（两模式共用，`../docs/EXERCISE-PLAN.md §10.1`；对应 Mac `ExerciseTabView` + 练习页 + 列表页）：
  * 顶上一条（范围名 + 进度 + 筛选 + 全部重做 + 练习 / 列表），下面是练习页或列表页。
  *
  * 只认 [ExDeckView]，操作全部交给 [ExHost]（模式1 写本机库 / 模式2 发给 Mac），改完由宿主把新的一份 [show] 回来——
@@ -140,7 +140,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private val historyNote = note()
     private val agentNote = note()
     private val markNote = note()
-    /** 填空 / 主观题：本轮平板上不能作答（`../EXERCISE-PLAN.md §11.6`）。 */
+    /** 填空 / 主观题：本轮平板上不能作答（`../docs/EXERCISE-PLAN.md §11.6`）。 */
     private val macOnlyNote = note()
     private val explanationTitle = TextView(a).apply {
         text = s(R.string.ex_explanation)

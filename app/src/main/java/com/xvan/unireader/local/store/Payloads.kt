@@ -153,7 +153,7 @@ class InkPayload(val raw: JSONObject) {
         ): Pair<Stroke, String?>? {
             val s = String(bytes, StandardCharsets.UTF_8)
             val span = InkPointsScan.span(s)
-            // v18 规则（`../BINARY-INK-PLAN.md §3`，Mac `InkStrokePayload.read` 同一份）：
+            // v18 规则（`../docs/BINARY-INK-PLAN.md §3`，Mac `InkStrokePayload.read` 同一份）：
             //  1. 二进制有效（points_at == updated_at）→ 用二进制，JSON 点不解；
             //  2. 否则 JSON 里有点 → 用 JSON；3. 否则有二进制 → 用二进制（已清理兼容数据）；4. 都没有 → 空。
             if (blobValid && span != null) {
@@ -183,7 +183,7 @@ class InkPayload(val raw: JSONObject) {
         }
 
         /**
-         * 把 `"points":[…]` 摘成 `"points":[]`（已清理兼容数据时写库前用，`../BINARY-INK-PLAN.md §4`）。
+         * 把 `"points":[…]` 摘成 `"points":[]`（已清理兼容数据时写库前用，`../docs/BINARY-INK-PLAN.md §4`）。
          * 返回 (换过的 payload, 原来有没有点)；找不到 points 键 → null。只配方括号，不解数字。
          */
         fun stripPoints(bytes: ByteArray): Pair<ByteArray, Boolean>? {
@@ -329,7 +329,7 @@ fun boundsOf(pts: List<Pt3>): DoubleArray {
  * `quote`/`rects`/`color`/`type_id` 一个都不能在安卓这边丢（红线同上）。
  */
 /**
- * 书签 payload（note kind=5，`../REQUIREMENTS.md §1.9`）：页/页内位置走 note 的列，
+ * 书签 payload（note kind=5，`../docs/REQUIREMENTS.md §1.9`）：页/页内位置走 note 的列，
  * 这里只剩名字。键名与 Mac 端 `BookmarkPayload` 一致（`title`）。
  */
 class BookmarkPayload(val raw: JSONObject) {

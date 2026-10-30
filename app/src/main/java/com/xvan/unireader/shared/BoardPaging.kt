@@ -6,7 +6,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * 分页画板（v17，`../BOARD-NOTE-PLAN.md §9`）的**三端契约**：布局、背景模板编码、模板几何、页面尺寸预设。
+ * 分页画板（v17，`../docs/BOARD-NOTE-PLAN.md §9`）的**三端契约**：布局、背景模板编码、模板几何、页面尺寸预设。
  * 逐条对应 Mac `Sources/App/BoardModel.swift` 的 `BoardLayout` / `BoardTemplate` / `BoardTemplateGeometry` /
  * `BoardPageSize`——改一个数三端一起改（网页 `web/src` 同款），否则同一本画板两端画出来的页和线不在一个位置。
  *

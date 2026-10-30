@@ -162,7 +162,7 @@
     <string name="tools_workspace">Switch workspace…</string>
     <string name="tools_hide_bar">Hide top bar</string>
     <string name="tools_conn">Connection settings…</string>
-    <!-- 习题（../EXERCISE-PLAN.md §10；措辞与 Mac Localizable.strings 同一套） -->
+    <!-- 习题（../docs/EXERCISE-PLAN.md §10；措辞与 Mac Localizable.strings 同一套） -->
     <string name="ex_title">Exercises</string>
     <string name="ex_all">All Exercises</string>
     <string name="ex_mistakes">Mistakes</string>
@@ -327,7 +327,7 @@
     <string name="backup_restoring">Restoring…</string>
     <string name="backup_hint">Backups are kept automatically: the last 5, one a day for 7 days, one a week for 4 weeks.</string>
 
-    <!-- 连接服务器（../SERVER-MODE-PLAN.md，local/server/） -->
+    <!-- 连接服务器（../docs/SERVER-MODE-PLAN.md，local/server/） -->
     <string name="srv_connect">Connect to Server…</string>
     <string name="srv_connect_title">Connect to Server</string>
     <string name="srv_connect_sub">Enter the server address and the pairing code it shows.</string>

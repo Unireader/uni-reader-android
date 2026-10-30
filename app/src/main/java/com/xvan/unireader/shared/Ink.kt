@@ -23,7 +23,7 @@ const val MODE_LASSO = 3
 /**
  * 选字（划字高亮 / 划字笔记）。
  *
- * 🔴 **只有模式1 有这一档，线格式里没有它**：`mode` 是双向消息、`../PROTOCOL.md §4.1` 写死
+ * 🔴 **只有模式1 有这一档，线格式里没有它**：`mode` 是双向消息、`../docs/PROTOCOL.md §4.1` 写死
  * `0=note 1=erase 2=page 3=lasso`，多发一个 4 过去 Mac 不认识。所以它不进
  * [PadConst.MODE_LABELS]（那张表就是线上契约），只进模式1 自己的
  * [PadConst.LOCAL_MODE_LABELS]；模式2 的模式键循环一格都不会碰到它。
@@ -127,7 +127,7 @@ data class TextNote(
      * （Mac `PageCellView.markerPos` 一直是这么画的，本端 2026-09-04 才跟上）。
      *
      * 模式1 从库里读 `anchor_w`；**模式2 恒 0** —— 线上 `notes` 消息只发 anchor 的左上角
-     * （`../PROTOCOL.md §4.3`），拿不到宽。那边的图钉照旧落锚点，与改之前一样。
+     * （`../docs/PROTOCOL.md §4.3`），拿不到宽。那边的图钉照旧落锚点，与改之前一样。
      */
     val aw: Float = 0f,
     /** 笔记类型 id（payload 的 `type_id`）。图钉底色/图标按它查；null/未知 = 通用暖黄 */

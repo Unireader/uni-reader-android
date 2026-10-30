@@ -9,7 +9,7 @@ import okhttp3.Request
 
 /**
  * 画板笔记上的图（模式2）：`GET http://host:8770/image?h=<sha>` → 解码 → 按 sha 缓存。
- * 与 `/page.png` 同级不带 token（`../PROTOCOL.md §4.8`；Mac 只认当前跟随画板上登记过的 sha）。
+ * 与 `/page.png` 同级不带 token（`../docs/PROTOCOL.md §4.8`；Mac 只认当前跟随画板上登记过的 sha）。
  *
  * 缓存按 sha（图片内容的哈希）记，所以换画板再回来、或同一张图在两篇画板里各贴一次都不必重下。
  * 额度按字节，放得下十来张 2048px 的图就够——画板上的图比页图小得多也少得多。

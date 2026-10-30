@@ -701,7 +701,7 @@ class LocalCanvasView @JvmOverloads constructor(
      * 装载这份内容的 OCR 文本层。**在 StoreQueue 线程上跑**（整本的 JSON 解析是几十毫秒级），
      * 结果回主线程注入画布。
      *
-     * 文本来自 `ocr_page`——Mac 跑的 OCR，随离线镜像双向同步过来（`../OFFLINE-MIRROR-PLAN.md §4.1`）；
+     * 文本来自 `ocr_page`——Mac 跑的 OCR，随离线镜像双向同步过来（`../docs/OFFLINE-MIRROR-PLAN.md §4.1`）；
      * **本机不跑 OCR**，所以没同步过来的书在平板上就是划不动，这是设计如此。
      *
      * 水印一律在这里滤掉：跨页统计要整本的样本，逐页懒读攒不出来（同 Mac `rebuildWatermarkProfile`）。
@@ -973,7 +973,7 @@ class LocalCanvasView @JvmOverloads constructor(
     private val pinPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pinRect = RectF()
 
-    // ---------- 图片笔记（note kind=6，`../IMAGE-NOTE-PLAN.md §5`；模式1 专属：线格式里没有它） ----------
+    // ---------- 图片笔记（note kind=6，`../docs/IMAGE-NOTE-PLAN.md §5`；模式1 专属：线格式里没有它） ----------
     //
     // 同文字笔记一套壳：图钉 + 气泡 + 三种展开方式。气泡里是缩略图 + 说明（最多 3 行），**没有铅笔**
     // （压在图上很突兀，同 Mac）：点缩略图看大图，看大图那页里再进编辑 / 删除。

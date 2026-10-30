@@ -11,7 +11,7 @@ import org.json.JSONObject
 
 /**
  * 离线镜像的**记账层**：`sync_base` 基线表、血缘 meta、借出记录的编解码。
- * 方案 `../OFFLINE-MIRROR-PLAN.md` §3/§5；建镜像的文件级流程在 [MirrorBuilder]。
+ * 方案 `../docs/OFFLINE-MIRROR-PLAN.md` §3/§5；建镜像的文件级流程在 [MirrorBuilder]。
  *
  * 🔴 **跨端契约**：表结构、meta 键名、借出记录的 JSON 形态都写在同一个工作区的库里，
  * 与 Mac `Sources/Store/MirrorStore.swift` 必须一致，改一边同步另一边。
@@ -225,7 +225,7 @@ object MirrorStore {
         )
 
     /**
-     * 一个库里 `page_align` 的「内容 hash → updated_at」（`../SCAN-ALIGN-PLAN.md §5`，不带 payload）。
+     * 一个库里 `page_align` 的「内容 hash → updated_at」（`../docs/SCAN-ALIGN-PLAN.md §5`，不带 payload）。
      *
      * **表不存在就当空**：本端早于 v14 建的库、没被新版 Mac 打开过的老库都没有这张表，
      * 查不到表就抛错的话整次同步都会失败。同 Mac `MirrorStore.alignStamps`（两列不是文本的行跳过，

@@ -31,7 +31,7 @@ import kotlin.math.roundToInt
  * 选 Pdfium 而非内置 `PdfRenderer` 的理由见 `ANDROID-STANDALONE-PLAN.md §4`：后者只能出图，
  * 没有文字层也没有书签，下一版的搜索/选择/目录会全部卡死。
  *
- * **扫描页对齐**（`../SCAN-ALIGN-PLAN.md`）：传了 [align] 且页数对得上，这份文档的「页面」就是对齐后的那张——
+ * **扫描页对齐**（`../docs/SCAN-ALIGN-PLAN.md`）：传了 [align] 且页数对得上，这份文档的「页面」就是对齐后的那张——
  * [pageSizes] 报 `(W, sh)`、[request] 出的是转正平移过的图。几何层、草稿纸垫页、参考窗全都只经
  * [pageSizes] + [request] 认识页面，所以一处换掉处处一致；库里的批注坐标本来就是 Mac 按对齐页面写的，一个不换算。
  */
@@ -130,7 +130,7 @@ class PdfSource(
         }
     }
 
-    /** 显示身份（`../SCAN-ALIGN-PLAN.md §3.1`）：没开 = 内容 hash；开着 = `hash~a戳`。页图缓存键带它 */
+    /** 显示身份（`../docs/SCAN-ALIGN-PLAN.md §3.1`）：没开 = 内容 hash；开着 = `hash~a戳`。页图缓存键带它 */
     val displayKey: String = ScanAlignTable.displayKey(contentHash, scanAlign)
 
     /**
@@ -367,7 +367,7 @@ class PdfSource(
     }
 
     /**
-     * 扫描页对齐出图（`../SCAN-ALIGN-PLAN.md §2.2`）：成品 `widthPx × round(widthPx·sh/W)`，先铺白底，
+     * 扫描页对齐出图（`../docs/SCAN-ALIGN-PLAN.md §2.2`）：成品 `widthPx × round(widthPx·sh/W)`，先铺白底，
      * 再把**原页**按「像素/pt = widthPx / W」画成中间图，用 §2.2 的 `Matrix` 画进来——转出页外的角被裁掉、
      * 页内空出来的角是白的（同 Mac `PageBitmap.draw` 的 `cgTransform`）。
      *

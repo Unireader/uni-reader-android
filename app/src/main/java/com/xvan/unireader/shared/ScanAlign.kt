@@ -7,7 +7,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * 扫描页对齐（`../SCAN-ALIGN-PLAN.md`）的**读端**纯逻辑：每页变换 + 参数表解码 + 显示身份。
+ * 扫描页对齐（`../docs/SCAN-ALIGN-PLAN.md`）的**读端**纯逻辑：每页变换 + 参数表解码 + 显示身份。
  * 纯 Kotlin、不认识 android.*，`ScanAlignTest` 在 JVM 上直接跑。
  *
  * 🔴 **与 Mac `Sources/App/ScanAlign.swift` 的 `PageAlign` / `ScanAlignTable` 同款算法两份实现**：

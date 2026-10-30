@@ -64,7 +64,7 @@ class LibraryActivity : Activity() {
     /** 一行要显示的全部东西，全在后台备好（主线程不再碰库） */
     private class Row(val doc: LibDocument, val ink: Int, val pdfOk: Boolean, val opened: Boolean)
 
-    /** 画板笔记一行（`../BOARD-NOTE-PLAN.md §5`）：[items] = 上面有几条东西（笔迹 + 图片） */
+    /** 画板笔记一行（`../docs/BOARD-NOTE-PLAN.md §5`）：[items] = 上面有几条东西（笔迹 + 图片） */
     private class BoardRow(val board: BoardNote, val items: Int, val opened: Boolean)
 
     /** 「习题」一组的一行（只列第一级：全部 / 错题本 / 收藏 / 每本有题的书；章节在阅读界面抽屉里选） */
@@ -78,10 +78,10 @@ class LibraryActivity : Activity() {
         val boards: List<BoardRow>,
         /** 工作区 Markdown 笔记（`Notes/` 里的相对路径 → 是否已在标签页里），按路径排 */
         val notes: List<Pair<String, Boolean>> = emptyList(),
-        /** 服务器工作区连的那台（`meta.srv_url` / `srv_id`，`../SERVER-MODE-PLAN.md`）；本地工作区 = null */
+        /** 服务器工作区连的那台（`meta.srv_url` / `srv_id`，`../docs/SERVER-MODE-PLAN.md`）；本地工作区 = null */
         val serverUrl: String? = null,
         val serverId: String? = null,
-        /** 习题（`../EXERCISE-PLAN.md`）：没有题 = 空，整组不显示（同 Mac 侧栏「有题才出现」） */
+        /** 习题（`../docs/EXERCISE-PLAN.md`）：没有题 = 空，整组不显示（同 Mac 侧栏「有题才出现」） */
         val exercises: List<ExRow> = emptyList(),
     )
 
@@ -337,7 +337,7 @@ class LibraryActivity : Activity() {
         }
     }
 
-    /** 「笔记」一组（`../MARKDOWN-NOTES-PLAN.md`）：每篇一行，次行是所在目录；点开 = 在阅读界面的标签页里打开 */
+    /** 「笔记」一组（`../docs/MARKDOWN-NOTES-PLAN.md`）：每篇一行，次行是所在目录；点开 = 在阅读界面的标签页里打开 */
     private fun renderNotes(ws: File, notes: List<Pair<String, Boolean>>) {
         if (notes.isEmpty()) return
         list.addView(Ui.groupTitle(this, getString(R.string.md_group), top = 24))
@@ -358,7 +358,7 @@ class LibraryActivity : Activity() {
         }
     }
 
-    // ---------- 画板笔记（`../BOARD-NOTE-PLAN.md §5`） ----------
+    // ---------- 画板笔记（`../docs/BOARD-NOTE-PLAN.md §5`） ----------
 
     /** 书库页的「画板笔记」一组：每篇一行（点开 = 在阅读界面的标签页里打开）+「新建」 */
     private fun renderBoards(ws: File, boards: List<BoardRow>) {
@@ -448,7 +448,7 @@ class LibraryActivity : Activity() {
     }
 
     /** 新建一篇空画板，建好直接在阅读界面里打开 */
-    /** 新建画板：先选模式（无限画布 / 分页 + 页面大小、背景、页数，`../BOARD-NOTE-PLAN.md §9.4`），再写库 */
+    /** 新建画板：先选模式（无限画布 / 分页 + 页面大小、背景、页数，`../docs/BOARD-NOTE-PLAN.md §9.4`），再写库 */
     private fun createBoard(ws: File) {
         com.xvan.unireader.shared.NewBoardSheet.show(this) { spec -> createBoard(ws, spec) }
     }
@@ -653,7 +653,7 @@ class LibraryActivity : Activity() {
         }
         val sheet = Sheet(this)
         when {
-            // 服务器工作区：本机缓存本身就是离线副本，不再给「做成离线副本」（`../SERVER-MODE-PLAN.md §1`）
+            // 服务器工作区：本机缓存本身就是离线副本，不再给「做成离线副本」（`../docs/SERVER-MODE-PLAN.md §1`）
             serverUrl != null -> {
                 sheet.title(getString(R.string.srv_workspace_title)).subtitle(syncLine.text.toString())
                 item(R.drawable.ic_redo, getString(R.string.srv_sync_now)) { ServerSync.syncNow(this, ws) }

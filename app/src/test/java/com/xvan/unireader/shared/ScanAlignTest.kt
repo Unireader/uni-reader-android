@@ -12,7 +12,7 @@ import kotlin.math.PI
 import kotlin.math.tan
 
 /**
- * 扫描页对齐的读端纯逻辑（[PageAlign] / [ScanAlignTable]，方案 `../SCAN-ALIGN-PLAN.md` §2/§3）。
+ * 扫描页对齐的读端纯逻辑（[PageAlign] / [ScanAlignTable]，方案 `../docs/SCAN-ALIGN-PLAN.md` §2/§3）。
  *
  * 与 Mac `spike/scan-align-test.swift` 的 ①（变换）②（payload）⑤（安卓 Matrix 系数）三段对应；
  * ③④ 是测量算法，只在 Mac 跑，本端没有。

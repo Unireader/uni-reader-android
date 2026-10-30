@@ -58,7 +58,7 @@ object WireCodec {
     const val OP_SCRATCH_PADS = 0x3D
     const val OP_SCRATCH_STROKES = 0x3E
 
-    /** 与 [OP_SCRATCH_STROKES] 逐字节相同，语义是「追加」（`../PROTOCOL.md §4.4`，同 [OP_STROKES_APPEND] 之于 strokes） */
+    /** 与 [OP_SCRATCH_STROKES] 逐字节相同，语义是「追加」（`../docs/PROTOCOL.md §4.4`，同 [OP_STROKES_APPEND] 之于 strokes） */
     const val OP_SCRATCH_STROKES_APPEND = 0x5D
     const val OP_NOTE_NEW = 0x3F
     const val OP_SCROLL = 0x40
@@ -72,10 +72,10 @@ object WireCodec {
     const val OP_LASSO_SCALE = 0x4A
     const val OP_CANVAS = 0x4B
 
-    /** 与 [OP_STROKES] 逐字节相同，语义是「追加」（`../PROTOCOL.md §4.2`） */
+    /** 与 [OP_STROKES] 逐字节相同，语义是「追加」（`../docs/PROTOCOL.md §4.2`） */
     const val OP_STROKES_APPEND = 0x4C
 
-    /** 书签（`../REQUIREMENTS.md §1.9`）：S→C 全量镜像 / C→S 增删改请求 */
+    /** 书签（`../docs/REQUIREMENTS.md §1.9`）：S→C 全量镜像 / C→S 增删改请求 */
     const val OP_BOOKMARKS = 0x4D
     const val OP_BOOKMARK_EDIT = 0x4E
 
@@ -88,7 +88,7 @@ object WireCodec {
     const val OP_CLIP = 0x51
 
     /**
-     * 画板笔记（v16，`../PROTOCOL.md §4.8`）：boards / boardImages 是 S→C 全量镜像，
+     * 画板笔记（v16，`../docs/PROTOCOL.md §4.8`）：boards / boardImages 是 S→C 全量镜像，
      * boardOpen / boardAdd 是 C→S 请求。笔迹本身仍走草稿纸那几条（画板会话里那张纸永远开着）。
      */
     const val OP_BOARDS = 0x52
@@ -97,24 +97,24 @@ object WireCodec {
     const val OP_BOARD_IMAGES = 0x55
 
     /**
-     * 分页画板（v17，`../PROTOCOL.md §4.8` 末尾、`../BOARD-NOTE-PLAN.md §9.5`）：boardPages 是 S→C 全量镜像
+     * 分页画板（v17，`../docs/PROTOCOL.md §4.8` 末尾、`../docs/BOARD-NOTE-PLAN.md §9.5`）：boardPages 是 S→C 全量镜像
      * （n=0 = 不是分页画板）；boardPageAdd / boardPageTemplate 是 C→S 请求。boardAdd 另有可选尾部。
      */
     const val OP_BOARD_PAGES = 0x56
     const val OP_BOARD_PAGE_ADD = 0x57
     const val OP_BOARD_PAGE_TEMPLATE = 0x58
 
-    /** 书写锁定（双向，同 [OP_ERASER] 一个 opcode 两个方向都用；`../PROTOCOL.md §4.1`） */
+    /** 书写锁定（双向，同 [OP_ERASER] 一个 opcode 两个方向都用；`../docs/PROTOCOL.md §4.1`） */
     const val OP_LOCK = 0x59
-    /** 相对粗细模式开关（双向，同 [OP_LOCK]；`../PROTOCOL.md` `relInk`） */
+    /** 相对粗细模式开关（双向，同 [OP_LOCK]；`../docs/PROTOCOL.md` `relInk`） */
     const val OP_REL_INK = 0x5A
     /**
-     * 画板视口（双向，`../PROTOCOL.md §4.8` 末尾、`../BOARD-NOTE-PLAN.md §10.1`）：S→C = Mac 库里存的
+     * 画板视口（双向，`../docs/PROTOCOL.md §4.8` 末尾、`../docs/BOARD-NOTE-PLAN.md §10.1`）：S→C = Mac 库里存的
      * （紧跟 boards / boardPages），C→S = 用户动过视口后停手回传。两个方向都带画板 id。
      */
     const val OP_BOARD_VIEWPORT = 0x5B
     /**
-     * 分页画板同步滚动（双向，`../PROTOCOL.md §4.8`「分页画板同步滚动」）：`str id · u32 page · f32 frac · f64 t`。
+     * 分页画板同步滚动（双向，`../docs/PROTOCOL.md §4.8`「分页画板同步滚动」）：`str id · u32 page · f32 frac · f64 t`。
      * C→S 走 UDP 不保证送达（同 scroll），S→C 走 WS。位置口径见 `ScratchCanvas.pageAnchor`。
      */
     const val OP_BOARD_SCROLL = 0x5C
@@ -123,11 +123,11 @@ object WireCodec {
     const val BOARD_KIND_PDF = 0
     const val BOARD_KIND_MARKDOWN = 1
     const val BOARD_KIND_BOARD = 2
-    /** 被跟随会话是习题标签（2026-10-11）：`boards.current` = 那一组的范围键（`../PROTOCOL.md §4.9`） */
+    /** 被跟随会话是习题标签（2026-10-11）：`boards.current` = 那一组的范围键（`../docs/PROTOCOL.md §4.9`） */
     const val BOARD_KIND_EXERCISE = 3
 
     /**
-     * 习题（2026-10-11，`../PROTOCOL.md §4.9`）：分组（S→C）/ 平板开哪组（C→S）/ 一组的全量（S→C）/
+     * 习题（2026-10-11，`../docs/PROTOCOL.md §4.9`）：分组（S→C）/ 平板开哪组（C→S）/ 一组的全量（S→C）/
      * 第几题（双向）/ 平板的操作（C→S）。
      */
     const val OP_EX_GROUPS = 0x5E
@@ -184,7 +184,7 @@ object WireCodec {
      * 文档列表项（docs 消息元素；纯线格式概念——模式1 的文档列表来自 SQLite，不走这里）。
      *
      * [ws] = 那个窗口**所属工作区的名字**。Mac 的工作区是窗口级、多个可以同时开着，
-     * 所以这份列表天生跨工作区混排，客户端必须拿 [ws] 分组（`../PROTOCOL.md §4.2`）。
+     * 所以这份列表天生跨工作区混排，客户端必须拿 [ws] 分组（`../docs/PROTOCOL.md §4.2`）。
      */
     data class DocEntry(val id: String, val title: String, val ws: String)
 
@@ -220,7 +220,7 @@ object WireCodec {
         val b: Int,
         val a: Float,
         val pattern: Int,
-        /** 页面底图（v10）：这张纸要不要把它锚定的那一页垫在纸下面（几何契约见 ../PROTOCOL.md §4.4） */
+        /** 页面底图（v10）：这张纸要不要把它锚定的那一页垫在纸下面（几何契约见 ../docs/PROTOCOL.md §4.4） */
         val showPage: Boolean,
     )
 
@@ -229,7 +229,7 @@ object WireCodec {
 
     /**
      * 画板上的一张图（boardImages 消息元素）。[x]/[y]/[w]/[h] = 画布坐标矩形（左上原点，逻辑点）；
-     * 图片本体按 [sha] 走 `GET /image?h=`（`../PROTOCOL.md §4.8`）。
+     * 图片本体按 [sha] 走 `GET /image?h=`（`../docs/PROTOCOL.md §4.8`）。
      */
     data class BoardImageEntry(
         val id: String,
@@ -283,7 +283,7 @@ object WireCodec {
         /** 长按进度环（环形盘前置动画）；on=false 时其余字段无意义 */
         data class PressRing(val on: Boolean, val page: Long, val nx: Float, val ny: Float) : Msg()
         /**
-         * 画板模式（../PROTOCOL.md `canvas`）：页面两侧的空白也是可书写区。
+         * 画板模式（../docs/PROTOCOL.md `canvas`）：页面两侧的空白也是可书写区。
          * [margin] = **每侧**页边宽度，单位是页宽的倍数（0.5 = 每侧半个页宽）；Mac 是唯一真源。
          * 页边笔迹仍是页内笔迹，只是归一化 x 越出 0…1 —— 除本条外线格式一个字节没变。
          */
@@ -557,7 +557,7 @@ object WireCodec {
     /**
      * 书签增删改**请求**（Mac 是唯一真源，落库后以 bookmarks 全量回推为准，别乐观改本地表）。
      * add 的 [id] 由本端生成 UUID 串（同 textNote 先例）；rename 只认 id+title、delete 只认 id，
-     * 其余字段填 0 即可（`../PROTOCOL.md §4.1`）。
+     * 其余字段填 0 即可（`../docs/PROTOCOL.md §4.1`）。
      */
     fun encodeBookmarkEdit(
         op: Int,
@@ -587,7 +587,7 @@ object WireCodec {
 
     /**
      * 请求切画板模式（C→S）。**只有 `on` 有意义**，margin 一律编 0——页边宽度轮不到客户端定
-     * （../PROTOCOL.md `canvas`）。Mac 执行后照旧广播权威值回来，本端那时才改布局。
+     * （../docs/PROTOCOL.md `canvas`）。Mac 执行后照旧广播权威值回来，本端那时才改布局。
      */
     fun encodeCanvas(on: Boolean): ByteArray =
         Writer().apply { u8(OP_CANVAS); u8(if (on) 1 else 0); f32(0f) }.bytes()
@@ -632,7 +632,7 @@ object WireCodec {
     }.bytes()
 
     /**
-     * 撤销 / 重做（0x4F）。**撤销栈只有 Mac 一份**（`../PROTOCOL.md §4.1`）：本端只发意图，
+     * 撤销 / 重做（0x4F）。**撤销栈只有 Mac 一份**（`../docs/PROTOCOL.md §4.1`）：本端只发意图，
      * 不做乐观预览——撤销要么整步成立要么不动，没有中间态可预览，而抢先撤了再被真源纠正
      * 是最难看的一种闪烁。结果照常由 `strokes`/`notes`/`scratchStrokes` 全量镜像回来。
      */
@@ -666,7 +666,7 @@ object WireCodec {
             u8(OP_SCRATCH_PAPER); u16(index); u8(r); u8(g); u8(b); f32(a); u8(pattern)
         }.bytes()
 
-    /** 开/关第 index 张纸的页面底图（把它锚定的那一页垫在纸下面，几何契约见 ../PROTOCOL.md §4.4） */
+    /** 开/关第 index 张纸的页面底图（把它锚定的那一页垫在纸下面，几何契约见 ../docs/PROTOCOL.md §4.4） */
     fun encodeScratchPageShow(index: Int, show: Boolean): ByteArray =
         Writer().apply { u8(OP_SCRATCH_PAGE_SHOW); u16(index); u8(if (show) 1 else 0) }.bytes()
 
@@ -719,7 +719,7 @@ object WireCodec {
     fun encodeExIndex(scope: String, index: Int): ByteArray =
         Writer().apply { u8(OP_EX_INDEX); str(scope); u16(index) }.bytes()
 
-    /** 平板的操作（[act] 见 EX_ACT_*；各字段用法见 `../PROTOCOL.md §4.9` 的 act 表） */
+    /** 平板的操作（[act] 见 EX_ACT_*；各字段用法见 `../docs/PROTOCOL.md §4.9` 的 act 表） */
     fun encodeExAct(
         scope: String,
         act: Int,
@@ -938,7 +938,7 @@ object WireCodec {
                     val list = ArrayList<TextNote>(n)
                     var i = 0
                     while (i < n && r.remaining > 0) {
-                        // 尾部 u8 = 展开方式（0=点击 1=悬停 2=始终），见 ../PROTOCOL.md §4.2
+                        // 尾部 u8 = 展开方式（0=点击 1=悬停 2=始终），见 ../docs/PROTOCOL.md §4.2
                         list.add(TextNote(r.str(), r.u32(), r.f32(), r.f32(), r.str(), r.u8())); i++
                     }
                     Msg.Notes(list)

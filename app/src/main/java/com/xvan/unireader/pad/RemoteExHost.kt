@@ -11,8 +11,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /**
- * 模式2 的习题宿主（`../EXERCISE-PLAN.md §10.4`）：题目与作答都只在 Mac，界面（`shared/exercise/ExerciseScreen`）的
- * 每个操作都编成 `exAct` / `exIndex` 发给 Mac（`../PROTOCOL.md §4.9`），Mac 做完回一份 `exDeck`，界面再画。
+ * 模式2 的习题宿主（`../docs/EXERCISE-PLAN.md §10.4`）：题目与作答都只在 Mac，界面（`shared/exercise/ExerciseScreen`）的
+ * 每个操作都编成 `exAct` / `exIndex` 发给 Mac（`../docs/PROTOCOL.md §4.9`），Mac 做完回一份 `exDeck`，界面再画。
  *
  * 只有翻题先在本地挪一下（[onLocalGo]，不等一趟来回），Mac 回的 `exIndex` 是同一个位置，不打架。
  * 原题图走 `GET /exercise.png?id=&w=`（Mac 渲，只认平板开着那组里的题），按「题 id + 宽」缓存。

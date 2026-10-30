@@ -11,7 +11,7 @@ import java.time.Duration
 import java.time.Instant
 
 /**
- * 同步里「一行」的定位、读取、指纹与写入（`../SERVER-MODE-PLAN.md §4.1`）。
+ * 同步里「一行」的定位、读取、指纹与写入（`../docs/SERVER-MODE-PLAN.md §4.1`）。
  * 🔴 逐条照 Mac `../Sources/Sync/SyncRows.swift`，改一边同步另一边。
  *
  * 两类表：

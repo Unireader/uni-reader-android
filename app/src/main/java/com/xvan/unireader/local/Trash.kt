@@ -14,7 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 回收站（`../BACKUP-PLAN.md §2`，Mac `TrashModel` + `WorkspaceManager+Trash` 的同款）：
+ * 回收站（`../docs/BACKUP-PLAN.md §2`，Mac `TrashModel` + `WorkspaceManager+Trash` 的同款）：
  * `<工作区>/UniReader/Trash/<时间>_<标题>/{snapshot.sqlite, manifest.json}`。
  *
  * 🔴 **先归档、再删除**（红线 11）：归档（快照 + manifest）写成了才删库行；归档失败 = 整个删除放弃并报错。

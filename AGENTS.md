@@ -4,11 +4,11 @@ UniReader 的安卓端：**一个 App 两种模式**（启动页两个标签页�
 「连接 Mac」= 模式2；2026-09-26 起选哪台 Mac 在启动页上做——连过的 Mac 点一下 / 扫码，经
 `PadActivity.start(host, token)` 带参数进去直接开连，不带参数才是旧行为「进去先弹连接设置」；停在哪一页记在本机）。
 2026-10-10 起「连接 Mac」页在「连过的 Mac」之上多一组**局域网里的 Mac**（`pad/MacDiscovery`，Bonjour `_unireader._tcp`，契约
-`../PROTOCOL.md §8`）：只在这一页显示着、启动页在前台时查找；广播只带配对码指纹，对上了点一下直连，对不上 / 没配过点了去扫码。
+`../docs/PROTOCOL.md §8`）：只在这一页显示着、启动页在前台时查找；广播只带配对码指纹，对上了点一下直连，对不上 / 没配过点了去扫码。
 
 - 模式1 独立版（`local/`）：平板本机直接打开工作区 `.unrd`，Pdfium 渲染 + 裸 SQLite 落库，不需要 Mac。
   🔴 **目标是与 macOS 版功能对齐**（用户 2026-09-26 定）：模式1 是独立产品，Mac 上有的功能这里都要有，
-  **只有平板上确实做不到的才跳过**（跳过的要在 `../TODO.md` 记一句为什么）。Mac 端每加一个功能，默认模式1 也要跟上
+  **只有平板上确实做不到的才跳过**（跳过的要在 `../docs/TODO.md` 记一句为什么）。Mac 端每加一个功能，默认模式1 也要跟上
 
 - 模式2 输入板（`pad/`）：连 Mac 当手写输入板/第二屏（二进制线格式 + UDP RT 上行）
 - `shared/`：两模式共用的几何 / 输入 / 渲染 / 笔迹算法
@@ -20,13 +20,13 @@ UniReader 的安卓端：**一个 App 两种模式**（启动页两个标签页�
 - 所以**安卓端自己的规则、结构、坑写在本文件**（`CLAUDE.md` 是它的软链），跟着安卓仓库走；
   主仓库根的 `AGENTS.md` 只留一句引用。**改安卓代码前先读本文件，跨端契约再回上级目录查。**
 - 上级目录（主仓库，路径都相对本目录写成 `../`）：
-  - `../PROTOCOL.md` — 二进制线格式**唯一契约**，三端字节级一致，改协议先改它
-  - `../ANDROID-STANDALONE-PLAN.md` — 模式1 方案（§9 已踩的坑 / §11.1 待真机清单 / §11.2 模拟器能证明什么）
-  - `../ANDROID-MODE2-PLAN.md` — 模式2 方案
-  - `../OFFLINE-MIRROR-PLAN.md` — 工作区离线镜像（整份复制到本机、离线写笔迹、接回硬盘三方合并）
-  - `../SERVER-MODE-PLAN.md` — 连接服务器（独立的 Swift 服务器程序；工作区「从服务器打开 / 上传到服务器」，本机缓存 + 只传改动）
-  - `../SCRATCHPAD-ANDROID-HANDOFF.md` — 草稿纸安卓端交接（坐标系 / 存储 / 协议）
-  - `../TODO.md`（进行中/待办，第一优先）、`../HISTORY.md`（已完成归档）——安卓条目也在里面
+  - `../docs/PROTOCOL.md` — 二进制线格式**唯一契约**，三端字节级一致，改协议先改它
+  - `../docs/ANDROID-STANDALONE-PLAN.md` — 模式1 方案（§9 已踩的坑 / §11.1 待真机清单 / §11.2 模拟器能证明什么）
+  - `../docs/ANDROID-MODE2-PLAN.md` — 模式2 方案
+  - `../docs/OFFLINE-MIRROR-PLAN.md` — 工作区离线镜像（整份复制到本机、离线写笔迹、接回硬盘三方合并）
+  - `../docs/SERVER-MODE-PLAN.md` — 连接服务器（独立的 Swift 服务器程序；工作区「从服务器打开 / 上传到服务器」，本机缓存 + 只传改动）
+  - `../docs/SCRATCHPAD-ANDROID-HANDOFF.md` — 草稿纸安卓端交接（坐标系 / 存储 / 协议）
+  - `../docs/TODO.md`（进行中/待办，第一优先）、`../docs/HISTORY.md`（已完成归档）——安卓条目也在里面
   - `../AGENTS.md` — macOS 端的构建、红线与结构
 
 ## 构建与验证
@@ -68,7 +68,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - **连接服务器的端到端**（`ServerSyncE2ETest`，平板经 USB 接着）：主仓库根目录 `bash spike/android-server-e2e.sh`——Mac 上起临时服务器
   （127.0.0.1:18791）+ `adb reverse`，地址 / 配对码经插桩参数传进去；顺带跑 Mac ↔ 安卓互通（`spike/android-server-interop.swift`）。
   不经这个脚本跑时这个类自己跳过（没参数）。
-- 装包可以做，**手感/观感一律由用户在真机上测**，别自己截图自证；结论攒进 `../ANDROID-STANDALONE-PLAN.md §11.1`。
+- 装包可以做，**手感/观感一律由用户在真机上测**，别自己截图自证；结论攒进 `../docs/ANDROID-STANDALONE-PLAN.md §11.1`。
 
 ## 结构要点
 
@@ -84,7 +84,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   两模式的差异只由开关表达，不分叉代码：`DocTabsBar.canClose`（模式2 = false，「开着哪几篇」
   真源在 Mac，关窗要在 Mac 上做）。**工作区芯片两模式同义**（`⌄` 切工作区，2026-09-06 起；
   此前模式2 点它是开书库）：模式1 切本机的 `.unrd`，模式2 在 **Mac 已开着的工作区**之间切
-  ——`docs` 广播每项带 `ws`（`../PROTOCOL.md §4.2`），标签页栏**只列当前工作区那几篇**、
+  ——`docs` 广播每项带 `ws`（`../docs/PROTOCOL.md §4.2`），标签页栏**只列当前工作区那几篇**、
   芯片下拉按 `ws` 分组，点一行就对那个工作区里上次待过的那篇发 `selectDoc`。
   🔴 当前工作区取 **`docs` 里 selected 那项的 `ws`**，不取 `library` 广播的 wsName：
   两条广播的先后没有保证（同 `layout`/`toc` 那个坑），拿另一条的字段分组会在切档瞬间错位一拍。
@@ -112,10 +112,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
   补表、`ADD COLUMN` 补列、写 `meta.schema_version`），也可以提出新的表 / 列。剩下的纪律只有一条——
   **schema 是两端共同的契约**：任何一端改结构，另一端同一次一起改，DDL 逐字相同、版本号同步，
-  并同步 `../REQUIREMENTS.md §8` 与相关方案文档；不许出现「只有一端认识」的表或列。
+  并同步 `../docs/REQUIREMENTS.md §8` 与相关方案文档；不许出现「只有一端认识」的表或列。
   （历史：此前只在全新库建表、老库一个字 DDL 不写，例外是 `page_align` 镜像补表与 v16 画板两张表补建，
   现在这些都并入正常迁移。）
-- **扫描页对齐（模式1 只读，2026-09-17，`../SCAN-ALIGN-PLAN.md`）**：开关与测量只在 Mac；本端按**打开的那个文件**的
+- **扫描页对齐（模式1 只读，2026-09-17，`../docs/SCAN-ALIGN-PLAN.md`）**：开关与测量只在 Mac；本端按**打开的那个文件**的
   内容 hash 读 `page_align`（`LibraryStore.activePageAlign`，老库没表 → 按没开），交给 `PdfSource`。开着时
   `PdfSource.pageSizes` 报对齐后的 `(W, sh)`、`request` 出转正平移过的图——几何层 / 草稿纸垫页 / 参考窗都只经这两处
   认识页面，所以不必各改；库里的批注坐标本来就是按对齐页面写的，**一个不换算**。页图缓存键带 `displayKey`（`hash~a戳`）。
@@ -128,7 +128,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/FileBrowser.kt` = 唯一的目录浏览器（先列存储卷再逐级点进），按 `Mode` 分三用：
   `WORKSPACE`（只有 `.unrd` 能选中）/ `FOLDER`（选存放位置）/ `PDF`（挑文件，点一个加一本、不关窗）。
   **别再各处抄一份**——异步令牌、卷枚举、慢卷上的后台列目录都在里面。
-- `local/mirror/` = **离线镜像**（`../OFFLINE-MIRROR-PLAN.md`）：`MirrorStore`（`sync_base` 基线表 +
+- `local/mirror/` = **离线镜像**（`../docs/OFFLINE-MIRROR-PLAN.md`）：`MirrorStore`（`sync_base` 基线表 +
   血缘 meta + 借出记录编解码）+ `MirrorBuilder`（建镜像：`VACUUM INTO` → 拷 PDF → 内化外部文件 →
   算基线 → 源库记一笔借出）。**必须跑在 `StoreQueue` 的独占线程上**——慢卷上是分钟级（主线程做必 ANR），
   且老机器的「整文件拷」兜底路径正是靠「拷的时候进程内没人在写」才安全。
@@ -136,16 +136,16 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `shared/OcrText.kt`（`TextRun`/`OcrTextSelect`/`OcrFlow`/`OcrWatermark`）+ `shared/TextSelect.kt`
   （选区装配）+ `local/TextSelectBar.kt`（划完浮出来的「四色高亮 / 批注 / 复制」）。
   文本层来自工作区库的 `ocr_page`——**Mac 跑的 OCR，本机一行都不跑**（随离线镜像同步过来，
-  见 `../OFFLINE-MIRROR-PLAN.md §4.1`）；没同步过来的书在平板上就是划不动，切进选字模式会有一句提示。
-  🔴 **`MODE_TEXT=4` 不进 `PadConst.MODE_LABELS`**：那张表是线上契约（`../PROTOCOL.md §4.1` 的
+  见 `../docs/OFFLINE-MIRROR-PLAN.md §4.1`）；没同步过来的书在平板上就是划不动，切进选字模式会有一句提示。
+  🔴 **`MODE_TEXT=4` 不进 `PadConst.MODE_LABELS`**：那张表是线上契约（`../docs/PROTOCOL.md §4.1` 的
   `mode` u8 只有 0..3），模式1 用 `LOCAL_MODE_LABELS`，模式2 循环碰不到第五档。
-  **模式2 的划字刻意没做，方案已备**——要做先读 `../ANDROID-MODE2-PLAN.md §9`
+  **模式2 的划字刻意没做，方案已备**——要做先读 `../docs/ANDROID-MODE2-PLAN.md §9`
   （选定「平板本地判定、Mac 只执行动作」，预留 `0x52 textLayer`/`0x53 textAct`，
   顺带给 `notes` 补 `aw`/类型色）。
 - 模式1 的阅读界面 = 「一个工作区」的多标签页（`ReaderActivity` + `DocTabsBar` + `TabSet`）：
   一个工作区一份 `LibraryStore`+`StoreQueue` 全部标签页共用，标签页懒装载、LRU 只保活 3 篇。
-- **画板笔记（v16，2026-09-26，`../BOARD-NOTE-PLAN.md`）**＝工作区里独立的无限白板，整页就是一张草稿纸
-  （画布坐标 / 笔宽 / 橡皮 ×800 / 网格全按 `../PROTOCOL.md §4.4`）。
+- **画板笔记（v16，2026-09-26，`../docs/BOARD-NOTE-PLAN.md`）**＝工作区里独立的无限白板，整页就是一张草稿纸
+  （画布坐标 / 笔宽 / 橡皮 ×800 / 网格全按 `../docs/PROTOCOL.md §4.4`）。
   · 模式1：标签页 docId 存 `board:<id>`（`TabSet.BOARD_PREFIX`，于是标签页组存取一行没改）；画板标签**没有**
   阅读画布，整页是 `local/BoardController` 那块 `ScratchCanvas`（照 `ScratchController` 写，读写 `board_note` /
   `board_item`：笔迹 kind=1，payload 同草稿纸 kind=4 但**不写 padId**）。工具状态挂在一块不显示的
@@ -159,7 +159,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 图片（kind=2）画在底纹之上、笔迹之下（`ScratchCanvas.setPics`）。**模式1 能编辑**（`ScratchCanvas.picsEditable`，2026-10-29）：
   随框选一起挪 / 缩放（`LassoEdit.picsAfter` → `updateBoardImageRect`，分页按上沿重新归页）、长按一张 → 看原图 / 删除、⋯「插入图片…」
   （最长边 400 画布点，同 Mac）；模式2 仍只显示（线格式没有改图片的消息）。分页画板手指长按某一页 = 那一页的页菜单（`onPageLongPress`）。
-  · **分页画板（v17，`../BOARD-NOTE-PLAN.md §9`）**：有 `board_page` 行 = 分页。契约（布局 `(-W/2, i×(H+24), W, H)`、
+  · **分页画板（v17，`../docs/BOARD-NOTE-PLAN.md §9`）**：有 `board_page` 行 = 分页。契约（布局 `(-W/2, i×(H+24), W, H)`、
   模板 u8 与几何、尺寸预设）只在 `shared/BoardPaging.kt`（↔ Mac `BoardModel.swift`，`BoardPagingTest` ↔ `spike/board-store-test.swift`）；
   画法与视口（页宽适配 / 横向夹页宽 / 到底上拉加页 / 页码）只在 `ScratchCanvas.setPages` 那一份，两模式共用。
   画布上一律画布坐标；模式1 落库时按「第一个点（图片按上沿）所在页」换成**页内坐标** + payload `page`
@@ -172,7 +172,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （`DIRECT_MAX_PTS`），多了宁可先空着等块。🔴 `ScratchCanvas.strokes` 的每一处增删都要经 `strokesChanged(removed, added)`，
   漏一处那一处改了就看不见。草稿纸几何与缩放成正比，`InkRenderer.drawScratchStroke` 缩放后**不重建**、按比例缩放已有轮廓
   （放大超过 1.5 倍才重建）。计时打点 logcat `UniReader/Tiles`。
-- **笔迹点集二进制（schema v18，2026-09-26，`../BINARY-INK-PLAN.md`）**：`note` / `board_item` 多两列 `points`（`InkPointsBlob`，
+- **笔迹点集二进制（schema v18，2026-09-26，`../docs/BINARY-INK-PLAN.md`）**：`note` / `board_item` 多两列 `points`（`InkPointsBlob`，
   u8 版本 + f32 x/y/z 小端，跨端向量 `../spike/ink-blob-vectors.txt`）+ `points_at`（= 写时的 `updated_at`，不相等 = 旧版改过、读 JSON）。
   读一律经 `InkPayload.readStroke(payload, id, page, points, pointsValid)`（四条规则与 Mac `InkStrokePayload.read` 同一份）；
   写口都要带 `points = InkPointsBlob.encode(...)`；payload 里的 JSON 点一律摘成 `[]`（只在 `LibraryStore.inkPayloadForWrite`）。
@@ -182,7 +182,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   圈选（笔迹任一点落多边形内）/ 拖框内移动 / 拖手柄缩放，**只作用于笔迹**。移动 / 缩放**本地立刻生效**，经
   `onLassoEdit` 交给宿主：模式1 `updateScratchStrokes` / `updateBoardStrokes` 写回点 + 线宽（🔴 不能走擦除那条
   reconcile：它按「点数没变 = 没改」跳过，平移过的笔迹点数恰好不变）；模式2 发 `lassoMove` / `lassoScale`，
-  纸开着时坐标按**画布坐标**解释（`../PROTOCOL.md §4.4`，Mac `AppModel+Scratch.applyScratchLasso` 复判）。
+  纸开着时坐标按**画布坐标**解释（`../docs/PROTOCOL.md §4.4`，Mac `AppModel+Scratch.applyScratchLasso` 复判）。
   选中集按**多边形**记，表一换就重判（模式2 的笔迹没有 id）；拖动时选中那几条从 `strokes` 里拿出来单独画，松手放回。
   顶栏剪切 / 复制 / 粘贴在画板标签或纸开着时作用在纸上：模式1 走 `InkClipLocal.putCanvas/takeCanvas`（画布空间，
   跨空间折算同 Mac `InkClipboard.scaled`），模式2 发 `clip`（画布坐标，粘贴落点 = 视口正中）。
@@ -208,25 +208,25 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   锁定后 `cyclePen` 笔记档不轮替、`selectPen` 只认当前笔、`cycleMode`/`setModeLocal` 只在 笔记/擦除 间来回；
   顶栏「writeLock」键在**笔组**里紧跟 mode/pen（图标 `ic_write_lock` = 笔 + 小锁，别再和「锁定缩放」的 `ic_lock`
   共用——用户报两个锁分不清；老布局经 `ToolLayout.MOVED` 一次性挪过来）；模式1 本机独立判定
-  （`RadialController` 长按盘只剩当前笔+橡皮），模式2 双向发 `../PROTOCOL.md` `lock` 0x59（`MacClient.Callback
+  （`RadialController` 长按盘只剩当前笔+橡皮），模式2 双向发 `../docs/PROTOCOL.md` `lock` 0x59（`MacClient.Callback
   .onLock`/`PadView.onLockChanged`，同 `eraser` 一个 opcode 两个方向都用）。相对粗细模式在共用层
   `PageCanvasView.relativeInkWidth`（落笔时 `strokePen()` 按本机 `zoom` 折算 `curStrokePen`），草稿纸 / 画板经
   `ScratchCanvas.Tools.relativeInk` 按画布缩放折算；**折算在 pad 上做**，模式2 上行的 `pen.w` 已是折算后的值、
   Mac 原样用（Mac 拿不到 pad 的缩放）。开关模式1 存 `ToolPrefs`，模式2 与 Mac 双向同步 `relInk` 0x5A
   （`onRelInkChanged`/`setRelativeInkWidthLocal`，同 lock）。
-- **画板笔记记住上次滚动位置（schema v19，2026-09-26，`../BOARD-NOTE-PLAN.md §10`）**：`board_note` 加
+- **画板笔记记住上次滚动位置（schema v19，2026-09-26，`../docs/BOARD-NOTE-PLAN.md §10`）**：`board_note` 加
   `viewport_x/y/zoom`（`viewport_zoom<=0` = 没存过，按老规矩摆），**刻意不进 `MirrorFp`**（同 `last_opened_at`）。
   `ScratchCanvas.openSession(restore:)`/`currentViewport()`，`BoardController` 停手 0.6s 节流写回、
-  `close()`/宿主 `onPause()` 立即 flush。**模式2 经协议读写同一份**（2026-10-07，`../BOARD-NOTE-PLAN.md §10.1`）：
+  `close()`/宿主 `onPause()` 立即 flush。**模式2 经协议读写同一份**（2026-10-07，`../docs/BOARD-NOTE-PLAN.md §10.1`）：
   `boardViewport` 0x5B 双向带画板 id，Mac 紧跟 `boards` 下发库里那份，`PadScratch` 打开时复位一次、**用户动过视口**
   （`ScratchCanvas.viewportTouched`）才停手 0.6s 回传，换篇 / 回 PDF / `onPause` 立即补发。
   🔴 `ScratchCanvas.restoreHold`：复位后、用户动手前，每次夹取都从复位原值重算（页 / 笔迹晚到也不会把位置夹回原点或首页顶），
   `setPages` 也不再摆回首页顶；手 / 笔落下、回中、适应内容、跳页才放手。新加挪视口的公开入口要先调 `takeOverViewport()`。
-  · **分页画板改为与 Mac 同步滚动**（2026-10-07，`../BOARD-NOTE-PLAN.md §12`，协议 `boardScroll` 0x5C）：同 PDF，谁滚谁领头；
+  · **分页画板改为与 Mac 同步滚动**（2026-10-07，`../docs/BOARD-NOTE-PLAN.md §12`，协议 `boardScroll` 0x5C）：同 PDF，谁滚谁领头；
   只同步竖向位置（`ScratchCanvas.pageAnchor`：锚线 = 视图顶下 `PAGED_TOP`，折成「页 + 页内比例」），缩放各自独立。
   `followPageAnchor` 在手指 / 笔落着或惯性中不跟；跟过去那一下 `followApplying` 为真、不回发；用户没动过视口不发。
   分页画板因此**不再走 `boardViewport`**（不复位、不回传），那条只剩无限画布在用。
-- **习题（v20，2026-10-11，`../EXERCISE-PLAN.md §10`）**：两模式共用一份界面 `shared/exercise/ExerciseScreen`
+- **习题（v20，2026-10-11，`../docs/EXERCISE-PLAN.md §10`）**：两模式共用一份界面 `shared/exercise/ExerciseScreen`
   （顶栏 范围名 / 进度 / 全部重做 / 只看没做过 / 练习·列表；练习页一次一题、左右划翻题；列表页长按多选）+ 抽屉第三页「习题」
   （`ReaderDrawer.setExercises`，有题才出现）；模式1 书库页（`LibraryActivity`）末尾也有一组「习题」（2026-10-30，有题才出现，
   只列第一级：全部 / 错题本 / 收藏 / 每本书，章节在抽屉里选；点一行带 `ex:<范围键>` 进阅读界面，同 `openExercises` 就地换公用习题标签）。界面只认中立数据 `ExDeckView` / `ExCard`，操作交给 `ExHost`：
@@ -236,19 +236,19 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   一组题的进度 `LocalExerciseDeck`（照 Mac `ExerciseDeck`：快照、这一轮的作答、再做一次、筛选）+ `LibraryStore` 的习题一节（SQL 照抄 Mac）。
   标签页 docId 存 `ex:<范围键>`（公用，错题本一支另一个）/ `exs:<范围键>`（长按「在新标签页中打开」），同 Mac `StoredTab`。
   看原题 = 本机 Pdfium 出整页再裁框；设章节读 `PdfSource.toc`。删除界面还没做（回收站已有 `trashArchiveExercises`，见「回收站」）。
-  · 模式2 = `pad/RemoteExHost`：题目与作答只在 Mac，操作编成 `exAct` / `exIndex` 发过去，Mac 回 `exDeck`（`../PROTOCOL.md §4.9`）。
+  · 模式2 = `pad/RemoteExHost`：题目与作答只在 Mac，操作编成 `exAct` / `exIndex` 发过去，Mac 回 `exDeck`（`../docs/PROTOCOL.md §4.9`）。
   平板可以自己开一组（标签栏末尾一个能关的标签，`DocTabsBar.closable`），Mac 不跟着换；Mac 当前标签是习题（`boards.kind = 3`）时跟随显示。
   两边开着同一组时用的是 Mac 上**同一份**进度，作答 / 第几题 / 筛选天然同步。原题图 `GET /exercise.png?id=&w=`。
   · 题干 / 选项 / 解析的 Markdown + 公式：`shared/exercise/MathText`（Markwon + JLaTeXMath，依赖只在这一个文件；`$…$` 先改写成
   Markwon 认的 `$$…$$`，见 `normalize`）。**Markwon 默认会给文字挂上点链接的处理、把触摸吃掉**——bind 之后摘掉，否则点选项正文选不中。
   · 离线镜像：两张表进 `MirrorFp.specs`（向量 #30/#31，v21 加的三列见 #31 改 / #32，v22 笔记列见 #30 改 / #33），`MirrorApply.livingExercises` 挡掉「题已删、作答还要写」的孤儿。
-  · **填空 / 主观题（v21，2026-10-13，`../EXERCISE-PLAN.md §11.6`）本端本轮不能作答**：`kind` 3 / 4 读得出、`ExCard.kind` 带着，
+  · **填空 / 主观题（v21，2026-10-13，`../docs/EXERCISE-PLAN.md §11.6`）本端本轮不能作答**：`kind` 3 / 4 读得出、`ExCard.kind` 带着，
   练习页只显示题干 + 「请在 Mac 上作答」（`ExCard.macOnly`），`LocalExerciseDeck.submit` 挡掉；模式2 Mac 不发这两种题的选项 / 答案 / 作答。
-  做平板作答时先读 `../EXERCISE-PLAN.md §11`（作答格式 `ExerciseResponse`、手写 `ExerciseInk` 逻辑坐标、`judged_by` 后判为准）。
-  · **题目笔记 + 重做上次做错的（v22，2026-10-27，`../EXERCISE-PLAN.md §12`）本端本轮没做**（用户定先只做 Mac）：`exercise.note`
+  做平板作答时先读 `../docs/EXERCISE-PLAN.md §11`（作答格式 `ExerciseResponse`、手写 `ExerciseInk` 逻辑坐标、`judged_by` 后判为准）。
+  · **题目笔记 + 重做上次做错的（v22，2026-10-27，`../docs/EXERCISE-PLAN.md §12`）本端本轮没做**（用户定先只做 Mac）：`exercise.note`
   只建列、随离线镜像同步；`exDeck.filter` 可能收到 `4`（Mac 开着「重做上次做错的」），按「只看没做过」没开显示。
   补做时：笔记判完才显示（同解析）、挑题规则照抄 Mac `Exercise.lastResultWrong`（最近一次是错的；没判的不算）。
-- **笔记对齐 Mac（2026-10-29，`../TODO.md` 差距清单 A 组）**：
+- **笔记对齐 Mac（2026-10-29，`../docs/TODO.md` 差距清单 A 组）**：
   · 高亮 / 选区注解三种画法 `HL_FILL/UNDERLINE/BOX`（payload `style`）+ 注解显式颜色，画法只在 `PadOverlays.drawTextFill`；
   手指点中高亮 → `local/NoteSheets.showHighlight`（换色 / 换画法 / 转批注 / 删除，`PageCanvasView.onFingerTapLate` 排在笔记图钉之后）。
   · 模式1 的笔记编辑器 = `local/NoteSheets.showEditor`（类型 / 标记色 / 画法 / 展开方式）+ 类型管理（`meta.note_types` 整表写回，
@@ -256,21 +256,21 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 气泡正文 = `shared/NoteBubbleText`（Markwon + 公式画到画布上，两模式共用）：在固定参考字号下排版再整体缩放（宽字比不随缩放变，捏合不重排）。
   🔴 公式一律在 `MathText` 那**一条**线程上排：Markwon 默认线程池并发，JLaTeXMath 首次静态初始化不是线程安全的，一屏两条公式会抢着初始化、输的回落成源码。
   · 卡片（payload `card`，Mac `NoteCard`）：`NoteBubbleGeom.layout(card=…)`，存的数 × 页宽÷`REF_PAGE_W`(933) 换算，压住图钉就挪开。平板上拖卡片还没做。
-  · 图片笔记（kind=6，`../IMAGE-NOTE-PLAN.md`）：存图 `local/ImageAssets`（同 Mac：四种格式原样、其它 / 超 4096 转 PNG、EXIF 转正）、
+  · 图片笔记（kind=6，`../docs/IMAGE-NOTE-PLAN.md`）：存图 `local/ImageAssets`（同 Mac：四种格式原样、其它 / 超 4096 转 PNG、EXIF 转正）、
   画在 `LocalCanvasView`（图钉 + 气泡 + 缩略图缓存）、截取 = `beginSnip` 拖框 → `PdfSource.renderRegion`（按页重渲染，不截屏）。
   引用计数数 note kind=6 + board_item kind=2（本端解 payload，不用 `json_extract`），开工作区对账 + 清 30 天（回收站引用着的不清）。
-- **Markdown 笔记（2026-10-29，`../MARKDOWN-NOTES-PLAN.md`）**：只做内建 `Notes/`（Mac 引用的外部目录存的是 Mac 绝对路径，只在抽屉里提一句）。
+- **Markdown 笔记（2026-10-29，`../docs/MARKDOWN-NOTES-PLAN.md`）**：只做内建 `Notes/`（Mac 引用的外部目录存的是 Mac 绝对路径，只在抽屉里提一句）。
   纯逻辑 `local/MdNotes`（扫描跳过 `.` 开头与 `trash`、多级树、`[[…]]` 解析次序同 Mac `NoteIndex`、显示用转换：`[[目标|别名]]` →
   `[别名](uniwiki:目标)`，单独一行的 `![[图]]` 画成图）；界面 `local/MdNoteController`（阅读 / 编辑两态，停手 0.8 秒 / 切走 / 退后台存）；
   标签 docId = `md:<相对路径>`（`TabSet.MD_PREFIX`）；`md_doc` 只当扫描缓存对账。🔴 **只写用户在编辑框里改的**（红线 9），文件已不在就不存；
   删除 = 挪进 `Notes/.trash/`（Obsidian 的回收站目录，两端扫描都跳过），不进 `Trash/`（Mac 不认那种条目）。
-- **回收站 + 定时备份（2026-10-29，`../BACKUP-PLAN.md`）**：`local/Trash`（目录名 / manifest 键 / 时间格式与 Mac 同，Mac 代码实测能恢复本端建的条目）
+- **回收站 + 定时备份（2026-10-29，`../docs/BACKUP-PLAN.md`）**：`local/Trash`（目录名 / manifest 键 / 时间格式与 Mac 同，Mac 代码实测能恢复本端建的条目）
   + `local/store/TrashStore`（快照**单独开库**逐行复制，不用 ATTACH——本端主库 WAL 连接池里 ATTACH 只挂在一条连接上）+ `local/TrashSheet`。
   🔴 先归档再删（红线 11）：删画板、删文档（书库页长按）都走 `Trash.delete*`，归档失败就什么都不删。
   备份 `local/Backups`：`library-yyyyMMdd-HHmmss.sqlite`（本地时间）、稀释规则逐条照抄 Mac（`BackupsTest` ↔ `../spike/backup-retention-test.swift`）；
   还原 = 存还原点 → `closeWorkspace { … }` 等连接真关（`StoreQueue.close(then)`）→ 换库连 `-wal/-shm` → 重新打开。
-- **连接服务器（S3 第一轮，2026-10-29，`../SERVER-MODE-PLAN.md §13.7`）** 全在 `local/server/`，照 Mac 的 S2 做：
-  · 线格式 `SyncWire`（↔ `../Sources/Sync/SyncWire.swift`，契约 `../PROTOCOL.md §9`）+ 一行的读写 `SyncRows` + 客户端算法 `SyncClient`
+- **连接服务器（S3 第一轮，2026-10-29，`../docs/SERVER-MODE-PLAN.md §13.7`）** 全在 `local/server/`，照 Mac 的 S2 做：
+  · 线格式 `SyncWire`（↔ `../Sources/Sync/SyncWire.swift`，契约 `../docs/PROTOCOL.md §9`）+ 一行的读写 `SyncRows` + 客户端算法 `SyncClient`
   （↔ `../Sources/Sync/SyncClient.swift`，逐条照抄；冲突规则不另写，复用 `local/mirror/` 的 `MirrorDiff` / `MirrorApply`，基线沿用 `sync_base`）；
   `ServerClient`（OkHttp，阻塞，**一律不走代理**，`Cancel` 断开正在飞的请求）、`ServerAccounts`（连过的服务器，本机 prefs）、
   `ServerSyncIO`（一轮 / 建缓存 / 上传 / 下 PDF，纯 IO）、`ServerSync`（时机与状态）、`ServerUi`（几块界面）、`ServerDiscovery`（`_unireader-srv._tcp`）。
@@ -296,7 +296,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 ## 红线与高频坑
 
 - **页面尺寸口径必须与 Mac 一致**：CropBox 有效则 CropBox、否则 MediaBox。取错了 Mac 上写的笔迹在平板上
-  整体漂移/缩放，且是那种「看着差一点点、说不清哪错了」的 bug（`../ANDROID-STANDALONE-PLAN.md §9.1`）。
+  整体漂移/缩放，且是那种「看着差一点点、说不清哪错了」的 bug（`../docs/ANDROID-STANDALONE-PLAN.md §9.1`）。
   pdfiumandroid 取页框的接口**只看本页字典、不认继承**（页框写在上级 Pages 节点的 PDF——Mac「打印为 PDF」就是这样——会读成 0、整页空白），
   读不到时退到 `getPageBoundingBox()`（Pdfium 的有效页框，顺着继承找；2026-10-29 修）。
 - 🔴 **新建任何行的 id 一律大写 UUID**（`UUID.randomUUID().toString().uppercase()` / `newBoardId()`）：Mac 把 id 解析成 `UUID`、
@@ -305,7 +305,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - **同款算法多份实现，改一边必须同步其余端**：`shared/InkEdit.kt`（局部擦除切段/平移/框选缩放/多边形命中/尺子吸附）↔ Mac
   `Sources/App/InkEdit.swift` ↔ web 版；`pad/WireCodec.kt` ↔ `Sources/Resources/wire.js` ↔ `WireCodec.swift`；
   `shared/NoteBubbleGeom.kt`（文字笔记展开气泡的比例常数与位置规则）↔ Mac `Sources/Views/NoteBubbleView.swift`
-  的 `NoteBubble` ↔ web `render.ts` 的 `BUB`（`../REQUIREMENTS.md §1.2`）；
+  的 `NoteBubble` ↔ web `render.ts` 的 `BUB`（`../docs/REQUIREMENTS.md §1.2`）；
   `shared/CanvasMargin.kt`（画板模式的页边软边界档位：STEP/SLACK/LIMIT 三个常数 + `marginFor`）
   ↔ Mac `Sources/App/CanvasMargin.swift` ↔ web `shared.ts` 的 `canvasMarginFor`；
   `shared/TocMerge.kt`（目录 + 书签的合并规则：一级组区间、组内插位、树顶平铺）
@@ -322,7 +322,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   ↔ Mac `spike/ocr-char-select-test.swift`/`ocr-watermark-test.swift`
   ——判定不一致 = 同一本书两端划出来的字不一样，而那段文字会当 `quote` 落库；
   `shared/ScanAlign.kt`（**扫描页对齐**：每页变换 `PageAlign` + 参数表解码 `ScanAlignTable` + 戳 / `displayKey`）
-  ↔ Mac `Sources/App/ScanAlign.swift`（契约 `../SCAN-ALIGN-PLAN.md` §2/§3），本端 `ScanAlignTest` ↔ Mac
+  ↔ Mac `Sources/App/ScanAlign.swift`（契约 `../docs/SCAN-ALIGN-PLAN.md` §2/§3），本端 `ScanAlignTest` ↔ Mac
   `spike/scan-align-test.swift` ①②⑤，**戳的跨端向量**（样例 payload → `7438e8a2`）两端各算一遍抄进测试；
   `local/mirror/MirrorDiff.alignPlan` 与 `Plan.isCleanPushToMirror`/`pendingToSource` ↔ Mac `MirrorDiff.swift`
   （`MirrorDiffTest` 的对齐三条 ↔ `spike/mirror-align-test.swift` ①②）
@@ -338,9 +338,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   ——差一点，连过的 Mac 在发现列表里就永远显示「配对码已重置」。
   改完三端测试一起跑（安卓 `WireCodecTest` 的向量与 Mac/web 的跨端向量同源）。
 - **草稿纸画布坐标系 = 逻辑点（dp），原点＝创建点、可负无界**；橡皮半径按 `eraserRefWidth = 800`
-  从页宽归一化折算，**三端必须同一个数**（`../SCRATCHPAD-ANDROID-HANDOFF.md §1`）。
+  从页宽归一化折算，**三端必须同一个数**（`../docs/SCRATCHPAD-ANDROID-HANDOFF.md §1`）。
   **页面底图**（v10）同理是三端契约：页宽恒 `ScratchGeom.PAGE_REF_W = 800` 画布 dp、高按页纵横比、
-  **锚点落在画布原点**（`../PROTOCOL.md §4.4`）。改一个数三端一起改，否则同一张纸两端写的位置不一样。
+  **锚点落在画布原点**（`../docs/PROTOCOL.md §4.4`）。改一个数三端一起改，否则同一张纸两端写的位置不一样。
 - **画板模式的页边不是新坐标系**：页边笔迹仍是**页内笔迹**（归属那一页），只是归一化 `x`
   越出 `0…1`（单位还是页宽的倍数）。所以擦除/框选/图层/落库一律照旧，只有三处要跟着放宽：
   ① 命中（`locate`/`pageLocClamped` 的 `wide` 参数）；② 渲染 clamp（`InkRenderer` 的 `xMargin`，
@@ -369,26 +369,26 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   只看「离落笔点的总位移」挡不住小字：写一个小字全程都在 14dp 半径里打转，停满 1s 盘就凭空弹出来。
   加了滑动窗口内的平均速度（写字必然在动、长按必然不动）。常量在 `PadConst.LP`，
   **与 Mac `AppModel` 的 `holdSpeed*` 是同一套的两份实现**（模式2 的判定跑在 Mac），改一边同步另一边。
-  另两条同族的规矩（2026-09-02 修，`../TODO.md` 已知 Bug 有完整成因）：
+  另两条同族的规矩（2026-09-02 修，`../docs/TODO.md` 已知 Bug 有完整成因）：
   · **探针坐标锚在落笔那一刻的坐标系里**（`beginProbe` 冻结落点与页宽页高，`probeAt` 把屏幕位移
   折成归一化量，**刻意不 clamp**）。翻页模式下笔拖着页面一起走，按当前页面算的话笔相对页面
   几乎没动 → 判定方把「拖着翻页」当成长按。擦除模式页面不动，两种算法逐值相等。
   · **迟到的 `pressRing on=true` / `radial open=true` 一律丢弃**（`overlayAllowed`，笔不在纸上就不画）。
   这两样只在手势进行中才有意义；它们与 `strokes` 全量镜像共用一条有序 WS 通道，大帧一在飞就会迟到，
   补画出来就是「环凭空冒出来、还不在笔尖」。`false`（撤环/收盘）永远照收——那是清理。
-- **笔迹回推有两种，别只处理一种**（2026-08-28，`../PROTOCOL.md §4.2`）：`strokes`(0x36) 是**整表替换**，
+- **笔迹回推有两种，别只处理一种**（2026-08-28，`../docs/PROTOCOL.md §4.2`）：`strokes`(0x36) 是**整表替换**，
   `strokesAppend`(0x4C) 是**追加**（payload 逐字节相同，只差 opcode）。Mac 只在收笔那一处发追加帧
   ——全量镜像每收一笔就重发整篇是 O(n²)。对应 `PageCanvasView.setStrokes` / `appendStrokes` 两个入口，
   追加那条**不走**擦除那道整份丢弃闸（追加不会把擦掉的复活），只按 `ackRel` 销账乐观笔。
   草稿纸 / 画板同理（2026-10-07）：`scratchStrokes`(0x3E) 整表替换、`scratchStrokesAppend`(0x5D) 追加，对应
-  `PadScratch.applyStrokes` / `appendStrokes`；分页画板的整表**只有平板所在页前后各 3 页**（`../PROTOCOL.md §4.8`），不是全篇。
-- **`ackRel` 对账：落墨与擦除是两件事，别用同一条判据**（2026-08-28 修，`../PROTOCOL.md §4.2`）。
+  `PadScratch.applyStrokes` / `appendStrokes`；分页画板的整表**只有平板所在页前后各 3 页**（`../docs/PROTOCOL.md §4.8`），不是全篇。
+- **`ackRel` 对账：落墨与擦除是两件事，别用同一条判据**（2026-08-28 修，`../docs/PROTOCOL.md §4.2`）。
   整份丢弃一份回推快照，只因为它**比本地的擦除旧**（比 `lastEraseRel`）。拿「本端已发出的最后一个
   `seqRel`」去比是错的：ink move 每 8ms 就是一个新序号，连续快写时判据永远为真、快照一份都进不来，
   乐观笔迹只能靠超时撤掉 → 用户看到「上一个字的笔画依次闪烁」。落墨**逐条认领**：每条乐观笔记下自己
   `ink end` 帧的 REL 序号（`UdpSender.sendRel` 同步返回），`ackRel` 追上才销账，没追上的叠在快照之上照画。
   乐观笔迹的兜底撤销判据是「**一份回推都没收到**」而不是「等够久了」——真源哑了才算掉线。
-- **页图缓存的额度别拿 `maxMemory()` 算**（2026-08-29 踩过两轮，`../HISTORY.md` 同日第一节）。
+- **页图缓存的额度别拿 `maxMemory()` 算**（2026-08-29 踩过两轮，`../docs/HISTORY.md` 同日第一节）。
   **API 26 起 `Bitmap` 像素在 native 堆，不占 Java 堆** → `maxMemory()`（本机 256MB =
   `dalvik.vm.heapgrowthlimit`）跟页图没关系，拿它的 1/3 当预算 = 8GB 的平板上只肯留 85MB
   ＝**一张横屏页图**（2880×4073×4 ≈ 47MB），换篇文档回来必然重下。同理 **`largeHeap` 对页图无用**。
@@ -428,7 +428,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   2026-08 实测：顶栏尺子点一下 18.5 → 36.0 画布单位（≈1.94 倍），再关掉仍是 34.9，
   于是「点过的键比没点过的大一圈」。查这类问题**别去调图标几何**——先量渲染像素，
   跟 `gen.py --check` 打印的声明值一比，对不上就是别的地方在改缩放。
-- **模拟器验证的四个坑**（`../ANDROID-STANDALONE-PLAN.md §11.2`，都误判过，别重踩）：
+- **模拟器验证的四个坑**（`../docs/ANDROID-STANDALONE-PLAN.md §11.2`，都误判过，别重踩）：
   ① `adb pull` 库要连 `-wal`/`-shm` 一起拉，否则新写入还在 WAL 里、读到的是旧数据；
   ② 按 `uiautomator dump` 出的文本定位点击，别记坐标（最近列表会重排）；
   ③ `input stylus swipe` 的终点只走到全程 ~80%（短行程更夸张），靠日志打实际归一化框来对；

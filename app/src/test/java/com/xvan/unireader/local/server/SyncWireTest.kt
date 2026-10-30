@@ -8,7 +8,7 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 连接服务器的同步线格式（`../PROTOCOL.md §9`）跨端一致性：照 Mac `spike/sync-wire-test.swift` 的 canonical 表
+ * 连接服务器的同步线格式（`../docs/PROTOCOL.md §9`）跨端一致性：照 Mac `spike/sync-wire-test.swift` 的 canonical 表
  * 在 Kotlin 里编同一组消息，与主仓库 `spike/sync-wire-vectors.txt` 逐字节比对；文件里的字节解回来再编，一字不差。
  * 差一个字节，平板推上去的行服务器就解不出（或解错）。canonical 表**只许在末尾追加**，两边同一顺序。
  */

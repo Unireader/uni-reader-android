@@ -11,7 +11,7 @@ import com.xvan.unireader.pad.MacDiscovery
 import java.net.Inet4Address
 
 /**
- * 局域网里的 UniReader 服务器（Bonjour `_unireader-srv._tcp`，契约 `../SERVER-MODE-PLAN.md §3.7`）。
+ * 局域网里的 UniReader 服务器（Bonjour `_unireader-srv._tcp`，契约 `../docs/SERVER-MODE-PLAN.md §3.7`）。
  * 只在「连接服务器」面板开着时查找。做法同 `pad/MacDiscovery`（系统 `NsdManager`，逐个解析、老系统串行；只收 IPv4），
  * 公告里**没有配对码**：发现只是帮着填地址，连接照旧要配对码。
  * ⚠️ 组播不跨网段：平板与服务器不在同一网段（经路由 / VPN）时发现不了，手填地址。

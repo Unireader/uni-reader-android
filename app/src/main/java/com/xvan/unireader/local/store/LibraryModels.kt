@@ -79,7 +79,7 @@ data class LibNote(
     val updatedAt: String,
     /**
      * 笔迹点集的二进制形态（v18 `points` 列，[InkPointsBlob]；非笔迹行 / 还没迁移 = null）。
-     * 写库时 `points_at` 自动取这一行的 `updated_at`（`../BINARY-INK-PLAN.md §2`）。
+     * 写库时 `points_at` 自动取这一行的 `updated_at`（`../docs/BINARY-INK-PLAN.md §2`）。
      */
     val points: ByteArray? = null,
     /** 读出来时二进制是否最新（`points_at == updated_at`，比原始字符串）。写库时不看。 */
@@ -115,7 +115,7 @@ data class InkDiff(val deleted: Int, val updated: Int, val inserted: Int) {
 
 /** `note.kind`（Mac 端 `LibNote.kind` 的取值） */
 /**
- * 一枚书签（note kind=5 读出来的形态，`../REQUIREMENTS.md §1.9`）。
+ * 一枚书签（note kind=5 读出来的形态，`../docs/REQUIREMENTS.md §1.9`）。
  * [createdAt] 只用来排序（页/页内位置并列时的稳定序），界面上不显示。
  */
 data class LibBookmark(
@@ -135,14 +135,14 @@ object NoteKind {
     const val SCRATCH_INK = 4
 
     /**
-     * 书签（`../REQUIREMENTS.md §1.9`）：挂在「某页某处」的带名字定位记录。
+     * 书签（`../docs/REQUIREMENTS.md §1.9`）：挂在「某页某处」的带名字定位记录。
      * page → note.page，页内比例 → anchor_y（点锚，x/w/h 恒 0），payload = `{"title":"…"}`。
      * **表结构一个字没改**，故不升 schema 版本——只是多一个 kind 值。
      */
     const val BOOKMARK = 5
 
     /**
-     * 图片笔记（`../IMAGE-NOTE-PLAN.md §2.2`）：挂在「某页某处」、正文是一张图（`image` 表 + `Images/<sha>.<ext>`）。
+     * 图片笔记（`../docs/IMAGE-NOTE-PLAN.md §2.2`）：挂在「某页某处」、正文是一张图（`image` 表 + `Images/<sha>.<ext>`）。
      * payload = `{image, caption, display, source, card?}`；PDF 节选的 anchor = 框出来的那块，导入的 = 点锚。
      */
     const val IMAGE = 6
@@ -236,7 +236,7 @@ data class ScratchPad(
 }
 
 /**
- * 一篇画板笔记（`board_note` 表，v16，`../BOARD-NOTE-PLAN.md §2`）：工作区里独立的无限白板，
+ * 一篇画板笔记（`board_note` 表，v16，`../docs/BOARD-NOTE-PLAN.md §2`）：工作区里独立的无限白板，
  * **不挂 document**。纸样两列与 [ScratchPad] 同语义。逐字对应 Mac `LibBoard`（时间戳存 ISO 串）。
  * 列表 `ORDER BY COALESCE(last_opened_at, created_at) DESC`（照抄 Mac，最近打开的在前）。
  */
@@ -289,7 +289,7 @@ data class BoardItem(
 }
 
 /**
- * 分页画板的一页（`board_page` 表，v17，`../BOARD-NOTE-PLAN.md §9`）。逐字对应 Mac `LibBoardPage`。
+ * 分页画板的一页（`board_page` 表，v17，`../docs/BOARD-NOTE-PLAN.md §9`）。逐字对应 Mac `LibBoardPage`。
  * 尺寸整本统一（每页存同一个值、一起改）；[template] 存模板名（`blank`/`lined`/…，见 `shared/BoardPaging`）。
  * 列表 `ORDER BY sort_key ASC, created_at ASC`（照抄 Mac）。
  */

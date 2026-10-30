@@ -275,7 +275,7 @@ class MirrorApplyTest {
     }
 
     /**
-     * 扫描页对齐参数（`../SCAN-ALIGN-PLAN.md §5`）：整行按 `updated_at` 取新、逐字搬、对面没表也能补、幂等。
+     * 扫描页对齐参数（`../docs/SCAN-ALIGN-PLAN.md §5`）：整行按 `updated_at` 取新、逐字搬、对面没表也能补、幂等。
      * 对应 Mac `spike/mirror-align-test.swift` ③④⑤。
      */
     @Test

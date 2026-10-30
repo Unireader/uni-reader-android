@@ -1,7 +1,7 @@
 package com.xvan.unireader.shared
 
 /**
- * 目录 + 书签的合并规则（`../REQUIREMENTS.md §1.9`）。纯函数，只认「深度 + 页号」。
+ * 目录 + 书签的合并规则（`../docs/REQUIREMENTS.md §1.9`）。纯函数，只认「深度 + 页号」。
  *
  * ⚠️ **参照实现是 Mac 的 `Sources/App/TOCMerge.swift`**（spike/toc-merge-test.swift 19 项覆盖），
  * 本文件与 web 的 `lib/tocMerge.ts` 都是它的移植。**改一条规则要三端同步**，
@@ -31,7 +31,7 @@ object TocMerge {
     /**
      * 给每枚书签算落位。
      * @param rows 拍平（先序）后的目录行
-     * @param pages 书签页号，**必须按升序**（线上就是有序的，见 `../PROTOCOL.md`）
+     * @param pages 书签页号，**必须按升序**（线上就是有序的，见 `../docs/PROTOCOL.md`）
      * @return 与 [pages] 等长、一一对应的落位表
      */
     fun place(rows: List<Row>, pages: List<Int>): List<Slot> {

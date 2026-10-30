@@ -8,7 +8,7 @@ import com.xvan.unireader.shared.exercise.ExJudge
 import com.xvan.unireader.shared.exercise.ExShown
 
 /**
- * 模式1 的一组题 + 练到哪了（`../EXERCISE-PLAN.md §10.2`），逐条照 Mac `ExerciseDeck`：
+ * 模式1 的一组题 + 练到哪了（`../docs/EXERCISE-PLAN.md §10.2`），逐条照 Mac `ExerciseDeck`：
  *
  * - 题目集合是**快照**：打开时按范围取一次，之后库里变了只**就地刷新**已在里面的题、把新进范围（且过得了筛选）的题接在末尾——
  *   移出错题本 / 取消收藏 / 刚做过（「只看没做过」开着）的题这一轮还留着，不会在眼前突然消失；真删了的才去掉。
@@ -156,7 +156,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         }
     }
 
-    /** 给界面的那一份（字段同线上 `exDeck`，`../PROTOCOL.md §4.9`）。 */
+    /** 给界面的那一份（字段同线上 `exDeck`，`../docs/PROTOCOL.md §4.9`）。 */
     fun view(title: String): ExDeckView {
         val cards = items.map(::card)
         return ExDeckView(

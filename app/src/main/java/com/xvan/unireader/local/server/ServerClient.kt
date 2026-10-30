@@ -16,7 +16,7 @@ import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 /**
- * 连 UniReader 服务器的 HTTP 客户端（`../SERVER-MODE-PLAN.md §3.3`；接口全表在
+ * 连 UniReader 服务器的 HTTP 客户端（`../docs/SERVER-MODE-PLAN.md §3.3`；接口全表在
  * `../server/Sources/UniServerHTTP/ServerApp.swift` 文件头）。只管收发，同步算法在 [SyncClient]。
  * 照 Mac `../Sources/ServerSync/ServerClient.swift` 写，接口一一对应。
  *

@@ -65,7 +65,7 @@ class MacClient(
         fun onLock(on: Boolean)
         /** 相对粗细模式开关（双向，同 [onLock]） */
         fun onRelInk(on: Boolean)
-        /** 画板模式（../PROTOCOL.md `canvas`）：页面两侧的空白也可书写；margin = 每侧页边 ÷ 页宽 */
+        /** 画板模式（../docs/PROTOCOL.md `canvas`）：页面两侧的空白也可书写；margin = 每侧页边 ÷ 页宽 */
         fun onCanvas(on: Boolean, margin: Float)
         /** 草稿纸列表全量镜像（Mac 唯一真源）：open = 当前打开 list 里第几张，-1 = 没开 */
         fun onScratchPads(open: Int, list: List<WireCodec.ScratchPadEntry>)
@@ -76,17 +76,17 @@ class MacClient(
          * @param append true = 追加（`scratchStrokesAppend` 0x5D，Mac 只在收笔那一处发），false = 整表替换
          */
         fun onScratchStrokes(ackRel: Long, list: List<Stroke>, append: Boolean)
-        /** 画板笔记列表 + 被跟随会话的类型（kind 0=PDF 1=Markdown 2=画板，`../PROTOCOL.md §4.8`） */
+        /** 画板笔记列表 + 被跟随会话的类型（kind 0=PDF 1=Markdown 2=画板，`../docs/PROTOCOL.md §4.8`） */
         fun onBoards(kind: Int, current: String, list: List<WireCodec.BoardEntry>)
         /** 当前画板上的图（不是画板会话时是空表） */
         fun onBoardImages(list: List<WireCodec.BoardImageEntry>)
-        /** 被跟随画板的页（全量镜像；空表 = 不是分页画板，`../PROTOCOL.md §4.8` 分页画板） */
+        /** 被跟随画板的页（全量镜像；空表 = 不是分页画板，`../docs/PROTOCOL.md §4.8` 分页画板） */
         fun onBoardPages(w: Float, h: Float, list: List<WireCodec.BoardPageEntry>)
-        /** 画板 [id] 在 Mac 库里存的视口（紧跟 boards；zoom<=0 = 没存过，`../PROTOCOL.md §4.8` 画板视口） */
+        /** 画板 [id] 在 Mac 库里存的视口（紧跟 boards；zoom<=0 = 没存过，`../docs/PROTOCOL.md §4.8` 画板视口） */
         fun onBoardViewport(id: String, x: Float, y: Float, zoom: Float)
-        /** 分页画板 [id] 在 Mac 上滚到的位置（同步滚动，`../PROTOCOL.md §4.8`） */
+        /** 分页画板 [id] 在 Mac 上滚到的位置（同步滚动，`../docs/PROTOCOL.md §4.8`） */
         fun onBoardScroll(id: String, page: Long, frac: Float)
-        /** 抽屉「习题」一段（被跟随会话所在工作区的分组，全量镜像；`../PROTOCOL.md §4.9`） */
+        /** 抽屉「习题」一段（被跟随会话所在工作区的分组，全量镜像；`../docs/PROTOCOL.md §4.9`） */
         fun onExGroups(list: List<com.xvan.unireader.shared.exercise.ExGroup>)
         /** 平板开着那一组习题的全量（`scope` 为空 = 那一组开不了了） */
         fun onExDeck(view: com.xvan.unireader.shared.exercise.ExDeckView)

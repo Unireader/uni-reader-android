@@ -24,7 +24,7 @@ import kotlin.math.min
  * 模式2 从 Mac 的 `toc`/`library` 广播转一层，模式1 从本机 Pdfium 书签与工作区 SQLite 读。
  * **依赖方向仍是单向的**（`pad`/`local` → `shared`），这边一行都不认识 `WireCodec`。
  *
- * 目录数据是**先序拍平 + depth**（`../PROTOCOL.md §4.2`），树结构在这里按 depth 就地重建：
+ * 目录数据是**先序拍平 + depth**（`../docs/PROTOCOL.md §4.2`），树结构在这里按 depth 就地重建：
  * 前一项 depth 更小者即父。线上不必编码嵌套，这边也不必递归。
  *
  * 用自绘覆盖层而不是 [Sheet]：抽屉要贴着左边缘满高滑出，而 Sheet 是居中卡片。
@@ -38,7 +38,7 @@ class ReaderDrawer(private val a: Activity) {
         /** 打开时停在哪一页（[open] 的参数） */
         const val TAB_TOC = 0
         const val TAB_LIB = 1
-        /** 习题（`../EXERCISE-PLAN.md §10.1`）：工作区里有题才出现这一页 */
+        /** 习题（`../docs/EXERCISE-PLAN.md §10.1`）：工作区里有题才出现这一页 */
         const val TAB_EX = 2
 
         private const val MAX_W = 340        // 面板最宽（dp）：平板上不让它占掉半屏
@@ -64,14 +64,14 @@ class ReaderDrawer(private val a: Activity) {
     /** 点书库条目：库文档 id */
     var onOpenDoc: (String) -> Unit = {}
 
-    // —— 书签（`../REQUIREMENTS.md §1.9`）。三个都只是**请求**：模式2 发给 Mac、模式1 落本机库，
+    // —— 书签（`../docs/REQUIREMENTS.md §1.9`）。三个都只是**请求**：模式2 发给 Mac、模式1 落本机库，
     // 两边都由各自的真源回推后再 [setBookmarks]，本类不改自己的表。
     /** 加一枚：参数 = 名字（落点由调用方定，两模式都取「当前视口顶」，与 Mac ⌘D 同口径） */
     var onAddBookmark: (String) -> Unit = {}
     var onRenameBookmark: (String, String) -> Unit = { _, _ -> }
     var onDeleteBookmark: (String) -> Unit = {}
 
-    // —— 画板笔记（`../BOARD-NOTE-PLAN.md §5`）：书库页的第二组。**[setBoards] 没被调过 = 整组不显示**。
+    // —— 画板笔记（`../docs/BOARD-NOTE-PLAN.md §5`）：书库页的第二组。**[setBoards] 没被调过 = 整组不显示**。
     // 两个模式都用：模式1 读本机库，模式2 用 Mac 的 `boards` 镜像。[LibItem.id] 是画板 id，
     // [LibItem.open] = 模式1 已在标签页里 / 模式2 是 Mac 正开着的那篇。
     private var boards: List<LibItem>? = null
@@ -84,7 +84,7 @@ class ReaderDrawer(private val a: Activity) {
     /** 画板那一行右侧的「更多」（改名 / 删除，由宿主弹） */
     var onBoardMore: (String) -> Unit = {}
 
-    // —— Markdown 笔记（`../MARKDOWN-NOTES-PLAN.md`，模式1）：null = 不显示这一组 ——
+    // —— Markdown 笔记（`../docs/MARKDOWN-NOTES-PLAN.md`，模式1）：null = 不显示这一组 ——
     private var notes: List<NoteNode>? = null
     /** Mac 上引用的外部目录的名字（平板上打不开，只列出来说一声） */
     private var noteRefs: List<String> = emptyList()
@@ -94,7 +94,7 @@ class ReaderDrawer(private val a: Activity) {
     /** 笔记那一行右侧的「更多」（改名…，由宿主弹） */
     var onNoteMore: (String) -> Unit = {}
 
-    // —— 习题（`../EXERCISE-PLAN.md §10.1`）：Mac 侧栏「习题」一段的同一份分组（全部 / 错题本 → 书 → 章 / 收藏 /
+    // —— 习题（`../docs/EXERCISE-PLAN.md §10.1`）：Mac 侧栏「习题」一段的同一份分组（全部 / 错题本 → 书 → 章 / 收藏 /
     // 每本书 → 章节树），摊平成「一行一个范围 + 缩进层级」。模式1 本机算、模式2 是 Mac 的 `exGroups`。
     // **空表 = 这一页不出现**（同 Mac：有题才有这一段）。
     private var exGroups: List<com.xvan.unireader.shared.exercise.ExGroup> = emptyList()
@@ -348,7 +348,7 @@ class ReaderDrawer(private val a: Activity) {
         }
     }
 
-    // ---------- 习题（`../EXERCISE-PLAN.md §10.1`） ----------
+    // ---------- 习题（`../docs/EXERCISE-PLAN.md §10.1`） ----------
 
     /**
      * 分组树：按 depth 就地还原（同目录那一页的做法），有下级的行带折叠箭头（默认收起，同 Mac 侧栏），
@@ -507,7 +507,7 @@ class ReaderDrawer(private val a: Activity) {
         addView(hit, LinearLayout.LayoutParams(0, -2, 1f))
     }
 
-    // ---------- 书签（`../REQUIREMENTS.md §1.9`） ----------
+    // ---------- 书签（`../docs/REQUIREMENTS.md §1.9`） ----------
 
     /** 顶上那条「添加书签」。名字必填 → 先弹输入框，输完才发请求。 */
     private fun addBookmarkRow(): View = PadPanels.iconRow(a, R.drawable.ic_bookmark, "添加书签",
@@ -704,7 +704,7 @@ class ReaderDrawer(private val a: Activity) {
         setOnClickListener {
             if (onClick != null) { onClick(); return@setOnClickListener }
             // 已打开的也照发：两模式的接收端都会自己识别并切过去，而不是重复开一份
-            // （模式2 = Mac `openPadDoc`，见 `../PROTOCOL.md §4.1`；模式1 = `openDoc` 切到那个标签页）
+            // （模式2 = Mac `openPadDoc`，见 `../docs/PROTOCOL.md §4.1`；模式1 = `openDoc` 切到那个标签页）
             onOpenDoc(d.id)
             close()
         }

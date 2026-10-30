@@ -3,7 +3,7 @@ package com.xvan.unireader.local.store
 import java.security.MessageDigest
 
 /**
- * 离线镜像三方合并的**行指纹**（方案见 `../OFFLINE-MIRROR-PLAN.md` §3）。
+ * 离线镜像三方合并的**行指纹**（方案见 `../docs/OFFLINE-MIRROR-PLAN.md` §3）。
  *
  * 用途：镜像库里的 `sync_base(tbl,row_id,fp)` 记下「建镜像那一刻」每行的样子；合并时重算一遍
  * 就能判出新增 / 删除 / 修改，**不需要墓碑表、不需要改任何写路径、不需要动 schema 契约**。
@@ -123,7 +123,7 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
-        // v16：画板笔记（`../BOARD-NOTE-PLAN.md §6`）。父表在前（`board_item.board_id` 指向它），两张都按
+        // v16：画板笔记（`../docs/BOARD-NOTE-PLAN.md §6`）。父表在前（`board_item.board_id` 指向它），两张都按
         // `updated_at` 取新；`board_item` 一条一行，两边各加的笔迹 / 图自然并起来。
         // `last_opened_at` 同 `document`：刻意不进指纹（翻开过一次就满屏「改过」）。列顺序与 Mac 逐字一致。
         TableSpec(
@@ -134,7 +134,7 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
-        // v17：分页画板的页（`../BOARD-NOTE-PLAN.md §9`），在 board_note 之后、board_item 之前（外键序，同 Mac）
+        // v17：分页画板的页（`../docs/BOARD-NOTE-PLAN.md §9`），在 board_note 之后、board_item 之前（外键序，同 Mac）
         TableSpec(
             "board_page", "id",
             listOf(
@@ -152,7 +152,7 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
-        // v20 习题（`../EXERCISE-PLAN.md §10.3`，2026-10-11 起同步，与 Mac 同序同列）。父表在前
+        // v20 习题（`../docs/EXERCISE-PLAN.md §10.3`，2026-10-11 起同步，与 Mac 同序同列）。父表在前
         // （`exercise_attempt.exercise_id` 指向它）。`exercise` 按 `updated_at` 取新（收藏 / 进出错题本 / 设章节都改它）；
         // `exercise_attempt` 一次作答一行，两边各做的自然并起来，没有修改时间 → 冲突保留源盘。
         TableSpec(
@@ -161,12 +161,12 @@ object MirrorFp {
                 t("id"), t("document_id"), i("page"), i("seq"), i("kind"), t("number"), t("section"),
                 b("payload"), i("starred"), i("wrong"), t("source"), t("created_at"), t("updated_at"),
                 t("chapter"),
-                // v22 表尾：题目笔记（`../EXERCISE-PLAN.md §12`，写笔记也改 updated_at，照样按它取新；与 Mac 同序）
+                // v22 表尾：题目笔记（`../docs/EXERCISE-PLAN.md §12`，写笔记也改 updated_at，照样按它取新；与 Mac 同序）
                 t("note"),
             ),
             lww = "updated_at",
         ),
-        // v21（`../EXERCISE-PLAN.md §11`）表尾多三列：手写 / 谁判的 / Agent 评语（与 Mac 同序）。
+        // v21（`../docs/EXERCISE-PLAN.md §11`）表尾多三列：手写 / 谁判的 / Agent 评语（与 Mac 同序）。
         TableSpec(
             "exercise_attempt", "id",
             listOf(

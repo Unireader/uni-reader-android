@@ -3,7 +3,7 @@ package com.xvan.unireader.local.exercise
 import com.xvan.unireader.shared.MiniJson
 
 /*
- * 习题的纯逻辑（模式1，`../EXERCISE-PLAN.md §10.2`）：逐条对应 Mac `Sources/App/Exercise.swift` 里**练习要用的那部分**
+ * 习题的纯逻辑（模式1，`../docs/EXERCISE-PLAN.md §10.2`）：逐条对应 Mac `Sources/App/Exercise.swift` 里**练习要用的那部分**
  * ——payload 解码、判题、以前的作答、范围键与 `includes`、筛选、侧栏的数、章节树、侧栏分组。
  * 导入 / 校验 / 去重是 Agent 在 Mac 上做的，这里不抄。
  *
@@ -92,7 +92,7 @@ data class Exercise(
     val chapter: List<String>,
 ) {
     val multiple: Boolean get() = kind == KIND_MULTIPLE
-    /** 选择题（单选 / 多选）。填空 / 主观题本端本轮只显示题干、提示到 Mac 上作答（`../EXERCISE-PLAN.md §11.6`）。 */
+    /** 选择题（单选 / 多选）。填空 / 主观题本端本轮只显示题干、提示到 Mac 上作答（`../docs/EXERCISE-PLAN.md §11.6`）。 */
     val isChoice: Boolean get() = kind == KIND_SINGLE || kind == KIND_MULTIPLE
     val hasAnswer: Boolean get() = payload.answer.any { it.isNotEmpty() }
     val answerFromAgent: Boolean get() = hasAnswer && payload.answerSource == "agent"

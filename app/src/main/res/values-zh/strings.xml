@@ -158,7 +158,7 @@
     <string name="tools_workspace">切换工作区…</string>
     <string name="tools_hide_bar">收起顶栏</string>
     <string name="tools_conn">连接设置…</string>
-    <!-- 习题（../EXERCISE-PLAN.md §10；措辞与 Mac Localizable.strings 同一套） -->
+    <!-- 习题（../docs/EXERCISE-PLAN.md §10；措辞与 Mac Localizable.strings 同一套） -->
     <string name="ex_title">习题</string>
     <string name="ex_all">全部习题</string>
     <string name="ex_mistakes">错题本</string>
@@ -323,7 +323,7 @@
     <string name="backup_restoring">正在还原…</string>
     <string name="backup_hint">自动保留：最近 5 份、最近 7 天每天 1 份、最近 4 周每周 1 份。</string>
 
-    <!-- 连接服务器（../SERVER-MODE-PLAN.md，local/server/） -->
+    <!-- 连接服务器（../docs/SERVER-MODE-PLAN.md，local/server/） -->
     <string name="srv_connect">连接服务器…</string>
     <string name="srv_connect_title">连接服务器</string>
     <string name="srv_connect_sub">填服务器地址和它给的配对码。</string>
