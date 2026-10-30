@@ -24,6 +24,7 @@ UniReader 的安卓端：**一个 App 两种模式**（启动页两个标签页�
   - `../ANDROID-STANDALONE-PLAN.md` — 模式1 方案（§9 已踩的坑 / §11.1 待真机清单 / §11.2 模拟器能证明什么）
   - `../ANDROID-MODE2-PLAN.md` — 模式2 方案
   - `../OFFLINE-MIRROR-PLAN.md` — 工作区离线镜像（整份复制到本机、离线写笔迹、接回硬盘三方合并）
+  - `../SERVER-MODE-PLAN.md` — 连接服务器（独立的 Swift 服务器程序；工作区「从服务器打开 / 上传到服务器」，本机缓存 + 只传改动）
   - `../SCRATCHPAD-ANDROID-HANDOFF.md` — 草稿纸安卓端交接（坐标系 / 存储 / 协议）
   - `../TODO.md`（进行中/待办，第一优先）、`../HISTORY.md`（已完成归档）——安卓条目也在里面
   - `../AGENTS.md` — macOS 端的构建、红线与结构
@@ -64,6 +65,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   别把它当成自己改坏了——先 `git stash -u` 跑一遍基线对数，或只跑自己那个类。
   不依赖 fixture 的（`WorkspaceCreateTest`/`MirrorBuilderTest`）一律在 `cacheDir` 里做，随处能跑。
 - 依赖已缓存，日常可 `--offline`；**新增依赖时必须去掉 `--offline`**（要联网解析）。
+- **连接服务器的端到端**（`ServerSyncE2ETest`，平板经 USB 接着）：主仓库根目录 `bash spike/android-server-e2e.sh`——Mac 上起临时服务器
+  （127.0.0.1:18791）+ `adb reverse`，地址 / 配对码经插桩参数传进去；顺带跑 Mac ↔ 安卓互通（`spike/android-server-interop.swift`）。
+  不经这个脚本跑时这个类自己跳过（没参数）。
 - 装包可以做，**手感/观感一律由用户在真机上测**，别自己截图自证；结论攒进 `../ANDROID-STANDALONE-PLAN.md §11.1`。
 
 ## 结构要点
@@ -264,6 +268,19 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   🔴 先归档再删（红线 11）：删画板、删文档（书库页长按）都走 `Trash.delete*`，归档失败就什么都不删。
   备份 `local/Backups`：`library-yyyyMMdd-HHmmss.sqlite`（本地时间）、稀释规则逐条照抄 Mac（`BackupsTest` ↔ `../spike/backup-retention-test.swift`）；
   还原 = 存还原点 → `closeWorkspace { … }` 等连接真关（`StoreQueue.close(then)`）→ 换库连 `-wal/-shm` → 重新打开。
+- **连接服务器（S3 第一轮，2026-10-29，`../SERVER-MODE-PLAN.md §13.7`）** 全在 `local/server/`，照 Mac 的 S2 做：
+  · 线格式 `SyncWire`（↔ `../Sources/Sync/SyncWire.swift`，契约 `../PROTOCOL.md §9`）+ 一行的读写 `SyncRows` + 客户端算法 `SyncClient`
+  （↔ `../Sources/Sync/SyncClient.swift`，逐条照抄；冲突规则不另写，复用 `local/mirror/` 的 `MirrorDiff` / `MirrorApply`，基线沿用 `sync_base`）；
+  `ServerClient`（OkHttp，阻塞，**一律不走代理**，`Cancel` 断开正在飞的请求）、`ServerAccounts`（连过的服务器，本机 prefs）、
+  `ServerSyncIO`（一轮 / 建缓存 / 上传 / 下 PDF，纯 IO）、`ServerSync`（时机与状态）、`ServerUi`（几块界面）、`ServerDiscovery`（`_unireader-srv._tcp`）。
+  · 有 `meta.srv_url` = 服务器工作区。**时机**：打开前完整一轮（启动页 `openWorkspace` 与阅读界面开库前，最多等 3 秒，超时照常开本机这份；
+  启动页刚同步过 60 秒内阅读界面不再同步）；阅读界面开着时**只推不拉**（`ServerSync.sessionStart`，每 60 秒 + `onPause`，在那条 `StoreQueue` 上找改动、
+  `total_changes()` 没变就跳过，基线逐行写不开事务）；阅读界面关库之后、退出书库页时完整一轮。
+  🔴 **阅读界面开着它的时候不跑完整一轮**（另一条连接写用户数据，内存里的笔迹快照就对不上了）——`prepareToOpen` / `syncNow` 见到开着的会话只叫它推一次；
+  还原备份关库时不同步（`closeWorkspace(syncAfter = false)`，要换库文件）。完整一轮之后后台下小 PDF（默认 ≤50MB，只写 `location`）。
+  · 缓存放 `/storage/emulated/0/Documents/UniReader/Servers/<主机-端口>/<名字>.unrd`；入口：启动页「本机工作区」页「连接服务器…」+ 每台服务器一段
+  （2026-10-29 用户定放这一页）；书库页 ⋯「上传到服务器…」（原文件夹就地成为缓存）/「立即同步」/「变回本地工作区…」（只给不在缓存目录里的）；
+  没下载的书在书库页、阅读界面都能点「从服务器下载」。离线副本与服务器工作区互斥（副本不能上传、有借出不能上传、服务器工作区不再做副本）。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，
@@ -312,6 +329,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `local/exercise/Exercise.kt`（**习题**：判题、以前的作答、范围键、筛选、章节树、侧栏分组）↔ Mac `Sources/App/Exercise.swift`
   （+ `Window/Exercise/ExerciseDeck.swift` ↔ `LocalExerciseDeck`），本端 `ExerciseTest` ↔ `../spike/exercise-test.swift` 的同名几段
   ——规则差一点，同一组题两端显示的题数、「上次作答」、范围键就对不上（标签页存的、线上发的都是范围键）；
+  `local/server/SyncWire.kt`（连接服务器的同步线格式）↔ `../Sources/Sync/SyncWire.swift`（App 与服务器共用），向量 `../spike/sync-wire-vectors.txt`
+  （Mac `spike/sync-wire-test.swift` 生成，本端 `SyncWireTest`），`SyncClient` / `SyncRows` ↔ `../Sources/Sync/` 同名两份
+  ——差一个字节服务器就解不出推上去的行；判定差一条，同一行两端互相覆盖；
   `pad/MacDiscovery.fingerprint`（配对码指纹，局域网发现 TXT `tk`）↔ Mac `Pairing.fingerprint`，
   本端 `MacDiscoveryTest.fingerprintVectors` ↔ `../spike/pairing-fp-test.swift` 同两条向量
   ——差一点，连过的 Mac 在发现列表里就永远显示「配对码已重置」。

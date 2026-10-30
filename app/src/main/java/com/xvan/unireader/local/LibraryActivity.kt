@@ -20,6 +20,11 @@ import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.mirror.MirrorStore
 import com.xvan.unireader.local.mirror.MirrorUi
+import com.xvan.unireader.local.server.ServerAccounts
+import com.xvan.unireader.local.server.ServerSync
+import com.xvan.unireader.local.server.ServerSyncIO
+import com.xvan.unireader.local.server.ServerUi
+import com.xvan.unireader.local.server.SyncClient
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteKind
 import com.xvan.unireader.local.store.StoreQueue
@@ -68,11 +73,28 @@ class LibraryActivity : Activity() {
         val boards: List<BoardRow>,
         /** 工作区 Markdown 笔记（`Notes/` 里的相对路径 → 是否已在标签页里），按路径排 */
         val notes: List<Pair<String, Boolean>> = emptyList(),
+        /** 服务器工作区连的那台（`meta.srv_url` / `srv_id`，`../SERVER-MODE-PLAN.md`）；本地工作区 = null */
+        val serverUrl: String? = null,
+        val serverId: String? = null,
     )
 
     private lateinit var list: LinearLayout
     private lateinit var titleView: TextView
     private lateinit var header: TextView
+    /** 服务器工作区：哪台服务器 + 同步状态（本地工作区不显示） */
+    private lateinit var syncLine: TextView
+    private var serverUrl: String? = null
+    private var serverId: String? = null
+    /** 同步状态变了：刷表头；一轮做完（或后台下好了 PDF）再重读列表，拉下来的改动要显示出来（攒 0.3 秒，别连着读） */
+    private val syncListener: () -> Unit = {
+        renderSyncLine()
+        val ws = workspace
+        if (serverUrl != null && ws != null && ServerSync.status(ws) !is ServerSync.Status.Syncing) {
+            list.removeCallbacks(reloadSoon)
+            list.postDelayed(reloadSoon, 300)
+        }
+    }
+    private val reloadSoon = Runnable { reload() }
     private var workspace: File? = null
 
     /** 只认最后一次 reload 的结果：`onResume` 可能在前一次读盘还没回来时又触发一次 */
@@ -102,6 +124,11 @@ class LibraryActivity : Activity() {
         }
         workspace = File(path)
         header = Ui.body(this, "").apply { setPadding(0, 0, 0, dp(4)) }
+        syncLine = Ui.body(this, "").apply {
+            textSize = 13f
+            visibility = View.GONE
+            setOnClickListener { workspace?.let { ServerSync.syncNow(this@LibraryActivity, it) } }
+        }
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         titleView = Ui.title(this, "", 26f)
         val col = LinearLayout(this).apply {
@@ -128,6 +155,7 @@ class LibraryActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 addView(titleView)
                 addView(header)
+                addView(syncLine)
             },
             LinearLayout.LayoutParams(0, -2, 1f),
         )
@@ -137,11 +165,31 @@ class LibraryActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        ServerSync.addListener(syncListener)
         reload()
+    }
+
+    override fun onPause() {
+        ServerSync.removeListener(syncListener)
+        super.onPause()
+    }
+
+    private fun renderSyncLine() {
+        val ws = workspace
+        val url = serverUrl
+        if (ws == null || url == null) {
+            syncLine.visibility = View.GONE
+            return
+        }
+        val label = ServerAccounts.find(this, serverId, url)?.label ?: url.substringAfter("://")
+        syncLine.text = ServerUi.statusLine(this, label, ServerSync.status(ws))
+        syncLine.visibility = View.VISIBLE
     }
 
     override fun onDestroy() {
         closeAddQueue()
+        // 退出书库 = 用完这个工作区：服务器工作区同步一轮（阅读界面还开着它的话只推一次，见 ServerSync.syncNow）
+        if (isFinishing && serverUrl != null) workspace?.let { ServerSync.syncNow(applicationContext, it) }
         super.onDestroy()
     }
 
@@ -176,6 +224,7 @@ class LibraryActivity : Activity() {
             // 是切过去而不是重新打开，先说清楚免得以为点错了
             val opened = TabSet.openDocIds(this, ws.absolutePath)
             val mirror = MirrorUi.isMirror(store)
+            val srvUrl = store.meta(SyncClient.META_SERVER_URL)?.takeIf { it.isNotEmpty() }
             // 借出记录只在源盘那边有；一行足矣（「是信息不是锁」，方案 §5.2）
             val lent = MirrorStore.decodeCheckouts(store.meta(MirrorStore.META_CHECKOUTS)).size
             // 画板笔记（只读连接：没有这两张表就是「还没有画板」，补建留给可写打开）
@@ -186,6 +235,8 @@ class LibraryActivity : Activity() {
             Snapshot(
                 name = store.workspaceName().ifEmpty { ws.name },
                 isMirror = mirror,
+                serverUrl = srvUrl,
+                serverId = store.meta(SyncClient.META_SERVER_ID)?.takeIf { it.isNotEmpty() },
                 boards = boards,
                 // 只扫目录不读正文（同 Mac 侧栏）；md_doc 对账留给阅读界面那条可写连接
                 notes = MdNotes.scan(ws).notes.map { it.relPath to (TabSet.mdKey(it.relPath) in opened) },
@@ -208,13 +259,16 @@ class LibraryActivity : Activity() {
 
     private fun render(ws: File, snap: Snapshot) {
         isMirror = snap.isMirror
+        serverUrl = snap.serverUrl
+        serverId = snap.serverId
+        renderSyncLine()
         list.removeAllViews()
         title = ws.name
         titleView.text = snap.name
         header.text = snap.info
         for ((i, r) in snap.rows.withIndex()) {
             if (i > 0) list.addView(Ui.divider(this))
-            list.addView(row(r.doc, r.ink, r.pdfOk, r.opened, snap.isMirror))
+            list.addView(row(r.doc, r.ink, r.pdfOk, r.opened, snap.isMirror, snap.serverUrl != null))
         }
         if (snap.rows.isEmpty()) {
             list.addView(
@@ -402,8 +456,21 @@ class LibraryActivity : Activity() {
      * 一条书。整行可点（涟漪铺满行），不是行里塞个按钮——列表项的点按目标就该是整行。
      * 进度做成一条细进度条：数字要读，条一眼就看得到读到哪儿了。
      */
-    private fun row(d: LibDocument, inkCount: Int, pdfOk: Boolean, opened: Boolean, isMirror: Boolean): View {
-        val col = Ui.row(this, if (pdfOk) ({ workspace?.let { ReaderActivity.start(this, it, d.id) } }) else null)
+    private fun row(d: LibDocument, inkCount: Int, pdfOk: Boolean, opened: Boolean, isMirror: Boolean, onServer: Boolean): View {
+        val onClick: (() -> Unit)? = when {
+            pdfOk -> ({ workspace?.let { ReaderActivity.start(this, it, d.id) } })
+            // 服务器工作区里还没下载的书：点一下从服务器下载，下完直接打开（方案 §4.1：大 PDF 用到再下）
+            onServer -> ({
+                workspace?.let { ws ->
+                    ServerUi.downloadPdf(this, ws, d.id, d.title) { ok ->
+                        reload()
+                        if (ok) ReaderActivity.start(this, ws, d.id)
+                    }
+                }
+            })
+            else -> null
+        }
+        val col = Ui.row(this, onClick)
         col.setOnLongClickListener { workspace?.let { showDocMenu(it, d) }; true }
         col.addView(
             Ui.title(this, d.title, 17f).apply {
@@ -425,7 +492,10 @@ class LibraryActivity : Activity() {
             ).apply { setPadding(0, dp(4), 0, dp(8)) },
         )
         if (started) col.addView(progressBar(ratio))
-        if (!pdfOk) {
+        if (!pdfOk && onServer) {
+            // 服务器工作区本来就只自动下小 PDF，没下的不是出错
+            col.addView(Ui.body(this, getString(R.string.srv_pdf_not_downloaded)).apply { textSize = 12f })
+        } else if (!pdfOk) {
             col.addView(
                 // 镜像里「没带 PDF」是刻意的（库全量、PDF 选择性，方案 §7），不是出错——
                 // 说成「重新关联」会把用户引到一条根本不该走的路上
@@ -525,17 +595,45 @@ class LibraryActivity : Activity() {
      */
     private fun showMore() {
         val ws = workspace ?: return
-        val sheet = Sheet(this).title(if (isMirror) "离线副本" else "工作区")
-        if (isMirror) {
-            sheet.subtitle("插上源盘就能预览同步会做什么")
-            sheet.action("同步预览…", primary = true) { MirrorUi.syncPreview(this, ws) }
-        } else {
-            sheet.subtitle("复制一份到内部存储，拔了盘也能看和写")
-            sheet.action("做成离线副本…", primary = true) { MirrorUi.makeMirror(this, ws) { reload() } }
+        val name = titleView.text.toString().ifEmpty { ws.name }
+        // 动作做成一列行（原先排在弹层底部一行按钮里；加了「上传到服务器」之后一行放不下）
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        var dlg: AlertDialog? = null
+        fun item(icon: Int, label: String, detail: String? = null, act: () -> Unit) {
+            val onClick = { dlg?.dismiss(); act() }
+            list.addView(
+                if (detail == null) PadPanels.iconRow(this, icon, label, Ui.accent(this), onClick = onClick)
+                else PadPanels.twoLineRow(this, icon, Ui.accent(this), label, detail, onClick = onClick),
+            )
         }
-        sheet.action(getString(R.string.trash_open)) { showTrash(ws) }
-        sheet.action("取消")
-        sheet.show()
+        val sheet = Sheet(this)
+        when {
+            // 服务器工作区：本机缓存本身就是离线副本，不再给「做成离线副本」（`../SERVER-MODE-PLAN.md §1`）
+            serverUrl != null -> {
+                sheet.title(getString(R.string.srv_workspace_title)).subtitle(syncLine.text.toString())
+                item(R.drawable.ic_redo, getString(R.string.srv_sync_now)) { ServerSync.syncNow(this, ws) }
+                // 只给就地变成缓存的原件（不在 App 缓存目录里的），同 Mac：缓存目录里的变回本地也还藏在那儿
+                if (!ServerSyncIO.isInCachesFolder(ws)) {
+                    item(R.drawable.ic_folder, getString(R.string.srv_detach)) {
+                        ServerUi.confirmDetach(this, ws, name) { reload() }
+                    }
+                }
+            }
+            // 离线副本不能再做副本，也不能上传（传原来那份）
+            isMirror -> {
+                sheet.title("离线副本")
+                item(R.drawable.ic_eye, "同步预览…", "插上源盘就能预览同步会做什么") { MirrorUi.syncPreview(this, ws) }
+            }
+            else -> {
+                sheet.title("工作区")
+                item(R.drawable.ic_tablet, "做成离线副本…", "复制一份到内部存储，拔了盘也能看和写") {
+                    MirrorUi.makeMirror(this, ws) { reload() }
+                }
+                item(R.drawable.ic_monitor, getString(R.string.srv_upload)) { ServerUi.upload(this, ws, name) { reload() } }
+            }
+        }
+        item(R.drawable.ic_delete, getString(R.string.trash_open)) { showTrash(ws) }
+        dlg = sheet.content(list).action("取消").show()
     }
 
     /** 回收站：每个操作临时开一条可写连接（书库页平时只开只读的） */

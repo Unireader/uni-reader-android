@@ -26,6 +26,12 @@ import com.xvan.unireader.local.FileBrowser
 import com.xvan.unireader.local.LibraryActivity
 import com.xvan.unireader.local.StorageScan
 import com.xvan.unireader.local.Workspace
+import com.xvan.unireader.local.server.ServerAccount
+import com.xvan.unireader.local.server.ServerAccounts
+import com.xvan.unireader.local.server.ServerClient
+import com.xvan.unireader.local.server.ServerSync
+import com.xvan.unireader.local.server.ServerSyncIO
+import com.xvan.unireader.local.server.ServerUi
 import com.xvan.unireader.pad.KnownMacs
 import com.xvan.unireader.pad.MacDiscovery
 import com.xvan.unireader.pad.PadActivity
@@ -76,6 +82,8 @@ class Launcher : Activity() {
     private lateinit var permBtn: TextView
     private lateinit var permCard: LinearLayout
     private lateinit var recentBox: LinearLayout
+    /** 每台连上的服务器一段（`../SERVER-MODE-PLAN.md §2`，2026-10-29 用户定放在本页、最近打开下面） */
+    private lateinit var serverBox: LinearLayout
     private lateinit var scanBox: LinearLayout
     private lateinit var scanBtn: TextView
     private lateinit var newBtn: TextView
@@ -233,10 +241,14 @@ class Launcher : Activity() {
         newBtn = Ui.button(this, getString(R.string.launcher_local_new)) { onCreateWorkspace() }
         col.addView(Ui.spacer(this, 8))
         col.addView(sideBySide(newBtn, scanBtn))
+        col.addView(Ui.spacer(this, 8))
+        col.addView(Ui.button(this, getString(R.string.srv_connect)) { ServerUi.connect(this) { refreshServers() } })
 
         recentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        serverBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scanBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(recentBox)
+        col.addView(serverBox)
         col.addView(scanBox)
 
         // —— 单写者提醒（§9.2：工作区没有任何加锁/同步机制）——一行说完，细节点开才看 ——
@@ -439,6 +451,7 @@ class Launcher : Activity() {
         scanBtn.text = getString(if (Workspace.scanDone(this)) R.string.launcher_local_rescan else R.string.launcher_local_scan)
         refreshMacs()   // 从输入板回来：刚连上的那台要出现在「连过的 Mac」里
         refreshRecents()
+        refreshServers()
         refreshScan()
         maybeAutoScan(ok)
     }
@@ -469,6 +482,123 @@ class Launcher : Activity() {
                     },
                 ) { openWorkspace(dir) },
             )
+        }
+    }
+
+    // ---------- 服务器（../SERVER-MODE-PLAN.md §2「安卓模式1」） ----------
+
+    /** 只认最后一次 [refreshServers] 发出去的那批查询（onResume 连着触发时别让旧结果盖掉新的） */
+    private var serverToken: Any? = null
+
+    /** 一台服务器这一段要显示的：服务器上的工作区（连不上 = null + [error]）、本机已有的缓存 */
+    private class ServerState(
+        val workspaces: List<ServerClient.WorkspaceInfo>?,
+        val error: Throwable?,
+        val caches: List<ServerSyncIO.Cache>,
+    )
+
+    /**
+     * 每台连上的服务器一段：先只画标题（「正在列出工作区…」），后台问服务器要列表、扫本机缓存目录，回来再画行。
+     * 每行 = 一个服务器工作区：本机已有 → 点了直接开（打开前会同步）；没有 → 先下载资料库建一份本机缓存再开。
+     * 连不上时照样列出本机已有的那几份（离线也能开）。
+     */
+    private fun refreshServers() {
+        serverBox.removeAllViews()
+        val accounts = ServerAccounts.all(this)
+        if (accounts.isEmpty()) return
+        val token = Any()
+        serverToken = token
+        val holders = accounts.associateWith { acc ->
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(serverHeader(acc))
+                addView(hint(getString(R.string.srv_loading)))
+                serverBox.addView(this)
+            }
+        }
+        for (acc in accounts) {
+            runInBackground(
+                what = "列服务器工作区 ${acc.url}",
+                work = {
+                    val caches = if (hasAllFiles()) {
+                        ServerSyncIO.caches().filter { c ->
+                            if (!acc.serverId.isNullOrEmpty() && !c.serverId.isNullOrEmpty()) c.serverId == acc.serverId
+                            else c.serverUrl == acc.url
+                        }
+                    } else {
+                        emptyList()
+                    }
+                    val r = runCatching { acc.client().workspaces() }
+                    ServerState(r.getOrNull(), r.exceptionOrNull(), caches)
+                },
+                ok = { st -> if (serverToken === token) holders[acc]?.let { renderServer(it, acc, st) } },
+            )
+        }
+    }
+
+    private fun serverHeader(acc: ServerAccount): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(Ui.sectionTitle(this@Launcher, getString(R.string.srv_section, acc.label)), LinearLayout.LayoutParams(0, -2, 1f))
+        addView(
+            Ui.iconButton(this@Launcher, R.drawable.ic_more, getString(R.string.srv_disconnect), Ui.onVariant(this@Launcher)) {
+                ServerUi.accountMenu(this@Launcher, acc) { refreshServers() }
+            },
+        )
+    }
+
+    private fun renderServer(box: LinearLayout, acc: ServerAccount, st: ServerState) {
+        box.removeAllViews()
+        box.addView(serverHeader(acc))
+        val cacheOf = st.caches.associateBy { it.workspaceId.uppercase() }
+        if (st.workspaces == null) {
+            val why = st.error?.let { ServerUi.describe(this, it) }.orEmpty()
+            box.addView(hint(getString(R.string.srv_unreachable_list, why)))
+            for (c in st.caches) {
+                box.addView(twoLineRow(R.drawable.ic_doc, Ui.accent(this), c.folder.name.removeSuffix(".unrd"), getString(R.string.srv_local_copy)) {
+                    openWorkspace(c.folder)
+                })
+            }
+            return
+        }
+        if (st.workspaces.isEmpty() && st.caches.isEmpty()) {
+            box.addView(hint(getString(R.string.srv_no_workspaces)))
+            return
+        }
+        val listed = HashSet<String>()
+        for (ws in st.workspaces) {
+            val cache = cacheOf[ws.id.uppercase()]
+            listed.add(ws.id.uppercase())
+            box.addView(
+                twoLineRow(
+                    R.drawable.ic_doc,
+                    Ui.accent(this),
+                    ws.name.ifEmpty { ws.id.take(8) },
+                    if (cache != null) getString(R.string.srv_local_copy) else getString(R.string.srv_not_downloaded),
+                ) { openServerWorkspace(acc, ws, cache?.folder) },
+            )
+        }
+        // 本机有、服务器列表里没有的（服务器上删了）：照样列出来，能打开本机这份
+        for (c in st.caches) {
+            if (c.workspaceId.uppercase() in listed) continue
+            box.addView(twoLineRow(R.drawable.ic_doc, Ui.onVariant(this), c.folder.name.removeSuffix(".unrd"), getString(R.string.srv_local_copy)) {
+                openWorkspace(c.folder)
+            })
+        }
+    }
+
+    private fun openServerWorkspace(acc: ServerAccount, ws: ServerClient.WorkspaceInfo, cache: File?) {
+        if (!hasAllFiles()) {
+            alert(getString(R.string.srv_open_failed), getString(R.string.srv_need_files))
+            return
+        }
+        if (cache != null) {
+            openWorkspace(cache)
+            return
+        }
+        ServerUi.openFromServer(this, acc, ws) { dir ->
+            refreshServers()
+            openWorkspace(dir)
         }
     }
 
@@ -801,7 +931,12 @@ class Launcher : Activity() {
         busyDlg = busy("正在打开 ${dir.name}…")
         runInBackground(
             what = "校验工作区 ${dir.name}",
-            work = { Workspace.check(dir) },
+            work = {
+                Workspace.check(dir).also { c ->
+                    // 服务器工作区：打开前同步一轮（最多等 3 秒，连不上就照常开本机这份，`ServerSync.prepareToOpen`）
+                    if (c is Workspace.Check.OK && !c.readOnly) ServerSync.prepareToOpen(applicationContext, c.dir, 3_000L)
+                }
+            },
             ok = { c ->
                 dismissBusy()
                 when (c) {

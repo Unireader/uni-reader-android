@@ -34,6 +34,9 @@ import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.ScratchPad
 import com.xvan.unireader.local.store.NoteTypeDef
 import com.xvan.unireader.local.store.StoreQueue
+import com.xvan.unireader.local.server.ServerSync
+import com.xvan.unireader.local.server.ServerUi
+import com.xvan.unireader.local.server.SyncClient
 import org.json.JSONObject
 import com.xvan.unireader.local.store.LibImageNote
 import com.xvan.unireader.local.store.LibImage
@@ -199,6 +202,8 @@ class ReaderActivity : Activity() {
         val typeRgb: Map<String, IntArray> = emptyMap(),
         val typeIcons: Map<String, String> = emptyMap(),
         val reason: String?,
+        /** 文档在、只是本机没有能打开的 PDF（服务器工作区据此问要不要从服务器下载） */
+        val noPdf: Boolean = false,
     )
 
     /** 参考窗在库队列上读齐的那一份：文档行 + 能打开的文件 + 它的内容 hash + 开着的对齐参数 */
@@ -210,7 +215,12 @@ class ReaderActivity : Activity() {
         val name: String,
         val docs: List<LibDocument>,
         val boards: List<BoardNote>,
+        /** 服务器工作区（`meta.srv_url`，`../SERVER-MODE-PLAN.md`）：开着时定时推送、关掉后同步一轮 */
+        val onServer: Boolean = false,
     )
+
+    /** 当前工作区是不是服务器工作区（[attachWorkspace] 定，[closeWorkspace] 清） */
+    private var onServer = false
 
     private lateinit var canvasHost: FrameLayout
     private lateinit var bar: TopBar
@@ -813,9 +823,14 @@ class ReaderActivity : Activity() {
         runInBackground(
             what = "开工作区库 ${dir.name}",
             work = {
+                // 服务器工作区：开库前先同步一轮（最多 3 秒；刚在启动页同步过就跳过，`ServerSync.prepareToOpen`）
+                ServerSync.prepareToOpen(applicationContext, dir, 3_000L, skipIfRecentMs = 60_000L)
                 val s = LibraryStore.open(dir)
                 try {
-                    WsOpened(s, s.workspaceName(), s.allDocuments(), s.boards())
+                    WsOpened(
+                        s, s.workspaceName(), s.allDocuments(), s.boards(),
+                        onServer = !s.meta(SyncClient.META_SERVER_URL).isNullOrEmpty(),
+                    )
                 } catch (e: Throwable) {
                     // 只抛不关的话，这个库连接（带 WAL）就悬在后台了（同 §9.5 的 discard 理由）
                     runCatching { s.close() }
@@ -831,6 +846,8 @@ class ReaderActivity : Activity() {
     private fun attachWorkspace(dir: File, o: WsOpened, initialDoc: String?) {
         val q = StoreQueue(o.store)
         queue = q
+        onServer = o.onServer
+        if (o.onServer) ServerSync.sessionStart(this, dir, q)   // 开着时只推不拉（每 60 秒 / 退到后台）
         libTitles = o.docs.associate { it.id to it.title }
         workspaceName = o.name.ifEmpty { dir.name }
         tabsBar.setWorkspace(workspaceName)
@@ -990,8 +1007,10 @@ class ReaderActivity : Activity() {
      *
      * 顺序不能乱：[saveTabSet] 必须在 [tabs] 清空之前（空列表等于把这个工作区的记录删掉），
      * 关库必须最后（它排在队尾，前面攒的写才落得下去，见 [StoreQueue.close]）。
+     *
+     * @param syncAfter 服务器工作区关掉后同步一轮（还原备份要换库文件，那次传 false：不能有别的连接开着它）
      */
-    private fun closeWorkspace(onClosed: (() -> Unit)? = null) {
+    private fun closeWorkspace(syncAfter: Boolean = true, onClosed: (() -> Unit)? = null) {
         scratch.close()   // 开着的草稿纸属于这个工作区的文档，随它一起收
         scratch.bind(null, "", emptyList())
         board.bind(null, null)   // 画板同理（bind(null) 顺带收起）
@@ -1011,9 +1030,20 @@ class ReaderActivity : Activity() {
         tabsBar.setTabs(emptyList(), -1)
         handler.removeCallbacks(backupTick)
         val q = queue
+        val closing = workspace
+        val wasOnServer = onServer
+        if (wasOnServer && closing != null) ServerSync.sessionStop(closing)
+        onServer = false
         queue = null
         workspace = null
-        if (q != null) q.close(onClosed) else onClosed?.invoke()
+        // 服务器工作区：连接真关了之后再完整同步一轮（关掉之前跑就是两条连接同时写，见 ServerSync 类注释）
+        val app = applicationContext
+        val after: (() -> Unit)? = if (wasOnServer && closing != null && syncAfter) {
+            { ServerSync.workspaceClosed(app, closing); onClosed?.invoke() }
+        } else {
+            onClosed
+        }
+        if (q != null) q.close(after) else after?.invoke()
         refreshHud()
     }
 
@@ -1083,7 +1113,7 @@ class ReaderActivity : Activity() {
                         return@submit
                     }
                     val busy = Sheet(this).busy(getString(R.string.backup_restoring))
-                    closeWorkspace {
+                    closeWorkspace(syncAfter = false) {
                         Bg.submit("换库文件") {
                             val err = runCatching { Backups.replaceLibrary(ws, item.file) }.exceptionOrNull()
                             runOnUiThread {
@@ -1773,6 +1803,7 @@ class ReaderActivity : Activity() {
                     DocData(
                         doc, null, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
                         reason = "《${doc.title}》没有能打开的 PDF——需要在 Mac 上把文件拷进工作区",
+                        noPdf = true,
                     )
                 } else {
                     // 落库上下文 + 当前作画图层（老文档可能没有图层行，补一条默认层，同 Mac 的行为）
@@ -1801,6 +1832,16 @@ class ReaderActivity : Activity() {
 
     /** 第二跳：开 Pdfium（读**全部**页尺寸表，几百页的文档不便宜，所以甩给 [Bg] 而不是压库队列） */
     private fun onDocData(t: Tab, d: DocData) {
+        val ws = workspace
+        if (d.noPdf && onServer && d.doc != null && ws != null) {
+            // 服务器工作区里还没下载的书（大 PDF 用到才下，方案 §4.1）：问一句，下完重新装这一篇
+            ServerUi.offerPdfDownload(this, ws, d.doc.id, d.doc.title) { ok ->
+                t.loading = false
+                if (!ok) failToOpen(t, d.reason ?: "打不开这个文档")
+                else if (workspace == ws && t in tabs && curTab() === t) loadTab(t)
+            }
+            return
+        }
         if (d.reason != null || d.doc == null || d.file == null) {
             t.loading = false
             failToOpen(t, d.reason ?: "打不开这个文档")
@@ -2631,6 +2672,7 @@ class ReaderActivity : Activity() {
         board.flushViewportSave()   // 画板视口同理：节流中的那次立即写一次，没开画板时空操作
         md.flush()                  // Markdown 笔记：没存的输入立即写盘（同 Mac「App 退出」那条）
         backupNow(force = false)    // 退到后台也备份一次（节流 30 分钟；同 Mac「退出前」那条）
+        if (onServer) workspace?.let { ServerSync.pushNow(it) }   // 服务器工作区：退到后台推一次（进程随时可能被杀）
     }
 
     /**
