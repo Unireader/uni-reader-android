@@ -228,7 +228,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   分页画板因此**不再走 `boardViewport`**（不复位、不回传），那条只剩无限画布在用。
 - **习题（v20，2026-10-11，`../EXERCISE-PLAN.md §10`）**：两模式共用一份界面 `shared/exercise/ExerciseScreen`
   （顶栏 范围名 / 进度 / 全部重做 / 只看没做过 / 练习·列表；练习页一次一题、左右划翻题；列表页长按多选）+ 抽屉第三页「习题」
-  （`ReaderDrawer.setExercises`，有题才出现）。界面只认中立数据 `ExDeckView` / `ExCard`，操作交给 `ExHost`：
+  （`ReaderDrawer.setExercises`，有题才出现）；模式1 书库页（`LibraryActivity`）末尾也有一组「习题」（2026-10-30，有题才出现，
+  只列第一级：全部 / 错题本 / 收藏 / 每本书，章节在抽屉里选；点一行带 `ex:<范围键>` 进阅读界面，同 `openExercises` 就地换公用习题标签）。界面只认中立数据 `ExDeckView` / `ExCard`，操作交给 `ExHost`：
   「哪一组题」都在抽屉里选（错题本、收藏都按书 → 章展开），顶栏的筛选只剩「只看没做过」一个开关，
   `ExDeckView.noFilter` 为真（错题本那一支）时不显示——模式2 由 Mac 在 `exDeck` 尾部告诉，平板不去解析范围键。
   · 模式1 = `local/ExerciseController`：纯逻辑 `local/exercise/Exercise.kt`（逐条照抄 Mac `Exercise.swift`，JVM 单测 `ExerciseTest`）+

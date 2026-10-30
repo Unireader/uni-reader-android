@@ -12,6 +12,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.xvan.unireader.R
 import android.app.AlertDialog
+import com.xvan.unireader.local.exercise.ExGroupNode
+import com.xvan.unireader.local.exercise.ExScope
 import com.xvan.unireader.local.store.BoardNote
 import com.xvan.unireader.local.store.Iso
 import com.xvan.unireader.local.store.ScratchPad
@@ -64,6 +66,9 @@ class LibraryActivity : Activity() {
 
     /** 画板笔记一行（`../BOARD-NOTE-PLAN.md §5`）：[items] = 上面有几条东西（笔迹 + 图片） */
     private class BoardRow(val board: BoardNote, val items: Int, val opened: Boolean)
+
+    /** 「习题」一组的一行（只列第一级：全部 / 错题本 / 收藏 / 每本有题的书；章节在阅读界面抽屉里选） */
+    private class ExRow(val key: String, val title: String, val count: Int, val opened: Boolean)
     private class Snapshot(
         val name: String,
         val info: String,
@@ -76,6 +81,8 @@ class LibraryActivity : Activity() {
         /** 服务器工作区连的那台（`meta.srv_url` / `srv_id`，`../SERVER-MODE-PLAN.md`）；本地工作区 = null */
         val serverUrl: String? = null,
         val serverId: String? = null,
+        /** 习题（`../EXERCISE-PLAN.md`）：没有题 = 空，整组不显示（同 Mac 侧栏「有题才出现」） */
+        val exercises: List<ExRow> = emptyList(),
     )
 
     private lateinit var list: LinearLayout
@@ -240,6 +247,7 @@ class LibraryActivity : Activity() {
                 boards = boards,
                 // 只扫目录不读正文（同 Mac 侧栏）；md_doc 对账留给阅读界面那条可写连接
                 notes = MdNotes.scan(ws).notes.map { it.relPath to (TabSet.mdKey(it.relPath) in opened) },
+                exercises = readExercises(store, docs, opened),
                 info = buildString {
                     append("${docs.size} 个文档")
                     if (opened.isNotEmpty()) append("　${opened.size} 个在标签页里")
@@ -256,6 +264,23 @@ class LibraryActivity : Activity() {
                 },
             )
         }
+
+    /**
+     * 习题分组的第一级（哪几行、什么顺序只在 [ExGroupNode.build] 一份，同抽屉 / Mac 侧栏）。
+     * 某组已经在标签页里（公用的或单独开的都算）就标出来。
+     */
+    private fun readExercises(store: LibraryStore, docs: List<LibDocument>, opened: Set<String>): List<ExRow> {
+        val openKeys = opened.filter(TabSet::isExercise).map(TabSet::exerciseKeyOf).toSet()
+        val title: (ExScope) -> String = { sc ->
+            when (sc) {
+                ExScope.Wrong -> getString(R.string.ex_mistakes)
+                ExScope.Starred -> getString(R.string.ex_starred)
+                else -> getString(R.string.ex_all)
+            }
+        }
+        return ExGroupNode.build(store.exerciseSummary(), docs.map { it.id to it.title }, title, getString(R.string.ex_no_chapter))
+            .map { ExRow(it.scope.key, it.title, it.count, it.scope.key in openKeys) }
+    }
 
     private fun render(ws: File, snap: Snapshot) {
         isMirror = snap.isMirror
@@ -290,6 +315,26 @@ class LibraryActivity : Activity() {
         }
         renderBoards(ws, snap.boards)
         renderNotes(ws, snap.notes)
+        renderExercises(ws, snap.exercises)
+    }
+
+    /** 「习题」一组：点一行 = 在阅读界面的习题标签里打开这一组（公用的习题标签就地换组，见 `ReaderActivity`） */
+    private fun renderExercises(ws: File, rows: List<ExRow>) {
+        if (rows.isEmpty()) return
+        list.addView(Ui.groupTitle(this, getString(R.string.ex_title), top = 24))
+        for ((i, r) in rows.withIndex()) {
+            if (i > 0) list.addView(Ui.divider(this))
+            val col = Ui.row(this) { ReaderActivity.start(this, ws, TabSet.exerciseTab(r.key, separate = false)) }
+            col.addView(
+                Ui.title(this, r.title, 17f).apply { if (r.opened) setTextColor(Ui.accent(this@LibraryActivity)) },
+            )
+            val sub = buildString {
+                append(getString(R.string.ex_count, r.count))
+                if (r.opened) append("　已在标签页里")
+            }
+            col.addView(Ui.body(this, sub).apply { setPadding(0, dp(4), 0, 0) })
+            list.addView(col)
+        }
     }
 
     /** 「笔记」一组（`../MARKDOWN-NOTES-PLAN.md`）：每篇一行，次行是所在目录；点开 = 在阅读界面的标签页里打开 */

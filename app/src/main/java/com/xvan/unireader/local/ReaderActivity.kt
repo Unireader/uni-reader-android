@@ -426,7 +426,12 @@ class ReaderActivity : Activity() {
         val path = intent.getStringExtra(EXTRA_WORKSPACE) ?: return
         val docId = intent.getStringExtra(EXTRA_DOC_ID)?.takeIf { it.isNotEmpty() }
         if (workspace?.absolutePath == path) {
-            if (docId != null) openDoc(docId)
+            // 书库点的一组习题（公用标签 `ex:`）：同 [openExercises]，就地换掉同一支的公用习题标签，不多开一个
+            if (docId != null && TabSet.isExercise(docId) && !TabSet.isSeparateExercise(docId)) {
+                openExercises(TabSet.exerciseKeyOf(docId), newTab = false)
+            } else if (docId != null) {
+                openDoc(docId)
+            }
         } else {
             switchWorkspace(File(path), docId)
         }
@@ -894,8 +899,20 @@ class ReaderActivity : Activity() {
         var want = saved.active.coerceIn(0, max(0, tabs.size - 1))
         if (initialDoc != null) {
             val i = tabs.indexOfFirst { it.docId == initialDoc }
+            // 书库点的一组习题：已开着这一组（公用或单独开的）→ 切过去；否则同一支的公用习题标签就地换组（同 [openExercises]）
+            val exScope = if (i < 0 && TabSet.isExercise(initialDoc)) ExScope.parse(TabSet.exerciseKeyOf(initialDoc)) else null
+            val exSame = if (exScope == null) -1 else tabs.indexOfFirst { it.isExercise && TabSet.exerciseKeyOf(it.docId) == exScope.key }
+            val exShared = if (exScope == null || exSame >= 0) -1 else tabs.indexOfFirst {
+                it.isExercise && !TabSet.isSeparateExercise(it.docId) && it.exerciseScope?.isMistakes == exScope.isMistakes
+            }
             when {
                 i >= 0 -> want = i
+                exSame >= 0 -> want = exSame
+                exShared >= 0 && tabTitleOf(initialDoc) != null -> {
+                    tabs[exShared] = Tab(initialDoc, tabTitleOf(initialDoc) ?: getString(R.string.ex_title))
+                        .also { it.usedAt = tabs[exShared].usedAt }
+                    want = exShared
+                }
                 tabTitleOf(initialDoc) != null && tabs.size < MAX_TABS -> {
                     tabs.add(Tab(initialDoc, tabTitleOf(initialDoc) ?: "文档"))
                     want = tabs.size - 1
