@@ -132,6 +132,26 @@ data class Exercise(
         /** 作答记录里存的那串：选中的键按字母序拼起来。 */
         fun answerString(keys: Set<String>): String = keys.sorted().joinToString("")
 
+        /**
+         * 打开一组题时停在第几道（用户 2026-10-31 定「接着上次做的往下」，`../docs/EXERCISE-PLAN.md §13`），逐条照抄 Mac `Exercise.resumeIndex`：
+         * 先找这一组里**在 App 里最近练过**的那道（`lastAt` 最大；书上的作答不算），从它后面找第一道没做过的；
+         * 后面都做过了，从头找第一道没做过的；全做过 → 第 1 题。「没做过」同「只看没做过」（一次作答都没有，书上的也算做过）。
+         * 两道时间一样时取排在后面的那道。时间按 ISO 串比：两端写的是同一种定长格式，库里挑「最近一次」的 `MAX(created_at)` 也是按串比。
+         */
+        fun resumeIndex(items: List<Exercise>, stats: Map<String, ExAttemptStats>): Int {
+            fun undone(i: Int) = (stats[items[i].id]?.attempts ?: 0) == 0
+            var last = -1
+            var lastAt: String? = null
+            items.forEachIndexed { i, e ->
+                val t = stats[e.id]?.lastAt ?: return@forEachIndexed
+                val prev = lastAt
+                if (prev == null || t >= prev) { last = i; lastAt = t }
+            }
+            val start = last + 1
+            (start until items.size).firstOrNull { undone(it) }?.let { return it }
+            return (0 until start).firstOrNull { undone(it) } ?: 0
+        }
+
         /** 「AC」「A,C」「A、C」「A C」→ [A, C]（保序去重）；含选项键以外的字母 → null（同 Mac `ExerciseImport.parseAnswer`）。 */
         fun parseAnswer(raw: String): List<String>? {
             val out = ArrayList<String>()

@@ -80,12 +80,16 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
 
     private fun passes(e: Exercise) = filter.includes(e, stats[e.id]?.attempts ?: 0)
 
-    /** 第一次打开 / 换筛选：整份按范围 + 筛选重取，尽量停在原来那道题上。 */
+    /**
+     * 第一次打开 / 换筛选：整份按范围 + 筛选重取。第一次打开 = 接着上次做的往下（[Exercise.resumeIndex]，同 Mac `ExerciseDeck.init`；
+     * 关工作区前切回来停在原来那题，这份一直在 [shared] 里）；换筛选 = 尽量停在原来那道题上。
+     */
     fun applyFresh(f: Fresh) {
         val curId = current?.id
         stats = f.stats
         items = f.items.filter(::passes)
-        index = curId?.let { id -> items.indexOfFirst { it.id == id }.takeIf { it >= 0 } } ?: index.coerceIn(0, maxOf(0, items.size - 1))
+        index = if (!loaded) Exercise.resumeIndex(items, stats)
+        else curId?.let { id -> items.indexOfFirst { it.id == id }.takeIf { it >= 0 } } ?: index.coerceIn(0, maxOf(0, items.size - 1))
         loaded = true
     }
 

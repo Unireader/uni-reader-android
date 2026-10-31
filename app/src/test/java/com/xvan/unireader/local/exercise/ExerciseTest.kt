@@ -267,6 +267,41 @@ class ExerciseTest {
 
     // ---------- 一组题的进度（同 Mac `ExerciseDeck`） ----------
 
+    /** 打开一组题停在第几道（接着上次做的往下），与 `../spike/exercise-test.swift` 同名一段逐条对应。 */
+    @Test
+    fun resumeIndex() {
+        val q = (1..6).map { ex("q$it") }
+        fun done(sec: Int) = ExAttemptStats(attempts = 1, correct = 1, lastAnswer = "B",
+            lastAt = "2027-01-15T08:00:%02d.000Z".format(sec))
+        val book = ExAttemptStats(attempts = 1, markedAnswer = "A", markedCorrect = false)
+        assertEquals("一道题都没有", 0, Exercise.resumeIndex(emptyList(), emptyMap()))
+        assertEquals("一道都没做过", 0, Exercise.resumeIndex(q, emptyMap()))
+        assertEquals("按顺序做完前 3 道", 3, Exercise.resumeIndex(q, mapOf("q1" to done(1), "q2" to done(2), "q3" to done(3))))
+        assertEquals("跳过第 3 题、最近做的是第 4 题", 4,
+            Exercise.resumeIndex(q, mapOf("q1" to done(1), "q2" to done(2), "q4" to done(4))))
+        assertEquals("最近做的那道后面都做过了", 0,
+            Exercise.resumeIndex(q, mapOf("q4" to done(9), "q5" to done(1), "q6" to done(2))))
+        assertEquals("最近做的是最后一道", 1,
+            Exercise.resumeIndex(q, mapOf("q1" to done(1), "q5" to done(5), "q6" to done(6), "q4" to done(3))))
+        assertEquals("书上已有作答的算做过", 3, Exercise.resumeIndex(q, mapOf("q2" to done(5), "q3" to book)))
+        assertEquals("只有书上的作答", 2, Exercise.resumeIndex(q, mapOf("q1" to book, "q2" to book)))
+        assertEquals("全都做过", 0, Exercise.resumeIndex(q, q.withIndex().associate { (i, e) -> e.id to done(i) }))
+        assertEquals("两道时间一样取后面那道", 4, Exercise.resumeIndex(q, mapOf("q2" to done(7), "q4" to done(7))))
+        assertEquals("最近做的是第 5 题、第 6 题也做过", 0,
+            Exercise.resumeIndex(q, mapOf("q3" to done(2), "q5" to done(8), "q6" to done(1))))
+        // 一组题第一次读库：停在接着做的那道；换筛选 / 刷新不再挪
+        val d = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.Document("D1"))
+        val st = mapOf("q1" to done(1), "q2" to done(2))
+        d.applyFresh(LocalExerciseDeck.Fresh(q, st, emptyMap()))
+        assertEquals(2, d.index)
+        d.index = 5
+        d.applyReload(LocalExerciseDeck.Fresh(q, st, emptyMap()))
+        assertEquals(5, d.index)
+        assertTrue(d.setFilter(ExFilter.UNANSWERED))
+        d.applyFresh(LocalExerciseDeck.Fresh(q, st, emptyMap()))
+        assertEquals("换筛选：停在原来那道", "q6", d.current?.id)
+    }
+
     @Test
     fun deckSnapshotAndReload() {
         val d = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.Wrong)
