@@ -31,8 +31,10 @@ object Schema {
      * v21：`exercise_attempt` 加 `ink BLOB` / `judged_by` / `feedback`（填空 / 主观题的手写、谁判的、Agent 评语，
      * `../docs/EXERCISE-PLAN.md §11`；本端本轮只建列，作答在 Mac 上做）。
      * v22：`exercise` 加 `note`（题目笔记，`../docs/EXERCISE-PLAN.md §12`；本端本轮只建列、随离线镜像同步，界面在 Mac 上）。
+     * v23：`agent_context`（Agent 上下文：一段 Agent 对话的交接摘要，`../docs/ACP-AGENT-PLAN.md §12`；
+     * 本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步、回收站能恢复）。
      */
-    const val VERSION = 22
+    const val VERSION = 23
 
     /**
      * v14 `page_align`（`../docs/SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -159,6 +161,24 @@ object Schema {
     )
 
     /**
+     * v23 Agent 上下文（`../docs/ACP-AGENT-PLAN.md §12`），与 Mac `migrate()` 里那段**逐字相同**。
+     * 工作区级、不挂文档、没有子表。本端只建表不读写（平板上没有 Agent 面板）；改这里必须与 Mac `LibraryStore.swift` 同步。
+     */
+    private val AGENT_CONTEXT_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS agent_context (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          summary TEXT NOT NULL DEFAULT '',
+          agent TEXT NOT NULL DEFAULT '',
+          session_id TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+    )
+
+    /**
      * 与 Mac `migrate()` 里那段 `CREATE TABLE IF NOT EXISTS …` 逐字一致，只是拆成了单条语句。
      * 唯一形式上的出入：`location` 建表时就带上 `is_relative`（Mac 是 CREATE 之后 `ADD COLUMN` 补的，
      * 全新库两者列序相同——Mac `MirrorFingerprint` 的列序注释说的就是这份）。
@@ -244,7 +264,7 @@ object Schema {
         )
         """,
         PAGE_ALIGN_DDL,
-    ) + MD_DOC_DDL + BOARD_DDL + EXERCISE_DDL
+    ) + MD_DOC_DDL + BOARD_DDL + EXERCISE_DDL + AGENT_CONTEXT_DDL
 
     /**
      * 老库补列：与 Mac `migrate()` 的 `addColumnIfMissing` **逐条同序**（v1 → v12 攒下来的那些）。

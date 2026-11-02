@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 34 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 35 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -139,6 +139,14 @@ class MirrorFpTest {
         "wrong" to 1L, "updated_at" to "2026-10-27T08:00:00.000Z",
         "note" to "别忘了 ${'$'}f'(x)=2x${'$'}，**链式法则**",
     )
+    // v23 Agent 上下文（与 spike/mirror-fp-test.swift 末尾那行 agent_context 逐字段一致）：中文标题 + 多行 Markdown 摘要
+    private val agentContextRow: Map<String, Any?> = mapOf(
+        "id" to "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC",
+        "title" to "高数第二章错题整理",
+        "summary" to "## 做到哪了\n- 已导入第二章习题 1~20\n- 第 5 题答案待核对：${'$'}f'(x)=2x${'$'}\n\n## 接下来\n1. 批改主观题",
+        "agent" to "Kimi", "session_id" to "session-7f3a",
+        "created_at" to "2026-11-02T08:00:00.000Z", "updated_at" to "2026-11-02T08:30:00.000Z",
+    )
 
     @Test
     fun valueVectors() {
@@ -269,8 +277,17 @@ class MirrorFpTest {
                     "e588abe5bf98e4ba86202466272878293d327824efbc8c2a2ae993bee5bc8fe6b395e588992a" +
                     "2a",
                 "c4bc4c6002e7b1c7"),
+            R(34, "agent_context", agentContextRow,
+                "0343434343434343432d434343432d344343432d384343432d4343434343434343434343431f" +
+                    "03e9ab98e695b0e7acace4ba8ce7aba0e99499e9a298e695b4e790861f03232320e5819ae588" +
+                    "b0e593aae4ba860a2d20e5b7b2e5afbce585a5e7acace4ba8ce7aba0e4b9a0e9a29820317e32" +
+                    "300a2d20e7acac203520e9a298e7ad94e6a188e5be85e6a0b8e5afb9efbc9a2466272878293d" +
+                    "3278240a0a232320e68ea5e4b88be69da50a312e20e689b9e694b9e4b8bbe8a782e9a2981f03" +
+                    "4b696d691f0373657373696f6e2d376633611f03323032362d31312d30325430383a30303a30" +
+                    "302e3030305a1f03323032362d31312d30325430383a33303a30302e3030305a",
+                "e4c41b0aecb7e9e4"),
         )
-        assertEquals(13, cases.size)
+        assertEquals(14, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -313,10 +330,10 @@ class MirrorFpTest {
     @Test
     fun tableSpecs() {
         assertEquals(
-            // 与 Mac `MirrorFp.specs` 同一份表集合、同一顺序（12 张；location 不在其中；v20 加了习题两张）
+            // 与 Mac `MirrorFp.specs` 同一份表集合、同一顺序（13 张；location 不在其中；v20 加了习题两张、v23 Agent 上下文）
             listOf(
                 "document", "variant", "note", "ink_layer", "scratch_pad", "md_doc",
-                "board_note", "board_page", "board_item", "exercise", "exercise_attempt", "meta",
+                "board_note", "board_page", "board_item", "exercise", "exercise_attempt", "agent_context", "meta",
             ),
             MirrorFp.specs.map { it.table },
         )
@@ -334,6 +351,11 @@ class MirrorFpTest {
             MirrorFp.spec("exercise_attempt")!!.columns.map { it.name },
         )
         assertNull(MirrorFp.spec("exercise_attempt")!!.lww)
+        assertEquals(
+            listOf("id", "title", "summary", "agent", "session_id", "created_at", "updated_at"),
+            MirrorFp.spec("agent_context")!!.columns.map { it.name },
+        )
+        assertEquals("updated_at", MirrorFp.spec("agent_context")!!.lww)
         assertEquals(
             listOf("id", "board_id", "sort_key", "width", "height", "template", "created_at", "updated_at"),
             MirrorFp.spec("board_page")!!.columns.map { it.name },

@@ -178,6 +178,7 @@
     <string name="ex_remove_mistake">Remove from Mistakes</string>
     <string name="ex_prev">Previous</string>
     <string name="ex_next">Next</string>
+    <string name="ex_auto_next">Next When Right</string>
     <string name="ex_practice">Practice</string>
     <string name="ex_list">List</string>
     <string name="ex_unanswered_only">Not Done Only</string>
@@ -305,6 +306,7 @@
     <string name="trash_kind_layer">Ink layer</string>
     <string name="trash_kind_annotations">Annotations</string>
     <string name="trash_kind_exercises">Exercises</string>
+    <string name="trash_kind_agent_contexts">Agent Context</string>
     <string name="trash_items">%1$d items</string>
     <string name="trash_hint">Items are deleted automatically after 30 days.</string>
     <string name="doc_delete">Delete…</string>

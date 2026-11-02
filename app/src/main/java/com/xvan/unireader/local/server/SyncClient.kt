@@ -203,8 +203,8 @@ object SyncClient {
             base[k.table]?.get(k.rowId)?.let { b.getOrPut(k.table) { HashMap() }[k.rowId] = it }
             if (!r.deleted && r.row != null) theirs.getOrPut(k.table) { HashMap() }[k.rowId] = SyncWire.sqliteRow(r.row)
         }
-        // 较新表（v15 md_doc / v16~17 画板 / v20 习题）在只读打开过的老库里可能还没建：先照 Mac 迁移一遍再读
-        if (idsByTable.keys.any { it == "md_doc" || it.startsWith("board_") || it.startsWith("exercise") }) Schema.migrate(db)
+        // 较新表（v15 md_doc / v16~17 画板 / v20 习题 / v23 Agent 上下文）在只读打开过的老库里可能还没建：先照 Mac 迁移一遍再读
+        if (idsByTable.keys.any { MirrorFp.needsMigrate(it) }) Schema.migrate(db)
         for ((table, ids) in idsByTable) mine[table] = SyncRows.fetch(db, MirrorFp.spec(table)!!, ids)
         val plan = MirrorDiff.compute(b, mine, theirs)
         val localWins = plan.changesTo(MirrorDiff.Side.SOURCE).map { Key(it.table, it.rowId) }.toSet()

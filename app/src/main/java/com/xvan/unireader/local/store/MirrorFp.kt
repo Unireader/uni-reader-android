@@ -174,10 +174,26 @@ object MirrorFp {
                 t("source"), b("ink"), t("judged_by"), t("feedback"),
             ),
         ),
+        // v23 Agent 上下文（`../docs/ACP-AGENT-PLAN.md §12`，与 Mac 同序同列）：工作区级、没有子表；
+        // 改标题 / 改摘要都改 `updated_at`，按它取新。本端没有 Agent 面板，只随同步搬运。
+        TableSpec(
+            "agent_context", "id",
+            listOf(
+                t("id"), t("title"), t("summary"), t("agent"), t("session_id"), t("created_at"), t("updated_at"),
+            ),
+            lww = "updated_at",
+        ),
         TableSpec("meta", "key", listOf(t("key"), t("value"))),
     )
 
     fun spec(table: String): TableSpec? = specs.firstOrNull { it.table == table }
+
+    /**
+     * 这张表是不是「较新的表」（v15 `md_doc` / v16~17 画板 / v20 习题 / v23 `agent_context`）：只读打开过的老库里可能还没建，
+     * 往里写（离线镜像合并 / 服务器拉下来的行）之前要先 `Schema.migrate`。两处调用（`MirrorApply.write`、`SyncClient`）共用这一条判定。
+     */
+    fun needsMigrate(table: String): Boolean =
+        table == "md_doc" || table.startsWith("board_") || table.startsWith("exercise") || table == "agent_context"
 
     /**
      * `meta` 表里**参与同步**的键（方案 §4）。`meta` 是个杂物袋：既有工作区级配置（该同步），

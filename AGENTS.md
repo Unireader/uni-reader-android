@@ -104,10 +104,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
-  （`Schema.VERSION = 22`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
-  `CREATE … IF NOT EXISTS` 补齐到 v22 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
+  （`Schema.VERSION = 23`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  `CREATE … IF NOT EXISTS` 补齐到 v23 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
-  `ink` / `judged_by` / `feedback`、v22 `exercise.note`（题目笔记）本端只建不用）+ 与 Mac 同序的 `ADD COLUMN` +
+  `ink` / `judged_by` / `feedback`、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
+  `../docs/ACP-AGENT-PLAN.md §12`）本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
+  `agentContexts` 条目并能恢复）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
   🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
   补表、`ADD COLUMN` 补列、写 `meta.schema_version`），也可以提出新的表 / 列。剩下的纪律只有一条——
@@ -242,6 +244,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 题干 / 选项 / 解析的 Markdown + 公式：`shared/exercise/MathText`（Markwon + JLaTeXMath，依赖只在这一个文件；`$…$` 先改写成
   Markwon 认的 `$$…$$`，见 `normalize`）。**Markwon 默认会给文字挂上点链接的处理、把触摸吃掉**——bind 之后摘掉，否则点选项正文选不中。
   · 离线镜像：两张表进 `MirrorFp.specs`（向量 #30/#31，v21 加的三列见 #31 改 / #32，v22 笔记列见 #30 改 / #33），`MirrorApply.livingExercises` 挡掉「题已删、作答还要写」的孤儿。
+  · **答对自动下一题**（2026-11-02，同 Mac）：练习页底部上一题 / 下一题中间一个开关，本机记住（prefs `exercise` 的 `autoNext`，默认关），两模式共用。
+  只认这一轮刚交的那次：交卷时记下那道题，宿主交回的那一份里它判完了才看对错，对了停 0.8 秒再翻（最后一题不翻）；翻走 / 重做 / 切走标签作废。
+  模式2 也由平板自己翻（Mac 不替平板翻），Mac 后来重推同一份不会再触发。
   · **填空 / 主观题（v21，2026-10-13，`../docs/EXERCISE-PLAN.md §11.6`）本端本轮不能作答**：`kind` 3 / 4 读得出、`ExCard.kind` 带着，
   练习页只显示题干 + 「请在 Mac 上作答」（`ExCard.macOnly`），`LocalExerciseDeck.submit` 挡掉；模式2 Mac 不发这两种题的选项 / 答案 / 作答。
   做平板作答时先读 `../docs/EXERCISE-PLAN.md §11`（作答格式 `ExerciseResponse`、手写 `ExerciseInk` 逻辑坐标、`judged_by` 后判为准）。

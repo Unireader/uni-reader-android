@@ -43,6 +43,7 @@ class TrashSheet(
             Trash.KIND_LAYER -> R.string.trash_kind_layer
             Trash.KIND_ANNOTATIONS -> R.string.trash_kind_annotations
             Trash.KIND_EXERCISES -> R.string.trash_kind_exercises
+            Trash.KIND_AGENT_CONTEXTS -> R.string.trash_kind_agent_contexts
             else -> R.string.trash_kind_document
         },
     )

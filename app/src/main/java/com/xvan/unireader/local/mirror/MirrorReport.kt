@@ -37,6 +37,7 @@ object MirrorReport {
         "board_page" -> "画板笔记的页"
         "exercise" -> "习题"
         "exercise_attempt" -> "做题记录"
+        "agent_context" -> "Agent 上下文"
         "meta" -> "工作区设置"
         else -> table
     }

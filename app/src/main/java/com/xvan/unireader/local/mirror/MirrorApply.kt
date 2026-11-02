@@ -156,9 +156,9 @@ object MirrorApply {
 
     /** 把一批改动写进一个库（**调用方负责包事务**） */
     fun write(db: Db, changes: List<MirrorDiff.Change>, result: Result, side: MirrorDiff.Side) {
-        // 有较新表（v15 md_doc / v16~17 画板 / v20 习题）的改动要写、而目标库还没迁移过（只读打开过的老库）：
+        // 有较新表（v15 md_doc / v16~17 画板 / v20 习题 / v23 Agent 上下文）的改动要写、而目标库还没迁移过（只读打开过的老库）：
         // 先照 Mac 迁移一遍（补表补列，语句与 Mac 逐字相同，见 Schema.migrate）
-        if (changes.any { it.table == "md_doc" || it.table.startsWith("board_") || it.table.startsWith("exercise") }) {
+        if (changes.any { MirrorFp.needsMigrate(it.table) }) {
             com.xvan.unireader.local.store.Schema.migrate(db)
         }
         val live = livingDocuments(db, changes)

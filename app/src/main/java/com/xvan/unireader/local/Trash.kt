@@ -36,6 +36,8 @@ object Trash {
     const val KIND_BOARD = "board"
     const val KIND_ANNOTATIONS = "annotations"
     const val KIND_EXERCISES = "exercises"
+    /** 几份 Agent 上下文（v23，Mac 删的；本端不建这种条目，只列出来、能恢复） */
+    const val KIND_AGENT_CONTEXTS = "agentContexts"
 
     class Manifest(
         val kind: String,

@@ -1,9 +1,12 @@
 package com.xvan.unireader.shared.exercise
 
 import android.app.Activity
+import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.text.TextUtils
 import android.view.GestureDetector
@@ -51,6 +54,20 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     /** 原题图开着吗（按题记：带图的题默认开）。 */
     private val originalShown = HashMap<String, Boolean>()
     private var originalFor = ""
+
+    /**
+     * 答对自动下一题（同 Mac 练习页底部那个开关，`../docs/EXERCISE-PLAN.md`「答对自动下一题」一节）：本机记住、默认关、两模式共用一份。
+     * 只认**这一轮刚交的**那一次：交卷时记下 [awaitingResult]，宿主交回的那一份里这道题判完了（模式2 是 Mac 回一趟）
+     * 才看对错——对了停 [AUTO_NEXT_MS] 让人看到绿勾再翻；之后再重推同一份不会再触发（已经消掉了）。
+     */
+    private val prefs = a.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private var autoNext = prefs.getBoolean(KEY_AUTO_NEXT, false)
+    /** 交了、还在等结果的那道题（空 = 没有）。与 [submittedFor] 分开：那个在判完换样子时就清了。 */
+    private var awaitingResult = ""
+    /** 已经排上「过一会儿翻下一题」的那道题（空 = 没排）。 */
+    private var autoNextFor = ""
+    private val handler = Handler(Looper.getMainLooper())
+    private val autoNextRun = Runnable { fireAutoNext() }
 
     private fun dp(v: Int) = Ui.dp(a, v)
     private fun s(id: Int, vararg args: Any) = a.getString(id, *args)
@@ -158,6 +175,18 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
     private val prevBtn = Ui.button(a, s(R.string.ex_prev)) { go(deck.index - 1) }
     private val nextBtn = Ui.button(a, s(R.string.ex_next)) { go(deck.index + 1) }
+    /** 答对自动下一题（开关，在上一题 / 下一题中间）。 */
+    private val autoNextBox = CheckBox(a).apply {
+        text = s(R.string.ex_auto_next)
+        textSize = 14f
+        setTextColor(Ui.onSurface(a))
+        isChecked = autoNext
+        setOnCheckedChangeListener { _, on ->
+            autoNext = on
+            prefs.edit().putBoolean(KEY_AUTO_NEXT, on).apply()
+            if (!on) cancelAutoNext()
+        }
+    }
     private val emptyView = Ui.body(a, "").apply {
         gravity = Gravity.CENTER
         setPadding(dp(24), dp(80), dp(24), dp(24))
@@ -226,6 +255,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
                     setPadding(dp(20), dp(8), dp(20), dp(8))
                     addView(prevBtn)
                     addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
+                    addView(autoNextBox)
+                    addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
                     addView(nextBtn)
                 })
             },
@@ -266,6 +297,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         setOnItemClickListener { _, _, pos, _ ->
             val c = deck.cards.getOrNull(pos) ?: return@setOnItemClickListener
             if (selecting) { toggleSelected(c.id); return@setOnItemClickListener }
+            cancelAutoNext()
+            awaitingResult = ""
             host.go(pos)
             setListMode(false)
         }
@@ -321,6 +354,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
 
     /** 宿主交来新的一份（打开 / 作答 / 换筛选 / 库里刷新之后）。 */
     fun show(d: ExDeckView) {
+        checkAutoNext(d)
         deck = d
         selected.retainAll(d.cards.map { it.id }.toSet())
         if (selected.isEmpty()) selecting = false
@@ -345,6 +379,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
 
     /** 宿主切走 / 关标签：收掉浮着的东西。 */
     fun onHidden() {
+        cancelAutoNext()
+        awaitingResult = ""
         if (selecting) { selecting = false; selected.clear(); refreshSelBar(); adapter.notifyDataSetChanged() }
     }
 
@@ -552,6 +588,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         if (c.judged || picked.isEmpty() || submittedFor == c.id) return
         val keys = picked.sorted().joinToString("")
         submittedFor = c.id   // 模式2 要等 Mac 回一趟：这期间连点不许记两次作答
+        awaitingResult = c.id   // 先记下：模式1 的宿主在 submit 里就同步交回判完的那一份
         host.submit(c.id, keys, SystemClock.uptimeMillis() - shownAt)
         // 判完的样子等宿主交回新的一份；单选这一下先把选中态画出来，别让人以为没点上
         refreshPractice()
@@ -559,7 +596,42 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
 
     private fun go(i: Int) {
         if (i !in deck.cards.indices || i == deck.index) return
+        cancelAutoNext()
+        awaitingResult = ""
         host.go(i)
+    }
+
+    // ---------- 答对自动下一题 ----------
+
+    /** 宿主交来新的一份时：等着的那道题判完了没有；判对了、开关开着、还停在它上面 → 排上翻页。 */
+    private fun checkAutoNext(d: ExDeckView) {
+        val id = awaitingResult
+        if (id.isEmpty()) return
+        val c = d.cards.firstOrNull { it.id == id }
+        if (c == null) { awaitingResult = ""; return }
+        if (!c.judged) return   // 模式2：Mac 还没回结果（或这一份是别的原因重推的），接着等
+        awaitingResult = ""
+        if (autoNext && c.shown == ExShown.ROUND && c.correct == ExJudge.RIGHT && d.current?.id == id) {
+            handler.removeCallbacks(autoNextRun)
+            autoNextFor = id
+            handler.postDelayed(autoNextRun, AUTO_NEXT_MS)
+        }
+    }
+
+    private fun cancelAutoNext() {
+        if (autoNextFor.isEmpty()) return
+        autoNextFor = ""
+        handler.removeCallbacks(autoNextRun)
+    }
+
+    /** 到点了：再确认一遍还是那道题、还是这一轮答对的样子（没翻走、没点「再做一次」），不是最后一题才翻。 */
+    private fun fireAutoNext() {
+        val id = autoNextFor
+        autoNextFor = ""
+        val c = cur() ?: return
+        if (!autoNext || listMode || c.id != id || c.shown != ExShown.ROUND || c.correct != ExJudge.RIGHT) return
+        if (deck.index >= deck.cards.size - 1) return
+        go(deck.index + 1)
     }
 
     private fun toggleOriginal() {
@@ -839,5 +911,12 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
                 v.layout(x, 0, x + v.measuredWidth, v.measuredHeight)
             }
         }
+    }
+
+    private companion object {
+        const val PREFS = "exercise"
+        const val KEY_AUTO_NEXT = "autoNext"
+        /** 判对之后停多久再翻（同 Mac，让人看到绿勾）。 */
+        const val AUTO_NEXT_MS = 800L
     }
 }
