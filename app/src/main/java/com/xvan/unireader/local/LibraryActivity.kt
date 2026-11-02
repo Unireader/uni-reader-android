@@ -693,10 +693,11 @@ class LibraryActivity : Activity() {
         }) { reload() }.show()
     }
 
-    /** 长按一本书：删除（进回收站）。确认框里说清有多少条会一起进去 */
+    /** 长按一本书：改名 / 删除（进回收站）。确认框里说清有多少条会一起进去 */
     private fun showDocMenu(ws: File, d: LibDocument) {
         Sheet(this).title(d.title)
             .action(getString(R.string.act_cancel))
+            .action(getString(R.string.doc_rename)) { renameDoc(ws, d) }
             .action(getString(R.string.doc_delete), primary = true) {
                 // 确认框里的数 = 这篇全部笔记行（笔迹 / 文字笔记 / 高亮 / 书签 / 图片…），不只是笔迹
                 runInBackground(
@@ -704,6 +705,32 @@ class LibraryActivity : Activity() {
                     work = { LibraryStore.open(ws, readOnly = true).use { it.notes(d.id).size } },
                     ok = { n -> confirmDeleteDoc(ws, d, n) },
                     fail = { confirmDeleteDoc(ws, d, 0) },
+                )
+            }
+            .show()
+    }
+
+    /** 改书名（同 Mac 侧栏右键「重命名…」，2026-11-02）：只改库里的名字，文件名不动；服务器工作区随下一轮同步传上去 */
+    private fun renameDoc(ws: File, d: LibDocument) {
+        val edit = PadPanels.inputBox(this, getString(R.string.doc_name_hint)).apply {
+            setText(d.title)
+            setSelection(text.length)
+        }
+        Sheet(this).title(getString(R.string.doc_rename_title))
+            .content(edit)
+            .action(getString(R.string.act_cancel))
+            .action(getString(R.string.common_save), primary = true) {
+                val t = edit.text.toString().trim()
+                if (t.isEmpty() || t == d.title) return@action
+                runInBackground(
+                    what = "改书名《${d.title}》",
+                    work = { LibraryStore.open(ws, readOnly = false).use { it.renameDocument(d.id, t) } },
+                    ok = { reload() },
+                    fail = { e ->
+                        Log.e(TAG, "改书名失败", e)
+                        alert(getString(R.string.doc_rename_title), e.message ?: "")
+                        reload()
+                    },
                 )
             }
             .show()

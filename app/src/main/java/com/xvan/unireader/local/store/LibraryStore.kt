@@ -189,6 +189,11 @@ class LibraryStore(private val db: Db) : Closeable {
         db.exec("UPDATE document SET last_opened_at=? WHERE id=?", arrayOf(at, documentId))
     }
 
+    /** 改书名（↔ Mac `LibraryStore.rename(documentId:title:)`）：只改库里的名字，磁盘上的文件名不动。 */
+    fun renameDocument(documentId: String, title: String) {
+        db.exec("UPDATE document SET title=? WHERE id=?", arrayOf(title, documentId))
+    }
+
     /**
      * 记录阅读进度（顶部所在页 + 页内比例 + 缩放倍率 + 横向滚动比例）。
      * frac 夹到 0~1，与 Mac 端 `updateProgress` 一致——越界值会让另一端复原时跳到页外。

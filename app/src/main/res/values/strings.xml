@@ -310,6 +310,9 @@
     <string name="doc_delete">Delete…</string>
     <string name="doc_delete_confirm">Delete “%1$s”?</string>
     <string name="doc_delete_msg">%1$d notes and strokes go to the trash with it. They’re deleted automatically after 30 days.</string>
+    <string name="doc_rename">Rename…</string>
+    <string name="doc_rename_title">Rename Document</string>
+    <string name="doc_name_hint">Document name</string>
     <string name="md_delete">Delete…</string>
     <string name="md_delete_confirm">Delete “%1$s”?</string>
     <string name="md_delete_msg">The file moves to Notes/.trash (Obsidian’s trash folder); move it back to restore it.</string>

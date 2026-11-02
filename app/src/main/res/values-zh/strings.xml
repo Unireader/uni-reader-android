@@ -306,6 +306,9 @@
     <string name="doc_delete">删除…</string>
     <string name="doc_delete_confirm">删除“%1$s”？</string>
     <string name="doc_delete_msg">%1$d 条笔迹和笔记会一起移入回收站，30 天后自动清除。</string>
+    <string name="doc_rename">重命名…</string>
+    <string name="doc_rename_title">重命名文档</string>
+    <string name="doc_name_hint">文档名称</string>
     <string name="md_delete">删除…</string>
     <string name="md_delete_confirm">删除“%1$s”？</string>
     <string name="md_delete_msg">文件会移到 Notes/.trash（Obsidian 的回收站目录），挪回来就恢复了。</string>
