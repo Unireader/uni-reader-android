@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 121 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 122 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -657,12 +657,27 @@ class WireCodecTest {
         assertFalse(old.noFilter)
         // #118 exIndex
         assertEquals(WireCodec.Msg.ExIndex("wrong", 7), WireCodec.decode(unhex(VECTORS[117])))
+        // #113 那四行没有尾部（老 Mac）：done 全是 null（只显示题数）
+        assertTrue(g.list.all { it.done == null })
+        // #122 exGroups 尾部 done（2026-11-02）：每组做过几道
+        val gd = unhex(VECTORS[121])
+        val gl = (WireCodec.decode(gd) as WireCodec.Msg.ExGroups).list
+        assertEquals(listOf("all", "wrong", "chap:D-1:[\"第二章 导数\"]"), gl.map { it.key })
+        assertEquals(listOf(12, 3, 5), gl.map { it.count })
+        assertEquals(listOf<Int?>(5, 3, 0), gl.map { it.done })
+        // 砍掉尾部（3 × u16）= 老 Mac 的帧：照样解得出，done 全 null
+        val gOld = (WireCodec.decode(gd.copyOf(gd.size - 6)) as WireCodec.Msg.ExGroups).list
+        assertEquals(3, gOld.size)
+        assertTrue(gOld.all { it.done == null })
+        // 0xFFFF = 这一行不显示进度（错题本那一支）
+        val gNone = gd.copyOf().also { it[it.size - 4] = 0xff.toByte(); it[it.size - 3] = 0xff.toByte() }
+        assertEquals(listOf<Int?>(5, null, 0), (WireCodec.decode(gNone) as WireCodec.Msg.ExGroups).list.map { it.done })
     }
 
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(121, VECTORS.size)
+        assertEquals(122, VECTORS.size)
     }
 
     @Test
@@ -675,7 +690,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 121 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 122 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -824,6 +839,8 @@ class WireCodecTest {
             "6207007374617272656403000000000200000002000300452d310300452d32",
             // #121 exDeck 尾部 noFilter = 1（错题本那一支没有「只看没做过」，2026-10-11）
             "600d0077726f6e673a646f633a442d311300e99499e9a298e69cac20c2b720e9ab98e695b000000000000000000001",
+            // #122 exGroups 尾部 done（每组做过几道，2026-11-02）
+            "5e03000300616c6c0c00e585a8e983a8e4b9a0e9a2980c0000050077726f6e670900e99499e9a298e69cac0300001d00636861703a442d313a5b22e7acace4ba8ce7aba020e5afbce695b0225d1000e7acace4ba8ce7aba020e5afbce695b0050001050003000000",
         )
     }
 }

@@ -247,6 +247,14 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · **答对自动下一题**（2026-11-02，同 Mac）：练习页底部上一题 / 下一题中间一个开关，本机记住（prefs `exercise` 的 `autoNext`，默认关），两模式共用。
   只认这一轮刚交的那次：交卷时记下那道题，宿主交回的那一份里它判完了才看对错，对了停 0.8 秒再翻（最后一题不翻）；翻走 / 重做 / 切走标签作废。
   模式2 也由平板自己翻（Mac 不替平板翻），Mac 后来重推同一份不会再触发。
+  · **进度显示 + 手机适配**（2026-11-02，同 Mac 侧栏「已做 / 共」，`../docs/EXERCISE-PLAN.md §16`）：抽屉 / 书库页习题行尾 `已做/共`
+  （`ExGroup.done`，null = 只显示题数，错题本那一支）。模式1 `LibraryStore.exerciseDoneCounts` + `ExDoneSummary` + `ExGroupNode.withDone`（照抄 Mac，
+  `ExerciseTest.doneSummaryAndGroups`），答对一道新题只重读这几个数（`refreshDone`）；模式2 读 `exGroups` 可选尾部 `n × u16 done`（`0xFFFF` = 不显示，
+  向量 #122）。练习页顶栏 `已做 x / 共 y`（`tries > 0` 现算）+ 系统水平进度条。
+  视图宽 < 600dp（手机 / 窄分屏）走紧凑排法（`ExerciseScreen.setCompact`，在根视图 `onMeasure` 里随尺寸切、不重建题目）：「全部重做 / 只看没做过」收进 ⋯、
+  进度另起一行；底部 `NavRow` 两个按钮等分宽度（≥48dp），一行放不下勾选框挪到上面一行；正文边距 16、选项间距 8 / 最小高 48、列表题号列 40。
+  系统栏：`ReaderActivity` 原先只让了顶部，习题页铺到屏幕底、底部按钮压在手势条下 → 改用 `onSystemInsets`（四边，左右并上挖孔）
+  经 `ExerciseScreen.setSystemInsets` 给习题页左 / 右 / 下内边距。⚠️ Markdown 笔记页（`md.view`）同样铺到底，底边没让，暂未改。
   · **填空 / 主观题（v21，2026-10-13，`../docs/EXERCISE-PLAN.md §11.6`）本端本轮不能作答**：`kind` 3 / 4 读得出、`ExCard.kind` 带着，
   练习页只显示题干 + 「请在 Mac 上作答」（`ExCard.macOnly`），`LocalExerciseDeck.submit` 挡掉；模式2 Mac 不发这两种题的选项 / 答案 / 作答。
   做平板作答时先读 `../docs/EXERCISE-PLAN.md §11`（作答格式 `ExerciseResponse`、手写 `ExerciseInk` 逻辑坐标、`judged_by` 后判为准）。

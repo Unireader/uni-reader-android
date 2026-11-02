@@ -892,6 +892,26 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /**
+     * 每篇文档每个章节做过几道 + 其中收藏了的几道（侧栏 / 抽屉行尾「已做 / 共」，同 Mac `exerciseDoneCounts`，
+     * `../docs/EXERCISE-PLAN.md §16`）。「做过」= 至少一次作答（含书上的作答）；`EXISTS` 走作答表的索引，不读 payload。
+     */
+    fun exerciseDoneCounts(): List<com.xvan.unireader.local.exercise.ExDoneRow> {
+        if (!hasExerciseTables()) return emptyList()
+        return db.query(
+            """
+            SELECT document_id, chapter, COUNT(*), SUM(starred) FROM exercise e
+            WHERE document_id IS NOT NULL AND EXISTS (SELECT 1 FROM exercise_attempt a WHERE a.exercise_id = e.id)
+            GROUP BY document_id, chapter
+            """.trimIndent(),
+        ) {
+            com.xvan.unireader.local.exercise.ExDoneRow(
+                it.getString(0), com.xvan.unireader.local.exercise.ExChapter.parse(it.getString(1) ?: ""),
+                it.getInt(2), it.getInt(3),
+            )
+        }
+    }
+
+    /**
      * 每道做过的题的作答统计（同 Mac `exerciseAttemptStats`：一条 GROUP BY + 书上的作答 + 最近一次 + App 里练的最近一次）。
      * 没做过的题不在结果里。时间是 ISO 毫秒串，字典序 = 时间序。
      */

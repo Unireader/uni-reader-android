@@ -13,10 +13,17 @@ import androidx.core.view.WindowInsetsCompat
  *
  * 模式2 的输入板不用这个：它整屏沉浸（`enterImmersive`），系统栏直接收掉。
  */
-fun View.onSystemBarInsets(apply: (top: Int, bottom: Int) -> Unit) {
+fun View.onSystemBarInsets(apply: (top: Int, bottom: Int) -> Unit) = onSystemInsets { _, top, _, bottom -> apply(top, bottom) }
+
+/**
+ * 四边版：上 / 下同 [onSystemBarInsets]（只看系统栏）；左 / 右再并上挖孔——横屏手机的三键导航栏与挖孔在侧边
+ * （平板上一直是 0，手机横屏才露出来，2026-11-02 习题页适配手机时补的）。一个 View 只能挂一个监听，二选一用。
+ */
+fun View.onSystemInsets(apply: (left: Int, top: Int, right: Int, bottom: Int) -> Unit) {
     ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
         val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-        apply(bars.top, bars.bottom)
+        val side = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+        apply(side.left, bars.top, side.right, bars.bottom)
         insets
     }
 }

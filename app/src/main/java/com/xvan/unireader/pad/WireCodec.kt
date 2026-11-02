@@ -984,6 +984,14 @@ object WireCodec {
                         list.add(com.xvan.unireader.shared.exercise.ExGroup(r.str(), r.str(), r.u16(), r.u8()))
                         i++
                     }
+                    // 可选尾部（2026-11-02，`../docs/PROTOCOL.md §4.9`）：每组做过几道，同序 n × u16；
+                    // 0xFFFF = 这一行不显示进度（错题本那一支）；老 Mac 不发 = 都不显示
+                    if (list.isNotEmpty() && r.remaining >= 2 * list.size) {
+                        for (k in list.indices) {
+                            val d = r.u16()
+                            if (d != 0xFFFF) list[k] = list[k].copy(done = d)
+                        }
+                    }
                     Msg.ExGroups(list)
                 }
                 OP_EX_DECK -> Msg.ExDeck(decodeExDeck(r))

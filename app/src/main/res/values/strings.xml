@@ -179,6 +179,9 @@
     <string name="ex_prev">Previous</string>
     <string name="ex_next">Next</string>
     <string name="ex_auto_next">Next When Right</string>
+    <string name="ex_done_of">Done %1$d of %2$d</string>
+    <string name="ex_progress">%1$d of %2$d done</string>
+    <string name="ex_more">More</string>
     <string name="ex_practice">Practice</string>
     <string name="ex_list">List</string>
     <string name="ex_unanswered_only">Not Done Only</string>

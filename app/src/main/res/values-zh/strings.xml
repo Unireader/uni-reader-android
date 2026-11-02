@@ -175,6 +175,9 @@
     <string name="ex_prev">上一题</string>
     <string name="ex_next">下一题</string>
     <string name="ex_auto_next">答对自动下一题</string>
+    <string name="ex_done_of">已做 %1$d 题，共 %2$d 题</string>
+    <string name="ex_progress">已做 %1$d / %2$d</string>
+    <string name="ex_more">更多</string>
     <string name="ex_practice">练习</string>
     <string name="ex_list">列表</string>
     <string name="ex_unanswered_only">只看没做过</string>

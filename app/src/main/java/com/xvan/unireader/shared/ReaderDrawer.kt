@@ -397,8 +397,11 @@ class ReaderDrawer(private val a: Activity) {
                 ellipsize = TextUtils.TruncateAt.END
                 setTextColor(if (isCur) Ui.accent(a) else Ui.onSurface(a))
             }
+            // 行尾「已做 / 共」（同 Mac 侧栏 `countCell`）；不显示进度的行（错题本那一支）只有题数
             val count = TextView(a).apply {
-                text = "${g.count}"
+                text = g.done?.let { "$it/${g.count}" } ?: "${g.count}"
+                g.done?.let { contentDescription = a.getString(R.string.ex_done_of, it, g.count) }
+                fontFeatureSettings = "tnum"
                 textSize = 12f
                 setTextColor(if (isCur) Ui.accent(a) else Ui.onVariant(a))
             }

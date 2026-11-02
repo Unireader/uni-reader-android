@@ -20,6 +20,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.PopupMenu
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import com.xvan.unireader.R
@@ -36,6 +38,10 @@ import kotlin.math.min
  * 只认 [ExDeckView]，操作全部交给 [ExHost]（模式1 写本机库 / 模式2 发给 Mac），改完由宿主把新的一份 [show] 回来——
  * 界面自己不推算对错、不改题目状态。只有两样是界面自己的：多选题还没交的勾选、这道题从什么时候开始看的（记用时）。
  * 「练习 / 列表」也是各端各自的（模式2 与 Mac 同一组题时只同步第几题，不同步这个）。
+ *
+ * **窄屏（手机，视图宽 < 600dp，2026-11-02 用户：「优化下手机UI的适配，方便刷题」）**换一套紧凑排法，宽窄随视图尺寸变
+ * （转屏 / 分屏），切换时只改排法、不重建题目：顶栏「全部重做 / 只看没做过」收进 ⋯，进度另起一行；底部按钮等分宽度、
+ * 放不下就把「答对自动下一题」挪到按钮上面；正文边距收窄、选项间距加大。平板（宽屏）照旧。
  */
 class ExerciseScreen(private val a: Activity, private val host: ExHost) {
 
@@ -100,25 +106,48 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
     private val practiceTab = pill(s(R.string.ex_practice)) { setListMode(false) }
     private val listTab = pill(s(R.string.ex_list)) { setListMode(true) }
-
-    private val header = LinearLayout(a).apply {
+    /** 窄屏时「全部重做 / 只看没做过」收进这里（系统 `PopupMenu`）。 */
+    private val moreBtn = Ui.iconButton(a, R.drawable.ic_more, s(R.string.ex_more)) { showMore() }.apply {
+        visibility = View.GONE
+    }
+    /**
+     * 这一组做过几道（`已做 x / 共 y`，同 Mac 侧栏「做过」的口径：至少一次作答，含书上的作答）。
+     * 系统水平进度条，只换成语义色。
+     */
+    private val progressBar = ProgressBar(a, null, android.R.attr.progressBarStyleHorizontal).apply {
+        isIndeterminate = false
+        progressTintList = ColorStateList.valueOf(Ui.accent(a))
+        progressBackgroundTintList = ColorStateList.valueOf(Ui.outline(a))
+        visibility = View.GONE
+    }
+    /** 宽屏：标题 + 进度文字叠在左边；窄屏进度文字挪到第二行（[progressRow]）。 */
+    private val titleCol = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(titleView)
+        addView(progressView)
+    }
+    private val headerRow = LinearLayout(a).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(16), dp(8), dp(12), dp(8))
-        setBackgroundColor(Ui.surface(a))
-        addView(
-            LinearLayout(a).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(titleView)
-                addView(progressView)
-            },
-            LinearLayout.LayoutParams(0, -2, 1f),
-        )
+        addView(titleCol, LinearLayout.LayoutParams(0, -2, 1f))
         for (v in listOf(redoAllBtn, unansweredBtn)) {
             addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         }
         addView(practiceTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
         addView(listTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) })
+        addView(moreBtn, LinearLayout.LayoutParams(dp(Ui.TOUCH), dp(Ui.TOUCH)).apply { marginStart = dp(2) })
+    }
+    private val progressRow = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(progressBar, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    private val header = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(8), dp(12), dp(4))
+        setBackgroundColor(Ui.surface(a))
+        addView(headerRow, LinearLayout.LayoutParams(-1, -2))
+        addView(progressRow, LinearLayout.LayoutParams(-1, -2))
     }
 
     // ---------- 练习页 ----------
@@ -244,24 +273,11 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
      * 上一题 / 下一题：钉在练习页底部、滚动区外面（同 Mac，用户 2026-10-27：「要固定位置，不能随着内容变化显示高度」——
      * 原先排在题目那一栏最后，每题高度不同，按钮跟着上下跳）。左右与题目那一栏对齐（同样限宽 760 居中）。
      */
+    private val navRow = NavRow(a, prevBtn, autoNextBox, nextBtn).apply { setPadding(dp(20), dp(8), dp(20), dp(8)) }
     private val navBar = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
         addView(Ui.divider(a))
-        addView(
-            CenterColumn(a, dp(760)).apply {
-                addView(LinearLayout(a).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(20), dp(8), dp(20), dp(8))
-                    addView(prevBtn)
-                    addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
-                    addView(autoNextBox)
-                    addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
-                    addView(nextBtn)
-                })
-            },
-            LinearLayout.LayoutParams(-1, -2),
-        )
+        addView(CenterColumn(a, dp(760)).apply { addView(navRow) }, LinearLayout.LayoutParams(-1, -2))
     }
 
     private val practice = object : ScrollView(a) {
@@ -331,7 +347,13 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     /** 整个习题页（宿主把它铺在内容区里，让开顶栏 + 标签页栏）。 */
-    val view: LinearLayout = LinearLayout(a).apply {
+    val view: LinearLayout = object : LinearLayout(a) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            // 宽窄跟着视图尺寸走（转屏 / 分屏 / 手机）：量之前定排法，这一趟量的就是新排法
+            setCompact(MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight < dp(COMPACT_BELOW_DP))
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        }
+    }.apply {
         orientation = LinearLayout.VERTICAL
         setBackgroundColor(Ui.surface(a))
         isClickable = true   // 别让触摸穿到下面的画布
@@ -369,12 +391,22 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         show(ExDeckView.EMPTY.copy(title = title))
         emptyView.text = ""
         progressView.text = ""
+        progressBar.visibility = View.GONE
     }
 
     /** 只换了第几题（模式2 的 `exIndex`）。 */
     fun showIndex(i: Int) {
         if (i == deck.index || i !in deck.cards.indices) return
         show(deck.copy(index = i))
+    }
+
+    /**
+     * 系统栏让位（edge-to-edge，`shared/Insets.kt`）：宿主把左 / 右 / 下三边给进来——底部那条按钮不许压在手势条 / 导航栏下面，
+     * 横屏手机的挖孔 / 三键导航栏在侧边。上边由宿主让开顶栏时已经让过了。模式2 整屏沉浸，不调（全 0）。
+     */
+    fun setSystemInsets(left: Int, right: Int, bottom: Int) {
+        if (view.paddingLeft == left && view.paddingRight == right && view.paddingBottom == bottom) return
+        view.setPadding(left, 0, right, bottom)
     }
 
     /** 宿主切走 / 关标签：收掉浮着的东西。 */
@@ -388,13 +420,84 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
 
     private fun refreshHeader() {
         titleView.text = deck.title
-        val parts = arrayListOf(s(R.string.ex_count, deck.cards.size))
+        // 整组进度（同 Mac「做过」：至少一次作答，含书上的作答）+ 这一轮
+        val total = deck.cards.size
+        val doneAll = deck.cards.count { it.tries > 0 }
+        val parts = arrayListOf(if (total > 0) s(R.string.ex_progress, doneAll, total) else s(R.string.ex_count, 0))
         if (deck.done > 0) parts += s(R.string.ex_round, deck.done, deck.right)
         progressView.text = parts.joinToString(" · ")
-        unansweredBtn.visibility = if (deck.noFilter) View.GONE else View.VISIBLE
+        progressBar.visibility = if (total > 0) View.VISIBLE else View.GONE
+        progressBar.max = maxOf(1, total)
+        progressBar.progress = doneAll
+        refreshHeaderButtons()
         paintPill(unansweredBtn, deck.filter == 1)
         redoAllBtn.isEnabled = deck.hasShown
         redoAllBtn.alpha = if (deck.hasShown) 1f else 0.4f
+    }
+
+    /** 「全部重做 / 只看没做过」：宽屏在顶栏上，窄屏收进 ⋯。 */
+    private fun refreshHeaderButtons() {
+        redoAllBtn.visibility = if (compact) View.GONE else View.VISIBLE
+        unansweredBtn.visibility = if (compact || deck.noFilter) View.GONE else View.VISIBLE
+        moreBtn.visibility = if (compact) View.VISIBLE else View.GONE
+    }
+
+    /** ⋯（窄屏）：全部重做（没有显示着作答的题时灰着）、只看没做过（可勾选；错题本那一支没有）。 */
+    private fun showMore() {
+        val menu = PopupMenu(a, moreBtn, Gravity.END)
+        val redo = menu.menu.add(0, 1, 0, dimIfDisabled(s(R.string.ex_redo_all), deck.hasShown))
+        redo.isEnabled = deck.hasShown
+        if (!deck.noFilter) {
+            menu.menu.add(0, 2, 1, s(R.string.ex_unanswered_only)).apply {
+                isCheckable = true
+                isChecked = deck.filter == 1
+            }
+        }
+        menu.setOnMenuItemClickListener { mi ->
+            when (mi.itemId) {
+                1 -> redoAllBtn.performClick()
+                2 -> unansweredBtn.performClick()
+            }
+            true
+        }
+        menu.show()
+    }
+
+    /** 禁用项文字显式染淡（同 `TopBar.showOverflow`：MIUI / OriginOS 只把禁用项淡一点点）。 */
+    private fun dimIfDisabled(t: String, enabled: Boolean): CharSequence = if (enabled) t else
+        android.text.SpannableString(t).apply {
+            val c = (Ui.onSurface(a) and 0x00FFFFFF) or (0x61 shl 24)
+            setSpan(android.text.style.ForegroundColorSpan(c), 0, length, 0)
+        }
+
+    // ---------- 宽窄两套排法 ----------
+
+    /** 窄屏（手机）排法开着吗（[view] 量尺寸时定，见那里）。 */
+    private var compact = false
+
+    private fun setCompact(on: Boolean) {
+        if (on == compact) return
+        compact = on
+        // 进度文字：宽屏叠在标题下面，窄屏单独一行（进度条之上）
+        (progressView.parent as? ViewGroup)?.removeView(progressView)
+        if (on) progressRow.addView(progressView, 0, LinearLayout.LayoutParams(-1, -2))
+        else titleCol.addView(progressView, LinearLayout.LayoutParams(-1, -2))
+        header.setPadding(dp(16), dp(8), dp(if (on) 4 else 12), dp(4))
+        refreshHeaderButtons()
+        val side = dp(if (on) 16 else 20)
+        column.setPadding(side, dp(16), side, dp(20))
+        for (i in 0 until optionsBox.childCount) styleOption(optionsBox.getChildAt(i))
+        navRow.equalButtons = on
+        val navSide = dp(if (on) 12 else 20)
+        navRow.setPadding(navSide, dp(8), navSide, dp(8))
+        for (b in listOf(prevBtn, nextBtn)) b.minimumHeight = if (on) dp(48) else 0
+        adapter.notifyDataSetChanged()   // 列表的题号那一列跟着换宽
+    }
+
+    /** 选项行的间距与最小高度（窄屏间距加大防误触、整行至少 48dp）。 */
+    private fun styleOption(v: View) {
+        (v.layoutParams as? LinearLayout.LayoutParams)?.bottomMargin = dp(if (compact) 8 else 6)
+        v.minimumHeight = if (compact) dp(48) else 0
     }
 
     private fun setListMode(on: Boolean) {
@@ -566,7 +669,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private fun buildOptions(c: ExCard) {
         optionsBox.removeAllViews()
         for ((k, t) in c.options) {
-            optionsBox.addView(OptionRow(k, t, c.multiple), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+            val row = OptionRow(k, t, c.multiple)
+            optionsBox.addView(row, LinearLayout.LayoutParams(-1, -2))
+            styleOption(row)
         }
     }
 
@@ -772,6 +877,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             h.check.visibility = if (selecting) View.VISIBLE else View.GONE
             h.check.isChecked = c.id in selected
             h.no.text = c.number.ifEmpty { "${position + 1}" }
+            val noW = dp(if (compact) 40 else 52)
+            (h.no.layoutParams as? LinearLayout.LayoutParams)?.takeIf { it.width != noW }?.let { it.width = noW; h.no.layoutParams = it }
             h.stem.text = c.plainStem
             val meta = arrayListOf<String>()
             if (c.chapter.isNotEmpty()) meta += c.chapter
@@ -885,6 +992,61 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         v.alpha = if (on) 1f else 0.4f
     }
 
+    /**
+     * 底部那条：上一题 / 答对自动下一题 / 下一题。
+     * 宽屏：两个按钮按原宽贴两边，勾选框居中（同原来）。窄屏（[equalButtons]）：两个按钮等分剩下的宽度，拇指好按。
+     * 一行放不下（窄屏 + 长文案，比如英文 360dp）就把勾选框单独挪到按钮上面一行、居中。
+     */
+    private class NavRow(c: android.content.Context, val prev: View, val box: View, val next: View) : ViewGroup(c) {
+        var equalButtons = false
+            set(v) { if (field != v) { field = v; requestLayout() } }
+        private val gap = (8 * c.resources.displayMetrics.density).toInt()
+        private var stacked = false
+
+        init {
+            addView(prev); addView(box); addView(next)
+        }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val w = MeasureSpec.getSize(widthMeasureSpec)
+            val inner = w - paddingLeft - paddingRight
+            val un = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+            for (v in listOf(prev, box, next)) v.measure(un, un)
+            stacked = prev.measuredWidth + box.measuredWidth + next.measuredWidth + 2 * gap > inner
+            val btnW = when {
+                stacked -> (inner - gap) / 2
+                equalButtons -> (inner - box.measuredWidth - 2 * gap) / 2
+                else -> -1
+            }
+            if (btnW > 0) {
+                for (b in listOf(prev, next)) {
+                    b.measure(MeasureSpec.makeMeasureSpec(btnW, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(b.measuredHeight, MeasureSpec.EXACTLY))
+                }
+            }
+            val row = maxOf(prev.measuredHeight, next.measuredHeight, if (stacked) 0 else box.measuredHeight)
+            val h = paddingTop + paddingBottom + row + if (stacked) box.measuredHeight + gap / 2 else 0
+            setMeasuredDimension(w, resolveSize(h, heightMeasureSpec))
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            val w = r - l
+            var y = paddingTop
+            val row = maxOf(prev.measuredHeight, next.measuredHeight, if (stacked) 0 else box.measuredHeight)
+            if (stacked) {
+                val bx = (w - box.measuredWidth) / 2
+                box.layout(bx, y, bx + box.measuredWidth, y + box.measuredHeight)
+                y += box.measuredHeight + gap / 2
+            }
+            fun place(v: View, x: Int) {
+                val vy = y + (row - v.measuredHeight) / 2
+                v.layout(x, vy, x + v.measuredWidth, vy + v.measuredHeight)
+            }
+            place(prev, paddingLeft)
+            place(next, w - paddingRight - next.measuredWidth)
+            if (!stacked) place(box, (w - box.measuredWidth) / 2)
+        }
+    }
+
     /** 子项按 `min(宽, maxW)` 量、水平居中、从顶上摆（练习页那一栏限宽用）。 */
     private class CenterColumn(c: android.content.Context, private val maxW: Int) : ViewGroup(c) {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -914,6 +1076,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     private companion object {
+        /** 视图宽小于它（dp）= 手机 / 窄分屏，用紧凑排法。 */
+        const val COMPACT_BELOW_DP = 600
         const val PREFS = "exercise"
         const val KEY_AUTO_NEXT = "autoNext"
         /** 判对之后停多久再翻（同 Mac，让人看到绿勾）。 */

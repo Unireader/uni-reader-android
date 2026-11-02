@@ -72,7 +72,7 @@ import com.xvan.unireader.shared.Toolbox
 import com.xvan.unireader.shared.Ui
 import com.xvan.unireader.shared.brushName
 import com.xvan.unireader.shared.capsule
-import com.xvan.unireader.shared.onSystemBarInsets
+import com.xvan.unireader.shared.onSystemInsets
 import com.xvan.unireader.shared.runInBackground
 import com.xvan.unireader.shared.setPenSwatch
 import com.xvan.unireader.shared.setTextIfChanged
@@ -774,9 +774,12 @@ class ReaderActivity : Activity() {
         handler.postDelayed(saver, SAVE_INTERVAL_MS)
         // 顶栏避开状态栏：不处理的话按钮压在时钟上，点击会被系统栏吃掉（见 shared/Insets.kt）。
         // 胶囊同理要避开底部导航栏——模式2 不用管这个（它整屏沉浸），模式1 有系统栏。
-        root.onSystemBarInsets { top, bottom ->
+        root.onSystemInsets { left, top, right, bottom ->
             barH = bar.applyTopInset(top)
             applyChromeHeight()
+            // 习题页铺到屏幕底：底部「上一题 / 下一题」那条要让开手势条 / 导航栏（手机上才明显，平板底边一直有余量），
+            // 横屏手机侧边的导航栏 / 挖孔同理
+            exercise.screen.setSystemInsets(left, right, bottom)
             val clp = capsules.layoutParams as FrameLayout.LayoutParams
             if (clp.bottomMargin != dp(10) + bottom) {
                 clp.bottomMargin = dp(10) + bottom

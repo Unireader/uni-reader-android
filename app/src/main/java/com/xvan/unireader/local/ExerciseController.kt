@@ -11,6 +11,7 @@ import android.widget.Toast
 import com.xvan.unireader.R
 import com.xvan.unireader.local.exercise.ExChapter
 import com.xvan.unireader.local.exercise.ExChapterNode
+import com.xvan.unireader.local.exercise.ExDoneSummary
 import com.xvan.unireader.local.exercise.ExFilter
 import com.xvan.unireader.local.exercise.ExGroupNode
 import com.xvan.unireader.local.exercise.ExScope
@@ -52,6 +53,8 @@ class ExerciseController(private val a: Activity) : ExHost {
     private var docs: List<Pair<String, String>> = emptyList()
     var summary = ExSummary()
         private set
+    /** 每组做过几道（抽屉行尾「已做 / 共」）。 */
+    private var doneSummary = ExDoneSummary()
     private var deck: LocalExerciseDeck? = null
 
     /** 抽屉「习题」一段（摊平的分组）变了。 */
@@ -68,6 +71,7 @@ class ExerciseController(private val a: Activity) : ExHost {
             deck = null
             docs = emptyList()
             summary = ExSummary()
+            doneSummary = ExDoneSummary()
             src?.let { s -> Bg.submit("关闭原题 PDF") { s.close() } }
             src = null
             srcDoc = ""
@@ -85,17 +89,31 @@ class ExerciseController(private val a: Activity) : ExHost {
     /** 重读抽屉的数（书库顺序 + 每篇几道 + 章节分布），推给 [onGroups]。 */
     fun refreshGroups(then: (() -> Unit)? = null) {
         val q = queue ?: return
-        q.submit("读习题分组", { s -> s.exerciseSummary() to s.allDocuments().map { it.id to it.title } }, { (sum, list) ->
+        q.submit("读习题分组", { s ->
+            Triple(s.exerciseSummary(), s.allDocuments().map { it.id to it.title }, ExDoneSummary.of(s.exerciseDoneCounts()))
+        }, { (sum, list, done) ->
             summary = sum
             docs = list
+            doneSummary = done
             onGroups(groups())
             then?.invoke()
         })
     }
 
+    /** 只重读「每组做过几道」（答了一道新题：题目行没变，只有行尾的数变了，同 Mac `refreshExerciseDone`）。 */
+    private fun refreshDone() {
+        val q = queue ?: return
+        q.submit("读习题做过几道", { s -> ExDoneSummary.of(s.exerciseDoneCounts()) }, { done ->
+            if (done == doneSummary) return@submit
+            doneSummary = done
+            onGroups(groups())
+        })
+    }
+
     private fun groups(): List<ExGroup> =
-        ExGroupNode.flatten(ExGroupNode.build(summary, docs, ::scopeTitle, a.getString(R.string.ex_no_chapter)))
-            .map { (n, depth) -> ExGroup(n.scope.key, n.title, n.count, depth) }
+        ExGroupNode.flatten(
+            ExGroupNode.build(summary, docs, ::scopeTitle, a.getString(R.string.ex_no_chapter)).map { it.withDone(doneSummary) },
+        ).map { (n, depth) -> ExGroup(n.scope.key, n.title, n.count, depth, n.done) }
 
     /** 范围名（同 Mac `exerciseScopeTitle`）：标签栏、习题页顶上都用它。 */
     fun scopeTitle(sc: ExScope): String = when (sc) {
@@ -171,8 +189,9 @@ class ExerciseController(private val a: Activity) : ExHost {
             runCatching { s.recordExerciseAttempt(id, Exercise.answerString(chosen), ans.correct, elapsedMs) }
                 .onFailure { Log.e(TAG, "记作答失败", it) }
         }, {
-            // 答错 = 进了错题本：题目行变了、抽屉的数也变了（答对不动题目行，同 Mac 不刷）
-            if (ans.correct == false) { reload(); refreshGroups() }
+            // 答错 = 进了错题本：题目行变了、抽屉的数也变了；答对不动题目行（同 Mac 不重读这一组），
+            // 只有「已做 / 共」可能变了（这道题第一次做）
+            if (ans.correct == false) { reload(); refreshGroups() } else refreshDone()
         })
     }
 

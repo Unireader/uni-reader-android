@@ -68,7 +68,8 @@ class LibraryActivity : Activity() {
     private class BoardRow(val board: BoardNote, val items: Int, val opened: Boolean)
 
     /** 「习题」一组的一行（只列第一级：全部 / 错题本 / 收藏 / 每本有题的书；章节在阅读界面抽屉里选） */
-    private class ExRow(val key: String, val title: String, val count: Int, val opened: Boolean)
+    /** `done` = 做过几道（null = 不显示，错题本那一行）。 */
+    private class ExRow(val key: String, val title: String, val count: Int, val opened: Boolean, val done: Int? = null)
     private class Snapshot(
         val name: String,
         val info: String,
@@ -278,8 +279,11 @@ class LibraryActivity : Activity() {
                 else -> getString(R.string.ex_all)
             }
         }
+        // 行尾「已做 / 共」同 Mac 侧栏（`../docs/EXERCISE-PLAN.md §16`）：错题本那一行只有题数
+        val done = com.xvan.unireader.local.exercise.ExDoneSummary.of(store.exerciseDoneCounts())
         return ExGroupNode.build(store.exerciseSummary(), docs.map { it.id to it.title }, title, getString(R.string.ex_no_chapter))
-            .map { ExRow(it.scope.key, it.title, it.count, it.scope.key in openKeys) }
+            .map { it.withDone(done) }
+            .map { ExRow(it.scope.key, it.title, it.count, it.scope.key in openKeys, it.done) }
     }
 
     private fun render(ws: File, snap: Snapshot) {
@@ -329,7 +333,7 @@ class LibraryActivity : Activity() {
                 Ui.title(this, r.title, 17f).apply { if (r.opened) setTextColor(Ui.accent(this@LibraryActivity)) },
             )
             val sub = buildString {
-                append(getString(R.string.ex_count, r.count))
+                append(r.done?.let { getString(R.string.ex_done_of, it, r.count) } ?: getString(R.string.ex_count, r.count))
                 if (r.opened) append("　已在标签页里")
             }
             col.addView(Ui.body(this, sub).apply { setPadding(0, dp(4), 0, 0) })

@@ -376,4 +376,53 @@ class ExerciseTest {
         assertEquals("\$\$\n\\int_0^1 x\\,dx\n\$\$", MathText.normalize("  \$\$ \\int_0^1 x\\,dx \$\$"))   // 一行的块公式拆三行
         assertEquals("落单的 \$ 原样", MathText.normalize("落单的 \$ 原样"))
     }
+
+    /**
+     * 侧栏 / 抽屉「已做 / 共」（`../docs/EXERCISE-PLAN.md §16`）：与 Mac `spike/exercise-test.swift`「侧栏已做几道」那几项逐条对应。
+     * 那边从库里数（同一道做两次只算一道、书上的作答也算做过——这两条是 SQL 的事，本端同一条语句，库层测试在设备上）；
+     * 这里拿同样的结果（g1 做两次 → 1 道、g2 书上作答 → 1 道、g3 / g4 没做）验汇总规则。
+     */
+    @Test
+    fun doneSummaryAndGroups() {
+        val d = "D-P"
+        val done = ExDoneSummary.of(
+            listOf(
+                ExDoneRow(d, listOf("第一章", "1.1"), done = 1, starred = 0),   // g1（做了两次，库里只数一道）
+                ExDoneRow(d, listOf("第一章", "1.2"), done = 1, starred = 1),   // g2（书上的作答，收藏了）
+            ),
+        )
+        assertEquals("整本书做过 2 道（一道做两次只算一次、书上的作答算）", 2, done.done(ExScope.Document(d)))
+        assertEquals("章 = 自己 + 各小节", 2, done.done(ExScope.Chapter(d, listOf("第一章"))))
+        assertEquals(1, done.done(ExScope.Chapter(d, listOf("第一章", "1.1"))))
+        assertEquals("没做的章是 0", 0, done.done(ExScope.Chapter(d, listOf("第二章"))))
+        assertEquals("未分章节是 0", 0, done.done(ExScope.Chapter(d, emptyList())))
+        assertEquals("收藏那一支数的是收藏里做过的", 1, done.done(ExScope.StarredDocument(d)))
+        assertEquals(0, done.done(ExScope.StarredChapter(d, listOf("第二章"))))
+        assertNull("错题本那一支不给（全都做过）", done.done(ExScope.Wrong))
+        assertNull(done.done(ExScope.WrongDocument(d)))
+        assertEquals("全部 = 各书相加", 2, done.done(ExScope.All))
+
+        val sum = ExSummary(
+            total = 4, starred = 2, byDocument = mapOf(d to 4),
+            chapters = mapOf(
+                d to mapOf(
+                    listOf("第一章", "1.1") to ExChapterStat(1, 1),
+                    listOf("第一章", "1.2") to ExChapterStat(1, 2, starred = 1),
+                    listOf("第二章") to ExChapterStat(1, 5, starred = 1),
+                    emptyList<String>() to ExChapterStat(1, 9),
+                ),
+            ),
+        )
+        val tree = ExGroupNode.build(sum, listOf(d to "进度"), { it.key }, "未分章节").map { it.withDone(done) }
+        val book = tree.first { it.scope == ExScope.Document(d) }
+        assertEquals("书那一行：2/4", 2, book.done)
+        assertEquals(4, book.count)
+        assertEquals("整棵树都填上了", 2, book.children.first().done)
+        assertEquals(1, book.children.first().children.first().done)
+        assertNull("错题本那一行不显示", tree[1].done)
+        assertEquals("全部", 2, tree[0].done)
+        assertEquals("收藏", 1, tree[2].done)
+        // 没给做题进度的树（调用方没调 withDone）一行都不显示
+        assertTrue(ExGroupNode.build(sum, listOf(d to "进度"), { it.key }, "x").all { it.done == null })
+    }
 }

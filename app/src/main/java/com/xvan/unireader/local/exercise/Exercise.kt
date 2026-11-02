@@ -387,6 +387,53 @@ data class ExSummary(
             .mapValues { it.value.copy(count = n(it.value)) }
 }
 
+/** 一个章节路径上做过几道 + 其中收藏了的几道（同 Mac `ExerciseDoneStat`）。 */
+data class ExDoneStat(val done: Int, val starred: Int = 0)
+
+/**
+ * 每组题做过几道（侧栏 / 抽屉行尾「已做 / 共」，同 Mac `ExerciseDoneSummary`，`../docs/EXERCISE-PLAN.md §16`）。
+ * 「做过」= 至少一次作答（含书上的作答）；数据来自 `LibraryStore.exerciseDoneCounts`（一条 GROUP BY）。
+ */
+data class ExDoneSummary(
+    /** 文档 id → 章节路径（恰好挂在这一级）→ 做过的题数 + 其中收藏了的几道。 */
+    val chapters: Map<String, Map<List<String>, ExDoneStat>> = emptyMap(),
+) {
+    /** 这一组做过几道。错题本那一支返回 null：里面的题都是答错进来的、全都做过，行尾只显示题数。 */
+    fun done(scope: ExScope): Int? {
+        fun sum(id: String?, path: List<String>?, n: (ExDoneStat) -> Int): Int {
+            val books = if (id != null) listOf(chapters[id] ?: emptyMap()) else chapters.values.toList()
+            var total = 0
+            for (book in books) {
+                for ((chapter, stat) in book) {
+                    if (path == null || ExChapter.contains(path, chapter)) total += n(stat)
+                }
+            }
+            return total
+        }
+        return when (scope) {
+            ExScope.All -> sum(null, null) { it.done }
+            ExScope.Starred -> sum(null, null) { it.starred }
+            is ExScope.Document -> sum(scope.id, null) { it.done }
+            is ExScope.Chapter -> sum(scope.id, scope.path) { it.done }
+            is ExScope.StarredDocument -> sum(scope.id, null) { it.starred }
+            is ExScope.StarredChapter -> sum(scope.id, scope.path) { it.starred }
+            ExScope.Wrong, is ExScope.WrongDocument, is ExScope.WrongChapter -> null
+        }
+    }
+
+    companion object {
+        /** 由 `LibraryStore.exerciseDoneCounts` 的行（文档 id, 章节路径, 做过几道, 其中收藏几道）装起来。 */
+        fun of(rows: List<ExDoneRow>): ExDoneSummary {
+            val m = HashMap<String, HashMap<List<String>, ExDoneStat>>()
+            for (r in rows) m.getOrPut(r.documentId) { HashMap() }[r.chapter] = ExDoneStat(r.done, r.starred)
+            return ExDoneSummary(m)
+        }
+    }
+}
+
+/** `exerciseDoneCounts` 的一行。 */
+data class ExDoneRow(val documentId: String, val chapter: List<String>, val done: Int, val starred: Int)
+
 /** 一本书底下的章节树：由「每个路径恰好几道」累加出每一级的总数。 */
 data class ExChapterTree(
     val label: String,
@@ -449,7 +496,17 @@ data class ExChapterTree(
 }
 
 /** 「习题」一段里的一行（同 Mac `ExerciseGroupNode`）。 */
-data class ExGroupNode(val scope: ExScope, val title: String, val count: Int, val children: List<ExGroupNode> = emptyList()) {
+data class ExGroupNode(
+    val scope: ExScope,
+    val title: String,
+    val count: Int,
+    val children: List<ExGroupNode> = emptyList(),
+    /** 做过几道（行尾「已做 / 共」）；null = 不显示（错题本那一支，或调用方没给做题进度）。 */
+    val done: Int? = null,
+) {
+    /** 整棵树填上「做过几道」（同 Mac `ExerciseGroupNode.withDone`）。 */
+    fun withDone(d: ExDoneSummary): ExGroupNode = copy(done = d.done(scope), children = children.map { it.withDone(d) })
+
     companion object {
         /**
          * 建整段（规则只有 Mac `ExerciseGroupNode.build` 一份，这里逐条照抄）：全部 / 错题本 / 收藏三行恒在；

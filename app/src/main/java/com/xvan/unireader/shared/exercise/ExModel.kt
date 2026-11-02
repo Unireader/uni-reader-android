@@ -93,7 +93,17 @@ data class ExDeckView(
 }
 
 /** 抽屉「习题」一段里的一行（摊平后的，`depth` = 缩进层级）。 */
-data class ExGroup(val key: String, val title: String, val count: Int, val depth: Int)
+data class ExGroup(
+    val key: String,
+    val title: String,
+    val count: Int,
+    val depth: Int,
+    /**
+     * 这一组做过几道（行尾「已做 / 共」，同 Mac 侧栏，`../docs/EXERCISE-PLAN.md §16`）；null = 不显示（错题本那一支、
+     * 或模式2 的老 Mac 没发 `exGroups` 尾部）。
+     */
+    val done: Int? = null,
+)
 
 /**
  * 习题界面把操作交给谁（模式1 本机写库 / 模式2 发给 Mac）。界面只调这些，不自己改 [ExDeckView]——
