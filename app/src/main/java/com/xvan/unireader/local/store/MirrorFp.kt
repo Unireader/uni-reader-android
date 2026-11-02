@@ -163,6 +163,8 @@ object MirrorFp {
                 t("chapter"),
                 // v22 表尾：题目笔记（`../docs/EXERCISE-PLAN.md §12`，写笔记也改 updated_at，照样按它取新；与 Mac 同序）
                 t("note"),
+                // v24 表尾：题目标签（JSON 字符串数组，同样改 updated_at；与 Mac 同序）
+                t("tags"),
             ),
             lww = "updated_at",
         ),

@@ -33,8 +33,9 @@ object Schema {
      * v22：`exercise` 加 `note`（题目笔记，`../docs/EXERCISE-PLAN.md §12`；本端本轮只建列、随离线镜像同步，界面在 Mac 上）。
      * v23：`agent_context`（Agent 上下文：一段 Agent 对话的交接摘要，`../docs/ACP-AGENT-PLAN.md §12`；
      * 本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步、回收站能恢复）。
+     * v24：`exercise` 加 `tags`（题目标签，JSON 字符串数组；本端本轮只建列、随同步走，界面在 Mac 上）。
      */
-    const val VERSION = 23
+    const val VERSION = 24
 
     /**
      * v14 `page_align`（`../docs/SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -139,7 +140,8 @@ object Schema {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           chapter TEXT NOT NULL DEFAULT '',
-          note TEXT NOT NULL DEFAULT ''
+          note TEXT NOT NULL DEFAULT '',
+          tags TEXT NOT NULL DEFAULT ''
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_exercise_doc ON exercise(document_id, page, seq)",
@@ -299,6 +301,8 @@ object Schema {
         Triple("exercise_attempt", "feedback", "TEXT NOT NULL DEFAULT ''"),
         // v22：题目笔记（`../docs/EXERCISE-PLAN.md §12`），与 Mac 同序
         Triple("exercise", "note", "TEXT NOT NULL DEFAULT ''"),
+        // v24：题目标签（JSON 字符串数组），与 Mac 同序
+        Triple("exercise", "tags", "TEXT NOT NULL DEFAULT ''"),
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =

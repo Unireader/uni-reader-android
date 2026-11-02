@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 35 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 36 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -139,6 +139,11 @@ class MirrorFpTest {
         "wrong" to 1L, "updated_at" to "2026-10-27T08:00:00.000Z",
         "note" to "别忘了 ${'$'}f'(x)=2x${'$'}，**链式法则**",
     )
+    // v24 题目标签（与 spike/mirror-fp-test.swift 末尾那行 exercise 逐字段一致）
+    private val exerciseTagsRow: Map<String, Any?> = exerciseRow + mapOf(
+        "updated_at" to "2026-11-02T09:00:00.000Z",
+        "chapter" to "", "note" to "", "tags" to "[\"真题\",\"2023\"]",
+    ).plus("wrong" to 0L).plus("starred" to 0L)
     // v23 Agent 上下文（与 spike/mirror-fp-test.swift 末尾那行 agent_context 逐字段一致）：中文标题 + 多行 Markdown 摘要
     private val agentContextRow: Map<String, Any?> = mapOf(
         "id" to "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC",
@@ -241,16 +246,16 @@ class MirrorFpTest {
                     "03323032362d30392d32365430393a30303a30305a1f03323032362d30392d32365430393a30353a" +
                     "30305a",
                 "2b807960580dd994"),
-            // v22 起按 15 列编码（笔记缺 = NULL，末尾多一个 1f00），编码 / fp 随列规格变了（`../docs/EXERCISE-PLAN.md §12`）
+            // v22 起按 15 列、v24 起按 16 列编码（笔记 / 标签缺 = NULL，末尾 1f00 ×2），编码 / fp 随列规格变了（`../docs/EXERCISE-PLAN.md §12`）
             R(30, "exercise", exerciseRow,
-                "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
-                    "0331313131313131312d313131312d343131312d383131312d3131313131313131313131311f" +
-                    "0131311f01321f01311f03351f03e4b9a0e9a29820322d331f047b22616e73776572223a5b22" +
-                    "41222c2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe202466287829" +
-                    "3d785e3224227d1f01311f01301f036b696d691f03323032362d31302d31305430393a30303a" +
-                    "30302e3030305a1f03323032362d31302d31315430383a30303a30302e3030305a1f035b22e7" +
-                    "acace4ba8ce7aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d1f00",
-                "05574ba10e907d07"),
+                "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f03" +
+                    "31313131313131312d313131312d343131312d383131312d3131313131313131313131311f0131" +
+                    "311f01321f01311f03351f03e4b9a0e9a29820322d331f047b22616e73776572223a5b2241222c" +
+                    "2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe2024662878293d785e32" +
+                    "24227d1f01311f01301f036b696d691f03323032362d31302d31305430393a30303a30302e3030" +
+                    "305a1f03323032362d31302d31315430383a30303a30302e3030305a1f035b22e7acace4ba8ce7" +
+                    "aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d1f001f00",
+                "c3e066d36723d4d3"),
             // v21 起按 10 列编码（新三列缺 = NULL，末尾 1f00 ×3），编码 / fp 随列规格变了（`../docs/EXERCISE-PLAN.md §11.5`）
             R(31, "exercise_attempt", exerciseAttemptRow,
                 "0341414141414141412d414141412d344141412d384141412d4141414141414141414141411f" +
@@ -267,16 +272,15 @@ class MirrorFpTest {
                     "ba92e8b4a82a2ae79a84e58187e8aebe",
                 "3bd6aba4f01a9dc0"),
             R(33, "exercise", exerciseNoteRow,
-                "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f" +
-                    "0331313131313131312d313131312d343131312d383131312d3131313131313131313131311f" +
-                    "0131311f01321f01311f03351f03e4b9a0e9a29820322d331f047b22616e73776572223a5b22" +
-                    "41222c2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe202466287829" +
-                    "3d785e3224227d1f01311f01311f036b696d691f03323032362d31302d31305430393a30303a" +
-                    "30302e3030305a1f03323032362d31302d32375430383a30303a30302e3030305a1f035b22e7" +
-                    "acace4ba8ce7aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d1f03" +
-                    "e588abe5bf98e4ba86202466272878293d327824efbc8c2a2ae993bee5bc8fe6b395e588992a" +
-                    "2a",
-                "c4bc4c6002e7b1c7"),
+                "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f03" +
+                    "31313131313131312d313131312d343131312d383131312d3131313131313131313131311f0131" +
+                    "311f01321f01311f03351f03e4b9a0e9a29820322d331f047b22616e73776572223a5b2241222c" +
+                    "2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe2024662878293d785e32" +
+                    "24227d1f01311f01311f036b696d691f03323032362d31302d31305430393a30303a30302e3030" +
+                    "305a1f03323032362d31302d32375430383a30303a30302e3030305a1f035b22e7acace4ba8ce7" +
+                    "aba020e5afbce695b0222c22322e3320e6b182e5afbce6b395e58899225d1f03e588abe5bf98e4" +
+                    "ba86202466272878293d327824efbc8c2a2ae993bee5bc8fe6b395e588992a2a1f00",
+                "44926c98ca9bfe92"),
             R(34, "agent_context", agentContextRow,
                 "0343434343434343432d434343432d344343432d384343432d4343434343434343434343431f" +
                     "03e9ab98e695b0e7acace4ba8ce7aba0e99499e9a298e695b4e790861f03232320e5819ae588" +
@@ -286,8 +290,18 @@ class MirrorFpTest {
                     "4b696d691f0373657373696f6e2d376633611f03323032362d31312d30325430383a30303a30" +
                     "302e3030305a1f03323032362d31312d30325430383a33303a30302e3030305a",
                 "e4c41b0aecb7e9e4"),
+            // v24 题目标签（JSON 字符串数组，含中文），表尾再多一列
+            R(35, "exercise", exerciseTagsRow,
+                "0339393939393939392d393939392d343939392d383939392d3939393939393939393939391f03" +
+                    "31313131313131312d313131312d343131312d383131312d3131313131313131313131311f0131" +
+                    "311f01321f01311f03351f03e4b9a0e9a29820322d331f047b22616e73776572223a5b2241222c" +
+                    "2243225d2c226f7074696f6e73223a5b5d2c227374656d223a22e8aebe2024662878293d785e32" +
+                    "24227d1f01301f01301f036b696d691f03323032362d31302d31305430393a30303a30302e3030" +
+                    "305a1f03323032362d31312d30325430393a30303a30302e3030305a1f031f031f035b22e79c9f" +
+                    "e9a298222c2232303233225d",
+                "8408973ce1a292d1"),
         )
-        assertEquals(14, cases.size)
+        assertEquals(15, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -340,7 +354,7 @@ class MirrorFpTest {
         assertEquals(
             listOf(
                 "id", "document_id", "page", "seq", "kind", "number", "section", "payload", "starred", "wrong",
-                "source", "created_at", "updated_at", "chapter", "note",
+                "source", "created_at", "updated_at", "chapter", "note", "tags",
             ),
             MirrorFp.spec("exercise")!!.columns.map { it.name },
         )
