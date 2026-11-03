@@ -288,8 +288,15 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `ServerClient`（OkHttp，阻塞，**一律不走代理**，`Cancel` 断开正在飞的请求）、`ServerAccounts`（连过的服务器，本机 prefs）、
   `ServerSyncIO`（一轮 / 建缓存 / 上传 / 下 PDF，纯 IO）、`ServerSync`（时机与状态）、`ServerUi`（几块界面）、`ServerDiscovery`（`_unireader-srv._tcp`）。
   · 有 `meta.srv_url` = 服务器工作区。**时机**：打开前完整一轮（启动页 `openWorkspace` 与阅读界面开库前，最多等 3 秒，超时照常开本机这份；
-  启动页刚同步过 60 秒内阅读界面不再同步）；阅读界面开着时**只推不拉**（`ServerSync.sessionStart`，每 60 秒 + `onPause`，在那条 `StoreQueue` 上找改动、
-  `total_changes()` 没变就跳过，基线逐行写不开事务）；阅读界面关库之后、退出书库页时完整一轮。
+  启动页刚同步过 60 秒内阅读界面不再同步）；阅读界面开着时（`ServerSync.sessionStart`，**S4 起能收了**，`../docs/SERVER-MODE-PLAN.md §13.12`）：
+  · **推**：每秒在那条 `StoreQueue` 上看一眼 `total_changes()`，变了就重新计时，**停手满 2 秒**（至少隔 5 秒；每分钟兜底；`onPause` 不等停手马上推）才找改动推，
+    基线逐行写不开事务；同步自己写库（记基线 / 应用拉到的行）不算本机改动（`seenTc` 跟着挪）。
+  · **收**：`watch` 线程挂着等服务器通知（`ServerClient.waitForChange`，长轮询 `GET wait`，`../docs/PROTOCOL.md §9.6`，最多 25 秒一轮）；有动静 →
+    网络线程 `SyncClient.fetchPulled` 攒齐所有页 → 在**库队列**上 `applyPulled` + 记修订号（和用户自己的写入排一条队，内存快照对得上）→ 主线程回调
+    `ReaderActivity.onRemoteRows`：按受影响的表刷新书库 / 画板 / 习题，开着的文档 `reloadStrokes` / `reloadNotes` / `reloadImageNotes`（库队列先进先出，读到的是应用之后的状态）。
+    与推送互斥（`pushing` / `pulling`）；出错退避重试（5 秒起、最多 60 秒）；服务器程序太旧（`wait` 不带说明的 404 / 405，`Failure.isUnsupportedRoute`）→ 不再挂、退回只推。
+  · 没做：画板 / 草稿纸内容与开着的练习页不实时更新（列表会）；笔记文件（`Notes/`）同步安卓整个还没做（`../docs/PROTOCOL.md §9.5`）。
+  阅读界面关库之后、退出书库页时完整一轮。
   🔴 **阅读界面开着它的时候不跑完整一轮**（另一条连接写用户数据，内存里的笔迹快照就对不上了）——`prepareToOpen` / `syncNow` 见到开着的会话只叫它推一次；
   还原备份关库时不同步（`closeWorkspace(syncAfter = false)`，要换库文件）。完整一轮之后后台下小 PDF（默认 ≤50MB，只写 `location`）。
   · 缓存放 `/storage/emulated/0/Documents/UniReader/Servers/<主机-端口>/<名字>.unrd`；入口：启动页「本机工作区」页「连接服务器…」+ 每台服务器一段

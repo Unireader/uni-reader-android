@@ -855,7 +855,8 @@ class ReaderActivity : Activity() {
         val q = StoreQueue(o.store)
         queue = q
         onServer = o.onServer
-        if (o.onServer) ServerSync.sessionStart(this, dir, q)   // 开着时只推不拉（每 60 秒 / 退到后台）
+        // 开着时：本机改动停手 2 秒后推（退到后台马上推）；服务器有动静就拉，拉下来的让界面跟上（`onRemoteRows`）
+        if (o.onServer) ServerSync.sessionStart(this, dir, q) { rows -> onRemoteRows(rows) }
         libTitles = o.docs.associate { it.id to it.title }
         workspaceName = o.name.ifEmpty { dir.name }
         tabsBar.setWorkspace(workspaceName)
@@ -1670,6 +1671,22 @@ class ReaderActivity : Activity() {
                 Log.e(TAG, "画板归档失败，没删", it)
                 runOnUiThread { Toast.makeText(this, getString(R.string.trash_failed), Toast.LENGTH_LONG).show() }
             }
+        }
+    }
+
+    /**
+     * 开着服务器工作区时拉到了别的设备的改动，已经在库队列上写进库（`ServerSync.pullWhileOpen`，主线程回调）：
+     * 书库 / 画板 / 习题 / 笔记列表刷新；开着的文档把笔迹、注解、图片笔记重读一遍（库队列先进先出，
+     * 读到的一定是应用之后的状态，也包括用户自己刚写的）。不动阅读位置。
+     */
+    private fun onRemoteRows(rows: List<com.xvan.unireader.local.server.SyncWire.PulledRow>) {
+        if (queue == null || workspace == null) return
+        val tables = rows.map { it.table }.toSet()
+        if (tables.any { it in setOf("document", "variant", "location", "meta") }) refreshDrawerLibrary()
+        if (tables.any { it.startsWith("board_") }) refreshBoards()
+        if (tables.any { it.startsWith("exercise") }) exercise.refreshGroups()
+        if (tables.any { it == "note" || it == "ink_layer" }) {
+            for (t in tabs) t.canvas?.let { c -> c.reloadStrokes(); c.reloadNotes(); c.reloadImageNotes() }
         }
     }
 

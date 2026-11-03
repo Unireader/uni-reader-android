@@ -29,7 +29,10 @@ class ServerClient(val baseUrl: String, val token: String?, private val cancel: 
      * 服务器回了错误状态：[status] = HTTP 状态码（[BAD_RESPONSE] / [BAD_ADDRESS] 是本端判的），
      * message = 服务器给的说明（可能为空，界面层再按状态码说人话，见 `ServerUi.describe`）。
      */
-    class Failure(val status: Int, message: String) : IOException(message)
+    class Failure(val status: Int, message: String) : IOException(message) {
+        /** 服务器程序太旧、没有这个接口：路由不存在时回的是不带说明的 404 / 405（「没有这个工作区」那种 404 带着说明） */
+        val isUnsupportedRoute: Boolean get() = (status == 404 || status == 405) && message.isNullOrEmpty()
+    }
 
     class Cancelled : IOException("cancelled")
 
@@ -127,6 +130,22 @@ class ServerClient(val baseUrl: String, val token: String?, private val cancel: 
             val o = arr.getJSONObject(i)
             WorkspaceInfo(o.getString("id"), o.optString("name"), o.optLong("head"))
         }
+    }
+
+    /** 变更通知的回答：服务器现在的行 / 笔记文件修订号；[changed] = 和传去的不一样（false = 等到超时什么也没发生） */
+    data class Change(val rows: Long, val notes: Long, val changed: Boolean)
+
+    /**
+     * 变更通知（S4，长轮询，`../docs/PROTOCOL.md §9.6`）：挂住等工作区有改动，行修订号 / 笔记文件修订号和 [rows] / [notes]
+     * 不一样就立刻回答，否则最多等 [timeoutSec] 秒。**阻塞**，在网络线程调；[Cancel] 取消会断开它。
+     * 服务器程序太旧没有这个接口 → 不带说明的 404 / 405（[isUnsupportedRoute]）。
+     */
+    fun waitForChange(ws: String, rows: Long, notes: Long, timeoutSec: Int = 25): Change {
+        val o = JSONObject(send(
+            request("v1/workspaces/$ws/wait", "rows" to rows.toString(), "notes" to notes.toString(), "timeout" to timeoutSec.toString()),
+            readTimeoutSec = timeoutSec + 20L,
+        ).decodeToString())
+        return Change(o.optLong("rows"), o.optLong("notes"), o.optBoolean("changed"))
     }
 
     fun push(ws: String, body: ByteArray): ByteArray =

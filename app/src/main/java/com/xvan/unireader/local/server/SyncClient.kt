@@ -254,6 +254,22 @@ object SyncClient {
     )
 
     /**
+     * 从 [start] 起把服务器上的改动**全部页攒齐**（父行和子行可能分在不同页，必须攒齐了再 [applyPulled]）。
+     * 返回行 + 服务器现在的修订号（没有新行也会返回，`pulledRev` 要跟着走）。阻塞，在网络线程调。
+     */
+    fun fetchPulled(start: Long, pull: (Long) -> SyncWire.PullResponse): Pair<List<SyncWire.PulledRow>, Long> {
+        var since = start
+        val acc = ArrayList<SyncWire.PulledRow>()
+        while (true) {
+            val page = pull(since)
+            acc += page.rows
+            if (page.more && page.rows.isNotEmpty()) since = page.rows.last().rev
+            else { since = maxOf(since, page.head); break }
+        }
+        return acc to since
+    }
+
+    /**
      * 一轮同步：推本地改动 → 拉服务器的改动（全部页攒齐）→ 应用 → 记下拉到的修订号。传输由调用方给（阻塞调用）。
      * [checkCancelled] 在应用拉下来的行之前问一次：被取消就停在那里——推上去而基线没记的，下一轮再推一次、
      * 服务器答「一致」即补上；拉下来还没应用的，修订号没记，下一轮重拉。

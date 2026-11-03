@@ -202,54 +202,88 @@ object ServerSync {
 
     // ---------- 开着时（只推不拉） ----------
 
-    private class Session(val ctx: Context, val dir: File, val queue: StoreQueue) {
-        var pushing = false
+    private class Session(val ctx: Context, val dir: File, val queue: StoreQueue, val onRemote: (List<SyncWire.PulledRow>) -> Unit) {
+        @Volatile var pushing = false
+        /** 拉别的设备的改动正在做（和推送互斥：两边同时改基线会互相踩） */
+        @Volatile var pulling = false
         /** 上次确认「没有要推的」时这条连接的 `total_changes()`；没变就不必再全量找改动。-1 = 要重找 */
         var cleanAt = -1L
         lateinit var tick: Runnable
+
+        // 以下三个只在库队列线程上读写（`push` 里找改动那一步）
+        /** 上次看到的 `total_changes()` 与那一刻：变了说明用户还在写，停手满 [QUIET_MS] 才推 */
+        var seenTc = -1L
+        var dirtyAt = 0L
+        var lastPush = 0L
+
+        @Volatile var stopped = false
+        val cancel = ServerClient.Cancel()
+        /** 上次处理完时服务器的笔记文件修订号（安卓还没做笔记文件同步，只是随着通知带回去） */
+        @Volatile var noteHead = 0L
     }
+
+    /** 停手多久再推（用户定「改完停 2 秒推送」）、两次推送至少隔多久、兜底每隔多久推一次 */
+    private const val QUIET_MS = 2_000L
+    private const val MIN_PUSH_MS = 5_000L
+    private const val HEARTBEAT_MS = 60_000L
 
     private class Prep(val tc: Long, val changes: List<SyncWire.RowChange>, val files: List<ServerSyncIO.FileUp>)
 
     private val sessions = ConcurrentHashMap<String, Session>()
 
-    /** 阅读界面开好了一个服务器工作区（主线程）：每 60 秒推一次 */
-    fun sessionStart(ctx: Context, dir: File, queue: StoreQueue) {
+    /**
+     * 阅读界面开好了一个服务器工作区（主线程）：每秒看一眼本机有没有改动（停手 2 秒后推），挂着等服务器通知（S4，有动静就拉）。
+     * [onRemote]（主线程）：拉到的别的设备的改动已经写进库了，让界面跟上（刷新列表、重读开着的文档）。
+     */
+    fun sessionStart(ctx: Context, dir: File, queue: StoreQueue, onRemote: (List<SyncWire.PulledRow>) -> Unit = {}) {
         val k = key(dir)
-        sessions.remove(k)?.let { main.removeCallbacks(it.tick) }
-        val s = Session(ctx.applicationContext, dir, queue)
+        sessions.remove(k)?.let { stopSession(it) }
+        val s = Session(ctx.applicationContext, dir, queue, onRemote)
         s.tick = Runnable {
             push(s)
-            main.postDelayed(s.tick, 60_000L)
+            main.postDelayed(s.tick, 1_000L)
         }
         sessions[k] = s
-        main.postDelayed(s.tick, 60_000L)
+        main.postDelayed(s.tick, 1_000L)
+        Thread({ watch(s) }, "unireader-watch").start()
     }
 
     /** 阅读界面要关这个工作区了（主线程，在关库之前） */
     fun sessionStop(dir: File) {
-        sessions.remove(key(dir))?.let { main.removeCallbacks(it.tick) }
+        sessions.remove(key(dir))?.let { stopSession(it) }
     }
 
-    /** 马上推一次（退到后台时）。没开着 = 什么都不做 */
+    private fun stopSession(s: Session) {
+        s.stopped = true
+        s.cancel.cancel()       // 断开挂着的长轮询
+        main.removeCallbacks(s.tick)
+    }
+
+    /** 马上推一次（退到后台时，不等停手）。没开着 = 什么都不做 */
     fun pushNow(dir: File) {
-        sessions[key(dir)]?.let { push(it) }
+        sessions[key(dir)]?.let { push(it, force = true) }
     }
 
     /**
      * 只推不拉：在库队列上找本地改动（库没被写过就跳过）→ 网络线程传文件、推送 → 回库队列逐行记基线（不开事务，
      * 见 [SyncClient.recordPushed]）。推的时候阅读界面关了（关掉后那一轮会再推一次）、或变回了本地工作区：不记。
      */
-    private fun push(s: Session) {
+    private fun push(s: Session, force: Boolean = false) {
         val k = key(s.dir)
-        if (s.pushing || sessions[k] !== s) return
+        if (s.pushing || s.pulling || sessions[k] !== s) return
         s.pushing = true
         s.queue.submit("同步：找本地改动", { store ->
             store.withMirrorDb { db ->
+                val now = System.currentTimeMillis()
                 val tc = totalChanges(db)
+                if (tc != s.seenTc) { s.seenTc = tc; s.dirtyAt = now }      // 用户还在写：重新计停手的时间
+                val quiet = now - s.dirtyAt >= QUIET_MS && now - s.lastPush >= MIN_PUSH_MS
                 if (tc == s.cleanAt || !MirrorStore.hasSyncBase(db)) {
                     null
+                } else if (!force && !quiet && now - s.lastPush < HEARTBEAT_MS) {
+                    null        // 还没停手，等下一秒再看
                 } else {
+                    s.lastPush = now
                     val ch = SyncClient.localChanges(db, s.dir)
                     Prep(tc, ch, ServerSyncIO.filesToUpload(ch, db, s.dir))
                 }
@@ -298,14 +332,111 @@ object ServerSync {
             store.withMirrorDb { db ->
                 val before = totalChanges(db)
                 SyncClient.recordPushed(db, prep.changes, resp)
+                val after = totalChanges(db)
+                if (s.seenTc == before) s.seenTc = after      // 记基线是同步自己写的，不算「本机改动」
                 // 找改动之后、记基线之前用户又写过 → 下次照常全量找；没写过 → 记下此刻，下次没变就跳过
-                if (before == prep.tc) totalChanges(db) else -1L
+                if (before == prep.tc) after else -1L
             }
         }) { tc ->
             s.cleanAt = tc
             s.pushing = false
             if (sessions[k] === s) setStatus(k, Status.Synced(System.currentTimeMillis()))
         }
+    }
+
+    // ---------- 服务器通知 → 拉（S4） ----------
+
+    /**
+     * 挂着等服务器通知（长轮询，最多 25 秒一轮），有动静就拉。出错退避重试（5 秒起、最多 60 秒）；
+     * 服务器程序太旧没有 `wait` 就不挂了（退回原来的只推）。**网络线程**，会话停了就退出。
+     */
+    private fun watch(s: Session) {
+        val k = key(s.dir)
+        var failures = 0
+        while (!s.stopped) {
+            try {
+                val ep = endpoint(s.ctx, s.dir)
+                if (ep == null) { Thread.sleep(10_000); continue }
+                val client = ep.account.client(s.cancel)
+                val rows = onQueue(s, "同步：读已拉修订号") { st -> st.withMirrorDb { SyncClient.pulledRev(it) } } ?: continue
+                val notes = s.noteHead
+                val ch = client.waitForChange(ep.wid, rows, notes)
+                failures = 0
+                if (!ch.changed || s.stopped) continue
+                pullWhileOpen(s, client, ep, ch)
+                // 拉完修订号没往前走（服务器数据被还原过之类）：别空转
+                val after = onQueue(s, "同步：读已拉修订号") { st -> st.withMirrorDb { SyncClient.pulledRev(it) } }
+                if (after == rows && s.noteHead == notes) Thread.sleep(10_000)
+            } catch (e: ServerClient.Cancelled) {
+                return
+            } catch (e: Throwable) {
+                if (s.stopped) return
+                if (e is ServerClient.Failure && e.isUnsupportedRoute) {
+                    Log.w(TAG, "${s.dir.name}：服务器程序太旧，没有 wait 接口——开着时不收通知（升级服务器后重新打开工作区）")
+                    return
+                }
+                failures++
+                Log.w(TAG, "${s.dir.name}：等服务器通知出错（第 $failures 次）", e)
+                if (sessions[k] === s) setStatus(k, classify(e))
+                try { Thread.sleep(minOf(60_000L, 5_000L * failures)) } catch (_: InterruptedException) { return }
+            }
+        }
+    }
+
+    private class Applied(val before: Long, val after: Long, val conflicts: Int, val skipped: Int, val images: Boolean, val books: Boolean)
+
+    /**
+     * 拉别的设备的改动：网络线程取行（攒齐所有页）→ **库队列**上应用（和用户自己的写入排在一条队里，内存快照不会对不上）→
+     * 主线程让界面跟上（[Session.onRemote]）。与推送互斥。新书的小 PDF 随后后台下。
+     */
+    private fun pullWhileOpen(s: Session, client: ServerClient, ep: Endpoint, ch: ServerClient.Change) {
+        val k = key(s.dir)
+        while (s.pushing && !s.stopped) Thread.sleep(300)
+        if (s.stopped) return
+        s.pulling = true
+        try {
+            val since = onQueue(s, "同步：读已拉修订号") { st -> st.withMirrorDb { SyncClient.pulledRev(it) } } ?: return
+            val (rows, head) = SyncClient.fetchPulled(since) { SyncWire.decodePullResponse(client.pull(ep.wid, it)) }
+            if (s.stopped) return
+            if (rows.isNotEmpty() || head != since) {
+                val a = onQueue(s, "同步：应用拉到的改动") { st ->
+                    st.withMirrorDb { db ->
+                        val before = totalChanges(db)
+                        val rep = SyncClient.applyPulled(db, s.dir, rows)
+                        SyncClient.setPulledRev(db, head)
+                        val newImages = rows.any { it.table == "image" && !it.deleted }
+                        if (newImages) runCatching { ServerSyncIO.downloadMissingImages(db, s.dir, client, ep.wid) }
+                        val after = totalChanges(db)
+                        if (s.seenTc == before) s.seenTc = after      // 同步自己写的，不算「本机改动」
+                        Applied(before, after, rep.conflicts, rep.skipped, newImages, rows.any { it.table == "variant" && !it.deleted })
+                    }
+                }
+                if (a != null) {
+                    if (rows.isNotEmpty()) Log.i(TAG, "${s.dir.name}：开着时拉到 ${rows.size} 行（冲突 ${a.conflicts} 跳过 ${a.skipped}）${rows.map { it.table }.toSet().sorted()}")
+                    main.post {
+                        if (sessions[k] !== s) return@post
+                        if (s.cleanAt == a.before) s.cleanAt = a.after
+                        if (rows.isNotEmpty()) s.onRemote(rows)
+                        setStatus(k, Status.Synced(System.currentTimeMillis()))
+                    }
+                    if (a.books) Thread({ prefetch(s.ctx, s.dir, ep) }, "unireader-prefetch").start()
+                }
+            }
+            s.noteHead = ch.notes
+        } finally {
+            s.pulling = false
+        }
+    }
+
+    /** 在库队列上做一件事并等结果（网络线程调）。队列关了 / 超时 = null */
+    private fun <T : Any> onQueue(s: Session, what: String, work: (com.xvan.unireader.local.store.LibraryStore) -> T): T? {
+        val latch = CountDownLatch(1)
+        var out: T? = null
+        var failed: Throwable? = null
+        s.queue.submit(what, { st -> try { work(st) } catch (t: Throwable) { failed = t; null } }, { r -> out = r; latch.countDown() })
+        if (!latch.await(60, TimeUnit.SECONDS)) return null
+        failed?.let { Log.w(TAG, "$what 失败", it) }
+        return out
     }
 
     private fun totalChanges(db: com.xvan.unireader.local.store.Db): Long =
