@@ -107,7 +107,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （`Schema.VERSION = 23`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
   `CREATE … IF NOT EXISTS` 补齐到 v23 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
-  `ink` / `judged_by` / `feedback`、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
+  `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
   `../docs/ACP-AGENT-PLAN.md §12`）本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
   `agentContexts` 条目并能恢复）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
@@ -255,9 +255,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   进度另起一行；底部 `NavRow` 两个按钮等分宽度（≥48dp），一行放不下勾选框挪到上面一行；正文边距 16、选项间距 8 / 最小高 48、列表题号列 40。
   系统栏：`ReaderActivity` 原先只让了顶部，习题页铺到屏幕底、底部按钮压在手势条下 → 改用 `onSystemInsets`（四边，左右并上挖孔）
   经 `ExerciseScreen.setSystemInsets` 给习题页左 / 右 / 下内边距。⚠️ Markdown 笔记页（`md.view`）同样铺到底，底边没让，暂未改。
-  · **填空 / 主观题（v21，2026-10-13，`../docs/EXERCISE-PLAN.md §11.6`）本端本轮不能作答**：`kind` 3 / 4 读得出、`ExCard.kind` 带着，
-  练习页只显示题干 + 「请在 Mac 上作答」（`ExCard.macOnly`），`LocalExerciseDeck.submit` 挡掉；模式2 Mac 不发这两种题的选项 / 答案 / 作答。
-  做平板作答时先读 `../docs/EXERCISE-PLAN.md §11`（作答格式 `ExerciseResponse`、手写 `ExerciseInk` 逻辑坐标、`judged_by` 后判为准）。
+  · **填空题模式1 可作答（2026-11-04，`../docs/EXERCISE-PLAN.md §11` 安卓一轮）**：练习页每空一个输入框（草稿按题暂存、
+  回车跳下一空、最后一空回车交卷）；全对得上参考答案（规整规则同 Mac `normalizeBlank`，逐条照抄）→ 直接判对，
+  有对不上的 → 亮参考答案、用户点「答对了 / 答错了」自己判（写回那条作答的 `correct` + `judged_by='self'`，
+  `LibraryStore.judgeExerciseAttempt`，判错进错题本）；作答 / 判定经 `exercise_attempt` 列随镜像 / 服务器同步回 Mac。
+  主观题（kind 4）与模式2 的填空仍只显示题干 + 提示到 Mac 上作答（`ExCard.macOnly`），手写（`ink` 列）本端不做。
   · **题目笔记 + 重做上次做错的（v22，2026-10-27，`../docs/EXERCISE-PLAN.md §12`）本端本轮没做**（用户定先只做 Mac）：`exercise.note`
   只建列、随离线镜像同步；`exDeck.filter` 可能收到 `4`（Mac 开着「重做上次做错的」），按「只看没做过」没开显示。
   补做时：笔记判完才显示（同解析）、挑题规则照抄 Mac `Exercise.lastResultWrong`（最近一次是错的；没判的不算）。

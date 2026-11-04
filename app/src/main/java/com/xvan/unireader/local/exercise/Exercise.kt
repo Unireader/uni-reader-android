@@ -18,7 +18,7 @@ data class ExOption(val key: String, val text: String)
 data class ExPayload(
     val stem: String,
     val options: List<ExOption>,
-    /** 正确选项的键（空 = 还没有答案）。 */
+    /** 正确选项的键 / 填空的每空参考答案 / 主观题的参考答案正文（空 = 还没有答案）。 */
     val answer: List<String>,
     /** `book` / `agent`；没有答案时为 null。 */
     val answerSource: String?,
@@ -27,6 +27,10 @@ data class ExPayload(
     val region: List<Double>?,
     /** 带图 / 表：练习时默认显示原题截图。 */
     val figure: Boolean,
+    /** 填空题的空数（v21；没答案时靠它摆输入框）。 */
+    val blanks: Int?,
+    /** 填空每空另外认可的写法（与 answer 等长；全空没有这个键）。 */
+    val accept: List<List<String>>?,
 ) {
     companion object {
         /** 坏了 → null（同 Mac：调用方跳过这一行）。 */
@@ -45,6 +49,10 @@ data class ExPayload(
                 explanation = o["explanation"] as? String,
                 region = region?.takeIf { it.size == 4 },
                 figure = o["figure"] as? Boolean ?: false,
+                blanks = (o["blanks"] as? Double)?.toInt(),
+                accept = (o["accept"] as? List<*>)?.map { row ->
+                    (row as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+                },
             )
         }
     }
@@ -63,6 +71,11 @@ data class ExAttemptStats(
     val lastAnswer: String? = null,
     /** ISO 毫秒 UTC。 */
     val lastAt: String? = null,
+    /** App 里练的最近一次那条作答的 id / 对错（填空显示用，Mac `lastPracticedCorrect`；对错**用库里记的**）。 */
+    val lastAttemptId: String? = null,
+    val lastPracticedCorrect: Boolean? = null,
+    /** 书上作答那条的 id。 */
+    val markedAttemptId: String? = null,
 )
 
 /** 以前的作答从哪来：App 里练的最近一次（带时间）/ 书上的作答。 */
@@ -92,13 +105,60 @@ data class Exercise(
     val chapter: List<String>,
 ) {
     val multiple: Boolean get() = kind == KIND_MULTIPLE
-    /** 选择题（单选 / 多选）。填空 / 主观题本端本轮只显示题干、提示到 Mac 上作答（`../docs/EXERCISE-PLAN.md §11.6`）。 */
+    /** 选择题（单选 / 多选）。 */
     val isChoice: Boolean get() = kind == KIND_SINGLE || kind == KIND_MULTIPLE
+    /** 填空题（主观题本端仍只显示题干、提示到 Mac 上作答）。 */
+    val isFill: Boolean get() = kind == KIND_FILL
     val hasAnswer: Boolean get() = payload.answer.any { it.isNotEmpty() }
     val answerFromAgent: Boolean get() = hasAnswer && payload.answerSource == "agent"
 
     /** 判题：选中的键与答案**完全相同**才算对。没有答案 → null（没法判）。只管选择题。 */
     fun judge(chosen: Set<String>): Boolean? = if (!isChoice || !hasAnswer) null else chosen == payload.answer.toSet()
+
+    // ---------- 填空（v21，`../docs/EXERCISE-PLAN.md §11`，逐条照 Mac）----------
+
+    /** 填空题有几个空（别的题型 0）：`blanks` 键与参考答案数取大。 */
+    val blankCount: Int get() = if (isFill) maxOf(payload.blanks ?: 0, payload.answer.size) else 0
+
+    /** 第 `i` 空认可的写法：参考答案 + `accept` 里的（原样，没规整）。 */
+    fun acceptedForms(blank: Int): List<String> {
+        val out = ArrayList<String>()
+        if (payload.answer.indices.contains(blank)) out += payload.answer[blank]
+        payload.accept?.getOrNull(blank)?.let { out += it }
+        return out.filter { it.isNotEmpty() }
+    }
+
+    /** 填空每一空对不对得上参考答案（规整后一字不差，[normalizeBlank]）。没有答案的空 = false。 */
+    fun blankMatches(blanks: List<String>): List<Boolean> =
+        (0 until blankCount).map { i ->
+            val mine = blanks.getOrElse(i) { "" }.let(::normalizeBlank)
+            mine.isNotEmpty() && acceptedForms(i).any { normalizeBlank(it) == mine }
+        }
+
+    /**
+     * 填空程序判题（拍板 ①）：**每空都对得上才判对**；有对不上的（或题目没答案）→ null 交给人判——
+     * `1/2` 和 `0.5` 这类等价写法程序认不出，所以不直接判错。
+     */
+    fun judgeFill(blanks: List<String>): Boolean? {
+        if (!isFill || !hasAnswer || blankCount <= 0) return null
+        return if (blankMatches(blanks).all { it }) true else null
+    }
+
+    /**
+     * 以前的填空作答（规则同 [earlierAnswer]：App 里练的最近一次优先，没练过再拿书上的作答）。
+     * 对错**用库里记的**（自己判过的没法现算）。没做过 → null。
+     */
+    fun earlierFill(s: ExAttemptStats?): Quadruple? {
+        if (!isFill || s == null) return null
+        if (s.lastAttemptId != null && s.lastAnswer != null)
+            return Quadruple(decodeBlanks(s.lastAnswer), s.lastPracticedCorrect, s.lastAttemptId, ExEarlier.Practiced(s.lastAt))
+        if (s.markedAttemptId != null && s.markedAnswer != null)
+            return Quadruple(decodeBlanks(s.markedAnswer), s.markedCorrect, s.markedAttemptId, ExEarlier.Book)
+        return null
+    }
+
+    /** [earlierFill] 的一份：每空的作答、库里记的对错、那条作答的 id、从哪来。 */
+    class Quadruple(val blanks: List<String>, val correct: Boolean?, val attemptId: String, val earlier: ExEarlier)
 
     /**
      * 以前做过的那次（用户 2026-10-11 定：做过的题直接显示上次结果）：App 里练的最近一次优先，没练过再拿书上的作答。
@@ -131,6 +191,34 @@ data class Exercise(
 
         /** 作答记录里存的那串：选中的键按字母序拼起来。 */
         fun answerString(keys: Set<String>): String = keys.sorted().joinToString("")
+
+        // ---------- 填空（v21，逐条照 Mac `Exercise.normalizeBlank` / `ExerciseResponse`）----------
+
+        /**
+         * 填空比对前的规整：NFKC（全角转半角）、去掉 `$` 和全部空白、几个只管排版的 LaTeX 写法、句末标点。
+         * 只做「肯定等价」的变换——宁可没认出来交给人判，也不能把错的判成对。
+         */
+        fun normalizeBlank(s: String): String {
+            var t = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFKC)
+            for ((a, b) in listOf(
+                "\\dfrac" to "\\frac", "\\tfrac" to "\\frac", "\\left" to "", "\\right" to "",
+                "\\," to "", "\\;" to "", "\\!" to "", "\\ " to "", "$" to "",
+            )) {
+                t = t.replace(a, b)
+            }
+            t = t.filter { !it.isWhitespace() }
+            while (t.isNotEmpty() && t.last() in "。.，,；;") t = t.dropLast(1)
+            return t
+        }
+
+        /** 填空写进 `answer` 列的串：JSON 字符串数组（写法同 Mac，同 [ExChapter.text]）。 */
+        fun fillAnswerString(blanks: List<String>): String = ExChapter.text(blanks)
+
+        /** 从 `answer` 列还原每空的作答；认不出的串（不是 JSON 数组）当成只填了一空（同 Mac `ExerciseResponse.decode`）。 */
+        fun decodeBlanks(raw: String): List<String> {
+            val v = MiniJson.parse(raw.toByteArray(Charsets.UTF_8)) as? List<*> ?: return if (raw.isEmpty()) emptyList() else listOf(raw)
+            return v.mapNotNull { it as? String }
+        }
 
         /**
          * 打开一组题时停在第几道（用户 2026-10-31 定「接着上次做的往下」，`../docs/EXERCISE-PLAN.md §13`），逐条照抄 Mac `Exercise.resumeIndex`：

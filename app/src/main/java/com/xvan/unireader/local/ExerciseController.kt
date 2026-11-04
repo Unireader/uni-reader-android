@@ -195,6 +195,31 @@ class ExerciseController(private val a: Activity) : ExHost {
         })
     }
 
+    override fun submitBlanks(id: String, blanks: List<String>, elapsedMs: Long) {
+        val d = deck ?: return
+        val ans = d.submitBlanks(id, blanks) ?: return
+        render()
+        val q = queue ?: return
+        q.submit("记填空作答 ${id.take(8)}", { s ->
+            runCatching { s.recordExerciseAttempt(id, Exercise.fillAnswerString(blanks), ans.correct, elapsedMs) }
+                .getOrElse { Log.e(TAG, "记填空作答失败", it); null }
+        }, { attemptId ->
+            // 没判上（等自己判）不动题目行；判对 / 判错只有「已做 / 共」和错题本要刷
+            if (ans.correct == false) { reload(); refreshGroups() } else refreshDone()
+            // 作答 id 补进内存（填空「答对了 / 答错了」写回用），然后按新统计重画
+            attemptId?.let { d.setAttemptId(id, it) }
+            if (deck === d) render()
+        })
+    }
+
+    override fun judgeExercise(id: String, attemptId: String, correct: Boolean) {
+        val d = deck ?: return
+        val aid = attemptId.ifEmpty { d.attemptIdOf(id) ?: return }
+        d.judgeAttempt(id, correct)
+        render()
+        write("判定作答 ${aid.take(8)}") { it.judgeExerciseAttempt(aid, correct, "self") }
+    }
+
     override fun setStarred(id: String, on: Boolean) = write("收藏 ${id.take(8)}") { it.setExerciseStarred(id, on) }
 
     override fun removeFromMistakes(id: String) = write("移出错题本 ${id.take(8)}") { it.setExerciseWrong(id, false) }

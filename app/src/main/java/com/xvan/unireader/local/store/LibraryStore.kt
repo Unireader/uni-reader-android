@@ -923,9 +923,13 @@ class LibraryStore(private val db: Db) : Closeable {
         ) { it.getString(0) to com.xvan.unireader.local.exercise.ExAttemptStats(it.getInt(1), it.getInt(2), it.getInt(3)) }
             .forEach { (id, s) -> out[id] = s }
         val mark = com.xvan.unireader.local.exercise.Exercise.MARK_SOURCE
-        db.query("SELECT exercise_id, answer, correct FROM exercise_attempt WHERE source=?", arrayOf(mark)) {
-            Triple(it.getString(0), it.getString(1) ?: "", if (it.isNull(2)) null else it.getInt(2) != 0)
-        }.forEach { (id, ans, c) -> out[id]?.let { out[id] = it.copy(markedAnswer = ans, markedCorrect = c) } }
+        db.query("SELECT exercise_id, id, answer, correct FROM exercise_attempt WHERE source=?", arrayOf(mark)) {
+            MarkRow(it.getString(0), it.getString(1), it.getString(2) ?: "", if (it.isNull(3)) null else it.getInt(3) != 0)
+        }.forEach { r ->
+            out[r.exerciseId]?.let {
+                out[r.exerciseId] = it.copy(markedAnswer = r.answer, markedCorrect = r.correct, markedAttemptId = r.attemptId)
+            }
+        }
         db.query(
             """
             SELECT a.exercise_id, a.correct FROM exercise_attempt a
@@ -936,26 +940,56 @@ class LibraryStore(private val db: Db) : Closeable {
             .forEach { (id, c) -> out[id]?.let { out[id] = it.copy(lastCorrect = c) } }
         db.query(
             """
-            SELECT a.exercise_id, a.answer, a.created_at FROM exercise_attempt a
+            SELECT a.exercise_id, a.id, a.answer, a.correct, a.created_at FROM exercise_attempt a
             JOIN (SELECT exercise_id, MAX(created_at) AS t FROM exercise_attempt WHERE source<>? GROUP BY exercise_id) m
               ON a.exercise_id = m.exercise_id AND a.created_at = m.t AND a.source<>?
             """.trimIndent(),
             arrayOf(mark, mark),
-        ) { Triple(it.getString(0), it.getString(1) ?: "", it.getString(2) ?: "") }
-            .forEach { (id, ans, at) -> out[id]?.let { out[id] = it.copy(lastAnswer = ans, lastAt = at) } }
+        ) { q ->
+            Quad(q.getString(0), q.getString(1), q.getString(2) ?: "", if (q.isNull(3)) null else q.getInt(3) != 0, q.getString(4) ?: "")
+        }.forEach { q ->
+            out[q.id]?.let {
+                out[q.id] = it.copy(
+                    lastAttemptId = q.attemptId, lastAnswer = q.answer,
+                    lastPracticedCorrect = q.correct, lastAt = q.at,
+                )
+            }
+        }
         return out
+    }
+
+    private class Quad(val id: String, val attemptId: String, val answer: String, val correct: Boolean?, val at: String)
+
+    private class MarkRow(val exerciseId: String, val attemptId: String, val answer: String, val correct: Boolean?)
+
+    /**
+     * 判一次作答（自己判，`../docs/EXERCISE-PLAN.md §11.3`）：同一次作答只留一个结论，改 `correct` + `judged_by='self'`；
+     * 判错的同一个事务把题放进错题本（判对不移出）。只用于填空 / 主观题——选择题程序自己判。
+     * `by` 预留给 Agent 批改（本端没有 Agent，现在只有 'self'）。
+     */
+    fun judgeExerciseAttempt(id: String, correct: Boolean, by: String = "self", at: String = nowIso()): String? {
+        var exerciseId: String? = null
+        db.transaction {
+            val row = db.query("SELECT exercise_id FROM exercise_attempt WHERE id=?", arrayOf(id)) { it.getString(0) }
+            val eid = row.firstOrNull() ?: return@transaction
+            exerciseId = eid
+            db.exec("UPDATE exercise_attempt SET correct=?, judged_by=? WHERE id=?", arrayOf<Any?>(if (correct) 1L else 0L, by, id))
+            if (!correct) db.exec("UPDATE exercise SET wrong=1, updated_at=? WHERE id=? AND wrong=0", arrayOf(at, eid))
+        }
+        return exerciseId
     }
 
     /**
      * 记一次作答；答错（`correct == false`）时同一个事务里把题放进错题本（拍板 ③：答错进、只能手动出，答对**不**动 `wrong`）。
-     * id 用大写 UUID（同 Mac `UUID().uuidString`）。
+     * id 用大写 UUID（同 Mac `UUID().uuidString`）。返回这条作答的 id（填空自己判定写回用）。
      */
-    fun recordExerciseAttempt(exerciseId: String, answer: String, correct: Boolean?, elapsedMs: Long, at: String = nowIso()) {
+    fun recordExerciseAttempt(exerciseId: String, answer: String, correct: Boolean?, elapsedMs: Long, at: String = nowIso()): String {
+        val id = UUID.randomUUID().toString().uppercase()
         db.transaction {
             db.exec(
                 "INSERT INTO exercise_attempt(id,exercise_id,answer,correct,elapsed_ms,created_at,source) VALUES(?,?,?,?,?,?,?)",
                 arrayOf<Any?>(
-                    UUID.randomUUID().toString().uppercase(), exerciseId, answer,
+                    id, exerciseId, answer,
                     correct?.let { if (it) 1L else 0L }, maxOf(0L, elapsedMs), at, "",
                 ),
             )
@@ -963,6 +997,7 @@ class LibraryStore(private val db: Db) : Closeable {
                 db.exec("UPDATE exercise SET wrong=1, updated_at=? WHERE id=? AND wrong=0", arrayOf(at, exerciseId))
             }
         }
+        return id
     }
 
     fun setExerciseStarred(id: String, on: Boolean, at: String = nowIso()) {

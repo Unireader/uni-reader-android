@@ -16,10 +16,21 @@ import org.junit.Test
  */
 class ExerciseTest {
 
-    private fun payload(answer: List<String> = listOf("B"), src: String? = "book") = ExPayload(
+    private fun payload(
+        answer: List<String> = listOf("B"), src: String? = "book",
+        blanks: Int? = null, accept: List<List<String>>? = null,
+    ) = ExPayload(
         stem = "题干", options = listOf(ExOption("A", "a"), ExOption("B", "b"), ExOption("C", "c")),
         answer = answer, answerSource = if (answer.isEmpty()) null else src, explanation = null, region = null, figure = false,
+        blanks = blanks, accept = accept,
     )
+
+    private fun fillPayload(
+        answer: List<String>, blanks: Int? = null, accept: List<List<String>>? = null, src: String? = "book",
+    ): ExPayload {
+        val base = payload(answer, src, blanks, accept)
+        return base.copy(options = emptyList())
+    }
 
     private fun ex(
         id: String, doc: String? = "D1", page: Int? = 0, chapter: List<String> = emptyList(),
@@ -49,19 +60,111 @@ class ExerciseTest {
         assertNull(ExPayload.parse("{bad".toByteArray()))
     }
 
-    /** v21 填空 / 主观题（`../docs/EXERCISE-PLAN.md §11.6`）：本端只显示题干，不判、不显示以前的作答、不收交卷。 */
+    /** v21 填空 / 主观题：主观题本端只显示题干；填空模式1 可作答（见 fill* 各条）。选择题的交卷对填空不收。 */
     @Test
     fun freeKindsAreMacOnly() {
         val fill = ex("f", kind = Exercise.KIND_FILL, answer = listOf("2", "4"))
         val sub = ex("s", kind = Exercise.KIND_SUBJECTIVE, answer = listOf("反证法"))
         assertFalse(fill.isChoice || sub.isChoice)
+        assertTrue(fill.isFill && !sub.isFill)
         assertTrue(ex("c").isChoice && ex("m", kind = 1).isChoice)
         assertNull(fill.judge(setOf("2")))
         assertNull(sub.earlierAnswer(ExAttemptStats(attempts = 1, lastAnswer = "ABC")))   // 主观题写的「ABC」不是选项
         val deck = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.All)
         deck.applyFresh(LocalExerciseDeck.Fresh(listOf(ex("c"), fill), emptyMap(), emptyMap()))
-        assertNull(deck.submit("f", setOf("A")))
+        assertNull(deck.submit("f", setOf("A")))                       // 选择题的交卷不收填空
         assertEquals(true, deck.submit("c", setOf("B"))?.correct)
+        assertEquals(true, deck.submitBlanks("f", listOf("2", "4"))?.correct)   // 填空全对得上 → 直接判对
+    }
+
+    // ---------- 填空（v21，逐条照 Mac `Exercise.normalizeBlank` / `autoJudge`，`../docs/EXERCISE-PLAN.md §11.3`）----------
+
+    @Test
+    fun payloadV21FillKeys() {
+        val p = ExPayload.parse("""{"stem":"s","answer":["2"],"blanks":2,"accept":[["0.5"],[]]}""".toByteArray())!!
+        assertEquals(2, p.blanks)
+        assertEquals(listOf(listOf("0.5"), emptyList()), p.accept)
+        // 老题没这两个键 → null
+        assertNull(ExPayload.parse("""{"stem":"s"}""".toByteArray())!!.blanks)
+        assertNull(ExPayload.parse("""{"stem":"s"}""".toByteArray())!!.accept)
+    }
+
+    @Test
+    fun normalizeBlankOnlyPositive() {
+        assertEquals("1/2", Exercise.normalizeBlank("１/２"))                  // NFKC 全角转半角
+        assertEquals("x^{2}", Exercise.normalizeBlank(" ${'$'}x^{2}${'$'} "))  // 去 $ 与全部空白
+        assertEquals("\\frac{1}{2}", Exercise.normalizeBlank("\\dfrac{1}{2}"))
+        assertEquals("\\frac12", Exercise.normalizeBlank("\\tfrac12"))
+        assertEquals("a(b)", Exercise.normalizeBlank("a\\left(b\\right)"))
+        assertEquals("x", Exercise.normalizeBlank("x，。"))                     // 句末标点
+        assertFalse(Exercise.normalizeBlank("b") == Exercise.normalizeBlank("B"))   // 不并大小写（b ≠ B）
+    }
+
+    @Test
+    fun fillBlankCountAndMatches() {
+        val e = ex("f", kind = 3, answer = listOf("2", "1/2"))
+            .copy(payload = fillPayload(listOf("2", "1/2"), blanks = 2, accept = listOf(emptyList(), listOf("0.5"))))
+        assertEquals(2, e.blankCount)
+        assertEquals(listOf("2"), e.acceptedForms(0))
+        assertEquals(listOf("1/2", "0.5"), e.acceptedForms(1))
+        assertEquals(emptyList<String>(), e.acceptedForms(9))
+        assertEquals(listOf(true, true), e.blankMatches(listOf("2", "0.5")))    // accept 里的写法也算对
+        assertEquals(listOf(true, false), e.blankMatches(listOf("2", "0.6")))
+        assertEquals(listOf(false, true), e.blankMatches(listOf("", "0.5")))     // 空着的 = 对不上
+        // blanks 键比答案多：按它摆输入框
+        val e2 = ex("f2", kind = 3, answer = emptyList()).copy(payload = fillPayload(emptyList(), blanks = 3))
+        assertEquals(3, e2.blankCount)
+        assertEquals(listOf(false, false, false), e2.blankMatches(listOf("a")))
+    }
+
+    @Test
+    fun fillJudgeNeverAutoWrong() {
+        val e = ex("f", kind = 3, answer = listOf("2")).copy(payload = fillPayload(listOf("2")))
+        assertEquals(true, e.judgeFill(listOf("2")))
+        assertNull(e.judgeFill(listOf("3")))                 // 对不上 → 交给人判，不直接判错
+        assertNull(e.judgeFill(listOf("")))
+        assertEquals(true, e.judgeFill(listOf("2", "3")))    // 只按前 blankCount 空判（多的忽略）
+        assertNull(ex("n", kind = 3, answer = emptyList()).judgeFill(listOf("2")))   // 没答案
+        assertNull(ex("c").judgeFill(listOf("2")))           // 只管填空
+    }
+
+    @Test
+    fun fillAnswerRoundTrip() {
+        assertEquals("[\"2\",\"1/2\"]", Exercise.fillAnswerString(listOf("2", "1/2")))
+        assertEquals(listOf("2", "1/2"), Exercise.decodeBlanks("[\"2\",\"1/2\"]"))
+        assertEquals(listOf("x"), Exercise.decodeBlanks("x"))               // 认不出的当只填一空
+        assertEquals(emptyList<String>(), Exercise.decodeBlanks(""))
+    }
+
+    @Test
+    fun fillEarlierAndDeck() {
+        val f = ex("f", kind = 3, answer = listOf("2", "4")).copy(payload = fillPayload(listOf("2", "4")))
+        // App 里练的最近一次优先，对错用库里记的
+        val st = ExAttemptStats(
+            attempts = 1, lastAnswer = "[\"2\",\"4\"]", lastAt = "2026-10-13T09:00:00.000Z",
+            lastAttemptId = "A1", lastPracticedCorrect = true,
+        )
+        val q = f.earlierFill(st)!!
+        assertEquals(listOf("2", "4"), q.blanks)
+        assertEquals(true, q.correct)
+        assertEquals("A1", q.attemptId)
+        assertTrue(q.earlier is ExEarlier.Practiced)
+        // 没练过看书上的作答
+        val st2 = ExAttemptStats(attempts = 1, markedAnswer = "[\"2\",\"3\"]", markedCorrect = false, markedAttemptId = "M1")
+        val q2 = f.earlierFill(st2)!!
+        assertEquals(listOf("2", "3"), q2.blanks)
+        assertEquals(false, q2.correct)
+        assertTrue(q2.earlier is ExEarlier.Book)
+        assertNull(f.earlierFill(null))
+        // deck：交卷全对 → 判对；有对不上的 → 还没判（correct null）
+        val deck = LocalExerciseDeck.shared("/ws-fill-${System.nanoTime()}", ExScope.All)
+        deck.applyFresh(LocalExerciseDeck.Fresh(listOf(f), emptyMap(), emptyMap()))
+        val a = deck.submitBlanks("f", listOf("2", "4"))!!
+        assertEquals(true, a.correct)
+        assertEquals(listOf("2", "4"), a.blanks)
+        val deck2 = LocalExerciseDeck.shared("/ws-fill2-${System.nanoTime()}", ExScope.All)
+        deck2.applyFresh(LocalExerciseDeck.Fresh(listOf(f), emptyMap(), emptyMap()))
+        assertNull(deck2.submitBlanks("f", listOf("2", "5"))!!.correct)
     }
 
     @Test

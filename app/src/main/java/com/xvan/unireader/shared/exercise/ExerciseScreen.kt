@@ -171,7 +171,23 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
     private val origNote = Ui.body(a, "").apply { visibility = View.GONE }
     private val optionsBox = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
-    private val submitBtn = Ui.button(a, s(R.string.ex_submit), filled = true) { submit() }
+    /** 填空作答区：每空一行「第 N 空 + 输入框」（和 [optionsBox] 互斥）。 */
+    private val fillBox = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+    /** 填空：交卷后亮出的参考答案（每空一行，另外认可的写法跟在后面；Markdown + 公式）。 */
+    private val fillRef = blocks(14f)
+    /** 填空：程序判不了（有对不上的空 / 没答案）时的「答对了 / 答错了」。 */
+    private val selfRightBtn = Ui.button(a, s(R.string.ex_self_right)) { cur()?.let { host.judgeExercise(it.id, it.attemptId, true) } }
+    private val selfWrongBtn = Ui.button(a, s(R.string.ex_self_wrong)) { cur()?.let { host.judgeExercise(it.id, it.attemptId, false) } }
+    private val selfJudgeRow = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        addView(selfRightBtn, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+        addView(selfWrongBtn, LinearLayout.LayoutParams(-2, -2))
+    }
+    /** 填空没交的输入按题存（翻到别的题再回来还在，同 Mac `ExerciseDeck.drafts`）。 */
+    private val fillDrafts = HashMap<String, List<String>>()
+    /** 当前填空输入框（按空序；交卷读值 / 「提交」亮不亮看它）。 */
+    private var fillEdits = emptyList<android.widget.EditText>()
+    private val submitBtn = Ui.button(a, s(R.string.ex_submit), filled = true) { if (cur()?.isFill == true) submitFill() else submit() }
     private val resultIcon = ImageView(a)
     private val resultText = TextView(a).apply {
         textSize = 15f
@@ -240,9 +256,12 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(origImage, lp(top = 12))
         addView(origNote, lp(top = 8))
         addView(optionsBox, lp(top = 14))
+        addView(fillBox, lp(top = 14))
         addView(macOnlyNote, lp(top = 4))
         addView(submitBtn, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
         addView(resultRow, lp(top = 16))
+        addView(fillRef, lp(top = 12))
+        addView(selfJudgeRow, lp(top = 8))
         addView(historyNote, lp(top = 4).apply { marginStart = dp(30) })
         addView(agentNote, lp(top = 10))
         addView(markNote, lp(top = 8))
@@ -544,10 +563,13 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         }
         val b = builtFor
         if (b == null || b.id != c.id || b.stem != c.stem || b.options != c.options || b.multiple != c.multiple ||
-            b.explanation != c.explanation) {
+            b.explanation != c.explanation || b.fillCount != c.fillCount || b.fillAnswers != c.fillAnswers ||
+            b.mineBlanks != c.mineBlanks || b.blankMatch != c.blankMatch || b.correct != c.correct ||
+            b.judged != c.judged || b.shown != c.shown) {
             bindBlocks(stemView, c.stem, 17f)
             bindBlocks(explanationView, c.explanation, 15f)
             buildOptions(c)
+            buildFill(c)
         }
         builtFor = c
 
@@ -573,6 +595,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         loadOriginal(c, showOrig)
 
         val judged = c.judged
+        val isFill = c.isFill
         val chosen = if (judged) c.chosen.map { it.toString() }.toSet() else picked
         val truth = c.answer.map { it.toString() }.toSet()
         for (i in 0 until optionsBox.childCount) {
@@ -589,11 +612,22 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
                 } else ExJudge.NONE,
             )
         }
-        submitBtn.visibility = if (!judged && c.multiple) View.VISIBLE else View.GONE
-        submitBtn.isEnabled = picked.isNotEmpty()
-        submitBtn.alpha = if (picked.isNotEmpty()) 1f else 0.4f
+        submitBtn.visibility = when {
+            judged -> View.GONE
+            isFill || c.multiple -> View.VISIBLE
+            else -> View.GONE
+        }
+        val canSubmit = if (isFill) fillEdits.any { it.text.isNotBlank() } else picked.isNotEmpty()
+        submitBtn.isEnabled = canSubmit
+        submitBtn.alpha = if (canSubmit) 1f else 0.4f
         macOnlyNote.visibility = if (c.macOnly) View.VISIBLE else View.GONE
-        if (c.macOnly) macOnlyNote.text = s(R.string.ex_mac_only)
+        if (c.macOnly) macOnlyNote.text = if (c.kind == 4) s(R.string.ex_mac_only_subjective) else s(R.string.ex_mac_only)
+
+        // 作答区：选择题一排选项，填空一排输入框，主观题（macOnly）都没有
+        optionsBox.visibility = if (isFill || c.macOnly) View.GONE else View.VISIBLE
+        fillBox.visibility = if (isFill) View.VISIBLE else View.GONE
+        fillRef.visibility = if (isFill && c.judged && c.fillAnswers.any { it.isNotEmpty() }) View.VISIBLE else View.GONE
+        selfJudgeRow.visibility = if (isFill && c.judged && c.correct == ExJudge.NONE) View.VISIBLE else View.GONE
 
         resultRow.visibility = if (judged) View.VISIBLE else View.GONE
         if (judged) {
@@ -642,6 +676,11 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     private fun resultLine(c: ExCard): String {
+        if (c.isFill) return when (c.correct) {
+            ExJudge.RIGHT -> s(R.string.ex_fill_right)
+            ExJudge.WRONG -> s(R.string.ex_fill_wrong)
+            else -> if (c.fillAnswers.any { it.isNotEmpty() }) s(R.string.ex_fill_pending) else s(R.string.ex_fill_no_answer)
+        }
         val mine = c.chosen
         val truth = c.answer
         return when (c.shown) {
@@ -674,6 +713,121 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             optionsBox.addView(row, LinearLayout.LayoutParams(-1, -2))
             styleOption(row)
         }
+    }
+
+    // ---------- 填空作答区（`../docs/EXERCISE-PLAN.md §11.2`，同 Mac 作答区）----------
+
+    /**
+     * 搭 [fillBox] / [fillRef]：没交 = 每空一个输入框（草稿回填、回车跳下一空、最后一空回车交卷）；
+     * 交卷后 = 每空的作答锁住显示、对得上的标绿勾；参考答案每空一行（另外认可的写法跟在后面）。
+     */
+    private fun buildFill(c: ExCard) {
+        fillBox.removeAllViews()
+        fillEdits = emptyList()
+        fillRef.removeAllViews()
+        if (!c.isFill) return
+        val edits = ArrayList<android.widget.EditText>()
+        for (i in 0 until c.fillCount) {
+            fillBox.addView(
+                fillRow(c, i, edits),
+                LinearLayout.LayoutParams(-1, -2).apply { if (i > 0) topMargin = dp(8) },
+            )
+        }
+        fillEdits = edits
+        if (c.judged) {
+            val md = StringBuilder("**" + s(R.string.ex_fill_reference) + "**\n")
+            for (i in 0 until c.fillCount) {
+                val forms = c.fillAnswers.getOrNull(i).orEmpty()
+                val alt = c.fillAccept.getOrNull(i).orEmpty()
+                md.append("\n").append(s(R.string.ex_blank_label, i + 1)).append("：")
+                if (forms.isEmpty()) md.append("—")
+                else {
+                    md.append("`").append(forms).append("`")
+                    if (alt.isNotEmpty()) md.append("（").append(alt.joinToString(" / ")).append("）")
+                }
+            }
+            bindBlocks(fillRef, md.toString(), 14f)
+        }
+    }
+
+    /** 一行：「第 N 空」+ 输入框（没交）或锁住的作答 + 对错标记（交卷后）。 */
+    private fun fillRow(c: ExCard, i: Int, edits: ArrayList<android.widget.EditText>): View {
+        val label = TextView(a).apply {
+            text = s(R.string.ex_blank_label, i + 1)
+            textSize = 14f
+            setTextColor(Ui.onSurface(a))
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        if (c.judged) {
+            val mine = c.mineBlanks.getOrElse(i) { "" }
+            val body = TextView(a).apply {
+                text = mine.ifEmpty { "—" }
+                textSize = 16f
+                setTextColor(Ui.onSurface(a))
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val mark = ImageView(a)
+            when {
+                !c.blankMatch.getOrElse(i) { false } -> setIcon(mark, R.drawable.ic_close, Ui.col(a, R.color.danger))
+                mine.isNotEmpty() -> setIcon(mark, R.drawable.ic_check, Ui.col(a, R.color.success))
+                else -> setIcon(mark, R.drawable.ic_close, Ui.col(a, R.color.danger))
+            }
+            return LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(label, LinearLayout.LayoutParams(dp(72), dp(40)))
+                addView(body, LinearLayout.LayoutParams(0, dp(40), 1f))
+                addView(mark, LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginStart = dp(8) })
+            }
+        }
+        val edits = ArrayList<android.widget.EditText>()
+        var ready = false   // 构造期 setText 也会触发回调：那时这条还没进 edits，忽略
+        val edit = android.widget.EditText(a).apply {
+            textSize = 16f
+            setTextColor(Ui.onSurface(a))
+            hint = ""
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            setPadding(dp(12), 0, dp(12), 0)
+            background = Ui.round(Ui.container(a), Ui.RADIUS, a, Ui.outline(a))
+            setText(fillDrafts[c.id]?.getOrNull(i) ?: "")
+            // 回车跳下一空；最后一空回车 = 交卷
+            imeOptions = if (i + 1 < c.fillCount) android.view.inputmethod.EditorInfo.IME_ACTION_NEXT
+            else android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) { submitFill(); true }
+                else false
+            }
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    if (!ready) return
+                    fillDrafts[c.id] = edits.map { it.text.toString() }
+                    val any = edits.any { it.text.isNotBlank() }
+                    if (submitBtn.isEnabled != any) { submitBtn.isEnabled = any; submitBtn.alpha = if (any) 1f else 0.4f }
+                }
+            })
+        }
+        edits += edit
+        ready = true
+        return LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(label, LinearLayout.LayoutParams(dp(72), -2))
+            addView(edit, LinearLayout.LayoutParams(0, dp(44), 1f))
+        }
+    }
+
+    private fun submitFill() {
+        val c = cur() ?: return
+        if (c.judged || submittedFor == c.id || fillEdits.isEmpty()) return
+        val blanks = fillEdits.map { it.text.toString().trim() }
+        if (blanks.all { it.isEmpty() }) return
+        submittedFor = c.id
+        awaitingResult = c.id
+        fillDrafts.remove(c.id)
+        host.submitBlanks(c.id, blanks, SystemClock.uptimeMillis() - shownAt)
+        refreshPractice()
     }
 
     private fun toggle(key: String) {
@@ -862,9 +1016,10 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val verdict = when (c.correct) {
             ExJudge.RIGHT -> s(R.string.ex_right)
             ExJudge.WRONG -> s(R.string.ex_wrong)
-            else -> s(R.string.ex_not_judged)
+            else -> if (c.isFill) s(R.string.ex_unjudged) else s(R.string.ex_not_judged)
         }
-        return s(R.string.ex_mine, c.chosen, verdict)
+        val mine = if (c.isFill) c.mineBlanks.joinToString(" / ") else c.chosen
+        return s(R.string.ex_mine, mine, verdict)
     }
 
     private inner class ListAdapter : BaseAdapter() {

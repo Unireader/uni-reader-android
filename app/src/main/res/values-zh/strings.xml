@@ -202,7 +202,16 @@
     <string name="ex_multiple">多选</string>
     <string name="ex_single">单选</string>
     <string name="ex_fill">填空</string>
-    <string name="ex_subjective">主观题</string>
+    <string name="ex_blank_label">第 %1$d 空</string>
+    <string name="ex_fill_reference">参考答案</string>
+    <string name="ex_fill_right">每个空都和参考答案一致，正确</string>
+    <string name="ex_fill_wrong">你判为错误，已进错题本</string>
+    <string name="ex_fill_pending">有对不上参考答案的空，对照答案后点「答对了」或「答错了」</string>
+    <string name="ex_fill_no_answer">这道题还没有参考答案，请对照课本自己判定对错</string>
+    <string name="ex_self_right">答对了</string>
+    <string name="ex_self_wrong">答错了</string>
+    <string name="ex_unjudged">未判</string>
+    <string name="ex_mac_only_subjective">主观题暂时请在 Mac 上作答。</string>    <string name="ex_subjective">主观题</string>
     <string name="ex_mac_only">填空题和主观题暂时请在 Mac 上作答。</string>
     <string name="ex_count">共 %1$d 题</string>
     <string name="ex_round">本轮已做 %1$d 题，对 %2$d 题</string>

@@ -19,8 +19,16 @@ import com.xvan.unireader.shared.exercise.ExShown
  */
 class LocalExerciseDeck private constructor(val scope: ExScope) {
 
-    /** 一道题显示的作答：选了什么、对不对（null = 没法判）、以前的作答从哪来（null = 这一轮答的）。 */
-    data class Answer(val chosen: Set<String>, val correct: Boolean?, val earlier: ExEarlier?)
+    /** 一道题显示的作答：选了什么 / 每空填了什么（选择题 null）、对不对（null = 没法判 / 等人判）、以前的作答从哪来（null = 这一轮答的）。 */
+    data class Answer(
+        val chosen: Set<String>,
+        val correct: Boolean?,
+        val earlier: ExEarlier?,
+        /** 填空：每空一格（没填的空串）。选择题 = null。 */
+        val blanks: List<String>? = null,
+        /** 显示着的那次作答的库 id（填空自己判定写回用；这一轮刚交的由调用方在记库后补上）。 */
+        val attemptId: String = "",
+    )
 
     /** [read] 在库队列线程上读出来的那一份。 */
     class Fresh(
@@ -122,10 +130,14 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         return true
     }
 
-    /** 这道题要显示的作答（null = 还没答，等着作答）：这一轮答的，否则以前那次（[Exercise.earlierAnswer]）。 */
+    /** 这道题要显示的作答（null = 还没答，等着作答）：这一轮答的，否则以前那次（[Exercise.earlierAnswer] / [Exercise.earlierFill]）。 */
     fun answer(e: Exercise): Answer? {
         answers[e.id]?.let { return it }
         if (e.id in redoing) return null
+        if (e.isFill) {
+            val q = e.earlierFill(stats[e.id]) ?: return null
+            return Answer(emptySet(), q.correct, q.earlier, q.blanks, q.attemptId)
+        }
         val p = e.earlierAnswer(stats[e.id]) ?: return null
         return Answer(p.first, p.second, p.third)
     }
@@ -151,6 +163,43 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         ))
         return a
     }
+
+    /**
+     * 填空交卷：每空都对得上 → 程序直接判对；有对不上的（或题目没答案）→ 还没判、交给人判（不直接判错，
+     * `0.5` / `1/2` 这类等价写法程序认不出，`../docs/EXERCISE-PLAN.md §11.3`）。库里那一行由调用方写。
+     */
+    fun submitBlanks(id: String, blanks: List<String>): Answer? {
+        val e = items.firstOrNull { it.id == id } ?: return null
+        if (!e.isFill) return null
+        val a = Answer(emptySet(), e.judgeFill(blanks), null, blanks)
+        answers[id] = a
+        redoing.remove(id)
+        val s = stats[id] ?: ExAttemptStats()
+        stats = stats + (id to s.copy(
+            attempts = s.attempts + 1,
+            correct = s.correct + if (a.correct == true) 1 else 0,
+            lastCorrect = a.correct,
+            lastPracticedCorrect = a.correct,
+            lastAnswer = Exercise.fillAnswerString(blanks),
+            lastAt = Iso.now(),
+        ))
+        return a
+    }
+
+    /** 记库成功后将作答 id 补给这一轮刚交的填空（自己判定写回用）。 */
+    fun setAttemptId(id: String, attemptId: String) {
+        answers[id]?.let { if (it.attemptId.isEmpty()) answers[id] = it.copy(attemptId = attemptId) }
+    }
+
+    /** 自己判定那条作答（写库后调用）：内存里的结论先跟上，统计随下一次读库刷新。 */
+    fun judgeAttempt(id: String, correct: Boolean) {
+        answers[id]?.let { answers[id] = it.copy(correct = correct) }
+    }
+
+    /** 显示着的那次作答的库 id（内存里还没有 → 库里统计的最近一次；填空自己判定写回用）。 */
+    fun attemptIdOf(id: String): String? =
+        answers[id]?.attemptId?.takeIf { it.isNotEmpty() }
+            ?: stats[id]?.let { it.lastAttemptId ?: it.markedAttemptId }
 
     /** 批量重做 / 再做一次：这几道这一轮当没答过（以前的作答也先不显示），库里的记录不动。 */
     fun redo(ids: Collection<String>) {
@@ -192,6 +241,14 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             marked = if (e.isChoice) st?.markedAnswer ?: "" else "",
             markedCorrect = if (!e.isChoice || st?.markedAnswer == null) ExJudge.NONE else ExJudge.of(st.markedCorrect),
             kind = e.kind,
+            // 填空（主观题仍 macOnly，不显示作答）：参考答案 / 显示着的作答 / 每空对不对
+            fillCount = e.blankCount,
+            fillAnswers = if (e.isFill) e.payload.answer else emptyList(),
+            fillAccept = if (e.isFill) e.payload.accept ?: emptyList() else emptyList(),
+            mineBlanks = if (e.isFill) a?.blanks ?: emptyList() else emptyList(),
+            blankMatch = if (e.isFill && a != null) e.blankMatches(a.blanks.orEmpty()) else emptyList(),
+            attemptId = a?.attemptId ?: "",
+            macOnly = e.kind == Exercise.KIND_SUBJECTIVE,
         )
     }
 }

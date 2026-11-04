@@ -206,6 +206,16 @@
     <string name="ex_multiple">Multiple choice</string>
     <string name="ex_single">Single choice</string>
     <string name="ex_fill">Fill in the blank</string>
+    <string name="ex_blank_label">Blank %1$d</string>
+    <string name="ex_fill_reference">Reference answers</string>
+    <string name="ex_fill_right">Every blank matches the reference — correct</string>
+    <string name="ex_fill_wrong">You marked it wrong; added to mistakes</string>
+    <string name="ex_fill_pending">Some blanks don’t match the reference — check the answers below and tap “Correct” or “Wrong”</string>
+    <string name="ex_fill_no_answer">No reference answer yet — check your book and mark it correct or wrong</string>
+    <string name="ex_self_right">Correct</string>
+    <string name="ex_self_wrong">Wrong</string>
+    <string name="ex_unjudged">unjudged</string>
+    <string name="ex_mac_only_subjective">Subjective questions can only be answered on the Mac for now.</string>
     <string name="ex_subjective">Subjective</string>
     <string name="ex_mac_only">Answer fill-in-the-blank and subjective questions on the Mac for now.</string>
     <string name="ex_count">%1$d questions</string>

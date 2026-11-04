@@ -60,12 +60,29 @@ data class ExCard(
     val markedCorrect: Int,
     /** 题型（`exercise.kind`）：0 单选 · 1 多选 · 3 填空 · 4 主观题（`../docs/EXERCISE-PLAN.md §11`）。 */
     val kind: Int = if (multiple) 1 else 0,
+    /** 填空：空数（别的题型 0）。 */
+    val fillCount: Int = 0,
+    /** 填空：每空参考答案（可能为空 = 还没答案）。 */
+    val fillAnswers: List<String> = emptyList(),
+    /** 填空：每空另外认可的写法（与 fillAnswers 等长，可能为空）。 */
+    val fillAccept: List<List<String>> = emptyList(),
+    /** 填空：显示着的作答（每空一格，没答 = 空表）。 */
+    val mineBlanks: List<String> = emptyList(),
+    /** 填空：显示着的作答每空对不对得上参考答案（与 mineBlanks 对应；没显示作答 = 空表）。 */
+    val blankMatch: List<Boolean> = emptyList(),
+    /** 显示着的那次作答的库 id（填空自己判定写回用；空 = 没有 / 不知道）。 */
+    val attemptId: String = "",
+    /**
+     * 这题在**本端**能不能作答：主观题（含模式2 的填空，Mac 不发它们的作答数据）只能看题干、提示到 Mac 上作答；
+     * 模式1 的填空可答（`../docs/EXERCISE-PLAN.md §11.6` → 本轮起模式1 支持，见该文档安卓一轮）。
+     */
+    val macOnly: Boolean = kind != 0 && kind != 1,
 ) {
     val judged: Boolean get() = shown != ExShown.NONE
-    /** 填空 / 主观题：平板本轮不能作答，只显示题干，提示到 Mac 上作答（`../docs/EXERCISE-PLAN.md §11.6`）。 */
-    val macOnly: Boolean get() = kind != 0 && kind != 1
     /** 列表里一行的题干：去掉换行、并掉连续空白。 */
     val plainStem: String get() = stem.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+    /** 填空题（本端可作答的那种，主观题不算）。 */
+    val isFill: Boolean get() = kind == 3 && !macOnly
 }
 
 /** 一组题（一个习题标签此刻的样子）。 */
@@ -112,6 +129,10 @@ data class ExGroup(
 interface ExHost {
     /** 交卷：`keys` 选的键拼起来（"AC"），`elapsedMs` 这道题看了多久。 */
     fun submit(id: String, keys: String, elapsedMs: Long)
+    /** 填空交卷：`blanks` 每空一格（没填的空串），`elapsedMs` 这道题看了多久。模式2 不支持（题是 macOnly），默认空实现。 */
+    fun submitBlanks(id: String, blanks: List<String>, elapsedMs: Long) {}
+    /** 填空自己判定对错（写回显示着的那次作答；`id` = 题、`attemptId` = 那次作答）。判错进错题本。 */
+    fun judgeExercise(id: String, attemptId: String, correct: Boolean) {}
     fun setStarred(id: String, on: Boolean)
     fun removeFromMistakes(id: String)
     /** 这几道当作没答过（这一轮），从第 `from` 题练起。 */
