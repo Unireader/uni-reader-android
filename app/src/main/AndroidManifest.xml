@@ -6,6 +6,11 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- 从服务器下载 PDF 的前台服务：退到后台 / 锁屏下载继续，进度在通知里（33+ 通知显示要再授予通知权限） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!--
       模式1 独立版要直接打开任意路径下的 .unrd 工作区（含 U 盘/SD/同步目录），且用的是裸
       SQLiteDatabase（需要真实文件路径，SAF 的 tree Uri 给不了）→ 只能走全盘文件权限。
@@ -60,6 +65,12 @@
             android:name=".pad.PadActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="false" />
+
+        <!-- 后台下载 PDF（前台服务，dataSync 类型）：通知显进度、可取消 -->
+        <service
+            android:name=".local.server.PdfDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

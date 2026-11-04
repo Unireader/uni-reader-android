@@ -400,6 +400,11 @@
     <string name="srv_pdf_download">Download from Server</string>
     <string name="srv_pdf_missing_title">“%1$s” isn’t on this tablet yet</string>
     <string name="srv_pdf_failed">Couldn’t download it</string>
+    <string name="srv_dl_channel">PDF downloads</string>
+    <string name="srv_dl_queued">%1$d more in queue</string>
+    <string name="srv_dl_done">Downloaded “%1$s”</string>
+    <string name="srv_dl_done_n">%1$d PDFs downloaded</string>
+    <string name="srv_dl_summary">%1$d downloaded · %2$d failed</string>
     <string name="srv_err_timeout">Took too long</string>
     <string name="srv_err_bad_response">The server sent something unexpected.</string>
     <string name="srv_err_status">Server error %1$d</string>

@@ -396,6 +396,11 @@
     <string name="srv_pdf_download">从服务器下载</string>
     <string name="srv_pdf_missing_title">《%1$s》还没有下载到本机</string>
     <string name="srv_pdf_failed">没下下来</string>
+    <string name="srv_dl_channel">PDF 下载</string>
+    <string name="srv_dl_queued">还有 %1$d 本在排队</string>
+    <string name="srv_dl_done">《%1$s》下载完成</string>
+    <string name="srv_dl_done_n">%1$d 本 PDF 下载完成</string>
+    <string name="srv_dl_summary">%1$d 本下载完成 · %2$d 本失败</string>
     <string name="srv_err_timeout">等太久了</string>
     <string name="srv_err_bad_response">服务器的回应不对。</string>
     <string name="srv_err_status">服务器出错 %1$d</string>

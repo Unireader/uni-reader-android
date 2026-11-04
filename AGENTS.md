@@ -296,6 +296,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
     `ReaderActivity.onRemoteRows`：按受影响的表刷新书库 / 画板 / 习题，开着的文档 `reloadStrokes` / `reloadNotes` / `reloadImageNotes`（库队列先进先出，读到的是应用之后的状态）。
     与推送互斥（`pushing` / `pulling`）；出错退避重试（5 秒起、最多 60 秒）；服务器程序太旧（`wait` 不带说明的 404 / 405，`Failure.isUnsupportedRoute`）→ 不再挂、退回只推。
   · 没做：画板 / 草稿纸内容与开着的练习页不实时更新（列表会）；笔记文件（`Notes/`）同步安卓整个还没做（`../docs/PROTOCOL.md §9.5`）。
+  · **后台下载 PDF（2026-11-04，`PdfDownloadService`）**：书库页 / 阅读界面点「从服务器下载」走**前台服务**（`dataSync` 类型 + 通知），退到后台 / 锁屏照下，
+    通知显进度、带「取消」（取消 = 全部停）；连着点几本排队下、同一篇重复点并成一份；下完各界面照常回调（界面已死就丢弃）。小 PDF 自动预取仍走普通线程、不经这里。
+    文案 `srv_dl_*`（strings 两份）；33+ 通知抽屉显示要 POST_NOTIFICATIONS（点下载会先弹授权，不授予照下、只是通知抽屉里看不到）。
   阅读界面关库之后、退出书库页时完整一轮。
   🔴 **阅读界面开着它的时候不跑完整一轮**（另一条连接写用户数据，内存里的笔迹快照就对不上了）——`prepareToOpen` / `syncNow` 见到开着的会话只叫它推一次；
   还原备份关库时不同步（`closeWorkspace(syncAfter = false)`，要换库文件）。完整一轮之后后台下小 PDF（默认 ≤50MB，只写 `location`）。

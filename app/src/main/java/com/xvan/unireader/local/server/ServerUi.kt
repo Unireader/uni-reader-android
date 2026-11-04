@@ -2,6 +2,8 @@ package com.xvan.unireader.local.server
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.Manifest
+import android.os.Build
 import android.util.Log
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -38,19 +40,22 @@ object ServerUi {
 
     // ---------- 说人话 ----------
 
-    fun describe(a: Activity, e: Throwable): String = when (e) {
-        is ServerClient.Cancelled -> a.getString(R.string.srv_err_timeout)
+    fun describe(a: Activity, e: Throwable): String = describe(a.resources, e)
+
+    /** 说人话（不带 Activity 的版本：前台服务里也用） */
+    fun describe(res: android.content.res.Resources, e: Throwable): String = when (e) {
+        is ServerClient.Cancelled -> res.getString(R.string.srv_err_timeout)
         is ServerClient.Failure -> when {
             !e.message.isNullOrEmpty() -> e.message!!
-            e.status == ServerClient.BAD_RESPONSE -> a.getString(R.string.srv_err_bad_response)
-            e.status == ServerClient.BAD_ADDRESS -> a.getString(R.string.srv_bad_address)
-            else -> a.getString(R.string.srv_err_status, e.status)
+            e.status == ServerClient.BAD_RESPONSE -> res.getString(R.string.srv_err_bad_response)
+            e.status == ServerClient.BAD_ADDRESS -> res.getString(R.string.srv_bad_address)
+            else -> res.getString(R.string.srv_err_status, e.status)
         }
-        is ServerSyncIO.NotOnServer -> a.getString(R.string.srv_err_not_on_server)
-        is UnknownHostException -> a.getString(R.string.srv_err_unknown_host)
-        is SSLException -> a.getString(R.string.srv_err_tls)
-        is ConnectException, is NoRouteToHostException, is SocketTimeoutException -> a.getString(R.string.srv_err_unreachable)
-        is IOException -> e.message ?: a.getString(R.string.srv_err_unreachable)
+        is ServerSyncIO.NotOnServer -> res.getString(R.string.srv_err_not_on_server)
+        is UnknownHostException -> res.getString(R.string.srv_err_unknown_host)
+        is SSLException -> res.getString(R.string.srv_err_tls)
+        is ConnectException, is NoRouteToHostException, is SocketTimeoutException -> res.getString(R.string.srv_err_unreachable)
+        is IOException -> e.message ?: res.getString(R.string.srv_err_unreachable)
         else -> e.message ?: e.javaClass.simpleName
     }
 
@@ -374,27 +379,34 @@ object ServerUi {
 
     // ---------- 下载 PDF ----------
 
-    /** 下一本书的 PDF（不管多大），带进度；成功 / 失败都回调（失败已经提示过） */
+    /**
+     * 下一本书的 PDF（不管多大）：交给 [PdfDownloadService] 前台服务下——退到后台、锁屏都继续，
+     * 进度在通知里、可取消；这里照旧弹进度条，事件从服务回来。成功 / 失败都回调
+     * （失败已经提示过；发起请求的界面已经关了就不回调）。
+     */
     fun downloadPdf(a: Activity, ws: File, documentId: String, title: String, onDone: (Boolean) -> Unit) {
+        // 33+ 通知显示要这个权限；不给了下载照跑，只是通知抽屉里看不到
+        if (Build.VERSION.SDK_INT >= 33) {
+            a.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        }
         val p = Progress(a, a.getString(R.string.srv_pdf_downloading, title))
-        a.runInBackground(
-            what = "下载 PDF ${documentId.take(8)}",
-            work = {
-                val ep = ServerSync.endpoint(a, ws) ?: throw ServerClient.Failure(401, a.getString(R.string.srv_need_connect))
-                ServerSyncIO.downloadPdf(ws, documentId, ep.account.client(), ep.wid) { done, total ->
-                    if (total > 0) a.runOnUiThread { p.set(a.getString(R.string.srv_pdf_downloading, title), done.toDouble() / total) }
+        PdfDownloadService.enqueue(a, ws, documentId, title) { ev ->
+            when (ev) {
+                is PdfDownloadService.Event.Progress ->
+                    p.set(a.getString(R.string.srv_pdf_downloading, title), ev.total.takeIf { it > 0 }?.let { ev.done.toDouble() / it })
+                is PdfDownloadService.Event.Done -> {
+                    p.dismiss()
+                    if (a.isFinishing || a.isDestroyed) return@enqueue
+                    if (ev.ok) {
+                        onDone(true)
+                    } else {
+                        // error 为空 = 用户在通知上取消了，不用弹错
+                        if (ev.error != null) a.showAlert(a.getString(R.string.srv_pdf_failed), ev.error)
+                        onDone(false)
+                    }
                 }
-            },
-            ok = {
-                p.dismiss()
-                onDone(true)
-            },
-            fail = { e ->
-                p.dismiss()
-                a.showAlert(a.getString(R.string.srv_pdf_failed), describe(a, e))
-                onDone(false)
-            },
-        )
+            }
+        }
     }
 
     /** 本机没有这本书的 PDF：问一句「从服务器下载」 */
