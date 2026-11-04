@@ -17,6 +17,7 @@ import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.CheckBox
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -161,7 +162,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private val starBtn = Ui.iconButton(a, R.drawable.ic_star, s(R.string.ex_star)) { cur()?.let { host.setStarred(it.id, !it.starred) } }
     private val origBtn = Ui.iconButton(a, R.drawable.ic_image, s(R.string.ex_original)) { toggleOriginal() }
     private val srcBtn = Ui.iconButton(a, R.drawable.ic_doc, s(R.string.ex_open_page)) { cur()?.let { host.openSource(it.id) } }
-    private val stemView = mathView(17f)
+    private val stemView = blocks(17f)
     private val origImage = ImageView(a).apply {
         adjustViewBounds = true
         scaleType = ImageView.ScaleType.FIT_START
@@ -194,7 +195,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(Ui.onSurface(a))
     }
-    private val explanationView = mathView(15f)
+    private val explanationView = blocks(15f)
     private val retryBtn = Ui.button(a, s(R.string.ex_try_again)) { cur()?.let { host.redo(listOf(it.id), deck.index) } }
     private val removeWrongBtn = Ui.button(a, s(R.string.ex_remove_mistake)) { cur()?.let { host.removeFromMistakes(it.id) } }
     private val actionsRow = LinearLayout(a).apply {
@@ -544,8 +545,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val b = builtFor
         if (b == null || b.id != c.id || b.stem != c.stem || b.options != c.options || b.multiple != c.multiple ||
             b.explanation != c.explanation) {
-            MathText.bind(stemView, c.stem)
-            MathText.bind(explanationView, c.explanation)
+            bindBlocks(stemView, c.stem, 17f)
+            bindBlocks(explanationView, c.explanation, 15f)
             buildOptions(c)
         }
         builtFor = c
@@ -776,7 +777,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         }
-        private val body = mathView(16f)
+        private val body = blocks(16f)
         private val mark = ImageView(a)
         private val radius = if (multiple) 8 else Ui.PILL
         private var locked = false
@@ -791,7 +792,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             addView(badge, LayoutParams(dp(32), dp(32)).apply { marginEnd = dp(12) })
             addView(body, LayoutParams(0, -2, 1f))
             addView(mark, LayoutParams(dp(22), dp(22)).apply { marginStart = dp(8) })
-            MathText.bind(body, text)
+            bindBlocks(body, text, 16f)
         }
 
         fun setState(selected: Boolean, locked: Boolean, mark: Int) {
@@ -950,6 +951,29 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     // ---------- 小件 ----------
+
+    /** 一段 Markdown + 公式 的正文（题干 / 解析 / 选项共用）：围栏代码块单独一个横滑不换行的视图，其余整段一个文字视图。 */
+    private fun blocks(size: Float) = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+
+    private fun bindBlocks(v: LinearLayout, md: String, size: Float) =
+        MathText.bindBlocks(v, md, dp(8), { mathView(size) }, { codeBlockView(size, it) })
+
+    /** 一段代码：等宽 + 不换行 + 横向滚动（代码的列对齐靠不换行保住，比如并排两段进程）；底纹区别于正文。 */
+    private fun codeBlockView(size: Float, code: String) = HorizontalScrollView(a).apply {
+        isHorizontalScrollBarEnabled = true   // 让人知道可以横滑
+        addView(
+            TextView(a).apply {
+                text = code.trim('\n')
+                textSize = size - 2f
+                typeface = Typeface.MONOSPACE
+                setTextColor(Ui.onSurface(a))
+                setHorizontallyScrolling(true)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+            },
+            FrameLayout.LayoutParams(-2, -2),
+        )
+        background = Ui.round(Ui.container(a), Ui.RADIUS, a)
+    }
 
     private fun mathView(size: Float) = TextView(a).apply {
         textSize = size

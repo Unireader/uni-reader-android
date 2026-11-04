@@ -75,9 +75,11 @@ dependencies {
     implementation("io.legere:pdfiumandroid:2.0.1")
     // 习题的题干 / 选项 / 解析：Markdown + `$…$` 公式（`../docs/EXERCISE-PLAN.md §10`，用户 2026-10-11 选的「安卓自带控件画」）。
     // Markwon 把 Markdown 画成 TextView 的 Spannable；ext-latex 经 JLaTeXMath 把公式画成图嵌在行里（传递依赖
-    // ru.noties:jlatexmath-android）；inline-parser 是行内公式的前提。都是 Java 库，不受上面 Kotlin 元数据版本的限制。
+    // ru.noties:jlatexmath-android）；inline-parser 是行内公式的前提；ext-tables 给 GFM 表格（表格不装只显示成
+    // 一行竖线文本）。都是 Java 库，不受上面 Kotlin 元数据版本的限制。
     implementation("io.noties.markwon:core:4.6.2")
     implementation("io.noties.markwon:ext-latex:4.6.2")
+    implementation("io.noties.markwon:ext-tables:4.6.2")
     implementation("io.noties.markwon:inline-parser:4.6.2")
     testImplementation("junit:junit:4.13.2")
     // 插桩测试（:app:connectedDebugAndroidTest）：数据层要在真 SQLite 上验，JVM 单测跑不了。

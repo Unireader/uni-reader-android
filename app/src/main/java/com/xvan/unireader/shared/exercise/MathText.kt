@@ -7,11 +7,14 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
 import android.text.Spanned
+import android.view.View
+import android.widget.LinearLayout
 import android.widget.TextView
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
 import io.noties.markwon.MarkwonConfiguration
 import io.noties.markwon.ext.latex.JLatexMathPlugin
+import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.image.AsyncDrawableSpan
 import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 
@@ -21,7 +24,8 @@ import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
  * 写法同 Mac 引擎（MCP 说明里的「Math in notes」）：`$…$` 行内、单独成行的 `$$…$$` 成块。Markwon 的公式插件只认
  * `$$`（行内也是 `$$…$$`），所以先把单个 `$` 包的改写成 `$$`（[normalize]），块公式拆成「`$$` / 内容 / `$$`」三行。
  * 公式在 Markwon 的后台线程里排版成图、排好再刷进文字（JLaTeXMath）。认不出的写法（JLaTeXMath 不支持的命令）
- * 原样显示源码，不让整段公式消失。
+ * 原样显示源码，不让整段公式消失。GFM 表格走 ext-tables 插件（边框 / 隔行底色从文字颜色自动派生，深浅色都正常）；
+ * 围栏代码块（``` / ~~~）由 [splitBlocks] 切出来单独画——不换行、横向滚动，列对齐（如并排两段进程）靠它保住。
  *
  * 依赖只在这一个文件里（`io.noties.markwon:*`），别处都只调 [bind]（文字视图）/ [spanned]（自己排版画到画布上，
  * 笔记气泡用，见 `shared/NoteBubbleText`）。
@@ -47,6 +51,7 @@ object MathText {
     private fun markwon(ctx: Context, size: Float, color: Int): Markwon = cache.getOrPut("$size#$color") {
         Markwon.builder(ctx.applicationContext)
             .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(TablePlugin.create(ctx.applicationContext))
             .usePlugin(
                 JLatexMathPlugin.create(size) { b ->
                     b.inlinesEnabled(true)
@@ -62,8 +67,12 @@ object MathText {
     fun bind(tv: TextView, md: String) {
         val m = markwon(tv.context, tv.textSize, tv.currentTextColor)
         m.setMarkdown(tv, normalize(md))
-        // Markwon 默认给文字挂上点链接的处理，文字视图就会把触摸吃掉——选项那一行点在正文上就选不中。
-        // 题目里不会有要点的链接，摘掉（同时把 clickable / focusable 还原成 false）
+        stripTouch(tv)
+    }
+
+    /** Markwon 默认给文字挂上点链接的处理，文字视图就会把触摸吃掉——选项那一行点在正文上就选不中。
+     * 题目里不会有要点的链接，摘掉（同时把 clickable / focusable 还原成 false） */
+    private fun stripTouch(tv: TextView) {
         tv.movementMethod = null
         tv.isClickable = false
         tv.isLongClickable = false
@@ -78,6 +87,7 @@ object MathText {
         val color = tv.currentTextColor
         Markwon.builder(tv.context.applicationContext)
             .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(TablePlugin.create(tv.context.applicationContext))
             .usePlugin(
                 JLatexMathPlugin.create(size) { b ->
                     b.inlinesEnabled(true)
@@ -115,6 +125,76 @@ object MathText {
         return sp
     }
 
+    /** 一段正文：普通 Markdown 或一段围栏代码。 */
+    sealed class Block { abstract val text: String }
+    class MdBlock(override val text: String) : Block()
+    class CodeBlock(override val text: String) : Block()
+
+    /**
+     * 按围栏代码块（``` 或 ~~~，至少 3 个）把正文切成一段段：围栏之外（含表格、公式、普通段落）整段是一个
+     * [MdBlock]，围栏之内是 [CodeBlock]（换行原样保留，列对齐交给代码视图的不换行）。没闭合的围栏当代码到结尾。
+     * 只管顶层的围栏——行内代码、表格单元格里的反引号不切。
+     */
+    fun splitBlocks(src: String): List<Block> {
+        val out = ArrayList<Block>()
+        val md = StringBuilder()
+        var code: StringBuilder? = null
+        var fenceChar = ' '
+        var fenceLen = 0
+        fun flushMd() {
+            if (md.isNotEmpty()) { out += MdBlock(md.toString().trim('\n')); md.setLength(0) }
+        }
+        for (raw in src.split('\n')) {
+            val t = raw.trim()
+            val cur = code
+            if (cur == null) {
+                val c = t.firstOrNull()
+                val n = if (c == '`' || c == '~') t.takeWhile { it == c }.length else 0
+                if (c != null && n >= 3) {
+                    // 开围栏：后面可以带语言名（```kotlin）
+                    flushMd()
+                    fenceChar = c; fenceLen = n
+                    code = StringBuilder()
+                } else {
+                    if (md.isNotEmpty()) md.append('\n')
+                    md.append(raw)
+                }
+            } else {
+                val c = t.firstOrNull()
+                val n = if (c == fenceChar) t.takeWhile { it == c }.length else 0
+                if (n >= fenceLen && n == t.length) {
+                    // 闭围栏：整行只有不少于开围栏的同款记号
+                    out += CodeBlock(cur.toString().trim('\n'))
+                    code = null
+                } else {
+                    if (cur.isNotEmpty()) cur.append('\n')
+                    cur.append(raw)
+                }
+            }
+        }
+        val tail = code
+        if (tail != null) out += CodeBlock(tail.toString().trim('\n')) else flushMd()
+        return out
+    }
+
+    /**
+     * 把 [md] 填进 [parent]（竖向 LinearLayout，宽度由宿主定）：Markdown 段与围栏代码块各一个子视图——
+     * 代码块用 [code] 造的视图（不换行、横向滚动，列对齐靠它），Markdown 段用 [plain] 造的文字视图照常换行。
+     * [gapPx] = 段间距。公式改写（[normalize]）只作用于 Markdown 段，代码里的 `$` 不动。
+     */
+    fun bindBlocks(parent: LinearLayout, md: String, gapPx: Int, plain: () -> TextView, code: (String) -> View) {
+        parent.removeAllViews()
+        for ((i, b) in splitBlocks(md).withIndex()) {
+            val v: View = when (b) {
+                is MdBlock -> plain().also { tv ->
+                    markwon(tv.context, tv.textSize, tv.currentTextColor).setMarkdown(tv, normalize(b.text))
+                    stripTouch(tv)
+                }
+                is CodeBlock -> code(b.text)
+            }
+            parent.addView(v, LinearLayout.LayoutParams(-1, -2).apply { if (i > 0) topMargin = gapPx })
+        }
+    }
     /**
      * Mac 的写法 → Markwon 认的写法：
      * - 一行只有 `$$…$$`（块公式写在一行里）→ 拆成 `$$` / 内容 / `$$` 三行；
