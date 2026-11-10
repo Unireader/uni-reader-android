@@ -82,4 +82,18 @@ class MathTextTest {
         assertEquals(1, r.size)
         assertEquals("a\n\nb", r[0].text)
     }
+
+    /** `==高亮==` 的认法（[HighlightPlugin.RE]，在行内解析器停在 `=` 上时从当前位置起匹配）。 */
+    @Test
+    fun 高亮的配对规则() {
+        fun at(text: String): String? = HighlightPlugin.RE.matcher(text).let { if (it.lookingAt()) it.group() else null }
+        assertEquals("==重点==", at("==重点== 后面"))
+        assertEquals("==a b==", at("==a b=="))
+        assertEquals("最短配对", "==a==", at("==a== 和 ==b=="))
+        assertEquals("里面可以有单个等号", "==x=1==", at("==x=1=="))
+        assertEquals(null, at("== 两边有空格 =="))
+        assertEquals(null, at("===三个等号"))
+        assertEquals(null, at("==没有结尾"))
+        assertEquals("不跨行", null, at("==第一行\n第二行=="))
+    }
 }

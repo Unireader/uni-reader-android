@@ -51,6 +51,7 @@ object MathText {
     private fun markwon(ctx: Context, size: Float, color: Int): Markwon = cache.getOrPut("$size#$color") {
         Markwon.builder(ctx.applicationContext)
             .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(HighlightPlugin())   // `==高亮==`
             .usePlugin(TablePlugin.create(ctx.applicationContext))
             .usePlugin(
                 JLatexMathPlugin.create(size) { b ->
@@ -87,6 +88,7 @@ object MathText {
         val color = tv.currentTextColor
         Markwon.builder(tv.context.applicationContext)
             .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(HighlightPlugin())   // `==高亮==`
             .usePlugin(TablePlugin.create(tv.context.applicationContext))
             .usePlugin(
                 JLatexMathPlugin.create(size) { b ->
