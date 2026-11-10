@@ -320,6 +320,39 @@ class ExerciseController(private val a: Activity) : ExHost {
         })
     }
 
+    // ---------- 题目笔记 / 删除 ----------
+
+    override val canEditNote: Boolean get() = true
+
+    override fun setNote(id: String, text: String) {
+        val t = text.trim()
+        if (deck?.items?.firstOrNull { it.id == id }?.note == t) return
+        write("题目笔记 ${id.take(8)}") { it.setExerciseNote(id, t) }
+    }
+
+    override val canDelete: Boolean get() = true
+
+    /** 删题：先归档进回收站，成了才删（红线 11）；归档失败一道都不删、提示一句。 */
+    override fun delete(ids: List<String>) {
+        val q = queue ?: return
+        val ws = workspace ?: return
+        val d = deck ?: return
+        val picked = d.items.filter { it.id in ids }
+        val first = picked.firstOrNull() ?: return
+        val title = if (picked.size == 1) a.getString(R.string.ex_trash_one, first.number.ifEmpty { first.id.take(8) })
+        else a.getString(R.string.ex_trash_many, picked.size)
+        val docTitle = first.documentId?.let { id -> docs.firstOrNull { it.first == id }?.second } ?: ""
+        val del = picked.map { it.id }
+        q.submit("删习题 ${del.size} 道", { s ->
+            runCatching { com.xvan.unireader.local.Trash.deleteExercises(s, ws, del, title, docTitle) }
+                .onFailure { Log.e(TAG, "习题归档失败，没删", it) }.isSuccess
+        }, { ok ->
+            if (ok) d.forgetAnswers(del) else Toast.makeText(a, R.string.trash_failed, Toast.LENGTH_LONG).show()
+            reload()
+            refreshGroups()
+        })
+    }
+
     // ---------- 设置章节（列表多选之后，同 Mac「设置章节…」） ----------
 
     override val canSetChapter: Boolean get() = true

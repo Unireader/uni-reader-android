@@ -233,6 +233,11 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         }
     }
 
+    /** 这几道题删掉了：这一轮在它们上答过的不再算进「本轮已做」。 */
+    fun forgetAnswers(ids: Collection<String>) {
+        for (id in ids) { answers.remove(id); redoing.remove(id) }
+    }
+
     /** 给界面的那一份（字段同线上 `exDeck`，`../docs/PROTOCOL.md §4.9`）。 */
     fun view(title: String): ExDeckView {
         val cards = items.map(::card)
@@ -274,6 +279,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             blankMatch = if (e.isFill && a != null) e.blankMatches(a.blanks.orEmpty()) else emptyList(),
             attemptId = a?.attemptId ?: "",
             macOnly = e.kind == Exercise.KIND_SUBJECTIVE,
+            note = e.note,
         )
     }
 }

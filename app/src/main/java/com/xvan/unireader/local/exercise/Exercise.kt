@@ -103,6 +103,8 @@ data class Exercise(
     val updatedAt: String,
     /** 所属章节：目录里的路径（顶层 → 最深一级），空 = 没设。 */
     val chapter: List<String>,
+    /** 题目笔记（v22 `exercise.note`，Markdown + `$…$`；空 = 没写。用户状态，Agent 重导题目不碰）。 */
+    val note: String = "",
 ) {
     val multiple: Boolean get() = kind == KIND_MULTIPLE
     /** 选择题（单选 / 多选）。 */

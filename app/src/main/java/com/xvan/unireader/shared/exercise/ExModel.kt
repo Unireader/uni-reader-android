@@ -77,6 +77,8 @@ data class ExCard(
      * 模式1 的填空可答（`../docs/EXERCISE-PLAN.md §11.6` → 本轮起模式1 支持，见该文档安卓一轮）。
      */
     val macOnly: Boolean = kind != 0 && kind != 1,
+    /** 题目笔记（Markdown + `$…$`，空 = 没写；模式2 的 `exDeck` 不带它 = 恒空）。判完才显示，同解析。 */
+    val note: String = "",
 ) {
     val judged: Boolean get() = shown != ExShown.NONE
     /** 列表里一行的题干：去掉换行、并掉连续空白。 */
@@ -151,6 +153,14 @@ interface ExHost {
     fun openSource(id: String)
     /** 原题那一块的图（宽约 `widthPx` 像素）；回调在主线程，拿不到给 null。 */
     fun loadOriginal(id: String, widthPx: Int, done: (Bitmap?) -> Unit)
+    /** 能不能写题目笔记（只有模式1：模式2 的线格式不带笔记）。 */
+    val canEditNote: Boolean get() = false
+    /** 存题目笔记（整段替换，空 = 删掉）。只有 [canEditNote] 为真时会调。 */
+    fun setNote(id: String, text: String) {}
+    /** 能不能删题（只有模式1；删除先进回收站）。 */
+    val canDelete: Boolean get() = false
+    /** 删这几道题（界面已经确认过）。只有 [canDelete] 为真时会调。 */
+    fun delete(ids: List<String>) {}
     /** 能不能「设置章节…」（只有模式1）。 */
     val canSetChapter: Boolean get() = false
     /** 设置章节（长按列表多选之后）。只有 [canSetChapter] 为真时会调。 */

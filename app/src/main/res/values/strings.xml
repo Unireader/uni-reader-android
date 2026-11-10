@@ -225,6 +225,15 @@
     <string name="ex_empty_unanswered">You’ve done every question here.</string>
     <string name="ex_redo_last_wrong">Redo Last Wrong</string>
     <string name="ex_empty_last_wrong">No question here was wrong last time.</string>
+    <string name="ex_note">My Note</string>
+    <string name="ex_note_add">Add a Note</string>
+    <string name="ex_note_edit">Edit Note</string>
+    <string name="ex_note_hint">Markdown and $…$ formulas work here</string>
+    <string name="ex_delete_one">Delete this exercise?</string>
+    <string name="ex_delete_many">Delete %1$d exercises?</string>
+    <string name="ex_delete_msg">They go to the Trash together with your answers, and can be restored from there.</string>
+    <string name="ex_trash_one">Exercise %1$s</string>
+    <string name="ex_trash_many">%1$d exercises</string>
     <string name="ex_empty">No exercises here yet. On the Mac, ask the Agent to recognize the exercises in a PDF.</string>
     <string name="ex_open_new_tab">Open in New Tab</string>
     <string name="ex_set_chapter">Set Chapter…</string>

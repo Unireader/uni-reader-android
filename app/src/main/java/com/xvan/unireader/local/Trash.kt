@@ -194,6 +194,20 @@ object Trash {
         return e
     }
 
+    /**
+     * 删几道习题（连同作答记录）：先归档，归档到的题数对得上才删行（同 Mac `Trash.archiveExercises` + `trashExercises`）。
+     * [title] = 回收站里显示的名字（「习题 3」/「5 道习题」），[documentTitle] = 第一道所在的书。
+     */
+    fun deleteExercises(s: LibraryStore, ws: File, ids: List<String>, title: String, documentTitle: String): Entry {
+        val e = archive(ws, title) { snap ->
+            val a = s.trashArchiveExercises(ids, snap)
+            if (a.counts.exercise != ids.size) throw java.io.IOException("只归档到 ${a.counts.exercise} / ${ids.size} 道题")
+            Manifest(KIND_EXERCISES, Date(), title, documentTitle = documentTitle, counts = a.counts)
+        }
+        s.deleteExercises(ids)
+        return e
+    }
+
     // ---------- 恢复 / 彻底删除 ----------
 
     /** 恢复结果：写回几行、是不是并入了已有的那一篇（PDF 重新导入过） */

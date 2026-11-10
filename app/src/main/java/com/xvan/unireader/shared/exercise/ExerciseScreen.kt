@@ -234,6 +234,19 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         setTextColor(Ui.onSurface(a))
     }
     private val explanationView = blocks(15f)
+    /**
+     * 题目笔记（同 Mac，`../docs/EXERCISE-PLAN.md §12.1`）：判完才显示（同解析，免得重做错题时先剧透）。
+     * 没写过只有「添加笔记」；写过 = 标题 + 渲染好的笔记 +「编辑笔记」。编辑在弹层里（多行输入，点「保存」才存）。
+     * 宿主不能写（模式2）时整块不显示。
+     */
+    private val noteTitle = TextView(a).apply {
+        text = s(R.string.ex_note)
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Ui.onSurface(a))
+    }
+    private val noteView = blocks(15f)
+    private val noteBtn = Ui.button(a, s(R.string.ex_note_add)) { cur()?.let(::editNote) }
     private val retryBtn = Ui.button(a, s(R.string.ex_try_again)) { cur()?.let { host.redo(listOf(it.id), deck.index) } }
     private val removeWrongBtn = Ui.button(a, s(R.string.ex_remove_mistake)) { cur()?.let { host.removeFromMistakes(it.id) } }
     private val actionsRow = LinearLayout(a).apply {
@@ -289,6 +302,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(markNote, lp(top = 8))
         addView(explanationTitle, lp(top = 16))
         addView(explanationView, lp(top = 6))
+        addView(noteTitle, lp(top = 16))
+        addView(noteView, lp(top = 6))
+        addView(noteBtn, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
         addView(actionsRow, lp(top = 16))
     }
 
@@ -591,11 +607,12 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         }
         val b = builtFor
         if (b == null || b.id != c.id || b.stem != c.stem || b.options != c.options || b.multiple != c.multiple ||
-            b.explanation != c.explanation || b.fillCount != c.fillCount || b.fillAnswers != c.fillAnswers ||
+            b.explanation != c.explanation || b.note != c.note || b.fillCount != c.fillCount || b.fillAnswers != c.fillAnswers ||
             b.mineBlanks != c.mineBlanks || b.blankMatch != c.blankMatch || b.correct != c.correct ||
             b.judged != c.judged || b.shown != c.shown) {
             bindBlocks(stemView, c.stem, 17f)
             bindBlocks(explanationView, c.explanation, 15f)
+            bindBlocks(noteView, c.note, 15f)
             buildOptions(c)
             buildFill(c)
         }
@@ -687,6 +704,12 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val hasExp = c.explanation.isNotEmpty()
         explanationTitle.visibility = if (judged && hasExp) View.VISIBLE else View.GONE
         explanationView.visibility = if (judged && hasExp) View.VISIBLE else View.GONE
+        val noteOn = judged && host.canEditNote
+        val hasNote = c.note.isNotEmpty()
+        noteTitle.visibility = if (noteOn && hasNote) View.VISIBLE else View.GONE
+        noteView.visibility = if (noteOn && hasNote) View.VISIBLE else View.GONE
+        noteBtn.visibility = if (noteOn) View.VISIBLE else View.GONE
+        noteBtn.text = s(if (hasNote) R.string.ex_note_edit else R.string.ex_note_add)
         retryBtn.visibility = if (judged) View.VISIBLE else View.GONE
         removeWrongBtn.visibility = if (c.wrong) View.VISIBLE else View.GONE
         actionsRow.visibility = if (judged || c.wrong) View.VISIBLE else View.GONE
@@ -991,6 +1014,41 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         }
     }
 
+    /** 写 / 改题目笔记：多行输入框（Markdown + `$…$`），「保存」才写；清空再保存 = 删掉笔记。 */
+    private fun editNote(c: ExCard) {
+        val edit = com.xvan.unireader.shared.PadPanels.inputBox(a, s(R.string.ex_note_hint)).apply {
+            isSingleLine = false
+            minLines = 4
+            maxLines = 12
+            gravity = Gravity.TOP or Gravity.START
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setText(c.note)
+            setSelection(text.length)
+        }
+        com.xvan.unireader.shared.Sheet(a).title(s(R.string.ex_note))
+            .content(edit)
+            .action(s(R.string.common_cancel))
+            .action(s(R.string.common_save), primary = true) { host.setNote(c.id, edit.text.toString()) }
+            .show()
+    }
+
+    /** 删题前问一句（删掉的先进回收站，能恢复）。 */
+    private fun confirmDelete(ids: List<String>) {
+        com.xvan.unireader.shared.Sheet(a)
+            .title(if (ids.size == 1) s(R.string.ex_delete_one) else s(R.string.ex_delete_many, ids.size))
+            .subtitle(s(R.string.ex_delete_msg))
+            .action(s(R.string.common_cancel))
+            .action(s(R.string.act_delete), primary = true) {
+                host.delete(ids)
+                selecting = false
+                selected.clear()
+                refreshSelBar()
+                adapter.notifyDataSetChanged()
+            }
+            .show()
+    }
+
     // ---------- 列表页 ----------
 
     private fun toggleSelected(id: String) {
@@ -1029,6 +1087,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             })
             if (c.wrong) selActions.addView(Ui.textButton(a, s(R.string.ex_remove_mistake)) { host.removeFromMistakes(c.id) })
             if (c.hasOriginal) selActions.addView(Ui.textButton(a, s(R.string.ex_open_page)) { host.openSource(c.id) })
+        }
+        if (host.canDelete && cards.isNotEmpty()) {
+            selActions.addView(Ui.textButton(a, s(R.string.act_delete)) { confirmDelete(cards.map { it.id }) })
         }
         selActions.addView(Ui.textButton(a, a.getString(R.string.common_cancel)) {
             selecting = false

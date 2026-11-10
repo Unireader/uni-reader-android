@@ -842,7 +842,7 @@ class LibraryStore(private val db: Db) : Closeable {
     // ---------- 习题（exercise / exercise_attempt，v20；`../docs/EXERCISE-PLAN.md §10.2`）----------
     //
     // SQL 逐条照抄 Mac `LibraryStore.swift` 的习题一节（含 ORDER BY）。本端只读题目、记作答、改收藏 / 错题本 / 章节；
-    // 导入与删除只在 Mac 做（删要先进回收站，安卓没有回收站）。只读连接上老库可能没这两张表 → 当没有题。
+    // 导入只在 Mac 做（Agent 经 MCP）。只读连接上老库可能没这两张表 → 当没有题。
 
     fun hasExerciseTables(): Boolean = hasTable("exercise") && hasTable("exercise_attempt")
 
@@ -1009,6 +1009,17 @@ class LibraryStore(private val db: Db) : Closeable {
         db.exec("UPDATE exercise SET wrong=?, updated_at=? WHERE id=?", arrayOf<Any?>(if (on) 1L else 0L, at, id))
     }
 
+    /** 题目笔记（同 Mac `setExerciseNote`）：空串 = 删掉。同时改 `updated_at`（离线镜像 / 服务器按它取新）。 */
+    fun setExerciseNote(id: String, note: String, at: String = nowIso()) {
+        db.exec("UPDATE exercise SET note=?, updated_at=? WHERE id=?", arrayOf(note, at, id))
+    }
+
+    /** 删几道题（作答记录随外键级联删掉）。🔴 归档进回收站由上层先做（[com.xvan.unireader.local.Trash.deleteExercises]）。 */
+    fun deleteExercises(ids: List<String>) {
+        if (ids.isEmpty()) return
+        db.exec("DELETE FROM exercise WHERE id IN (${ids.joinToString(",") { "?" }})", ids.toTypedArray())
+    }
+
     /** 改几道题的章节（列表「设置章节…」）。 */
     fun setExerciseChapter(ids: List<String>, path: List<String>, at: String = nowIso()) {
         val text = com.xvan.unireader.local.exercise.ExChapter.text(com.xvan.unireader.local.exercise.ExChapter.clean(path))
@@ -1032,6 +1043,7 @@ class LibraryStore(private val db: Db) : Closeable {
             starred = c.bool("starred"), wrong = c.bool("wrong"), source = c.str("source"),
             createdAt = c.str("created_at"), updatedAt = c.str("updated_at"),
             chapter = com.xvan.unireader.local.exercise.ExChapter.parse(c.str("chapter")),
+            note = c.getColumnIndex("note").let { i -> if (i < 0 || c.isNull(i)) "" else c.getString(i) },   // 只读打开的老库没有这一列
         )
     }
 
