@@ -440,6 +440,27 @@ class TextNotePayload(val raw: JSONObject) {
         return this
     }
 
+    /**
+     * 选区批注的图钉被手动拖到的位置（JSON 键 `pin: [x, y]`，页内归一化的图钉中心；Mac `TextNote.pin`，2026-11-10）。
+     * 缺键 / 坏掉 → null（自动位置：选区末端右侧）。本端只读它来画图钉，拖图钉在 Mac 上做。
+     */
+    val pin: FloatArray? get() {
+        val a = raw.optJSONArray("pin") ?: return null
+        if (a.length() != 2) return null
+        val x = a.optDouble(0)
+        val y = a.optDouble(1)
+        return if (x.isNaN() || y.isNaN()) null else floatArrayOf(x.toFloat(), y.toFloat())
+    }
+
+    /** 框选移动 / 缩放时图钉位置跟着选区走（[f] 把归一化的 x, y 变到新位置；没有 `pin` 键就不动） */
+    fun mapPin(f: (Double, Double) -> Pair<Double, Double>): TextNotePayload {
+        val a = raw.optJSONArray("pin") ?: return this
+        if (a.length() != 2) return this
+        val (x, y) = f(a.optDouble(0), a.optDouble(1))
+        raw.put("pin", JSONArray().put(x.coerceIn(0.0, 1.0)).put(y.coerceIn(0.0, 1.0)))
+        return this
+    }
+
     /** 只替换逐行框（框选移动时随 anchor 一起平移），其余键原样保留 */
     fun withRects(rs: List<DoubleArray>): TextNotePayload {
         val arr = JSONArray()

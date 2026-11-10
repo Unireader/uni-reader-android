@@ -143,6 +143,11 @@ data class TextNote(
     val quote: String = "",
     /** 气泡卡片手动摆过的位置 / 大小（payload `card`，Mac `NoteCard`）；null = 自动规则。模式2 线上没有，恒 null */
     val card: NoteCard? = null,
+    /**
+     * 选区批注的图钉被手动拖到的位置（payload `pin: [x, y]`，页内归一化的图钉中心；Mac 2026-11-10 起能拖）。
+     * null = 自动位置（选区末端右侧）。模式2 线上没有，恒 null。
+     */
+    val pin: FloatArray? = null,
 )
 
 /**

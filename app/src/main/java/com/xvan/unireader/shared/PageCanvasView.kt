@@ -1634,8 +1634,17 @@ open class PageCanvasView @JvmOverloads constructor(
             if (lassoGhost(nnx, nny, tmp2)) { nnx = tmp2[0]; nny = tmp2[1] }
         }
         val selNote = n.aw > 0f
-        var x = viewX(page, if (selNote) nnx + n.aw else nnx) + if (selNote) dp(PadConst.PIN.SEL_DX) else 0f
-        var y = viewY(page, nny) + if (selNote) dp(PadConst.PIN.SEL_DY) else 0f
+        val pin = n.pin?.takeIf { selNote }
+        var x: Float
+        var y: Float
+        if (pin != null) {
+            // 图钉手动摆过（Mac 上拖的）：就在那儿；框选拖动中的乐观位移照样跟（nnx - n.nx）
+            x = viewX(page, pin[0] + (nnx - n.nx))
+            y = viewY(page, pin[1] + (nny - n.ny))
+        } else {
+            x = viewX(page, if (selNote) nnx + n.aw else nnx) + if (selNote) dp(PadConst.PIN.SEL_DX) else 0f
+            y = viewY(page, nny) + if (selNote) dp(PadConst.PIN.SEL_DY) else 0f
+        }
         // 钳进页内（页左右缘 = 内容左缘 + 页宽；纵向 = 该页的显示高）
         val left = contentLeft()
         val right = left + pw()

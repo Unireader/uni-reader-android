@@ -457,7 +457,7 @@ class LibraryStore(private val db: Db) : Closeable {
                     // anchor 宽 > 0 = 选区注解：图钉要挪到行末右侧（同 Mac `markerPos`）
                     aw = n.anchorW.toFloat(), typeId = p.typeId,
                     color = p.color()?.let { c -> intArrayOf(c[0].toInt(), c[1].toInt(), c[2].toInt()) },
-                    style = p.style, quote = p.quote, card = p.card,
+                    style = p.style, quote = p.quote, card = p.card, pin = p.pin,
                 ),
             )
         }
@@ -673,6 +673,7 @@ class LibraryStore(private val db: Db) : Closeable {
             doubleArrayOf(n.anchorX, n.anchorY, n.anchorW, n.anchorH), dx.toDouble(), dy.toDouble(),
         )
         val rs = p.rects().map { InkEdit.translatedRect(it, dx.toDouble(), dy.toDouble()) }
+        p.mapPin { x, y -> (x + dx) to (y + dy) }   // 手动摆过的图钉跟着走（同 Mac `InkEdit.translated`）
         upsertNote(
             n.copy(
                 anchorX = a[0], anchorY = a[1], anchorW = a[2], anchorH = a[3],
@@ -698,6 +699,7 @@ class LibraryStore(private val db: Db) : Closeable {
         val rs = p.rects().map {
             InkEdit.scaledRect(it, ax.toDouble(), ay.toDouble(), sx.toDouble(), sy.toDouble())
         }
+        p.mapPin { x, y -> (ax + (x - ax) * sx) to (ay + (y - ay) * sy) }
         upsertNote(
             n.copy(
                 anchorX = a[0], anchorY = a[1], anchorW = a[2], anchorH = a[3],

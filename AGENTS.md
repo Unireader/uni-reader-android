@@ -331,6 +331,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
     `MdNoteController.unsavedSyncPaths` 里那篇绕开）。🔴 红线 9 照旧：冲突时两份都留，别处删了的挪进 `Notes/.trash/`。引用目录镜像没做。
     启动页长按服务器上的工作区 = `ServerUi.workspaceMenu`（下载到本机 / 重命名 / 从服务器删除，删除确认两次、本机那份不动）。
   · 没做：草稿纸内容不实时更新；冲突报告界面（Mac 有）。
+- **选区批注的图钉位置（2026-11-10）**：payload 可选键 `pin: [x, y]`（页内归一化的图钉中心，Mac 上拖图钉写的；`anchor` / `rects` 含义不变）。
+  本端只读：`TextNotePayload.pin` → `TextNote.pin` → `PageCanvasView.noteViewPos`；框选挪 / 缩放选区批注时 `TextNotePayload.mapPin` 让它跟着走。模式2 线上没有。
   · **后台下载 PDF（2026-11-04，`PdfDownloadService`）**：书库页 / 阅读界面点「从服务器下载」走**前台服务**（`dataSync` 类型 + 通知），退到后台 / 锁屏照下，
     通知显进度、带「取消」（取消 = 全部停）；连着点几本排队下、同一篇重复点并成一份；下完各界面照常回调（界面已死就丢弃）。小 PDF 自动预取仍走普通线程、不经这里。
     文案 `srv_dl_*`（strings 两份）；33+ 通知抽屉显示要 POST_NOTIFICATIONS（点下载会先弹授权，不授予照下、只是通知抽屉里看不到）。
