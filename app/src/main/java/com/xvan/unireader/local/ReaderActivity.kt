@@ -144,6 +144,8 @@ class ReaderActivity : Activity() {
      * 那时它在内存里只剩 [docId] 与 [title]，重新激活时按库里的进度整份装回来。
      */
     private class Tab(val docId: String, var title: String) {
+        /** 跳转历史（后退 / 前进，同 Mac；不落库，关标签就忘）。只有 PDF 标签用。 */
+        val jumps = com.xvan.unireader.shared.JumpHistory()
         /**
          * 画板笔记标签（`../docs/BOARD-NOTE-PLAN.md §5`）：[docId] 存成 `board:<id>`（[TabSet.BOARD_PREFIX]），
          * 于是标签页组的存取、「已打开」判定这些按 docId 走的地方一行不改就认得它，也不会与文档 id 撞。
@@ -507,6 +509,13 @@ class ReaderActivity : Activity() {
             }
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { cur()?.turn(prev = true) }
             icon("next", R.drawable.ic_chevron_right, "下一页", spillFirst = true) { cur()?.turn(prev = false) }
+            // 跳转历史（同 Mac）：目录 / 书签 / 跳页 / 习题原页这类跳转之后能退回来；长按 = 看整条来路
+            icon("jumpBack", R.drawable.ic_jump_back, getString(R.string.jump_back), spillFirst = true, available = { cur() != null }) {
+                jumpStep(back = true)
+            }.setOnLongClickListener { showJumpHistory(); true }
+            icon("jumpForward", R.drawable.ic_jump_forward, getString(R.string.jump_forward), spillFirst = true, available = { cur() != null }) {
+                jumpStep(back = false)
+            }.setOnLongClickListener { showJumpHistory(); true }
             // 模式键：图标随当前模式变，点一下轮换（环形盘/侧键/Mac 远程仍各自有效，这只是多一条路）
             // （模式 / 笔 / 尺子走 toolCanvas：画板标签里切的是画板那份工具状态）
             icon("mode", TopBar.modeIcon(MODE_PAGE), "切换模式") {
@@ -617,8 +626,7 @@ class ReaderActivity : Activity() {
         drawer = ReaderDrawer(this).apply {
             onJump = { page, frac ->
                 // frac 恒 0（Pdfium 只给页号，见 PdfSource.toc），所以这一跳落在页顶
-                cur()?.scrollToPageFrac(page, frac)
-                refreshHud()
+                jumpTo(page, frac, com.xvan.unireader.shared.JumpKind.TOC)
             }
             onOpenDoc = { id -> openDoc(id) }
             // 书签（`../docs/REQUIREMENTS.md §1.9`）：模式1 的真源就是本机库，写完读回来再喂抽屉
@@ -1490,8 +1498,72 @@ class ReaderActivity : Activity() {
         val j = pendingJump ?: return
         if (j.first != docId) return
         pendingJump = null
-        c.scrollToPageFrac(j.second, j.third)
+        val t = tabs.firstOrNull { it.canvas === c }
+        val from = jumpHere(c)
+        if (c.scrollToPageFrac(j.second, j.third)) {
+            t?.jumps?.record(from, com.xvan.unireader.shared.JumpMark(j.second, j.third, com.xvan.unireader.shared.JumpKind.LIST))
+        }
         refreshHud()
+    }
+
+    // ---------- 跳转历史（后退 / 前进，规则在 shared/JumpHistory，同 Mac） ----------
+
+    private fun jumpHere(c: LocalCanvasView) =
+        com.xvan.unireader.shared.JumpMark(c.topVisiblePage(), c.topFrac(), com.xvan.unireader.shared.JumpKind.READING)
+
+    /** 当前 PDF 标签跳到某页某处，并记进它的跳转历史。 */
+    private fun jumpTo(page: Int, frac: Float, kind: com.xvan.unireader.shared.JumpKind, label: String = "") {
+        val t = curTab() ?: return
+        val c = cur() ?: return
+        val from = jumpHere(c)
+        if (c.scrollToPageFrac(page, frac)) t.jumps.record(from, com.xvan.unireader.shared.JumpMark(page, frac, kind, label))
+        refreshHud()
+    }
+
+    private fun jumpStep(back: Boolean) {
+        val t = curTab() ?: return
+        val c = cur() ?: return
+        val m = (if (back) t.jumps.back() else t.jumps.forward()) ?: return
+        c.scrollToPageFrac(m.page, m.frac)
+        refreshHud()
+    }
+
+    /** 长按后退 / 前进：整条来路，点一行直接过去（当前那条标成强调色）。 */
+    private fun showJumpHistory() {
+        val t = curTab() ?: return
+        val c = cur() ?: return
+        if (t.jumps.marks.isEmpty()) {
+            Toast.makeText(this, R.string.jump_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        var dlg: android.app.AlertDialog? = null
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for (m in t.jumps.marks.reversed()) {   // 最近的在上
+            val what = getString(
+                when (m.kind) {
+                    com.xvan.unireader.shared.JumpKind.READING -> R.string.jump_kind_reading
+                    com.xvan.unireader.shared.JumpKind.TOC -> R.string.jump_kind_toc
+                    com.xvan.unireader.shared.JumpKind.SEARCH -> R.string.jump_kind_search
+                    com.xvan.unireader.shared.JumpKind.LIST -> R.string.jump_kind_list
+                },
+            )
+            val line = getString(R.string.jump_row, m.page + 1, m.label.ifEmpty { what })
+            box.addView(
+                Ui.row(this) {
+                    dlg?.dismiss()
+                    t.jumps.goTo(m.id)?.let { c.scrollToPageFrac(it.page, it.frac) }
+                    refreshHud()
+                }.apply {
+                    addView(Ui.title(this@ReaderActivity, line, 16f).apply {
+                        if (m.id == t.jumps.current?.id) setTextColor(Ui.accent(this@ReaderActivity))
+                    })
+                },
+            )
+        }
+        dlg = Sheet(this).title(getString(R.string.jump_history))
+            .content(android.widget.ScrollView(this).apply { addView(box) })
+            .action(getString(R.string.act_cancel))
+            .show()
     }
 
     // ---------- 画板笔记（`../docs/BOARD-NOTE-PLAN.md §5`） ----------
@@ -2259,6 +2331,8 @@ class ReaderActivity : Activity() {
         val isBoard = curTab()?.isBoard == true
         val isEx = curTab()?.isExercise == true || curTab()?.isMarkdown == true
         for (k in arrayOf("prev", "next", "scratch", "lock", "canvas")) bar.setVisible(k, !isBoard && !isEx)
+        bar.setEnabled("jumpBack", curTab()?.jumps?.canGoBack == true)
+        bar.setEnabled("jumpForward", curTab()?.jumps?.canGoForward == true)
         for (k in arrayOf("undo", "redo")) bar.setVisible(k, !isEx)   // 画板也能撤销（2026-10-29）
         if (isBoard) {
             refreshBoardHud()
@@ -2654,7 +2728,14 @@ class ReaderActivity : Activity() {
         val c = cur() ?: return
         val n = c.pageCountOrZero()
         if (n <= 0) return
-        PadPanels.showGotoPage(this, n) { c.gotoPage(it) }
+        PadPanels.showGotoPage(this, n) { p ->
+            if (p in 1..n) {
+                val from = jumpHere(c)
+                c.gotoPage(p)
+                curTab()?.jumps?.record(from, com.xvan.unireader.shared.JumpMark(p - 1, 0f, com.xvan.unireader.shared.JumpKind.LIST))
+                refreshHud()
+            }
+        }
     }
 
     // ---------- 进度落库 ----------

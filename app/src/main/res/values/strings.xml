@@ -157,6 +157,15 @@
     <string name="tools_write_lock">Writing lock</string>
     <string name="tools_relative_ink">Relative ink width</string>
     <string name="tools_layers">Layers…</string>
+    <string name="jump_back">Back</string>
+    <string name="jump_forward">Forward</string>
+    <string name="jump_history">Jump History</string>
+    <string name="jump_empty">No jumps yet.</string>
+    <string name="jump_row">Page %1$d · %2$s</string>
+    <string name="jump_kind_reading">where you were reading</string>
+    <string name="jump_kind_toc">contents</string>
+    <string name="jump_kind_search">search</string>
+    <string name="jump_kind_list">jump</string>
     <string name="tools_goto_page">Go to page…</string>
     <string name="tools_open_doc">Open another document…</string>
     <string name="tools_workspace">Switch workspace…</string>

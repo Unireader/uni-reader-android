@@ -77,7 +77,7 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
          */
         fun defaults(): ToolLayout = ToolLayout(
             mutableListOf(
-                Group(G_NAV, "", mutableListOf("toc", "prev", "next"), docked = true),
+                Group(G_NAV, "", mutableListOf("toc", "prev", "next", "jumpBack", "jumpForward"), docked = true),
                 Group(
                     G_PEN, "",
                     // writeLock（书写锁定）紧跟模式 / 笔：它锁的就是这两颗键能切到哪（用户 2026-09-27 定）

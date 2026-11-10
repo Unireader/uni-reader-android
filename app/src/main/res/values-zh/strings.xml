@@ -153,6 +153,15 @@
     <string name="tools_write_lock">书写锁定</string>
     <string name="tools_relative_ink">相对粗细</string>
     <string name="tools_layers">图层…</string>
+    <string name="jump_back">后退</string>
+    <string name="jump_forward">前进</string>
+    <string name="jump_history">跳转历史</string>
+    <string name="jump_empty">还没有跳转过。</string>
+    <string name="jump_row">第 %1$d 页 · %2$s</string>
+    <string name="jump_kind_reading">当时读到这里</string>
+    <string name="jump_kind_toc">目录</string>
+    <string name="jump_kind_search">搜索</string>
+    <string name="jump_kind_list">跳转</string>
     <string name="tools_goto_page">跳到第…页</string>
     <string name="tools_open_doc">打开另一篇…</string>
     <string name="tools_workspace">切换工作区…</string>
