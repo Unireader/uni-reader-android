@@ -336,6 +336,14 @@
     <string name="doc_delete">Delete…</string>
     <string name="doc_delete_confirm">Delete “%1$s”?</string>
     <string name="doc_delete_msg">%1$d notes and strokes go to the trash with it. They’re deleted automatically after 30 days.</string>
+    <string name="doc_ungrouped">Ungrouped</string>
+    <string name="doc_move_group">Move to Group…</string>
+    <string name="doc_group_new">New Group…</string>
+    <string name="doc_group_new_title">New Group</string>
+    <string name="doc_group_rename">Rename</string>
+    <string name="doc_group_rename_title">Rename Group</string>
+    <string name="doc_group_dissolve">Ungroup</string>
+    <string name="doc_group_name_hint">Group name</string>
     <string name="doc_rename">Rename…</string>
     <string name="doc_rename_title">Rename Document</string>
     <string name="doc_name_hint">Document name</string>

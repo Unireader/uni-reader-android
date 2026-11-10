@@ -331,6 +331,14 @@
     <string name="doc_delete">删除…</string>
     <string name="doc_delete_confirm">删除“%1$s”？</string>
     <string name="doc_delete_msg">%1$d 条笔迹和笔记会一起移入回收站，30 天后自动清除。</string>
+    <string name="doc_ungrouped">未分组</string>
+    <string name="doc_move_group">移动到分组…</string>
+    <string name="doc_group_new">新建分组…</string>
+    <string name="doc_group_new_title">新建分组</string>
+    <string name="doc_group_rename">重命名</string>
+    <string name="doc_group_rename_title">重命名分组</string>
+    <string name="doc_group_dissolve">解散分组</string>
+    <string name="doc_group_name_hint">分组名称</string>
     <string name="doc_rename">重命名…</string>
     <string name="doc_rename_title">重命名文档</string>
     <string name="doc_name_hint">文档名称</string>

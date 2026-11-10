@@ -34,6 +34,8 @@ data class LibDocument(
      * 老库没这一列 → `Cursor.bool` 兜底 false，观感与从前一致。
      */
     val canvasMode: Boolean = false,
+    /** 一级分组（schema v11 `document.group_name`，空串 = 未分组；同 Mac `LibDocument.group`）。 */
+    val group: String = "",
 )
 
 /** 一个内容版本＝一个 content hash（加 TOC 等致 hash 变即新增一个 variant）。 */

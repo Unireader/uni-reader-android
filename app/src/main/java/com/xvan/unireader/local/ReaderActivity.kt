@@ -1281,7 +1281,7 @@ class ReaderActivity : Activity() {
         val opened = tabs.map { it.docId }.toSet()
         drawer.setLibrary(
             workspaceName,
-            libDocs.map { LibItem(it.id, it.title, opened.contains(it.id)) },
+            libDocs.map { LibItem(it.id, it.title, opened.contains(it.id), it.group) },
         )
         drawer.setBoards(
             libBoards.map { LibItem(it.id, board.displayName(it), opened.contains(TabSet.boardKey(it.id))) },

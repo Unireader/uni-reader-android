@@ -295,10 +295,21 @@ class LibraryActivity : Activity() {
         title = ws.name
         titleView.text = snap.name
         header.text = snap.info
-        for ((i, r) in snap.rows.withIndex()) {
-            if (i > 0) list.addView(Ui.divider(this))
-            list.addView(row(r.doc, r.ink, r.pdfOk, r.opened, snap.isMirror, snap.serverUrl != null))
+        // 有分组就分段（同 Mac 侧栏：未分组在前，其余按名字）；分组小标题长按 = 改名 / 解散
+        for ((group, rows) in com.xvan.unireader.shared.DocGroups.sections(snap.rows) { it.doc.group }) {
+            if (group != null) {
+                list.addView(
+                    Ui.sectionTitle(this, group.ifEmpty { getString(R.string.doc_ungrouped) }).apply {
+                        if (group.isNotEmpty()) setOnLongClickListener { showGroupMenu(ws, group); true }
+                    },
+                )
+            }
+            for ((i, r) in rows.withIndex()) {
+                if (i > 0) list.addView(Ui.divider(this))
+                list.addView(row(r.doc, r.ink, r.pdfOk, r.opened, snap.isMirror, snap.serverUrl != null))
+            }
         }
+        groupNames = snap.rows.map { it.doc.group }.filter { it.isNotEmpty() }.distinct().sorted()
         if (snap.rows.isEmpty()) {
             list.addView(
                 Ui.card(this).apply {
@@ -702,6 +713,7 @@ class LibraryActivity : Activity() {
         Sheet(this).title(d.title)
             .action(getString(R.string.act_cancel))
             .action(getString(R.string.doc_rename)) { renameDoc(ws, d) }
+            .action(getString(R.string.doc_move_group)) { pickGroup(ws, d) }
             .action(getString(R.string.doc_delete), primary = true) {
                 // 确认框里的数 = 这篇全部笔记行（笔迹 / 文字笔记 / 高亮 / 书签 / 图片…），不只是笔迹
                 runInBackground(
@@ -710,6 +722,80 @@ class LibraryActivity : Activity() {
                     ok = { n -> confirmDeleteDoc(ws, d, n) },
                     fail = { confirmDeleteDoc(ws, d, 0) },
                 )
+            }
+            .show()
+    }
+
+    // ---------- 分组（schema v11 `document.group_name`，同 Mac 侧栏「移动到分组」/「重命名分组…」） ----------
+
+    /** 现有的分组名（按名字排；上次 [render] 时记下）。 */
+    private var groupNames: List<String> = emptyList()
+
+    private fun writeGroup(ws: File, what: String, body: (LibraryStore) -> Unit) {
+        runInBackground(
+            what = what,
+            work = { LibraryStore.open(ws, readOnly = false).use { body(it) } },
+            ok = { reload() },
+            fail = { e ->
+                Log.e(TAG, "$what 失败", e)
+                alert(getString(R.string.doc_move_group), e.message ?: "")
+                reload()
+            },
+        )
+    }
+
+    /** 把一本书移到哪个分组：未分组 / 现有分组 / 新建分组…（当前所在的那一项标成强调色）。 */
+    private fun pickGroup(ws: File, d: LibDocument) {
+        var dlg: android.app.AlertDialog? = null
+        val box = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
+        fun item(label: String, current: Boolean, onClick: () -> Unit) {
+            box.addView(
+                Ui.row(this) { dlg?.dismiss(); onClick() }.apply {
+                    addView(Ui.title(this@LibraryActivity, label, 16f).apply { if (current) setTextColor(Ui.accent(this@LibraryActivity)) })
+                },
+            )
+        }
+        item(getString(R.string.doc_ungrouped), d.group.isEmpty()) {
+            if (d.group.isNotEmpty()) writeGroup(ws, "移出分组《${d.title}》") { it.setDocumentGroup(d.id, "") }
+        }
+        for (g in groupNames) item(g, d.group == g) {
+            if (d.group != g) writeGroup(ws, "移到分组《${d.title}》→ $g") { it.setDocumentGroup(d.id, g) }
+        }
+        item(getString(R.string.doc_group_new), false) {
+            askGroupName(getString(R.string.doc_group_new_title), "") { name ->
+                writeGroup(ws, "新建分组 $name") { it.setDocumentGroup(d.id, name) }
+            }
+        }
+        dlg = Sheet(this).title(getString(R.string.doc_move_group)).subtitle(d.title)
+            .content(android.widget.ScrollView(this).apply { addView(box) })
+            .action(getString(R.string.act_cancel))
+            .show()
+    }
+
+    /** 长按分组小标题：改名 / 解散（书回未分组，书本身不动）。 */
+    private fun showGroupMenu(ws: File, group: String) {
+        Sheet(this).title(group)
+            .action(getString(R.string.act_cancel))
+            .action(getString(R.string.doc_group_dissolve)) { writeGroup(ws, "解散分组 $group") { it.renameDocumentGroup(group, "") } }
+            .action(getString(R.string.doc_group_rename), primary = true) {
+                askGroupName(getString(R.string.doc_group_rename_title), group) { name ->
+                    if (name != group) writeGroup(ws, "分组改名 $group → $name") { it.renameDocumentGroup(group, name) }
+                }
+            }
+            .show()
+    }
+
+    private fun askGroupName(title: String, initial: String, then: (String) -> Unit) {
+        val edit = PadPanels.inputBox(this, getString(R.string.doc_group_name_hint)).apply {
+            setText(initial)
+            setSelection(text.length)
+        }
+        Sheet(this).title(title)
+            .content(edit)
+            .action(getString(R.string.act_cancel))
+            .action(getString(R.string.common_save), primary = true) {
+                val t = edit.text.toString().trim()
+                if (t.isNotEmpty()) then(t)
             }
             .show()
     }

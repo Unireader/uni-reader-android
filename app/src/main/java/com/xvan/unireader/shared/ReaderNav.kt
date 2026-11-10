@@ -36,7 +36,28 @@ data class BookmarkItem(val id: String, val page: Int, val frac: Float, val titl
  * 模式1 是本机 `library.sqlite` 的 `document.id`。[open] = 已经开着（模式2 = Mac 某个窗口里开着，
  * 模式1 = 已在某个标签页里）。
  */
-data class LibItem(val id: String, val title: String, val open: Boolean)
+data class LibItem(
+    val id: String,
+    val title: String,
+    val open: Boolean,
+    /** 一级分组（空串 = 未分组）。模式2 的 `library` 广播不带它 = 恒空，抽屉照旧不分段。 */
+    val group: String = "",
+)
+
+/**
+ * 书库按分组分段（同 Mac 侧栏 `SidebarViewController`）：一个分组都没有 → 一段、没有小标题（标题 null）；
+ * 否则「未分组」（标题空串，没有未分组的书就没有这一段）在前，其余分组按名字排。段内保持传进来的顺序。
+ */
+object DocGroups {
+    fun <T> sections(docs: List<T>, groupOf: (T) -> String): List<Pair<String?, List<T>>> {
+        val names = docs.map(groupOf).filter { it.isNotEmpty() }.distinct().sorted()
+        if (names.isEmpty()) return listOf(null to docs)
+        val out = ArrayList<Pair<String?, List<T>>>()
+        docs.filter { groupOf(it).isEmpty() }.takeIf { it.isNotEmpty() }?.let { out += "" to it }
+        for (g in names) out += g to docs.filter { groupOf(it) == g }
+        return out
+    }
+}
 
 /**
  * 抽屉「笔记」一组的一行（工作区 Markdown 笔记，`../docs/MARKDOWN-NOTES-PLAN.md`；模式1 专属，模式2 不设 = 不显示）。

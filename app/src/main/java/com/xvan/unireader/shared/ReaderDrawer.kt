@@ -599,7 +599,13 @@ class ReaderDrawer(private val a: Activity) {
         if (lib.isEmpty()) {
             bodyBox.addView(Ui.body(a, "工作区里还没有文档"))
         }
-        for (d in lib) bodyBox.addView(libRow(d, openBadge(d.open)))
+        // 有分组就分段（同 Mac 侧栏：未分组在前，其余按名字）；一个分组都没有 = 照旧一整段
+        for ((group, docs) in DocGroups.sections(lib) { it.group }) {
+            if (group != null) {
+                bodyBox.addView(Ui.groupTitle(a, group.ifEmpty { a.getString(com.xvan.unireader.R.string.doc_ungrouped) }, top = 10))
+            }
+            for (d in docs) bodyBox.addView(libRow(d, openBadge(d.open)))
+        }
         buildBoards()
         buildNotes()
     }

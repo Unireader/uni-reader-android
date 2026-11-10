@@ -189,6 +189,16 @@ class LibraryStore(private val db: Db) : Closeable {
         db.exec("UPDATE document SET last_opened_at=? WHERE id=?", arrayOf(at, documentId))
     }
 
+    /** 把一本书移到分组（↔ Mac `setGroup`；空串 = 未分组）。调用方负责去掉首尾空白。 */
+    fun setDocumentGroup(documentId: String, group: String) {
+        db.exec("UPDATE document SET group_name=? WHERE id=?", arrayOf(group, documentId))
+    }
+
+    /** 整组改名（↔ Mac `renameGroup`；`to` 为空串 = 解散该组，书回未分组）。 */
+    fun renameDocumentGroup(from: String, to: String) {
+        db.exec("UPDATE document SET group_name=? WHERE group_name=?", arrayOf(to, from))
+    }
+
     /** 改书名（↔ Mac `LibraryStore.rename(documentId:title:)`）：只改库里的名字，磁盘上的文件名不动。 */
     fun renameDocument(documentId: String, title: String) {
         db.exec("UPDATE document SET title=? WHERE id=?", arrayOf(title, documentId))
@@ -2161,6 +2171,7 @@ class LibraryStore(private val db: Db) : Closeable {
         sortOrder = c.int("sort_order"), readPage = c.int("read_page"),
         readFrac = c.dbl("read_frac"), readZoom = c.dbl("read_zoom", 1.0),
         readHFrac = c.dbl("read_hfrac"), canvasMode = c.bool("canvas_mode"),
+        group = c.getColumnIndex("group_name").let { i -> if (i < 0 || c.isNull(i)) "" else c.getString(i) },
     )
 
     private fun variant(c: android.database.Cursor) = LibVariant(
