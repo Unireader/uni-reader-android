@@ -848,6 +848,28 @@ open class PageCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * 页图的**内容**变了（扫描页增强开 / 关）：视口附近的页重新要一遍、到了再替换（不先清空，免得闪一下白），
+     * 视口外的直接丢掉、滚到了再取。
+     */
+    fun reloadImages() {
+        if (pageCount == 0) return
+        val top = scrollY - availH
+        val bot = scrollY + availH * 2
+        requested.clear()
+        for (i in images.keys.toList()) {
+            if (i >= pageCount || offY[i] + dispH[i] < top || offY[i] > bot) images.remove(i)
+        }
+        if (!showPage) return
+        for (i in 0 until pageCount) {
+            if (offY[i] + dispH[i] >= top && offY[i] <= bot && requested.add(i)) {
+                val page = i
+                imageSource?.request(page, pw().roundToInt()) { bmp -> post { setPageImage(page, bmp) } }
+                    ?: requested.remove(page)
+            }
+        }
+    }
+
     // —— 坐标映射（跨页 + 缩放；视口坐标 ↔ 页内归一化） ——
     protected data class Loc(val page: Int, val nx: Float, val ny: Float)
 

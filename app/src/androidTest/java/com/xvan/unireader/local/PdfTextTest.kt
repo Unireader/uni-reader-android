@@ -62,4 +62,34 @@ class PdfTextTest {
             assertTrue("第 2 页 $mid", mid in 0.43f..0.52f)
         }
     }
+
+    /** 扫描页增强的位图那一层（分条读写）：开了以后出的页图纸面是白的、字是黑的，条与条之间没有接缝；关掉回到原图。 */
+    @Test
+    fun 增强出图() {
+        fun shot(s: PdfSource): android.graphics.Bitmap {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var out: android.graphics.Bitmap? = null
+            s.request(0, 600) { out = it; latch.countDown() }
+            assertTrue(latch.await(20, java.util.concurrent.TimeUnit.SECONDS))
+            return out!!
+        }
+        PdfSource(ctx, pdf(), contentHash = "T", align = null).use { s ->
+            val plain = shot(s)
+            s.setEnhance(com.xvan.unireader.shared.ScanEnhance.Params())
+            val b = shot(s)
+            assertTrue("开了增强要重新出图", b !== plain)
+            assertEquals(plain.width, b.width)
+            assertTrue("至少跨好几条（128 行一条）", b.height > 600)
+            // 空白处一整列都是纯白（跨过每一条的接缝）；字的位置有黑的
+            val x = b.width - 20
+            for (y in 0 until b.height) assertEquals("($x,$y)", 0xFFFFFFFF.toInt(), b.getPixel(x, y))
+            var dark = 0
+            for (y in 0 until b.height / 4) for (xx in 0 until b.width step 2) {
+                if (android.graphics.Color.red(b.getPixel(xx, y)) < 60) dark++
+            }
+            assertTrue("字还在 $dark", dark > 50)
+            s.setEnhance(null)
+            assertTrue(shot(s) !== b)
+        }
+    }
 }

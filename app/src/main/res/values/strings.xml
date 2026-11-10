@@ -137,6 +137,7 @@
     <string name="tools_edit_rename">Rename group</string>
     <string name="tools_edit_cancel">Cancel</string>
     <string name="tools_edit_ok">OK</string>
+    <string name="tools_scan_enhance">Enhance scanned pages</string>
     <string name="tools_night">Night mode</string>
     <string name="tools_show_page">Show page image</string>
     <string name="tools_two_finger">Two-finger scrolling (palm guard)</string>

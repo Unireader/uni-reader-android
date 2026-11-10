@@ -133,6 +133,7 @@
     <string name="tools_edit_rename">分组改名</string>
     <string name="tools_edit_cancel">取消</string>
     <string name="tools_edit_ok">确定</string>
+    <string name="tools_scan_enhance">增强扫描页</string>
     <string name="tools_night">夜间模式</string>
     <string name="tools_show_page">显示页面图</string>
     <string name="tools_two_finger">双指滚动（防误触）</string>

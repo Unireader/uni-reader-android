@@ -15,6 +15,7 @@ import com.xvan.unireader.shared.PageImageSource
 import com.xvan.unireader.shared.PageWidths
 import com.xvan.unireader.shared.ScanAlignTable
 import com.xvan.unireader.shared.TocItem
+import com.xvan.unireader.shared.ScanEnhance
 import io.legere.pdfiumandroid.PdfiumCore
 import io.legere.pdfiumandroid.api.Bookmark
 import java.io.Closeable
@@ -372,10 +373,77 @@ class PdfSource(
     }
 
     private fun render(page: Int, widthPx: Int): Bitmap? {
-        scanAlign?.page(page)?.let { return renderAligned(page, widthPx, it) }
-        val h = pixelHeight(page, widthPx)
-        if (h <= 0) return null
-        return renderRaw(page, widthPx, h)
+        val bmp = scanAlign?.page(page)?.let { renderAligned(page, widthPx, it) } ?: run {
+            val h = pixelHeight(page, widthPx)
+            if (h <= 0) return null
+            renderRaw(page, widthPx, h)
+        } ?: return null
+        enhance?.let { p ->
+            val t0 = android.os.SystemClock.uptimeMillis()
+            runCatching { applyEnhance(bmp, page, p) }.onFailure { Log.w(TAG, "第 $page 页增强失败，显示原图", it) }
+            Log.d(TAG, "增强第 $page 页 ${bmp.width}×${bmp.height} ${android.os.SystemClock.uptimeMillis() - t0}ms")
+        }
+        return bmp
+    }
+
+    // ---------- 扫描页增强（`shared/ScanEnhance`，只作用于 [request] 出的页图；节选 / 文字层不受影响） ----------
+
+    @Volatile private var enhance: ScanEnhance.Params? = null
+
+    /** 开 / 关 / 换参数：页图缓存全部作废（调用方接着让画布重取）。null = 关。 */
+    fun setEnhance(p: ScanEnhance.Params?) {
+        if (enhance == p) return
+        enhance = p
+        clear()
+    }
+
+    /**
+     * 就地增强一张页图。纸色在缩小的图上估一次；正文按 128 行一条处理（上下各多读几行给降噪 / 锐化看邻居），
+     * 不把整页像素一次搬进 Java 堆（一张 2880 宽的页图是 47MB）。在出图线程上跑。
+     */
+    private fun applyEnhance(bmp: Bitmap, page: Int, p: ScanEnhance.Params) {
+        val w = bmp.width
+        val h = bmp.height
+        val ptW = pageSizes.getOrNull(page)?.get(0)?.takeIf { it > 0f } ?: return
+        val pxPerPt = w / ptW
+        val scale = ScanEnhance.paperScale(pxPerPt)
+        val sw = (w / scale).coerceAtLeast(1)
+        val sh = (h / scale).coerceAtLeast(1)
+        val smallPx = IntArray(sw * sh)
+        val small = if (scale == 1) bmp else Bitmap.createScaledBitmap(bmp, sw, sh, true)
+        small.getPixels(smallPx, 0, sw, 0, 0, sw, sh)
+        if (small !== bmp) small.recycle()
+        val k = pxPerPt * sw / w   // 缩小图上的像素 / pt
+        val paper = ScanEnhance.estimatePaper(
+            smallPx, sw, sh,
+            maxR = (ScanEnhance.MAX_RADIUS_PT * k).roundToInt().coerceAtLeast(1),
+            blurR = (ScanEnhance.BLUR_RADIUS_PT * k).roundToInt().coerceAtLeast(1),
+        )
+        val lut = ScanEnhance.toneLut(p)
+        val sharpR = pxPerPt.roundToInt().coerceAtLeast(1)
+        val m = sharpR + 1
+        val step = 128
+        val buf = IntArray(w * (step + 2 * m))
+        // 自下而上？不行——条与条之间互相看的是**原图**的邻居，所以先把每条要的行读出来再写回会读到已处理的行。
+        // 做法：一条一条从上往下，下一条的上边距（m 行原图）在写回之前先留一份。
+        var carry = IntArray(0)   // 上一条写回之前留下的、紧挨着下一条上沿的 m 行原图
+        var y = 0
+        while (y < h) {
+            val rows = minOf(step, h - y)
+            val top = y - carry.size / w
+            val bot = minOf(h, y + rows + m)
+            val n = bot - top
+            System.arraycopy(carry, 0, buf, 0, carry.size)
+            bmp.getPixels(buf, carry.size, w, 0, y, w, bot - y)
+            // 留下这一条最后 m 行的原图给下一条当上边距
+            val keep = minOf(m, rows)
+            val nextCarry = IntArray(keep * w)
+            System.arraycopy(buf, (y + rows - keep - top) * w, nextCarry, 0, keep * w)
+            ScanEnhance.processStrip(buf, w, n, top, h, paper, lut, p, sharpR)
+            bmp.setPixels(buf, (y - top) * w, w, 0, y, w, rows)
+            carry = nextCarry
+            y += rows
+        }
     }
 
     /**

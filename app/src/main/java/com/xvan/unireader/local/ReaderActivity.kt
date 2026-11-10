@@ -165,6 +165,8 @@ class ReaderActivity : Activity() {
 
         var canvas: LocalCanvasView? = null
         var pdf: PdfSource? = null
+        /** 打开的那个文件的内容哈希（扫描页增强按它记开关）。 */
+        var contentHash = ""
 
         /** 这一篇的图层表（`ink_layer` 的内存镜像）。改完一律重读，不本地推算 */
         var layers = listOf<LibInkLayer>()
@@ -571,6 +573,17 @@ class ReaderActivity : Activity() {
             }
             icon("night", R.drawable.ic_moon, getString(R.string.tools_night), toggle = true, available = pdf) {
                 cur()?.toggleNight(); saveTools(); refreshHud()
+            }
+            // 扫描页增强（同 Mac「视图 › 增强扫描页」）：按文档记在本机，只改显示、不改 PDF
+            icon("scanEnhance", R.drawable.ic_enhance, getString(R.string.tools_scan_enhance), toggle = true, available = pdf) {
+                val t = curTab()
+                val src = t?.pdf
+                if (t != null && src != null && t.contentHash.isNotEmpty()) {
+                    val on = ScanEnhancePrefs.toggle(this@ReaderActivity, t.contentHash)
+                    src.setEnhance(if (on) com.xvan.unireader.shared.ScanEnhance.Params() else null)
+                    t.canvas?.reloadImages()
+                    refreshHud()
+                }
             }
             icon("showPage", R.drawable.ic_eye, getString(R.string.tools_show_page), toggle = true, available = pdf) {
                 cur()?.toggleShowPage(); refreshHud()
@@ -2006,6 +2019,8 @@ class ReaderActivity : Activity() {
         val c = newCanvas(t)
         t.canvas = c
         t.pdf = src
+        t.contentHash = d.contentHash
+        if (ScanEnhancePrefs.isOn(this, d.contentHash)) src.setEnhance(com.xvan.unireader.shared.ScanEnhance.Params())
         pushDrawerToc()   // 装载完才有 PdfSource，目录到这一步才拿得到（activate 那次是空的）
         t.layers = d.layers
         t.pads = d.pads
@@ -2377,6 +2392,7 @@ class ReaderActivity : Activity() {
         bar.setActive("lock", canvas.zoomLocked)
         bar.setActive("canvas", canvas.canvasModeOn())
         bar.setActive("night", canvas.night)
+        bar.setActive("scanEnhance", curTab()?.contentHash?.let { ScanEnhancePrefs.isOn(this, it) } == true)
         bar.setActive("showPage", canvas.showPage)
         bar.setActive("twoFinger", canvas.twoFingerScroll)
         bar.setActive("hLock", canvas.hLocked)

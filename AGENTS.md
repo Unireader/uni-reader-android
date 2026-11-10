@@ -283,6 +283,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   OCR 层用画布里已装好的整本可见行（`PageCanvasView.textLayer()`），自带文字层 `PdfSource.pageText` / `charTopFrac`（与出图共用 `docLock`，
   插桩 `PdfTextTest`）；面板 `local/SearchSheet`（⋯ 里的「搜索」，停手 300ms 才搜、上一轮作废，最多 500 处）。页面上的命中框 = `PageCanvasView.setSearchMarks`
   （只是显示；OCR 层 `OcrTextSelect.clip` 按字符裁，自带文字层 `PdfSource.charRects`，开着扫描页对齐时后者不换算）。
+- **扫描页增强（模式1，2026-11-10，`../docs/SCAN-ENHANCE-PLAN.md §2.1`）**：⋯「增强扫描页」（`scanEnhance`，按内容哈希记在本机 `ScanEnhancePrefs`）。
+  像素算法只在 `shared/ScanEnhance`（纯 Kotlin，不认识 Bitmap；步骤与色调曲线照 Mac `ScanEnhance.swift`，`ScanEnhanceTest`），
+  位图那层 `PdfSource.setEnhance` / `applyEnhance`（分条读写，条之间互相看的是**原图**邻居——上一条写回前留一份边距，别改成读已处理的行）。
+  🔴 `processStrip` 是逐像素热循环：别在里面建数组 / 用闭包。只作用于 `request` 出的页图，`renderRegion`（节选）不增强。
 - **笔记对齐 Mac（2026-10-29，`../docs/TODO.md` 差距清单 A 组）**：
   · 高亮 / 选区注解三种画法 `HL_FILL/UNDERLINE/BOX`（payload `style`）+ 注解显式颜色，画法只在 `PadOverlays.drawTextFill`；
   手指点中高亮 → `local/NoteSheets.showHighlight`（换色 / 换画法 / 转批注 / 删除，`PageCanvasView.onFingerTapLate` 排在笔记图钉之后）。
