@@ -1126,6 +1126,9 @@ open class PageCanvasView @JvmOverloads constructor(
     /** 这本书有没有文本层——没有的话选字模式该给用户一句话，而不是"划了没反应" */
     fun hasTextLayer(): Boolean = textRuns.isNotEmpty()
 
+    /** 整本的可见 OCR 行（全文搜索用；只读，别改）。 */
+    fun textLayer(): Map<Int, List<TextRun>> = textRuns
+
     fun setTextRuns(map: Map<Int, List<TextRun>>) {
         textRuns = map
         textGroupCache.clear()

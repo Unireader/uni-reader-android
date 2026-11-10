@@ -253,6 +253,46 @@ class PdfSource(
         cache.evictAll()
     }
 
+    // ---------- 自带文字层（全文搜索，`shared/TextSearch`） ----------
+
+    private val pageTexts = HashMap<Int, String>()
+
+    /** 一页自带文字层的全文（没有 / 取不到 = 空串）。一页只取一次；在后台线程调（与出图共用 [docLock]，一页一锁）。 */
+    fun pageText(page: Int): String {
+        synchronized(pageTexts) { pageTexts[page]?.let { return it } }
+        val t = synchronized(docLock) {
+            if (closed || page !in 0 until pageCount) return ""
+            runCatching {
+                doc.openPage(page)?.use { p ->
+                    p.openTextPage().use { tp ->
+                        val n = tp.textPageCountChars()
+                        if (n <= 0) "" else tp.textPageGetText(0, n) ?: ""
+                    }
+                } ?: ""
+            }.getOrElse { Log.w(TAG, "取第 $page 页文字失败", it); "" }
+        }
+        synchronized(pageTexts) { pageTexts[page] = t }
+        return t
+    }
+
+    /**
+     * 第 [charIndex] 个字的上沿在页内的纵向比例（0 顶 1 底）；取不到 → 0（页顶）。
+     * Pdfium 的字符框是 PDF 坐标（原点在页左下、y 向上），按**原始**页高折算；开着扫描页对齐时差的那点平移不管（只用来定跳到哪）。
+     */
+    fun charTopFrac(page: Int, charIndex: Int): Float = synchronized(docLock) {
+        if (closed || page !in 0 until pageCount) return 0f
+        val h = rawSizes.getOrNull(page)?.getOrNull(1) ?: return 0f
+        if (h <= 0f) return 0f
+        runCatching {
+            doc.openPage(page)?.use { p ->
+                p.openTextPage().use { tp ->
+                    val box = tp.textPageGetCharBox(charIndex) ?: return@use 0f
+                    (1f - maxOf(box.top, box.bottom) / h).coerceIn(0f, 1f)
+                }
+            } ?: 0f
+        }.getOrDefault(0f)
+    }
+
     override fun close() {
         synchronized(queue) {
             closed = true

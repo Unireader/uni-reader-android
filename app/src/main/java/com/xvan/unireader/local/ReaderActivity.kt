@@ -601,6 +601,16 @@ class ReaderActivity : Activity() {
                 toolCanvas()?.toggleRelativeInkWidth(); saveTools(); refreshHud()
             }
             icon("layers", R.drawable.ic_layers, getString(R.string.tools_layers), available = pdf) { showLayers() }
+            icon("search", R.drawable.ic_search, getString(R.string.search_title), available = pdf) {
+                val t = curTab()
+                val c = cur()
+                val src = t?.pdf
+                if (t != null && c != null && src != null) {
+                    SearchSheet.show(this@ReaderActivity, src, c.textLayer()) { hit, query ->
+                        jumpTo(hit.page, (hit.frac - 0.04f).coerceAtLeast(0f), com.xvan.unireader.shared.JumpKind.SEARCH, query)
+                    }
+                }
+            }
             icon("gotoPage", R.drawable.ic_hash, getString(R.string.tools_goto_page), available = {
                 cur() != null || (curTab()?.isBoard == true && board.pageCount > 0)   // 分页画板也能跳页
             }) { showGotoPage() }

@@ -162,6 +162,13 @@
     <string name="jump_kind_toc">目录</string>
     <string name="jump_kind_search">搜索</string>
     <string name="jump_kind_list">跳转</string>
+    <string name="search_title">搜索</string>
+    <string name="search_hint">在这本书里搜索</string>
+    <string name="search_none">没有找到。</string>
+    <string name="search_count">%1$d 处</string>
+    <string name="search_more">只显示前 %1$d 处</string>
+    <string name="search_busy">正在搜索…</string>
+    <string name="search_row_page">第 %1$d 页</string>
     <string name="tools_goto_page">跳到第…页</string>
     <string name="tools_open_doc">打开另一篇…</string>
     <string name="tools_workspace">切换工作区…</string>

@@ -166,6 +166,13 @@
     <string name="jump_kind_toc">contents</string>
     <string name="jump_kind_search">search</string>
     <string name="jump_kind_list">jump</string>
+    <string name="search_title">Search</string>
+    <string name="search_hint">Search this book</string>
+    <string name="search_none">No matches.</string>
+    <string name="search_count">%1$d matches</string>
+    <string name="search_more">Showing the first %1$d matches</string>
+    <string name="search_busy">Searching…</string>
+    <string name="search_row_page">p. %1$d</string>
     <string name="tools_goto_page">Go to page…</string>
     <string name="tools_open_doc">Open another document…</string>
     <string name="tools_workspace">Switch workspace…</string>

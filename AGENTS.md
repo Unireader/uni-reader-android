@@ -265,7 +265,20 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   错题本那一支也有。手机（紧凑排法）两个开关在标题下面单独一行（`ExerciseScreen.filterRow`），⋯ 里只剩「全部重做」。
   开着时「全部重做」= 再挑一遍（`ExHost.restartLastWrong`）：模式1 重读库；模式2 协议没改，先发 `exAct` 4 带 `0` 再带 `4`。
   模式2 不知道有几道上次做错的（`ExDeckView.lastWrong = null`），开关一直能点。
-  · **题目笔记（v22，`../docs/EXERCISE-PLAN.md §12.1`）本端还没做**：`exercise.note` 只建列、随离线镜像同步。补做时笔记判完才显示（同解析）。
+  · **题目笔记 + 删题（2026-11-10，只有模式1）**：笔记判完才显示（同解析），「添加笔记 / 编辑笔记」开弹层、点「保存」才写
+  （Mac 是页内边写边存，本端没照做）；`LibraryStore.setExerciseNote` 同时改 `updated_at`。列表长按多选 →「删除」，
+  🔴 先归档再删：`Trash.deleteExercises`（归档到的题数对不上就不删，同 Mac）。两样都经 `ExHost.canEditNote` / `canDelete` 开关，
+  模式2 线格式不带笔记、没有删题动作 → 不显示。插桩测试 `ExerciseStoreTest`（题目行用裸 SQL 造）。
+- **模式1 追平 Mac 第二轮（2026-11-10，`../docs/TODO.md` 差距清单 F2 / F3 / G1 / G2 / G3）**：
+  · **文档分组**（`document.group_name`）：`LibDocument.group`；分段规则只在 `shared/DocGroups.sections`（同 Mac 侧栏：没有分组不分段，
+  有则「未分组」在前、其余按名字；`DocGroupsTest`），书库页与抽屉共用。书库页长按一本书「移动到分组…」（现有 / 新建），长按组名改名 / 解散。
+  模式2 的 `library` 广播不带分组 → 抽屉照旧一整段。
+  · **跳转历史**：规则只在 `shared/JumpHistory`（逐条照 Mac `JumpHistory.swift`，`JumpHistoryTest`），一个 PDF 标签一份（`Tab.jumps`，不落库）。
+  🔴 模式1 里凡是「跳到别处」的入口都走 `ReaderActivity.jumpTo`（目录 / 书签 / 搜索）或自己 `record`（跳页、习题原页），别直接 `scrollToPageFrac`，
+  否则那一跳退不回来。顶栏 `jumpBack` / `jumpForward`（导航组，直箭头图标；不能退 / 进时灰着），长按 = 整条来路。
+  · **全文搜索**：纯逻辑 `shared/TextSearch`（去空白 + 折大小写后找、OCR 命中的页不再报自带文字层、摘要，照 Mac `TextSearch.swift`，`TextSearchTest`）；
+  OCR 层用画布里已装好的整本可见行（`PageCanvasView.textLayer()`），自带文字层 `PdfSource.pageText` / `charTopFrac`（与出图共用 `docLock`，
+  插桩 `PdfTextTest`）；面板 `local/SearchSheet`（⋯ 里的「搜索」，停手 300ms 才搜、上一轮作废，最多 500 处）。**没做**：页面上标出命中的字。
 - **笔记对齐 Mac（2026-10-29，`../docs/TODO.md` 差距清单 A 组）**：
   · 高亮 / 选区注解三种画法 `HL_FILL/UNDERLINE/BOX`（payload `style`）+ 注解显式颜色，画法只在 `PadOverlays.drawTextFill`；
   手指点中高亮 → `local/NoteSheets.showHighlight`（换色 / 换画法 / 转批注 / 删除，`PageCanvasView.onFingerTapLate` 排在笔记图钉之后）。
