@@ -234,7 +234,19 @@ class ExerciseController(private val a: Activity) : ExHost {
     override fun setFilter(filter: Int) {
         val d = deck ?: return
         val f = ExFilter.of(filter) ?: return
-        if (d.setFilter(f)) reload(fresh = true)
+        if (!d.setFilter(f)) return
+        if (f == ExFilter.LAST_WRONG) restartLastWrong() else reload(fresh = true)
+    }
+
+    override fun restartLastWrong() {
+        val q = queue ?: return
+        val d = deck ?: return
+        if (d.filter != ExFilter.LAST_WRONG) return
+        // 排在库队列上：刚交的作答已经先写进去了，读到的统计是最新的
+        q.submit("重挑上次做错的 ${d.scope.key.take(24)}", { s -> LocalExerciseDeck.read(s, d.scope) }, { f ->
+            d.applyLastWrongRound(f)
+            if (deck === d) render()
+        })
     }
 
     override fun go(index: Int) {

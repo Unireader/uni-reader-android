@@ -175,6 +175,20 @@ data class Exercise(
         return null
     }
 
+    /**
+     * 上一次的结果是错的（「重做上次做错的」挑的就是这些，`../docs/EXERCISE-PLAN.md §12.2`，逐条照 Mac `Exercise.lastResultWrong`）：
+     * 看的是练习页上显示的那次——App 里练的最近一次，没练过才看书上的作答。选择题按现在的答案现判；
+     * 填空 / 主观题用库里记的对错（同 Mac `earlierResponse`，主观题本端不能作答、但 Mac 上判错的照样挑进来）。
+     * 答对过、后来又做错的也算；还没判的（等自己判 / Agent 判、题目没答案）不算错。
+     */
+    fun lastResultWrong(s: ExAttemptStats?): Boolean {
+        if (isChoice) return earlierAnswer(s)?.second == false
+        if (s == null) return false
+        if (s.lastAttemptId != null && s.lastAnswer != null) return s.lastPracticedCorrect == false
+        if (s.markedAttemptId != null && s.markedAnswer != null) return s.markedCorrect == false
+        return false
+    }
+
     /** 列表里一行显示的题干：去掉换行、并掉连续空白。 */
     val plainStem: String get() = payload.stem.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
 
@@ -422,12 +436,15 @@ sealed class ExScope {
  * （用户 2026-10-11 定：哪一组题在抽屉里选，顶栏只管做题进度）。`2` 错题 / `3` 收藏已去掉，不再用。
  */
 enum class ExFilter(val code: Int) {
-    ALL(0), UNANSWERED(1);
+    ALL(0), UNANSWERED(1),
+    /** 重做上次做错的（同 Mac `ExerciseFilter.lastWrong`；`2` / `3` 是去掉的错题 / 收藏，不许再分配）。 */
+    LAST_WRONG(4);
 
-    /** `attempts` = 这道题一共做过几次（含书上的作答）。 */
-    fun includes(e: Exercise, attempts: Int): Boolean = when (this) {
+    /** `s` = 这道题的作答统计（null = 没做过；做过几次含书上的作答）。 */
+    fun includes(e: Exercise, s: ExAttemptStats?): Boolean = when (this) {
         ALL -> true
-        UNANSWERED -> attempts == 0
+        UNANSWERED -> (s?.attempts ?: 0) == 0
+        LAST_WRONG -> e.lastResultWrong(s)
     }
 
     companion object {

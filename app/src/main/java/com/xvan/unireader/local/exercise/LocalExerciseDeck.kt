@@ -50,6 +50,11 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         private set
     private val answers = HashMap<String, Answer>()
     private val redoing = HashSet<String>()
+    /** 这一组（不管筛选）有哪些题：「重做上次做错的」要按全组数一数有几道（开关能不能点），同 Mac `scopeItems`。 */
+    private var scopeItems: List<Exercise> = emptyList()
+
+    /** 这一组里上一次做错的有几道（[Exercise.lastResultWrong]；按内存里的统计，这一轮刚答的也算进去了）。 */
+    val lastWrongCount: Int get() = scopeItems.count { it.lastResultWrong(stats[it.id]) }
 
     companion object {
         private val decks = HashMap<String, LocalExerciseDeck>()
@@ -86,7 +91,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
 
     val current: Exercise? get() = items.getOrNull(index)
 
-    private fun passes(e: Exercise) = filter.includes(e, stats[e.id]?.attempts ?: 0)
+    private fun passes(e: Exercise) = filter.includes(e, stats[e.id])
 
     /**
      * 第一次打开 / 换筛选：整份按范围 + 筛选重取。第一次打开 = 接着上次做的往下（[Exercise.resumeIndex]，同 Mac `ExerciseDeck.init`；
@@ -95,6 +100,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
     fun applyFresh(f: Fresh) {
         val curId = current?.id
         stats = f.stats
+        scopeItems = f.items
         items = f.items.filter(::passes)
         index = if (!loaded) Exercise.resumeIndex(items, stats)
         else curId?.let { id -> items.indexOfFirst { it.id == id }.takeIf { it >= 0 } } ?: index.coerceIn(0, maxOf(0, items.size - 1))
@@ -105,6 +111,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
     fun applyReload(f: Fresh) {
         if (!loaded) { applyFresh(f); return }
         stats = f.stats
+        scopeItems = f.items
         val byId = f.items.associateBy { it.id }
         val curId = current?.id
         val next = ArrayList<Exercise>()
@@ -124,16 +131,33 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
     /** 这一组有没有「只看没做过」：错题本那一支没有（进了错题本的题一定做过，筛出来永远是空的）。 */
     val offersUnansweredFilter: Boolean get() = !scope.isMistakes
 
+    /** 换筛选（真换了 → true，调用方接着重读库：[applyFresh]，换成「重做上次做错的」则 [applyLastWrongRound]）。 */
     fun setFilter(f: ExFilter): Boolean {
-        if (f == filter || (f != ExFilter.ALL && !offersUnansweredFilter)) return false
+        if (f == filter || (f == ExFilter.UNANSWERED && !offersUnansweredFilter)) return false
         filter = f
         return true
+    }
+
+    /**
+     * 重做上次做错的（同 Mac `startLastWrongRound`）：按**此刻**库里的统计重挑一遍上次做错的题，这一轮在它们上答过的清掉，
+     * 从第一道练起。开着这个开关时以前的作答一律不显示（[answer]），所以挑出来的都等着重新作答。
+     * 这一轮答对的照旧留在眼前，下次再挑就不在了。开着时点「全部重做」也走这里（再挑一遍）。
+     */
+    fun applyLastWrongRound(f: Fresh) {
+        if (filter != ExFilter.LAST_WRONG) { applyFresh(f); return }
+        stats = f.stats
+        scopeItems = f.items
+        items = f.items.filter(::passes)
+        for (e in items) answers.remove(e.id)
+        index = 0
+        loaded = true
     }
 
     /** 这道题要显示的作答（null = 还没答，等着作答）：这一轮答的，否则以前那次（[Exercise.earlierAnswer] / [Exercise.earlierFill]）。 */
     fun answer(e: Exercise): Answer? {
         answers[e.id]?.let { return it }
-        if (e.id in redoing) return null
+        // 「重做上次做错的」：这一组都是要重做的题，以前那次不显示
+        if (e.id in redoing || filter == ExFilter.LAST_WRONG) return null
         if (e.isFill) {
             val q = e.earlierFill(stats[e.id]) ?: return null
             return Answer(emptySet(), q.correct, q.earlier, q.blanks, q.attemptId)
@@ -216,6 +240,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             scope = scope.key, title = title, filter = filter.code, index = index,
             done = answers.size, right = answers.values.count { it.correct == true }, cards = cards,
             noFilter = !offersUnansweredFilter,
+            lastWrong = lastWrongCount,
         )
     }
 

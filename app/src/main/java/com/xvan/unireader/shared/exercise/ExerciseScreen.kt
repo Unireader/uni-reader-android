@@ -99,15 +99,29 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
      * 错题本那一支不显示（错题都做过，[ExDeckView.noFilter]）。
      */
     private val unansweredBtn = pill(s(R.string.ex_unanswered_only)) { host.setFilter(if (deck.filter == 1) 0 else 1) }
-    /** 全部重做（同 Mac）：当前这一组（范围 + 筛选）都当没答过，从第一题练起。没有显示着作答的题时灰着。 */
+    /**
+     * 重做上次做错的（开关，同 Mac，`../docs/EXERCISE-PLAN.md §12.2`）：只留上一次结果是错的题、都等着重新作答，从第一道练起。
+     * 与「只看没做过」至多开一个（同一个 [ExDeckView.filter]）；哪一组都有（错题本里正好挑出还没做对的）。
+     * 这一组一道上次做错的都没有时灰着（开着时总能关）。
+     */
+    private val lastWrongBtn = pill(s(R.string.ex_redo_last_wrong)) {
+        if (deck.filter == FILTER_LAST_WRONG) { host.setFilter(0); return@pill }
+        if (deck.lastWrong == 0) return@pill
+        host.setFilter(FILTER_LAST_WRONG)
+        setListMode(false)   // 开 = 重做一轮：到练习页
+    }
+    /**
+     * 全部重做（同 Mac）：当前这一组（范围 + 筛选）都当没答过，从第一题练起。没有显示着作答的题时灰着。
+     * 开着「重做上次做错的」时 = 再挑一遍上次做错的（这一轮答对的不再出现），而不是把答对的也拉回来重做。
+     */
     private val redoAllBtn = pill(s(R.string.ex_redo_all)) {
         if (!deck.hasShown) return@pill
-        host.redo(deck.cards.map { it.id }, 0)
+        if (deck.filter == FILTER_LAST_WRONG) host.restartLastWrong() else host.redo(deck.cards.map { it.id }, 0)
         setListMode(false)
     }
     private val practiceTab = pill(s(R.string.ex_practice)) { setListMode(false) }
     private val listTab = pill(s(R.string.ex_list)) { setListMode(true) }
-    /** 窄屏时「全部重做 / 只看没做过」收进这里（系统 `PopupMenu`）。 */
+    /** 窄屏时「全部重做」收进这里（系统 `PopupMenu`）；两个筛选开关窄屏单独一行（[filterRow]），不用点开菜单。 */
     private val moreBtn = Ui.iconButton(a, R.drawable.ic_more, s(R.string.ex_more)) { showMore() }.apply {
         visibility = View.GONE
     }
@@ -131,12 +145,19 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         addView(titleCol, LinearLayout.LayoutParams(0, -2, 1f))
-        for (v in listOf(redoAllBtn, unansweredBtn)) {
+        for (v in listOf(redoAllBtn, lastWrongBtn, unansweredBtn)) {
             addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         }
         addView(practiceTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
         addView(listTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) })
         addView(moreBtn, LinearLayout.LayoutParams(dp(Ui.TOUCH), dp(Ui.TOUCH)).apply { marginStart = dp(2) })
+    }
+    /** 窄屏：「重做上次做错的 / 只看没做过」两个开关单独一行（宽屏时它们在 [headerRow] 上，这一行不显示）。 */
+    private val filterRow = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(4), 0, dp(6))
+        visibility = View.GONE
     }
     private val progressRow = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
@@ -148,6 +169,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         setPadding(dp(16), dp(8), dp(12), dp(4))
         setBackgroundColor(Ui.surface(a))
         addView(headerRow, LinearLayout.LayoutParams(-1, -2))
+        addView(filterRow, LinearLayout.LayoutParams(-1, -2))
         addView(progressRow, LinearLayout.LayoutParams(-1, -2))
     }
 
@@ -451,33 +473,28 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         progressBar.progress = doneAll
         refreshHeaderButtons()
         paintPill(unansweredBtn, deck.filter == 1)
+        val lastWrongOn = deck.filter == FILTER_LAST_WRONG
+        paintPill(lastWrongBtn, lastWrongOn)
+        lastWrongBtn.alpha = if (lastWrongOn || deck.lastWrong != 0) 1f else 0.4f   // 开着时总能关
         redoAllBtn.isEnabled = deck.hasShown
         redoAllBtn.alpha = if (deck.hasShown) 1f else 0.4f
     }
 
-    /** 「全部重做 / 只看没做过」：宽屏在顶栏上，窄屏收进 ⋯。 */
+    /** 「全部重做」：宽屏在顶栏上，窄屏收进 ⋯。两个筛选开关一直看得见（窄屏在 [filterRow]），只看没做过在错题本那一支没有。 */
     private fun refreshHeaderButtons() {
         redoAllBtn.visibility = if (compact) View.GONE else View.VISIBLE
-        unansweredBtn.visibility = if (compact || deck.noFilter) View.GONE else View.VISIBLE
+        unansweredBtn.visibility = if (deck.noFilter) View.GONE else View.VISIBLE
         moreBtn.visibility = if (compact) View.VISIBLE else View.GONE
+        filterRow.visibility = if (compact) View.VISIBLE else View.GONE
     }
 
-    /** ⋯（窄屏）：全部重做（没有显示着作答的题时灰着）、只看没做过（可勾选；错题本那一支没有）。 */
+    /** ⋯（窄屏）：全部重做（没有显示着作答的题时灰着）。 */
     private fun showMore() {
         val menu = PopupMenu(a, moreBtn, Gravity.END)
         val redo = menu.menu.add(0, 1, 0, dimIfDisabled(s(R.string.ex_redo_all), deck.hasShown))
         redo.isEnabled = deck.hasShown
-        if (!deck.noFilter) {
-            menu.menu.add(0, 2, 1, s(R.string.ex_unanswered_only)).apply {
-                isCheckable = true
-                isChecked = deck.filter == 1
-            }
-        }
         menu.setOnMenuItemClickListener { mi ->
-            when (mi.itemId) {
-                1 -> redoAllBtn.performClick()
-                2 -> unansweredBtn.performClick()
-            }
+            if (mi.itemId == 1) redoAllBtn.performClick()
             true
         }
         menu.show()
@@ -503,6 +520,13 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         if (on) progressRow.addView(progressView, 0, LinearLayout.LayoutParams(-1, -2))
         else titleCol.addView(progressView, LinearLayout.LayoutParams(-1, -2))
         header.setPadding(dp(16), dp(8), dp(if (on) 4 else 12), dp(4))
+        // 两个筛选开关：宽屏在标题那一行（「全部重做」后面），窄屏单独一行
+        val pills = listOf(lastWrongBtn, unansweredBtn)
+        for (v in pills) (v.parent as? ViewGroup)?.removeView(v)
+        pills.forEachIndexed { i, v ->
+            if (on) filterRow.addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginStart = if (i == 0) 0 else dp(8) })
+            else headerRow.addView(v, headerRow.indexOfChild(redoAllBtn) + 1 + i, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        }
         refreshHeaderButtons()
         val side = dp(if (on) 16 else 20)
         column.setPadding(side, dp(16), side, dp(20))
@@ -545,7 +569,11 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             column.visibility = View.GONE
             navBar.visibility = View.GONE
             emptyView.visibility = View.VISIBLE
-            emptyView.text = if (deck.filter == 1) s(R.string.ex_empty_unanswered) else s(R.string.ex_empty)
+            emptyView.text = when (deck.filter) {
+                1 -> s(R.string.ex_empty_unanswered)
+                FILTER_LAST_WRONG -> s(R.string.ex_empty_last_wrong)
+                else -> s(R.string.ex_empty)
+            }
             builtFor = null
             shownKey = ""
             return
@@ -1257,6 +1285,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private companion object {
         /** 视图宽小于它（dp）= 手机 / 窄分屏，用紧凑排法。 */
         const val COMPACT_BELOW_DP = 600
+        /** [ExDeckView.filter] 的「重做上次做错的」（线上 `exDeck.filter` = 4，`../docs/PROTOCOL.md §4.9`）。 */
+        const val FILTER_LAST_WRONG = 4
         const val PREFS = "exercise"
         const val KEY_AUTO_NEXT = "autoNext"
         /** 判对之后停多久再翻（同 Mac，让人看到绿勾）。 */

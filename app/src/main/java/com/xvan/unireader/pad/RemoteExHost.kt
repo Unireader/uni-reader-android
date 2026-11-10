@@ -53,6 +53,15 @@ class RemoteExHost(
 
     override fun setFilter(filter: Int) = act(WireCodec.EX_ACT_FILTER, num = filter.toLong())
 
+    /**
+     * 再挑一遍上次做错的：Mac 那边「换成 4」就是重挑一轮（`ExerciseDeck.setFilter` → `startLastWrongRound`），
+     * 已经是 4 时再发 4 不动，所以先关再开。线上没有单独的「重挑」动作，这样新老 Mac 都认。
+     */
+    override fun restartLastWrong() {
+        act(WireCodec.EX_ACT_FILTER, num = 0)
+        act(WireCodec.EX_ACT_FILTER, num = 4)
+    }
+
     override fun go(index: Int) {
         val sc = scope()
         if (sc.isEmpty()) return

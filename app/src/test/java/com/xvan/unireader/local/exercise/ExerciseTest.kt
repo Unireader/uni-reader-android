@@ -266,9 +266,10 @@ class ExerciseTest {
         assertTrue(ExScope.Starred.includes(c) && !ExScope.Starred.includes(a))
         assertTrue(ExScope.StarredChapter("D1", emptyList()).includes(c) && !ExScope.StarredChapter("D1", emptyList()).includes(b))
         assertTrue(ExScope.StarredDocument("D1").includes(c) && !ExScope.StarredDocument("D2").includes(c))
-        assertTrue(ExFilter.UNANSWERED.includes(a, 0) && !ExFilter.UNANSWERED.includes(a, 1))
-        // 只剩全部 / 只看没做过（老 Mac 发来的 2 错题 / 3 收藏不认）
-        assertEquals(listOf(ExFilter.ALL, ExFilter.UNANSWERED), ExFilter.entries.toList())
+        assertTrue(ExFilter.UNANSWERED.includes(a, null) && !ExFilter.UNANSWERED.includes(a, ExAttemptStats(attempts = 1)))
+        // 全部 / 只看没做过 / 重做上次做错的（老 Mac 发来的 2 错题 / 3 收藏不认）
+        assertEquals(listOf(ExFilter.ALL, ExFilter.UNANSWERED, ExFilter.LAST_WRONG), ExFilter.entries.toList())
+        assertEquals(ExFilter.LAST_WRONG, ExFilter.of(4))
         assertNull(ExFilter.of(2))
         assertNull(ExFilter.of(3))
     }
@@ -403,6 +404,70 @@ class ExerciseTest {
         assertTrue(d.setFilter(ExFilter.UNANSWERED))
         d.applyFresh(LocalExerciseDeck.Fresh(q, st, emptyMap()))
         assertEquals("换筛选：停在原来那道", "q6", d.current?.id)
+    }
+
+    /** 「上一次的结果是错的」各种情形，与 Mac `spike/exercise-test.swift` 的 `lastResultWrong` 一段逐条对应。 */
+    @Test
+    fun lastResultWrong() {
+        val lw = ex("lw")   // 答案 B
+        assertFalse("没做过", lw.lastResultWrong(null))
+        assertTrue("最近一次选 A（错）", lw.lastResultWrong(ExAttemptStats(attempts = 1, wrong = 1, lastAnswer = "A")))
+        assertFalse("错后对", lw.lastResultWrong(ExAttemptStats(attempts = 2, correct = 1, wrong = 1, lastAnswer = "B")))
+        assertTrue("对后错", lw.lastResultWrong(ExAttemptStats(attempts = 2, correct = 1, wrong = 1, lastAnswer = "C")))
+        assertTrue("只有书上的作答、错", lw.lastResultWrong(ExAttemptStats(attempts = 1, markedAnswer = "A", markedCorrect = false)))
+        assertFalse("书上错、App 里练对了",
+            lw.lastResultWrong(ExAttemptStats(attempts = 2, markedAnswer = "A", markedCorrect = false, lastAnswer = "B")))
+        assertFalse("题目没答案（没法判）", ex("no", answer = emptyList()).lastResultWrong(ExAttemptStats(attempts = 1, lastAnswer = "A")))
+        assertFalse("答案后来改了：按现在的答案判",
+            ex("now", answer = listOf("A")).lastResultWrong(ExAttemptStats(attempts = 1, wrong = 1, lastAnswer = "A")))
+        // 填空 / 主观题：用库里记的对错
+        val sub = ex("sub", kind = Exercise.KIND_SUBJECTIVE)
+        assertTrue("主观题判错", sub.lastResultWrong(
+            ExAttemptStats(attempts = 1, wrong = 1, lastAnswer = "x", lastAttemptId = "a1", lastPracticedCorrect = false)))
+        assertFalse("主观题没判", sub.lastResultWrong(
+            ExAttemptStats(attempts = 1, lastAnswer = "x", lastAttemptId = "a1", lastPracticedCorrect = null)))
+        assertFalse("主观题判对", sub.lastResultWrong(
+            ExAttemptStats(attempts = 2, lastAnswer = "x", lastAttemptId = "a2", lastPracticedCorrect = true)))
+        assertTrue("主观题只有书上的、错", sub.lastResultWrong(
+            ExAttemptStats(attempts = 1, markedAnswer = "y", markedCorrect = false, markedAttemptId = "m1")))
+        assertTrue(ExFilter.LAST_WRONG.includes(lw, ExAttemptStats(attempts = 1, wrong = 1, lastAnswer = "A")))
+        assertFalse(ExFilter.LAST_WRONG.includes(lw, null))
+    }
+
+    /** 重做上次做错的：开 = 重挑一轮、都等着作答；答对的这一轮留着、再挑就不在了；错题本那一支也能开。 */
+    @Test
+    fun deckLastWrongRound() {
+        val q = listOf(ex("a"), ex("b"), ex("c"), ex("d"))
+        fun st(ans: String) = ExAttemptStats(attempts = 1, lastAnswer = ans, lastAt = "2027-01-15T08:00:00.000Z")
+        val stats = mapOf("a" to st("A"), "b" to st("B"), "c" to st("C"))   // a、c 上次错，b 对，d 没做过
+        val d = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.Wrong)
+        d.applyFresh(LocalExerciseDeck.Fresh(q, stats, emptyMap()))
+        assertEquals(2, d.lastWrongCount)
+        assertEquals(2, d.view("错题本").lastWrong)
+        d.index = 2
+        assertTrue(d.setFilter(ExFilter.LAST_WRONG))
+        d.applyLastWrongRound(LocalExerciseDeck.Fresh(q, stats, emptyMap()))
+        assertEquals(listOf("a", "c"), d.items.map { it.id })
+        assertEquals(0, d.index)
+        var v = d.view("错题本")
+        assertEquals(4, v.filter)
+        assertTrue("以前的作答不显示，都等着重新作答", v.cards.none { it.judged })
+        // 答对 a：这一轮留在眼前，全组的数跟着少一道
+        assertEquals(true, d.submit("a", setOf("B"))?.correct)
+        v = d.view("错题本")
+        assertEquals(listOf("a", "c"), v.cards.map { it.id })
+        assertTrue(v.cards[0].judged && !v.cards[1].judged)
+        assertEquals(1, v.lastWrong)
+        // 再挑一遍（开着时点「全部重做」）：a 不在了，c 还等着作答
+        d.applyLastWrongRound(LocalExerciseDeck.Fresh(q, stats + ("a" to st("B").copy(attempts = 2)), emptyMap()))
+        assertEquals(listOf("c"), d.items.map { it.id })
+        assertFalse(d.view("错题本").cards[0].judged)
+        // 关掉 = 回到全部，这一轮答的照旧显示
+        assertTrue(d.setFilter(ExFilter.ALL))
+        d.applyFresh(LocalExerciseDeck.Fresh(q, stats + ("a" to st("B").copy(attempts = 2)), emptyMap()))
+        assertEquals(listOf("a", "b", "c", "d"), d.items.map { it.id })
+        assertEquals("c", d.current?.id)
+        assertEquals(ExShown.ROUND, d.view("错题本").cards[0].shown)
     }
 
     @Test

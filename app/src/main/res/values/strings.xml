@@ -223,6 +223,8 @@
     <string name="ex_redo_all">Redo All</string>
     <string name="ex_redo_n">Redo %1$d Questions</string>
     <string name="ex_empty_unanswered">You’ve done every question here.</string>
+    <string name="ex_redo_last_wrong">Redo Last Wrong</string>
+    <string name="ex_empty_last_wrong">No question here was wrong last time.</string>
     <string name="ex_empty">No exercises here yet. On the Mac, ask the Agent to recognize the exercises in a PDF.</string>
     <string name="ex_open_new_tab">Open in New Tab</string>
     <string name="ex_set_chapter">Set Chapter…</string>

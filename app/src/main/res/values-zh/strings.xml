@@ -218,6 +218,8 @@
     <string name="ex_redo_all">全部重做</string>
     <string name="ex_redo_n">重做这 %1$d 道题</string>
     <string name="ex_empty_unanswered">这里的题都做过了。</string>
+    <string name="ex_redo_last_wrong">重做上次做错的</string>
+    <string name="ex_empty_last_wrong">这里没有上次做错的题。</string>
     <string name="ex_empty">这里还没有题。可以在 Mac 上让 Agent 识别 PDF 里的习题。</string>
     <string name="ex_open_new_tab">在新标签页中打开</string>
     <string name="ex_set_chapter">设置章节…</string>

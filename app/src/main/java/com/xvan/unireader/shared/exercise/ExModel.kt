@@ -90,7 +90,7 @@ data class ExDeckView(
     /** 范围键（与 Mac `ExerciseScope.key` 同）；空 = 没在练。 */
     val scope: String,
     val title: String,
-    /** 0 全部 · 1 只看没做过（`2` 错题 / `3` 收藏已去掉，老 Mac 发来按「全部」显示）。 */
+    /** 0 全部 · 1 只看没做过 · 4 重做上次做错的（`2` 错题 / `3` 收藏已去掉，老 Mac 发来按「全部」显示）。 */
     val filter: Int,
     val index: Int,
     /** 这一轮做了几道、对几道。 */
@@ -99,6 +99,11 @@ data class ExDeckView(
     val cards: List<ExCard>,
     /** 这一组没有「只看没做过」（错题本那一支：错题都做过）——顶栏不显示那个开关。 */
     val noFilter: Boolean = false,
+    /**
+     * 这一组里上一次做错的有几道（「重做上次做错的」能不能点：0 = 灰着）；null = 不知道（模式2：`exDeck` 不带这个数，
+     * 开关一直能点，没有错题时点了显示一句「这里没有上次做错的题」）。
+     */
+    val lastWrong: Int? = null,
 ) {
     val current: ExCard? get() = cards.getOrNull(index)
     /** 有没有正显示着作答的题（「全部重做」能不能点）。 */
@@ -138,6 +143,8 @@ interface ExHost {
     /** 这几道当作没答过（这一轮），从第 `from` 题练起。 */
     fun redo(ids: List<String>, from: Int)
     fun setFilter(filter: Int)
+    /** 开着「重做上次做错的」时点「全部重做」：再挑一遍上次做错的（这一轮答对的不再出现），从第一道练起。 */
+    fun restartLastWrong()
     /** 翻到第几题。 */
     fun go(index: Int)
     /** 到 PDF 原页。 */

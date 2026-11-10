@@ -229,10 +229,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `followPageAnchor` 在手指 / 笔落着或惯性中不跟；跟过去那一下 `followApplying` 为真、不回发；用户没动过视口不发。
   分页画板因此**不再走 `boardViewport`**（不复位、不回传），那条只剩无限画布在用。
 - **习题（v20，2026-10-11，`../docs/EXERCISE-PLAN.md §10`）**：两模式共用一份界面 `shared/exercise/ExerciseScreen`
-  （顶栏 范围名 / 进度 / 全部重做 / 只看没做过 / 练习·列表；练习页一次一题、左右划翻题；列表页长按多选）+ 抽屉第三页「习题」
+  （顶栏 范围名 / 进度 / 全部重做 / 重做上次做错的 / 只看没做过 / 练习·列表；练习页一次一题、左右划翻题；列表页长按多选）+ 抽屉第三页「习题」
   （`ReaderDrawer.setExercises`，有题才出现）；模式1 书库页（`LibraryActivity`）末尾也有一组「习题」（2026-10-30，有题才出现，
   只列第一级：全部 / 错题本 / 收藏 / 每本书，章节在抽屉里选；点一行带 `ex:<范围键>` 进阅读界面，同 `openExercises` 就地换公用习题标签）。界面只认中立数据 `ExDeckView` / `ExCard`，操作交给 `ExHost`：
-  「哪一组题」都在抽屉里选（错题本、收藏都按书 → 章展开），顶栏的筛选只剩「只看没做过」一个开关，
+  「哪一组题」都在抽屉里选（错题本、收藏都按书 → 章展开），顶栏的筛选是「重做上次做错的」「只看没做过」两个开关（至多开一个），
   `ExDeckView.noFilter` 为真（错题本那一支）时不显示——模式2 由 Mac 在 `exDeck` 尾部告诉，平板不去解析范围键。
   · 模式1 = `local/ExerciseController`：纯逻辑 `local/exercise/Exercise.kt`（逐条照抄 Mac `Exercise.swift`，JVM 单测 `ExerciseTest`）+
   一组题的进度 `LocalExerciseDeck`（照 Mac `ExerciseDeck`：快照、这一轮的作答、再做一次、筛选）+ `LibraryStore` 的习题一节（SQL 照抄 Mac）。
@@ -251,7 +251,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （`ExGroup.done`，null = 只显示题数，错题本那一支）。模式1 `LibraryStore.exerciseDoneCounts` + `ExDoneSummary` + `ExGroupNode.withDone`（照抄 Mac，
   `ExerciseTest.doneSummaryAndGroups`），答对一道新题只重读这几个数（`refreshDone`）；模式2 读 `exGroups` 可选尾部 `n × u16 done`（`0xFFFF` = 不显示，
   向量 #122）。练习页顶栏 `已做 x / 共 y`（`tries > 0` 现算）+ 系统水平进度条。
-  视图宽 < 600dp（手机 / 窄分屏）走紧凑排法（`ExerciseScreen.setCompact`，在根视图 `onMeasure` 里随尺寸切、不重建题目）：「全部重做 / 只看没做过」收进 ⋯、
+  视图宽 < 600dp（手机 / 窄分屏）走紧凑排法（`ExerciseScreen.setCompact`，在根视图 `onMeasure` 里随尺寸切、不重建题目）：「全部重做」收进 ⋯（两个筛选开关 2026-11-10 起单独一行）、
   进度另起一行；底部 `NavRow` 两个按钮等分宽度（≥48dp），一行放不下勾选框挪到上面一行；正文边距 16、选项间距 8 / 最小高 48、列表题号列 40。
   系统栏：`ReaderActivity` 原先只让了顶部，习题页铺到屏幕底、底部按钮压在手势条下 → 改用 `onSystemInsets`（四边，左右并上挖孔）
   经 `ExerciseScreen.setSystemInsets` 给习题页左 / 右 / 下内边距。⚠️ Markdown 笔记页（`md.view`）同样铺到底，底边没让，暂未改。
@@ -260,9 +260,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   有对不上的 → 亮参考答案、用户点「答对了 / 答错了」自己判（写回那条作答的 `correct` + `judged_by='self'`，
   `LibraryStore.judgeExerciseAttempt`，判错进错题本）；作答 / 判定经 `exercise_attempt` 列随镜像 / 服务器同步回 Mac。
   主观题（kind 4）与模式2 的填空仍只显示题干 + 提示到 Mac 上作答（`ExCard.macOnly`），手写（`ink` 列）本端不做。
-  · **题目笔记 + 重做上次做错的（v22，2026-10-27，`../docs/EXERCISE-PLAN.md §12`）本端本轮没做**（用户定先只做 Mac）：`exercise.note`
-  只建列、随离线镜像同步；`exDeck.filter` 可能收到 `4`（Mac 开着「重做上次做错的」），按「只看没做过」没开显示。
-  补做时：笔记判完才显示（同解析）、挑题规则照抄 Mac `Exercise.lastResultWrong`（最近一次是错的；没判的不算）。
+  · **重做上次做错的（2026-11-10，两模式，`../docs/EXERCISE-PLAN.md §21`）**：顶栏开关，规则逐条照 Mac（`Exercise.lastResultWrong`、
+  `ExFilter.LAST_WRONG = 4`、`LocalExerciseDeck.applyLastWrongRound` = Mac `startLastWrongRound`、`lastWrongCount`）；与「只看没做过」至多开一个，
+  错题本那一支也有。手机（紧凑排法）两个开关在标题下面单独一行（`ExerciseScreen.filterRow`），⋯ 里只剩「全部重做」。
+  开着时「全部重做」= 再挑一遍（`ExHost.restartLastWrong`）：模式1 重读库；模式2 协议没改，先发 `exAct` 4 带 `0` 再带 `4`。
+  模式2 不知道有几道上次做错的（`ExDeckView.lastWrong = null`），开关一直能点。
+  · **题目笔记（v22，`../docs/EXERCISE-PLAN.md §12.1`）本端还没做**：`exercise.note` 只建列、随离线镜像同步。补做时笔记判完才显示（同解析）。
 - **笔记对齐 Mac（2026-10-29，`../docs/TODO.md` 差距清单 A 组）**：
   · 高亮 / 选区注解三种画法 `HL_FILL/UNDERLINE/BOX`（payload `style`）+ 注解显式颜色，画法只在 `PadOverlays.drawTextFill`；
   手指点中高亮 → `local/NoteSheets.showHighlight`（换色 / 换画法 / 转批注 / 删除，`PageCanvasView.onFingerTapLate` 排在笔记图钉之后）。
