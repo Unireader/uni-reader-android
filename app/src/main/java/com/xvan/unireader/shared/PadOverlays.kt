@@ -107,6 +107,15 @@ class PadOverlays(private val density: Float) {
         c.drawRoundRect(rect, r, r, p)
     }
 
+    /** 全文搜索的命中框：琥珀色铺底（[strong] = 用户点的那一处，深一档）。夜间反色只作用于页图，这层照旧。 */
+    fun drawSearchMark(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float, strong: Boolean) {
+        rect.set(min(x0, x1), min(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
+        p.style = Paint.Style.FILL
+        p.color = if (strong) Color.argb(150, 255, 149, 0) else Color.argb(90, 255, 204, 0)
+        val r = dp(2f)
+        c.drawRoundRect(rect, r, r, p)
+    }
+
     // ---------- 文字笔记展开气泡 ----------
 
     /**

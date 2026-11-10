@@ -606,7 +606,9 @@ class ReaderActivity : Activity() {
                 val c = cur()
                 val src = t?.pdf
                 if (t != null && c != null && src != null) {
-                    SearchSheet.show(this@ReaderActivity, src, c.textLayer()) { hit, query ->
+                    SearchSheet.show(this@ReaderActivity, src, c.textLayer(), { marks, focus ->
+                        c.setSearchMarks(marks, focus?.let { it.page to it.rects })
+                    }) { hit, query ->
                         jumpTo(hit.page, (hit.frac - 0.04f).coerceAtLeast(0f), com.xvan.unireader.shared.JumpKind.SEARCH, query)
                     }
                 }

@@ -22,13 +22,18 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * 全文搜索面板（模式1，同 Mac ⌘F 的「全文 + 结果列表」；规则在 `shared/TextSearch`）。
  * 边打字边搜（停手 300ms 才跑，上一轮作废）：OCR 层用画布里已装好的整本可见行，自带文字层逐页问 Pdfium（后台线程，一页只取一次）。
- * 点一处 → 关面板、跳过去（记进跳转历史）。本轮不在页面上标出命中的字。
+ * 点一处 → 关面板、跳过去（记进跳转历史），页面上标出全部命中（点的那一处深一档，[onMarks]）；「清除标记」= 清空搜索词和页面上的标记。
  */
 object SearchSheet {
     /** 上次搜的词（进程内记着：再打开面板接着翻结果）。 */
     private var lastQuery = ""
 
-    fun show(a: Activity, pdf: PdfSource, ocr: Map<Int, List<TextRun>>, onPick: (TextSearch.Hit, String) -> Unit) {
+    fun show(
+        a: Activity, pdf: PdfSource, ocr: Map<Int, List<TextRun>>,
+        /** 页面上要标的命中框变了（页 → 行框；空 = 清掉），第二个参数 = 用户点的那一处。 */
+        onMarks: (Map<Int, List<FloatArray>>, TextSearch.Hit?) -> Unit,
+        onPick: (TextSearch.Hit, String) -> Unit,
+    ) {
         val edit = PadPanels.inputBox(a, a.getString(R.string.search_hint)).apply {
             imeOptions = EditorInfo.IME_ACTION_SEARCH
             setText(lastQuery)
@@ -46,8 +51,12 @@ object SearchSheet {
         var running: AtomicBoolean? = null   // 这一轮的作废标记
         val accent = Ui.accent(a)
 
+        fun marks(hits: List<TextSearch.Hit>) =
+            hits.filter { it.rects.isNotEmpty() }.groupBy({ it.page }, { it.rects }).mapValues { it.value.flatten() }
+
         fun render(query: String, hits: List<TextSearch.Hit>) {
             results.removeAllViews()
+            onMarks(marks(hits), null)
             status.text = when {
                 hits.isEmpty() -> a.getString(R.string.search_none)
                 hits.size >= TextSearch.MAX_HITS -> a.getString(R.string.search_more, TextSearch.MAX_HITS)
@@ -61,6 +70,7 @@ object SearchSheet {
                 results.addView(
                     Ui.row(a) {
                         dlg?.dismiss()
+                        onMarks(marks(hits), h)
                         onPick(h, query)
                     }.apply {
                         addView(Ui.groupTitle(a, a.getString(R.string.search_row_page, h.page + 1), top = 0))
@@ -80,7 +90,7 @@ object SearchSheet {
             lastQuery = query
             val needle = TextSearch.foldQuery(query)
             results.removeAllViews()
-            if (needle.isEmpty()) { status.text = ""; return }
+            if (needle.isEmpty()) { status.text = ""; onMarks(emptyMap(), null); return }
             status.text = a.getString(R.string.search_busy)
             val cancelled = AtomicBoolean(false)
             running = cancelled
@@ -97,7 +107,8 @@ object SearchSheet {
                 }
                 val all = TextSearch.merge(ocrHits, plain).take(TextSearch.MAX_HITS).map { h ->
                     if (cancelled.get()) return@submit
-                    if (h.frac >= 0f) h else h.copy(frac = pdf.charTopFrac(h.page, h.origin))
+                    if (h.frac >= 0f) h
+                    else h.copy(frac = pdf.charTopFrac(h.page, h.origin), rects = pdf.charRects(h.page, h.origin, h.length))
                 }.sortedWith(compareBy<TextSearch.Hit> { it.page }.thenBy { it.frac })
                 Bg.main.post { if (!cancelled.get() && dlg?.isShowing == true) render(query, all) }
             }
@@ -115,7 +126,8 @@ object SearchSheet {
         dlg = Sheet(a).title(a.getString(R.string.search_title))
             .size(560, 0.8f)
             .content(body)
-            .action(a.getString(R.string.act_cancel))
+            .action(a.getString(R.string.search_clear), dismiss = false) { edit.setText("") }
+            .action(a.getString(R.string.act_done), primary = true)
             .show()
         dlg.setOnDismissListener { running?.set(true); edit.removeCallbacks(debounce) }
         if (lastQuery.isNotEmpty()) search(lastQuery)

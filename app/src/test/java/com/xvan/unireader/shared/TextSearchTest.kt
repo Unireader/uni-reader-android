@@ -26,6 +26,14 @@ class TextSearchTest {
         assertEquals(0.4f, hits[1].frac, 1e-6f)
         assertEquals("操作系 统", hits[0].snippet.substring(hits[0].hitStart, hits[0].hitEnd))
         assertTrue(hits.all { it.page == 3 })
+        // 命中框：跨两行 = 两个框（第一行只占行尾那三个字，第二行只占行首一个字）；第二处在一行里 = 一个框
+        assertEquals(2, hits[0].rects.size)
+        assertEquals(0.2f, hits[0].rects[0][1], 1e-6f)
+        assertEquals(0.25f, hits[0].rects[1][1], 1e-6f)
+        assertTrue("第一行的框贴着行尾", kotlin.math.abs(hits[0].rects[0][0] + hits[0].rects[0][2] - 0.9f) < 1e-4f && hits[0].rects[0][2] < 0.8f)
+        assertTrue("第二行的框从行首起", kotlin.math.abs(hits[0].rects[1][0] - 0.1f) < 1e-4f && hits[0].rects[1][2] < 0.8f)
+        assertEquals(1, hits[1].rects.size)
+        assertEquals(4, hits[1].length)
     }
 
     @Test

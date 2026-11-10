@@ -164,6 +164,7 @@
     <string name="jump_kind_list">跳转</string>
     <string name="search_title">搜索</string>
     <string name="search_hint">在这本书里搜索</string>
+    <string name="search_clear">清除标记</string>
     <string name="search_none">没有找到。</string>
     <string name="search_count">%1$d 处</string>
     <string name="search_more">只显示前 %1$d 处</string>

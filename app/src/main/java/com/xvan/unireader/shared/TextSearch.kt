@@ -18,7 +18,13 @@ object TextSearch {
      * 一处命中：页（0 起）、页内纵向比例（跳过去停在这儿；-1 = 不知道，由调用方另算）、摘要与摘要里命中那一段的位置。
      * [origin] = 命中开头在这一页原文里的字符位置（自带文字层用它去问 Pdfium 字符框）。
      */
-    data class Hit(val page: Int, val frac: Float, val snippet: String, val hitStart: Int, val hitEnd: Int, val origin: Int)
+    data class Hit(
+        val page: Int, val frac: Float, val snippet: String, val hitStart: Int, val hitEnd: Int, val origin: Int,
+        /** 命中在原文里占几个字符（自带文字层问行框用）。 */
+        val length: Int = 0,
+        /** 命中的行框（归一化 x,y,w,h，一行一个）；OCR 层当场算好，自带文字层由调用方补。 */
+        val rects: List<FloatArray> = emptyList(),
+    )
 
     /** 折好的一页：`hay` = 去空白 + 小写后的字，`at[i]` = 第 i 个字在原文里的位置。 */
     class Folded(val text: String, val hay: String, val at: IntArray)
@@ -75,8 +81,22 @@ object TextSearch {
         for (r in find(fold(text), needle)) {
             var line = starts.binarySearch(r.first)
             if (line < 0) line = -line - 2
+            line = line.coerceIn(0, runs.size - 1)
             val (s, a, b) = snippet(text, r)
-            into += Hit(page, runs[line.coerceIn(0, runs.size - 1)].y.coerceIn(0f, 1f), s, a, b, r.first)
+            // 命中框：命中跨到的每一行各按字符裁一段（`OcrTextSelect.clip`，同划字）；裁不出来就整行
+            val rects = ArrayList<FloatArray>()
+            var li = line
+            while (li < runs.size && starts[li] <= r.last) {
+                val run = runs[li]
+                val lo = (r.first - starts[li]).coerceIn(0, run.text.length)
+                val hi = (r.last + 1 - starts[li]).coerceIn(0, run.text.length)
+                if (hi > lo) {
+                    val c = OcrTextSelect.clip(run, run.text.codePointCount(0, lo), run.text.codePointCount(0, hi)) ?: run
+                    rects += floatArrayOf(c.x, c.y, c.w, c.h)
+                }
+                li++
+            }
+            into += Hit(page, runs[line].y.coerceIn(0f, 1f), s, a, b, r.first, r.last + 1 - r.first, rects)
         }
     }
 
@@ -85,7 +105,7 @@ object TextSearch {
         if (text.isEmpty()) return
         for (r in find(fold(text), needle)) {
             val (s, a, b) = snippet(text, r)
-            into += Hit(page, -1f, s, a, b, r.first)
+            into += Hit(page, -1f, s, a, b, r.first, r.last + 1 - r.first)
         }
     }
 

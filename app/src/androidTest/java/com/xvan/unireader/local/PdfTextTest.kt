@@ -54,6 +54,10 @@ class PdfTextTest {
             assertTrue("上方那行 $top", top in 0.05f..0.15f)
             val second = s.charTopFrac(0, t0.indexOf("Second"))
             assertTrue("下方那行 $second", second in 0.68f..0.78f)
+            // 命中框：一行一个，位置与字的上沿对得上，宽度在页内
+            val rects = s.charRects(0, hits[0].origin, hits[0].length)
+            assertEquals(1, rects.size)
+            assertTrue("框 ${rects[0].toList()}", kotlin.math.abs(rects[0][1] - top) < 0.02f && rects[0][0] in 0.1f..0.15f && rects[0][2] in 0.05f..0.3f && rects[0][3] in 0.01f..0.05f)
             val mid = s.charTopFrac(1, hits[1].origin)
             assertTrue("第 2 页 $mid", mid in 0.43f..0.52f)
         }

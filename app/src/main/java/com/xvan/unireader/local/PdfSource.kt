@@ -293,6 +293,31 @@ class PdfSource(
         }.getOrDefault(0f)
     }
 
+    /**
+     * 自带文字层里从第 [start] 个字起 [count] 个字的行框（归一化 x,y,w,h，按**原始**页面；一行一个）。取不到 = 空表。
+     * 开着扫描页对齐时不换算（差一点旋转 / 平移），只当「大概在这儿」的标记。
+     */
+    fun charRects(page: Int, start: Int, count: Int): List<FloatArray> = synchronized(docLock) {
+        if (closed || page !in 0 until pageCount || count <= 0) return emptyList()
+        val sz = rawSizes.getOrNull(page) ?: return emptyList()
+        val w = sz[0]
+        val h = sz[1]
+        if (w <= 0f || h <= 0f) return emptyList()
+        runCatching {
+            doc.openPage(page)?.use { p ->
+                p.openTextPage().use { tp ->
+                    val n = tp.textPageCountRects(start, count)
+                    (0 until n).mapNotNull { i ->
+                        val r = tp.textPageGetRect(i) ?: return@mapNotNull null
+                        val top = maxOf(r.top, r.bottom)
+                        val bottom = minOf(r.top, r.bottom)
+                        floatArrayOf(minOf(r.left, r.right) / w, 1f - top / h, kotlin.math.abs(r.right - r.left) / w, (top - bottom) / h)
+                    }
+                }
+            } ?: emptyList()
+        }.getOrDefault(emptyList())
+    }
+
     override fun close() {
         synchronized(queue) {
             closed = true

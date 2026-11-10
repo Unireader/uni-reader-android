@@ -168,6 +168,7 @@
     <string name="jump_kind_list">jump</string>
     <string name="search_title">Search</string>
     <string name="search_hint">Search this book</string>
+    <string name="search_clear">Clear</string>
     <string name="search_none">No matches.</string>
     <string name="search_count">%1$d matches</string>
     <string name="search_more">Showing the first %1$d matches</string>

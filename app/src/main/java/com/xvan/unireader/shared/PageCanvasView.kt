@@ -1210,6 +1210,39 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     /** 选区铺色：页图之上、墨迹之下（同 Mac 的层序——盖在墨迹上会挡住自己写的字） */
+    /**
+     * 全文搜索的命中框（页 → 归一化行框 x,y,w,h；模式1 `local/SearchSheet` 注入，空 = 不画）。
+     * [searchFocus] = 用户点的那一处（画深一档）。只是显示，不参与命中 / 落库。
+     */
+    private var searchMarks: Map<Int, List<FloatArray>> = emptyMap()
+    private var searchFocus: Pair<Int, List<FloatArray>>? = null
+
+    fun setSearchMarks(marks: Map<Int, List<FloatArray>>, focus: Pair<Int, List<FloatArray>>? = null) {
+        searchMarks = marks
+        searchFocus = focus
+        invalidate()
+    }
+
+    fun hasSearchMarks(): Boolean = searchMarks.isNotEmpty()
+
+    private fun drawSearchMarks(canvas: Canvas) {
+        if (searchMarks.isEmpty()) return
+        val p = pw()
+        fun draw(page: Int, rects: List<FloatArray>, strong: Boolean) {
+            if (page !in 0 until pageCount) return
+            val h = dispH[page]
+            val top = barH + offY[page] - scrollY
+            if (top > height || top + h < barH) return
+            for (r in rects) {
+                val x0 = contentLeft() + r[0] * p
+                val y0 = top + r[1] * h
+                overlays.drawSearchMark(canvas, x0, y0, x0 + r[2] * p, y0 + r[3] * h, strong)
+            }
+        }
+        for ((page, rects) in searchMarks) draw(page, rects, false)
+        searchFocus?.let { draw(it.first, it.second, true) }
+    }
+
     private fun drawTextSelection(canvas: Canvas) {
         val sel = textSelection ?: return
         for ((page, rects) in sel.rects) {
@@ -1383,6 +1416,7 @@ open class PageCanvasView @JvmOverloads constructor(
         }
 
         drawTextFills(canvas)
+        drawSearchMarks(canvas)
         drawTextSelection(canvas)   // 划字选区压在已有铺色之上（正在选的那块要看得见）
 
         // 静态笔迹层（框选提交待回传期间：命中项按位移/缩放乐观渲染）。
