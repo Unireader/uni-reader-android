@@ -235,8 +235,64 @@ object ServerSync {
 
         @Volatile var stopped = false
         val cancel = ServerClient.Cancel()
-        /** 上次处理完时服务器的笔记文件修订号（安卓还没做笔记文件同步，只是随着通知带回去） */
+        /** 上次处理完时服务器的笔记文件修订号（0 = 还没处理过，开头会完整过一遍 `Notes/`） */
         @Volatile var noteHead = 0L
+
+        // —— 笔记文件（`NoteSync`，`../docs/PROTOCOL.md §9.5`）——
+        /** 这一轮不许碰的笔记（编辑器里还有没存的输入的那篇，`Notes/…` 路径）。主线程上问。 */
+        var noteSkip: () -> Set<String> = { emptySet() }
+        /** 拉下来的笔记文件换掉了本机的（主线程）：界面重扫 `Notes/`、重读开着的那篇。 */
+        var onNotes: () -> Unit = {}
+        @Volatile var notesBusy = false
+        /** 本机存过笔记文件（[noteSaved]）：下一秒推。 */
+        @Volatile var notesDirty = false
+        var lastNotePush = 0L
+    }
+
+    /** 笔记文件存盘 / 新建 / 改名 / 删除之后调（主线程）：开着的服务器工作区马上把 `Notes/` 的改动推上去。 */
+    fun noteSaved(dir: File) {
+        sessions[key(dir)]?.notesDirty = true
+    }
+
+    /** 开着时的笔记文件：只推（不问服务器、不改本机已有文件）。存过盘就推，另外每分钟兜底一次。主线程调，活在网络线程上。 */
+    private fun maybePushNotes(s: Session) {
+        val now = System.currentTimeMillis()
+        if (s.stopped || s.notesBusy || s.pulling) return
+        if (!s.notesDirty && now - s.lastNotePush < HEARTBEAT_MS) return
+        s.notesBusy = true
+        s.notesDirty = false
+        s.lastNotePush = now
+        Thread({
+            try {
+                val ep = endpoint(s.ctx, s.dir) ?: return@Thread
+                val rep = NoteSync.sync(s.dir, ep.account.client(s.cancel), ep.wid, ServerSyncIO.deviceName(), full = false)
+                ServerSyncIO.logNotes(s.dir, rep, "open")
+            } catch (e: ServerClient.Cancelled) {
+                // 会话停了
+            } catch (e: Throwable) {
+                Log.w(TAG, "${s.dir.name}：笔记文件没推上去（下一分钟再试）", e)
+            } finally {
+                s.notesBusy = false
+            }
+        }, "unireader-notes").start()
+    }
+
+    /** 服务器上的笔记文件有动静（或会话刚开）：完整一轮（推 + 拉 + 冲突副本），编辑器里没存的那篇绕开。网络线程调。 */
+    private fun pullNotes(s: Session, client: ServerClient, ep: Endpoint) {
+        while (s.notesBusy && !s.stopped) Thread.sleep(200)
+        if (s.stopped) return
+        s.notesBusy = true
+        try {
+            val latch = CountDownLatch(1)
+            var skip: Set<String> = emptySet()
+            main.post { skip = runCatching { s.noteSkip() }.getOrDefault(emptySet()); latch.countDown() }
+            latch.await(5, TimeUnit.SECONDS)
+            val rep = NoteSync.sync(s.dir, client, ep.wid, ServerSyncIO.deviceName(), full = true, skip = skip)
+            ServerSyncIO.logNotes(s.dir, rep, "live")
+            if (rep.localChanged) main.post { if (sessions[key(s.dir)] === s) s.onNotes() }
+        } finally {
+            s.notesBusy = false
+        }
     }
 
     /** 停手多久再推（用户定「改完停 2 秒推送」）、两次推送至少隔多久、兜底每隔多久推一次 */
@@ -256,12 +312,23 @@ object ServerSync {
      * 阅读界面开好了一个服务器工作区（主线程）：每秒看一眼本机有没有改动（停手 2 秒后推），挂着等服务器通知（S4，有动静就拉）。
      * [onRemote]（主线程）：拉到的别的设备的改动已经写进库了，让界面跟上（刷新列表、重读开着的文档）。
      */
-    fun sessionStart(ctx: Context, dir: File, queue: StoreQueue, onRemote: (List<SyncWire.PulledRow>) -> Unit = {}) {
+    fun sessionStart(
+        ctx: Context, dir: File, queue: StoreQueue,
+        /** 这一刻不许同步去碰的笔记（编辑器里有没存的输入），主线程上问 */
+        noteSkip: () -> Set<String> = { emptySet() },
+        /** 拉下来的笔记文件换掉了本机的（主线程） */
+        onNotes: () -> Unit = {},
+        onRemote: (List<SyncWire.PulledRow>) -> Unit = {},
+    ) {
         val k = key(dir)
         sessions.remove(k)?.let { stopSession(it) }
         val s = Session(ctx.applicationContext, dir, queue, onRemote)
+        s.noteSkip = noteSkip
+        s.onNotes = onNotes
+        s.lastNotePush = System.currentTimeMillis()   // 开头那一遍由 watch 里的完整一轮做（noteHead = 0）
         s.tick = Runnable {
             push(s)
+            maybePushNotes(s)
             main.postDelayed(s.tick, 1_000L)
         }
         sessions[k] = s
@@ -454,6 +521,8 @@ object ServerSync {
                     if (a.books) Thread({ prefetch(s.ctx, s.dir, ep) }, "unireader-prefetch").start()
                 }
             }
+            // 笔记文件：服务器那边的修订号变了（或这次会话还没过过一遍）→ 完整一轮
+            if (ch.notes != s.noteHead || s.noteHead == 0L) pullNotes(s, client, ep)
             s.noteHead = ch.notes
         } finally {
             s.pulling = false

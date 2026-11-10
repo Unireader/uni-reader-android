@@ -219,6 +219,21 @@ class MdNoteController(private val a: Activity) {
         queue?.submit("记上次打开 $rel") { s -> runCatching { s.mdDocOpened(rel) } }
     }
 
+    // ---------- 服务器同步（`server/NoteSync`） ----------
+
+    /** 编辑器里还有没存的输入的那篇（同步这一轮不许碰它：盖了就丢），`Notes/…` 路径。 */
+    fun unsavedSyncPaths(): Set<String> {
+        val rel = current ?: return emptySet()
+        return if (dirty) setOf(com.xvan.unireader.local.server.NoteSync.PREFIX + com.xvan.unireader.local.server.NoteSync.normalize(rel)) else emptySet()
+    }
+
+    /** 同步把别的设备的笔记文件换到了本机：重扫目录树；开着的那篇没有没存的输入就按新内容重读。 */
+    fun onRemoteFilesChanged() {
+        refresh()
+        val rel = current ?: return
+        if (!dirty) open(rel)
+    }
+
     /** 切走 / 关掉：先存，再收起 */
     fun close() {
         flush()
@@ -248,6 +263,7 @@ class MdNoteController(private val a: Activity) {
         runCatching { MdNotes.write(f, text) }
             .onSuccess {
                 dirty = false
+                com.xvan.unireader.local.server.ServerSync.noteSaved(dir)   // 服务器工作区：马上把这篇推上去
                 queue?.submit("笔记存盘时间戳 $rel") { s -> runCatching { s.touchMdDoc(rel) } }
             }
             .onFailure { Log.e(TAG, "存笔记失败 $rel", it) }
@@ -389,7 +405,7 @@ class MdNoteController(private val a: Activity) {
         val name = MdNotes.availablePath(src.name, used)
         val ok = src.isFile && src.renameTo(File(bin, name))
         Log.i(TAG, "删笔记 $rel → .trash/$name ok=$ok")
-        if (ok) refresh { then(true) } else then(false)
+        if (ok) { com.xvan.unireader.local.server.ServerSync.noteSaved(dir); refresh { then(true) } } else then(false)
     }
 
     // ---------- 新建 / 改名 ----------
@@ -403,7 +419,7 @@ class MdNoteController(private val a: Activity) {
         Bg.submit("新建笔记 $rel") {
             val ok = runCatching { MdNotes.write(MdNotes.file(dir, rel), "") }
                 .onFailure { Log.e(TAG, "新建笔记失败 $rel", it) }.isSuccess
-            a.runOnUiThread { if (ok) refresh { then(rel) } }
+            a.runOnUiThread { if (ok) { com.xvan.unireader.local.server.ServerSync.noteSaved(dir); refresh { then(rel) } } }
         }
     }
 
@@ -431,6 +447,7 @@ class MdNoteController(private val a: Activity) {
             current = newRel
             titleView.text = titleOf(newRel)
         }
+        com.xvan.unireader.local.server.ServerSync.noteSaved(dir)
         refresh { then(newRel) }
     }
 }

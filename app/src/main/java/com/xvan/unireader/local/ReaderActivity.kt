@@ -889,7 +889,11 @@ class ReaderActivity : Activity() {
         queue = q
         onServer = o.onServer
         // 开着时：本机改动停手 2 秒后推（退到后台马上推）；服务器有动静就拉，拉下来的让界面跟上（`onRemoteRows`）
-        if (o.onServer) ServerSync.sessionStart(this, dir, q) { rows -> onRemoteRows(rows) }
+        if (o.onServer) ServerSync.sessionStart(
+            this, dir, q,
+            noteSkip = { md.unsavedSyncPaths() },
+            onNotes = { md.onRemoteFilesChanged() },
+        ) { rows -> onRemoteRows(rows) }
         libTitles = o.docs.associate { it.id to it.title }
         workspaceName = o.name.ifEmpty { dir.name }
         tabsBar.setWorkspace(workspaceName)

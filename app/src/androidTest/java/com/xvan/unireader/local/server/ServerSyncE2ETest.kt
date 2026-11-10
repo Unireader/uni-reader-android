@@ -162,6 +162,84 @@ class ServerSyncE2ETest {
      * Mac ↔ 安卓互通：脚本先让 Mac 造一个工作区传上去（`macWorkspace` 参数），这里建缓存、核对 Mac 写的行与 PDF，
      * 加一个书签推回去；脚本随后让 Mac 拉下来核对（`../spike/android-server-interop.swift verify`）。
      */
+    /**
+     * 笔记文件同步（`NoteSync`，`../docs/PROTOCOL.md §9.5`）对着真服务器：上传时带上去的笔记另一台拉得到、改动来回、
+     * 两边都改 → 冲突副本两份都在、删除传播（挪进 `.trash`）、开着时只推。
+     */
+    @Test
+    fun 笔记文件_拉取_来回改_冲突副本_删除() {
+        val url = args.getString("serverUrl")
+        val code = args.getString("pairingCode")
+        val macWid = args.getString("macWorkspace")
+        assumeTrue("没给 macWorkspace，跳过（用 spike/android-server-e2e.sh 跑）", url != null && code != null && macWid != null)
+        val root = File(ctx.cacheDir, "server-e2e-notes").apply { deleteRecursively(); mkdirs() }
+        val paired = ServerClient.pair(url!!, code!!, "安卓 笔记")
+        val client = ServerClient(url, paired.token)
+        // 两台「设备」= 同一个服务器工作区（Mac 造的那份）的两份缓存
+        val wid = macWid!!
+        val a = ServerSyncIO.createCache(File(root, "cachesA/host"), "Mac建的", url, paired.serverId, client, wid) {}
+        val b = ServerSyncIO.createCache(File(root, "cachesB/host"), "Mac建的", url, paired.serverId, client, wid) {}
+        fun note(ws: File, rel: String) = File(ws, "Notes/$rel")
+        note(a, "数学/极限 (1)+x&y.md").apply { parentFile?.mkdirs(); writeText("# 极限\n") }
+        note(a, "要删的.md").writeText("x")
+        note(a, ".trash/扔掉的.md").apply { parentFile?.mkdirs(); writeText("不该上传") }
+        fun round(ws: File, dev: String) = NoteSync.sync(ws, client, wid, dev, full = true)
+
+        // ① A 新建的两篇传上去（`.trash` 里的不传），B 拉下来（文件名里的 + & ( ) 空格都原样）
+        val ra = round(a, "A")
+        assertEquals(ra.summary + ra.failed, 2, ra.pushed)
+        val rb = round(b, "B")
+        assertEquals(2, rb.pulled)
+        assertTrue(note(b, "数学/极限 (1)+x&y.md").isFile && note(b, "要删的.md").isFile)
+        assertFalse(note(b, ".trash/扔掉的.md").exists())
+        assertEquals("# 极限\n", note(b, "数学/极限 (1)+x&y.md").readText())
+        assertTrue(rb.failed.toString(), rb.failed.isEmpty())
+
+        // ② B 改正文、新建一篇 → A 拉到
+        note(b, "数学/极限 (1)+x&y.md").writeText("# 极限\n\nB 加了一行\n")
+        note(b, "B 新建.md").writeText("b")
+        assertEquals(2, round(b, "B").pushed)
+        val ra2 = round(a, "A")
+        assertEquals(2, ra2.pulled)
+        assertEquals("# 极限\n\nB 加了一行\n", note(a, "数学/极限 (1)+x&y.md").readText())
+
+        // ③ 开着时只推：A 改了、不问服务器
+        note(a, "B 新建.md").writeText("a 改过")
+        val po = NoteSync.sync(a, client, wid, "A", full = false)
+        assertEquals(1, po.pushed)
+        assertEquals(1, round(b, "B").pulled)
+        assertEquals("a 改过", note(b, "B 新建.md").readText())
+
+        // ④ 两边都改同一篇 → 后同步的那台：服务器那份换到原路径，自己那份另存成冲突副本并上传；两份字节都在
+        note(a, "数学/极限 (1)+x&y.md").writeText("A 的版本")
+        note(b, "数学/极限 (1)+x&y.md").writeText("B 的版本")
+        assertEquals(1, round(a, "A").pushed)
+        val rc = round(b, "平板(B)")
+        assertEquals(1, rc.conflicts.size)
+        assertEquals("A 的版本", note(b, "数学/极限 (1)+x&y.md").readText())
+        val copy = File(b, rc.conflicts[0])
+        assertTrue("副本名带设备名：${copy.name}", copy.name.startsWith("极限 (1)+x&y (冲突 平板-B- ") && copy.name.endsWith(".md"))
+        assertEquals("B 的版本", copy.readText())
+        val ra4 = round(a, "A")
+        assertEquals("A 拉到那份副本", 1, ra4.pulled)
+        assertEquals("B 的版本", File(a, rc.conflicts[0]).readText())
+
+        // ⑤ A 删一篇 → 服务器记墓碑 → B 的那篇挪进 Notes/.trash（不是抹掉）
+        assertTrue(note(a, "要删的.md").delete())
+        assertEquals(1, round(a, "A").removedRemote)
+        val rd = round(b, "B")
+        assertEquals(1, rd.removedLocal)
+        assertFalse(note(b, "要删的.md").exists())
+        val trashed = File(b, "Notes/.trash").walkTopDown().filter { it.isFile }.map { it.name }.toList()
+        assertEquals(listOf("要删的.md"), trashed)
+        // 再跑一轮什么都不动（.trash 里的不会被传上去）
+        val quiet = round(b, "B")
+        assertFalse(quiet.summary, quiet.touched)
+        assertTrue(quiet.failed.isEmpty())
+        // 基线文件写下来了，能读回
+        assertTrue(NoteSync.loadBase(b).keys.any { it.startsWith("Notes/") })
+    }
+
     @Test
     fun Mac建的工作区_安卓打开并改回去() {
         val url = args.getString("serverUrl")

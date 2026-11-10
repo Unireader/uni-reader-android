@@ -69,7 +69,22 @@ object ServerSyncIO {
                 downloadMissingImages(db, folder, client, wid)
                 rep
             }
+        }.also {
+            // 笔记文件（`Notes/`）：库连接关了之后做（它不碰库）。完整一轮：推 + 拉 + 冲突副本
+            val notes = NoteSync.sync(folder, client, wid, deviceName(), full = true)
+            logNotes(folder, notes, "closed")
         }
+
+    /** 冲突副本文件名里的设备名。 */
+    fun deviceName(): String = android.os.Build.MODEL ?: "Android"
+
+    /** 笔记文件这一步做了什么：有动静或有失败才写日志。 */
+    fun logNotes(folder: File, r: NoteSync.Report, round: String) {
+        if (!r.touched && r.failed.isEmpty()) return
+        android.util.Log.i(NoteSync.TAG, "$round ${folder.name}：${r.summary}")
+        for (c in r.conflicts) android.util.Log.i(NoteSync.TAG, "  冲突副本 $c")
+        for (f in r.failed.take(10)) android.util.Log.w(NoteSync.TAG, "  失败 $f")
+    }
 
     /** 每张表已同步的行数（`sync_base` 的条数），「删得太多」按占比判时用。 */
     fun baseCounts(db: com.xvan.unireader.local.store.Db): Map<String, Int> =

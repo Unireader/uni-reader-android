@@ -6,6 +6,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONObject
@@ -75,6 +76,8 @@ class ServerClient(val baseUrl: String, val token: String?, private val cancel: 
     companion object {
         private val JSON = "application/json".toMediaType()
         private val OCTET = "application/octet-stream".toMediaType()
+        /** 笔记文件接口的响应头：这个文件现在的修订号（`PUT` / `DELETE` 的所有结果都带，包括 409）。 */
+        const val REV_HEADER = "X-UniReader-Rev"
         private const val CHUNK = 8 * 1024 * 1024
 
         /** [Failure.status] 的两个本端值：回应不合约定 / 地址拼不出来 */
@@ -194,6 +197,46 @@ class ServerClient(val baseUrl: String, val token: String?, private val cancel: 
 
     fun cancelUpload(upload: String) {
         runCatching { send(request("v1/uploads/$upload").delete()) }
+    }
+
+    // ---------- 笔记文件（`../docs/PROTOCOL.md §9.5`） ----------
+
+    /** 服务器对一次写（上传 / 删除）的回答：收下了（[Ok]），或这个文件在 `base` 之后又变过、没收（[Stale]）。`rev` = 它现在的修订号。 */
+    sealed class NoteWrite {
+        data class Ok(val rev: Long) : NoteWrite()
+        data class Stale(val rev: Long) : NoteWrite()
+    }
+
+    /** 服务器上全部笔记文件的现状（含墓碑）。 */
+    fun listNotes(ws: String): List<NoteSync.Entry> {
+        val o = JSONObject(send(request("v1/workspaces/$ws/notes"), readTimeoutSec = 60).decodeToString())
+        val a = o.getJSONArray("files")
+        return (0 until a.length()).map { i ->
+            val f = a.getJSONObject(i)
+            NoteSync.Entry(f.getString("path"), f.getLong("rev"), f.optString("sha256"), f.optLong("size"), f.optBoolean("deleted"))
+        }
+    }
+
+    /** 下载一个笔记文件到 [dst]（先写旁边的 `.part`，下完改名）。返回服务器上的修订号。 */
+    fun downloadNote(ws: String, path: String, dst: File): Long {
+        val r = download(request("v1/workspaces/$ws/note", "path" to path), dst) ?: throw Failure(0, "no response")
+        return r.header(REV_HEADER)?.toLongOrNull() ?: throw Failure(0, "no revision header")
+    }
+
+    /** 整份上传一个笔记文件。[base] = 上次同步时看到的修订号（本机新建传 0）。 */
+    fun putNote(ws: String, path: String, base: Long, file: File): NoteWrite =
+        noteWrite(request("v1/workspaces/$ws/note", "path" to path, "base" to base.toString()).put(file.asRequestBody(OCTET)))
+
+    fun deleteNote(ws: String, path: String, base: Long): NoteWrite =
+        noteWrite(request("v1/workspaces/$ws/note", "path" to path, "base" to base.toString()).delete())
+
+    private fun noteWrite(b: Request.Builder): NoteWrite = call(b.build(), readTimeoutSec = 300).use { r ->
+        val rev = r.header(REV_HEADER)?.toLongOrNull()
+        when {
+            r.isSuccessful -> NoteWrite.Ok(rev ?: throw Failure(0, "no revision header"))
+            r.code == 409 -> NoteWrite.Stale(rev ?: 0)
+            else -> throw failure(r.code, r.body.bytes())
+        }
     }
 
     // ---------- 收发 ----------
