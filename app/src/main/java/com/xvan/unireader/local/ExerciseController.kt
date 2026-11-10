@@ -152,6 +152,12 @@ class ExerciseController(private val a: Activity) : ExHost {
         screen.onHidden()
     }
 
+    /** 开着服务器工作区时别的设备改了习题 / 作答（行已写进库）：开着的这一组就地刷新（不换眼前的题），分组的数重读。 */
+    fun reloadFromRemote() {
+        refreshGroups()
+        if (deck != null) reload()
+    }
+
     private fun render() {
         val d = deck ?: return
         screen.show(d.view(scopeTitle(d.scope)))

@@ -1780,8 +1780,11 @@ class ReaderActivity : Activity() {
         if (queue == null || workspace == null) return
         val tables = rows.map { it.table }.toSet()
         if (tables.any { it in setOf("document", "variant", "location", "meta") }) refreshDrawerLibrary()
-        if (tables.any { it.startsWith("board_") }) refreshBoards()
-        if (tables.any { it.startsWith("exercise") }) exercise.refreshGroups()
+        if (tables.any { it.startsWith("board_") }) {
+            refreshBoards()
+            if (curTab()?.isBoard == true) board.reloadFromRemote()   // 开着的画板整篇重读
+        }
+        if (tables.any { it.startsWith("exercise") }) exercise.reloadFromRemote()   // 开着的练习页就地刷新
         if (tables.any { it == "note" || it == "ink_layer" }) {
             for (t in tabs) t.canvas?.let { c -> c.reloadStrokes(); c.reloadNotes(); c.reloadImageNotes() }
         }

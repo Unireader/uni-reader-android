@@ -295,6 +295,29 @@ class BoardController(private val a: Activity) {
         updateBar()
     }
 
+    /**
+     * 开着服务器工作区时别的设备改了画板（行已经在库队列上写进库，`../docs/SERVER-MODE-PLAN.md §13.13`）：
+     * 这一篇的页、笔迹、图片整篇重读（排在同一条队列上，读到的是应用之后的状态）。页没变就不重排页（视口不动）。
+     * 这一篇被别处删了 → 留着眼前这份，不替用户关。撤销栈清空（快照对不上库了）。
+     */
+    fun reloadFromRemote() {
+        val q = queue ?: return
+        val b = board ?: return
+        q.submit("别处改了画板，重读 ${b.id.take(8)}", { s ->
+            val ps = BoardPageSet(s.boardPages(b.id))
+            Triple(s.board(b.id), ps, readContents(s, b.id, ps))
+        }, { (row, ps, c) ->
+            if (board?.id != b.id || row == null) return@submit
+            board = row
+            canvas.setPaper(row.bg, row.pattern)
+            if (ps.pages != pageSet.pages) applyPages(ps)
+            applyContents(c)
+            undoStack.clear()
+            redoStack.clear()
+            updateBar()
+        })
+    }
+
     // ---------- 读内容（队列线程）/ 上屏（主线程） ----------
 
     private class Contents(

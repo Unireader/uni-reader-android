@@ -41,6 +41,19 @@ object ServerSync {
         data class Failed(val error: Throwable) : Status()
         /** 本机没有这台服务器的令牌（没连过、或断开了） */
         object NoAccount : Status()
+        /** 这次要从服务器删的行太多，先停下等用户确认（`SyncDeleteGuard`） */
+        data class NeedsConfirm(val excess: SyncDeleteGuard.Excess) : Status()
+    }
+
+    /** 用户确认过、放行的那批删除（按工作区）。 */
+    private val allowedDeletes = ConcurrentHashMap<String, Set<String>>()
+
+    /** 用户在界面上确认了「删得太多」那一批：放行，马上再同步一次。主线程调 */
+    fun confirmDeletes(ctx: Context, dir: File) {
+        val k = key(dir)
+        val x = (statuses[k] as? Status.NeedsConfirm)?.excess ?: return
+        allowedDeletes[k] = x.keys
+        syncNow(ctx, dir)
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -155,11 +168,15 @@ object ServerSync {
                 r.prev?.done?.await()
                 r.prev = null
                 r.cancel.check()
-                val rep = ServerSyncIO.closedRound(dir, ep.account.client(r.cancel), ep.wid)
+                val rep = ServerSyncIO.closedRound(dir, ep.account.client(r.cancel), ep.wid, allowedDeletes[k].orEmpty())
+                allowedDeletes.remove(k)
                 Log.i(TAG, "${dir.name}：同步完成 推 ${rep.pushed} 拉 ${rep.pulled} 冲突 ${rep.pull.conflicts} 跳过 ${rep.pull.skipped}")
                 lastOk[k] = System.currentTimeMillis()
                 setStatus(k, Status.Synced(System.currentTimeMillis()))
                 ok = true
+            } catch (e: SyncDeleteGuard.Blocked) {
+                Log.w(TAG, "${dir.name}：这一轮要删 ${e.excess.total} 行，超过阈值，等用户确认")
+                setStatus(k, Status.NeedsConfirm(e.excess))
             } catch (e: Throwable) {
                 Log.w(TAG, "${dir.name}：同步没完成", e)
                 setStatus(k, classify(e))
@@ -227,7 +244,11 @@ object ServerSync {
     private const val MIN_PUSH_MS = 5_000L
     private const val HEARTBEAT_MS = 60_000L
 
-    private class Prep(val tc: Long, val changes: List<SyncWire.RowChange>, val files: List<ServerSyncIO.FileUp>)
+    private class Prep(
+        val tc: Long, val changes: List<SyncWire.RowChange>, val files: List<ServerSyncIO.FileUp>,
+        /** 删得太多、还没确认：这一批先不推。 */
+        val blocked: SyncDeleteGuard.Excess? = null,
+    )
 
     private val sessions = ConcurrentHashMap<String, Session>()
 
@@ -285,7 +306,9 @@ object ServerSync {
                 } else {
                     s.lastPush = now
                     val ch = SyncClient.localChanges(db, s.dir)
-                    Prep(tc, ch, ServerSyncIO.filesToUpload(ch, db, s.dir))
+                    // 删得太多先问：这一批没确认过就整批先不推（同一次推送是一个事务，不拆开）
+                    val x = SyncDeleteGuard.excess(ch, ServerSyncIO.baseCounts(db), allowedDeletes[k].orEmpty())
+                    if (x != null) Prep(tc, ch, emptyList(), x) else Prep(tc, ch, ServerSyncIO.filesToUpload(ch, db, s.dir))
                 }
             }
         }) { prep ->
@@ -293,6 +316,15 @@ object ServerSync {
                 s.pushing = false
                 return@submit
             }
+            if (prep.blocked != null) {
+                if ((statuses[k] as? Status.NeedsConfirm)?.excess != prep.blocked) {
+                    Log.w(TAG, "${s.dir.name}：这次推送要删 ${prep.blocked.total} 行，超过阈值，等用户确认")
+                }
+                setStatus(k, Status.NeedsConfirm(prep.blocked))
+                s.pushing = false
+                return@submit
+            }
+            allowedDeletes.remove(k)
             if (prep.changes.isEmpty()) {
                 s.cleanAt = prep.tc
                 s.pushing = false

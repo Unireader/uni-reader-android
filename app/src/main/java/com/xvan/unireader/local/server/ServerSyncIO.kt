@@ -49,12 +49,19 @@ object ServerSyncIO {
     // ---------- 一轮（临时连接） ----------
 
     /** 完整一轮：推（先传新文件）→ 拉 → 应用 → 补缺的图片。🔴 只在阅读界面没开着它时调 */
-    fun closedRound(folder: File, client: ServerClient, wid: String): SyncClient.RoundReport =
+    fun closedRound(
+        folder: File, client: ServerClient, wid: String,
+        /** 用户确认过的那批删除（`SyncDeleteGuard`）；这一轮的删除超了阈值又不在里面 → 抛 [SyncDeleteGuard.Blocked]，什么都不推不拉。 */
+        allowedDeletes: Set<String> = emptySet(),
+    ): SyncClient.RoundReport =
         LibraryStore.open(folder).use { store ->
             store.withMirrorDb { db ->
                 val rep = SyncClient.round(
                     db, folder,
-                    beforePush = { changes -> uploadAll(filesToUpload(changes, db, folder), client, wid) },
+                    beforePush = { changes ->
+                        SyncDeleteGuard.excess(changes, baseCounts(db), allowedDeletes)?.let { throw SyncDeleteGuard.Blocked(it) }
+                        uploadAll(filesToUpload(changes, db, folder), client, wid)
+                    },
                     push = { req -> SyncWire.decodePushResponse(client.push(wid, SyncWire.encode(req))) },
                     pull = { since -> SyncWire.decodePullResponse(client.pull(wid, since)) },
                     checkCancelled = { client.checkCancelled() },
@@ -63,6 +70,11 @@ object ServerSyncIO {
                 rep
             }
         }
+
+    /** 每张表已同步的行数（`sync_base` 的条数），「删得太多」按占比判时用。 */
+    fun baseCounts(db: com.xvan.unireader.local.store.Db): Map<String, Int> =
+        if (!com.xvan.unireader.local.mirror.MirrorStore.hasSyncBase(db)) emptyMap()
+        else com.xvan.unireader.local.mirror.MirrorStore.syncBase(db).mapValues { it.value.size }
 
     // ---------- 文件 ----------
 

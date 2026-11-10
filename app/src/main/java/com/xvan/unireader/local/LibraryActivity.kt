@@ -135,7 +135,11 @@ class LibraryActivity : Activity() {
         syncLine = Ui.body(this, "").apply {
             textSize = 13f
             visibility = View.GONE
-            setOnClickListener { workspace?.let { ServerSync.syncNow(this@LibraryActivity, it) } }
+            setOnClickListener {
+                val ws = workspace ?: return@setOnClickListener
+                val st = ServerSync.status(ws)
+                if (st is ServerSync.Status.NeedsConfirm) confirmServerDeletes(ws, st.excess) else ServerSync.syncNow(this@LibraryActivity, ws)
+            }
         }
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         titleView = Ui.title(this, "", 26f)
@@ -723,6 +727,27 @@ class LibraryActivity : Activity() {
                     fail = { confirmDeleteDoc(ws, d, 0) },
                 )
             }
+            .show()
+    }
+
+    /** 「删得太多先问」：说清这次要从服务器删多少、各是什么，确认了才同步（`ServerSync.confirmDeletes`）。 */
+    private fun confirmServerDeletes(ws: File, x: com.xvan.unireader.local.server.SyncDeleteGuard.Excess) {
+        fun name(table: String) = getString(
+            when (table) {
+                "document", "variant", "location" -> R.string.srv_del_book
+                "note" -> R.string.srv_del_note
+                "ink_layer" -> R.string.srv_del_layer
+                "scratch_pad" -> R.string.srv_del_scratch
+                "board_note", "board_page", "board_item" -> R.string.srv_del_board
+                "exercise", "exercise_attempt" -> R.string.srv_del_exercise
+                else -> R.string.srv_del_other
+            },
+        )
+        val lines = x.byTable.groupBy({ name(it.first) }, { it.second }).map { (n, c) -> "$n × ${c.sum()}" }
+        Sheet(this).title(getString(R.string.srv_del_title, x.total))
+            .subtitle(getString(R.string.srv_del_msg) + "\n\n" + lines.joinToString("\n"))
+            .action(getString(R.string.srv_del_later))
+            .action(getString(R.string.srv_del_confirm), primary = true) { ServerSync.confirmDeletes(this, ws) }
             .show()
     }
 

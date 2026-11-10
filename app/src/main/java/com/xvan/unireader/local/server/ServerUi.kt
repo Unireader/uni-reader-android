@@ -68,6 +68,7 @@ object ServerUi {
         is ServerSync.Status.Offline -> a.getString(R.string.srv_status_offline, label, describe(a, s.error))
         is ServerSync.Status.Failed -> a.getString(R.string.srv_status_failed, label, describe(a, s.error))
         is ServerSync.Status.NoAccount -> a.getString(R.string.srv_status_noaccount, label)
+        is ServerSync.Status.NeedsConfirm -> a.getString(R.string.srv_status_confirm, label, s.excess.total)
         null -> a.getString(R.string.srv_status_idle, label)
     }
 
