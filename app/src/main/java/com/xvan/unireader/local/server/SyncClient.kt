@@ -44,6 +44,18 @@ object SyncClient {
     fun computeBase(db: Db, folder: File): Map<String, Map<String, String>> =
         SyncRows.specState(db) + SyncRows.channelState(db, folder)
 
+    /**
+     * 建缓存后补下来的图片记进基线（同 Mac `recordDownloadedImages`）：[resetBase] 那一刻图片文件还没下（通道状态只算文件在的），
+     * 不补记的话第一次同步会把每张图片当成「本机新加的」重新推一遍、文件也重传一遍。只补「现在文件在、基线里没有」的。
+     */
+    fun recordDownloadedImages(db: Db, folder: File) {
+        if (!MirrorStore.hasSyncBase(db)) return
+        val have = MirrorStore.syncBase(db)[SyncRows.IMAGE].orEmpty().keys
+        for (sha in SyncRows.channelState(db, folder)[SyncRows.IMAGE].orEmpty().keys) {
+            if (sha !in have) setBase(db, Key(SyncRows.IMAGE, sha), "")
+        }
+    }
+
     /** 写基线（整表替换 + 记下拉到的修订号），一个事务 */
     fun writeBase(db: Db, base: Map<String, Map<String, String>>, pulledRev: Long) {
         db.exec(MirrorStore.SYNC_BASE_DDL.trimIndent())

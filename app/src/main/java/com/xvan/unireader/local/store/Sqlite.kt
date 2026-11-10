@@ -29,10 +29,16 @@ class Db private constructor(
          * 打开已存在的库。**不建库**——文件不存在直接抛，因为「安卓端悄悄建了个空库」
          * 比「打不开」难查得多（用户会以为笔记丢了）。迁移不在这一层，由 `LibraryStore.open` 调 [Schema.migrate]。
          */
-        fun open(file: File, readOnly: Boolean = false): Db {
+        /**
+         * [wal] = false：不开 WAL（单条连接、没有连接池）。给「要当成**单个文件**传出去 / 搬走」的临时库用
+         * （上传到服务器前的快照，`ServerSyncIO.prepareUpload`）：开着 WAL 时安卓给这个库配的是一个连接池，
+         * 之后想 `PRAGMA journal_mode=DELETE` 切回单文件会因为池里别的连接还占着库而报 `database is locked`（2026-11-10 端到端测试里撞到）。
+         */
+        fun open(file: File, readOnly: Boolean = false, wal: Boolean = true): Db {
             require(file.isFile) { "库文件不存在：${file.absolutePath}" }
             val flags =
                 if (readOnly) SQLiteDatabase.OPEN_READONLY
+                else if (!wal) SQLiteDatabase.OPEN_READWRITE
                 else SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING
             val raw = try {
                 SQLiteDatabase.openDatabase(file.absolutePath, null, flags)
@@ -54,7 +60,7 @@ class Db private constructor(
             d.pragma("busy_timeout=3000")
             // 外键约束：Mac 侧每次打开都开，删文档要靠它级联删 variant/location/note/ink_layer。
             d.pragma("foreign_keys=ON")
-            if (!readOnly) {
+            if (!readOnly && wal) {
                 // Mac 侧每次打开都会 `PRAGMA journal_mode=WAL`，所以这里即使没设成 WAL 也不会
                 // 破坏契约；但设成了能少一次模式切换。FAT32/exFAT 的 U 盘上 WAL 建不起来
                 // （缺共享内存），此时保持原模式继续跑——但要让界面说得出这件事，别只留一行日志。

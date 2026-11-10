@@ -114,8 +114,9 @@ class ServerSyncE2ETest {
         LibraryStore.open(a).use { it.insertBookmark(docId, 1, 0f, "A2") }
         LibraryStore.open(b).use { it.insertBookmark(docId, 2, 0f, "B2") }
         assertEquals(1, ServerSyncIO.closedRound(a, client, info.id).pushed)
+        val bChanges = LibraryStore.open(b).use { st -> st.withMirrorDb { db -> SyncClient.localChanges(db, b).map { "${it.table}:${it.op}:${it.rowId.take(8)}" } } }
         val rb = ServerSyncIO.closedRound(b, client, info.id)
-        assertEquals(1, rb.pushed)
+        assertEquals("B 要推的：$bChanges", 1, rb.pushed)
         assertTrue(rb.pulled >= 1)
         ServerSyncIO.closedRound(a, client, info.id)
         val want = setOf("A 的书签", "A2", "B2")

@@ -248,7 +248,10 @@ object ServerSyncIO {
             require(tmp.renameTo(dst)) { "rename ${tmp.absolutePath}" }
             progress(Step.IMAGES)
             runCatching {
-                Db.open(File(dst, Workspace.DB_REL)).use { downloadMissingImages(it, dst, client, wid) }
+                Db.open(File(dst, Workspace.DB_REL)).use {
+                    downloadMissingImages(it, dst, client, wid)
+                    SyncClient.recordDownloadedImages(it, dst)   // 补下来的图片进基线，免得第一次同步又推一遍
+                }
             }.onFailure { Log.w(TAG, "建缓存后补图片没补完（下次同步再补）", it) }
             return dst
         } finally {
@@ -329,7 +332,8 @@ object ServerSyncIO {
         val lib = File(staging, "library.sqlite")
         store.checkpoint()
         if (!store.vacuumInto(lib.absolutePath)) File(store.dbPath).copyTo(lib, overwrite = true)
-        Db.open(lib).use { db ->
+        // 🔴 快照不开 WAL（单条连接）：末尾要把它收成单个文件，开着连接池切日志模式会报库被锁（见 `Db.open` 的 wal 参数）
+        Db.open(lib, wal = false).use { db ->
             val files = ArrayList<UploadFile>()
             val used = HashSet<String>()
             var missing = 0
@@ -375,8 +379,9 @@ object ServerSyncIO {
                     }
             }
             val base = SyncClient.computeBase(db, folder)
+            // 快照文件头里可能还记着 WAL（`VACUUM INTO` / 整文件拷带过来的）：合并并切回回滚日志，传出去的是单个文件
             db.pragma("wal_checkpoint(TRUNCATE)")
-            db.pragma("journal_mode=DELETE")   // 传出去的是单个文件
+            db.pragma("journal_mode=DELETE")
             return UploadPlan(lib, files, base, missing)
         }
     }

@@ -330,6 +330,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
     基线 `UniReader/note-sync.json`；完整一轮接在 `ServerSyncIO.closedRound` 后面，开着时 `ServerSync.noteSaved` → 只推、`watch` 见笔记修订号变了 → 完整一轮，
     `MdNoteController.unsavedSyncPaths` 里那篇绕开）。🔴 红线 9 照旧：冲突时两份都留，别处删了的挪进 `Notes/.trash/`。引用目录镜像没做。
     启动页长按服务器上的工作区 = `ServerUi.workspaceMenu`（下载到本机 / 重命名 / 从服务器删除，删除确认两次、本机那份不动）。
+  · 🔴 **要当成单个文件传出去的临时库别开 WAL**（`Db.open(file, wal = false)`）：开着 WAL 时安卓配的是连接池，之后 `PRAGMA journal_mode=DELETE`
+    必报 `database is locked`——「上传到服务器…」从写出来起就因此一直失败，2026-11-10 端到端测试第一次真跑才发现（`ServerSyncE2ETest` 现在三条全过）。
   · 没做：草稿纸内容不实时更新；冲突报告界面（Mac 有）。
 - **选区批注的图钉位置（2026-11-10）**：payload 可选键 `pin: [x, y]`（页内归一化的图钉中心，Mac 上拖图钉写的；`anchor` / `rects` 含义不变）。
   本端只读：`TextNotePayload.pin` → `TextNote.pin` → `PageCanvasView.noteViewPos`；框选挪 / 缩放选区批注时 `TextNotePayload.mapPin` 让它跟着走。模式2 线上没有。
