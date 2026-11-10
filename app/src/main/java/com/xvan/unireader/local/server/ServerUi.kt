@@ -245,6 +245,79 @@ object ServerUi {
         )
     }
 
+    // ---------- 启动页长按一个服务器工作区：下载到本机 / 重命名 / 从服务器删除（同 Mac 启动页右键，方案 §13.9） ----------
+
+    fun workspaceMenu(
+        a: Activity, acc: ServerAccount, ws: ServerClient.WorkspaceInfo, cached: Boolean,
+        /** 列表要重读（改了名 / 删了 / 下好了） */
+        onChanged: () -> Unit,
+    ) {
+        val name = ws.name.ifEmpty { ws.id.take(8) }
+        val s = Sheet(a).title(name).action(a.getString(R.string.act_cancel))
+        if (!cached) {
+            s.action(a.getString(R.string.srv_ws_download)) {
+                // 建本机缓存（不打开）；建好后同步一轮，顺带把不大的 PDF 下下来（大的用到再下）
+                openFromServer(a, acc, ws) { dir ->
+                    ServerSync.syncNow(a, dir)
+                    onChanged()
+                }
+            }
+        }
+        s.action(a.getString(R.string.srv_ws_delete)) { confirmDeleteWorkspace(a, acc, ws, name, cached, onChanged) }
+        s.action(a.getString(R.string.srv_ws_rename), primary = true) {
+            val edit = PadPanels.inputBox(a, a.getString(R.string.srv_ws_name_hint)).apply {
+                setText(name)
+                setSelection(text.length)
+            }
+            Sheet(a).title(a.getString(R.string.srv_ws_rename_title))
+                .content(edit)
+                .action(a.getString(R.string.act_cancel))
+                .action(a.getString(R.string.common_save), primary = true) {
+                    val t = edit.text.toString().trim()
+                    if (t.isEmpty() || t == ws.name) return@action
+                    serverCall(a, "服务器上改名 $name → $t", { acc.client().renameWorkspace(ws.id, t) }, onChanged)
+                }
+                .show()
+        }
+        s.show()
+    }
+
+    /** 确认两次：第一次说清后果，第二次再问一遍（删的是服务器上那一份，所有设备都受影响）。 */
+    private fun confirmDeleteWorkspace(
+        a: Activity, acc: ServerAccount, ws: ServerClient.WorkspaceInfo, name: String, cached: Boolean, onChanged: () -> Unit,
+    ) {
+        val msg = a.getString(R.string.srv_ws_delete_msg) + if (cached) "\n\n" + a.getString(R.string.srv_ws_delete_local) else ""
+        Sheet(a).title(a.getString(R.string.srv_ws_delete_title, name)).subtitle(msg)
+            .action(a.getString(R.string.act_cancel))
+            .action(a.getString(R.string.srv_ws_delete), primary = true) {
+                Sheet(a).title(a.getString(R.string.srv_ws_delete_again, name))
+                    .action(a.getString(R.string.act_cancel))
+                    .action(a.getString(R.string.srv_ws_delete_confirm), primary = true) {
+                        serverCall(a, "从服务器删除 $name", {
+                            try {
+                                acc.client().deleteWorkspace(ws.id)
+                            } catch (e: ServerClient.Failure) {
+                                if (e.status != 404 || e.isUnsupportedRoute) throw e     // 别的设备已经删掉了：照常
+                            }
+                        }, onChanged)
+                    }
+                    .show()
+            }
+            .show()
+    }
+
+    private fun serverCall(a: Activity, what: String, work: () -> Unit, then: () -> Unit) {
+        a.runInBackground(
+            what = what,
+            work = { work() },
+            ok = { then() },
+            fail = { e ->
+                val msg = if (e is ServerClient.Failure && e.isUnsupportedRoute) a.getString(R.string.srv_ws_too_old) else describe(a, e)
+                a.showAlert(a.getString(R.string.srv_ws_failed), msg)
+            },
+        )
+    }
+
     // ---------- 上传 ----------
 
     /** 书库页 ⋯「上传到服务器…」：挑服务器 → 确认 → 带进度上传 → 原文件夹就地成为本机缓存（方案 §5 第 4 步） */

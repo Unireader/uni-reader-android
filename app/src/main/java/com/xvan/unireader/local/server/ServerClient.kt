@@ -136,6 +136,16 @@ class ServerClient(val baseUrl: String, val token: String?, private val cancel: 
     }
 
     /** 变更通知的回答：服务器现在的行 / 笔记文件修订号；[changed] = 和传去的不一样（false = 等到超时什么也没发生） */
+    /** 在服务器上给工作区改名（`PATCH /v1/workspaces/{id}`，同 Mac `renameWorkspace`）。 */
+    fun renameWorkspace(ws: String, name: String) {
+        send(request("v1/workspaces/$ws").patch(JSONObject().put("name", name).toString().toRequestBody(JSON)))
+    }
+
+    /** 从服务器删除整个工作区（服务器先整个挪进它的回收站，90 天内能在服务器上用命令行找回）。 */
+    fun deleteWorkspace(ws: String) {
+        send(request("v1/workspaces/$ws").delete())
+    }
+
     data class Change(val rows: Long, val notes: Long, val changed: Boolean)
 
     /**

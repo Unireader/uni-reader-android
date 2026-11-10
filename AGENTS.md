@@ -324,7 +324,13 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
     网络线程 `SyncClient.fetchPulled` 攒齐所有页 → 在**库队列**上 `applyPulled` + 记修订号（和用户自己的写入排一条队，内存快照对得上）→ 主线程回调
     `ReaderActivity.onRemoteRows`：按受影响的表刷新书库 / 画板 / 习题，开着的文档 `reloadStrokes` / `reloadNotes` / `reloadImageNotes`（库队列先进先出，读到的是应用之后的状态）。
     与推送互斥（`pushing` / `pulling`）；出错退避重试（5 秒起、最多 60 秒）；服务器程序太旧（`wait` 不带说明的 404 / 405，`Failure.isUnsupportedRoute`）→ 不再挂、退回只推。
-  · 没做：画板 / 草稿纸内容与开着的练习页不实时更新（列表会）；笔记文件（`Notes/`）同步安卓整个还没做（`../docs/PROTOCOL.md §9.5`）。
+  · **2026-11-10 收尾（`../docs/SERVER-MODE-PLAN.md §13.13`）**：开着的画板 / 练习页跟着拉到的行重读（`BoardController.reloadFromRemote` /
+    `ExerciseController.reloadFromRemote`）；删得太多先问（`SyncDeleteGuard` ↔ Mac `Sources/Sync/SyncDeleteGuard.swift`，状态 `NeedsConfirm`，书库页同步那一行点一下确认）；
+    **笔记文件同步** `NoteSync`（↔ Mac `SyncNotes.swift` + `ServerNoteSync.swift` 的内建 `Notes/` 那一半，判定表 `NoteSync.decide` 逐行照抄、`NoteSyncTest`；
+    基线 `UniReader/note-sync.json`；完整一轮接在 `ServerSyncIO.closedRound` 后面，开着时 `ServerSync.noteSaved` → 只推、`watch` 见笔记修订号变了 → 完整一轮，
+    `MdNoteController.unsavedSyncPaths` 里那篇绕开）。🔴 红线 9 照旧：冲突时两份都留，别处删了的挪进 `Notes/.trash/`。引用目录镜像没做。
+    启动页长按服务器上的工作区 = `ServerUi.workspaceMenu`（下载到本机 / 重命名 / 从服务器删除，删除确认两次、本机那份不动）。
+  · 没做：草稿纸内容不实时更新；冲突报告界面（Mac 有）。
   · **后台下载 PDF（2026-11-04，`PdfDownloadService`）**：书库页 / 阅读界面点「从服务器下载」走**前台服务**（`dataSync` 类型 + 通知），退到后台 / 锁屏照下，
     通知显进度、带「取消」（取消 = 全部停）；连着点几本排队下、同一篇重复点并成一份；下完各界面照常回调（界面已死就丢弃）。小 PDF 自动预取仍走普通线程、不经这里。
     文案 `srv_dl_*`（strings 两份）；33+ 通知抽屉显示要 POST_NOTIFICATIONS（点下载会先弹授权，不授予照下、只是通知抽屉里看不到）。

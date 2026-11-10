@@ -575,7 +575,14 @@ class Launcher : Activity() {
                     Ui.accent(this),
                     ws.name.ifEmpty { ws.id.take(8) },
                     if (cache != null) getString(R.string.srv_local_copy) else getString(R.string.srv_not_downloaded),
-                ) { openServerWorkspace(acc, ws, cache?.folder) },
+                ) { openServerWorkspace(acc, ws, cache?.folder) }.apply {
+                    // 长按：下载到本机 / 重命名 / 从服务器删除
+                    setOnLongClickListener {
+                        if (!hasAllFiles()) alert(getString(R.string.srv_open_failed), getString(R.string.srv_need_files))
+                        else ServerUi.workspaceMenu(this@Launcher, acc, ws, cache != null) { refreshServers() }
+                        true
+                    }
+                },
             )
         }
         // 本机有、服务器列表里没有的（服务器上删了）：照样列出来，能打开本机这份
