@@ -1624,7 +1624,7 @@ open class PageCanvasView @JvmOverloads constructor(
      * · **点注解**落在锚点本身；
      * · 两者最后都钳进页内（12/10dp 边距），否则贴边的笔记图钉会有一半在页外。
      */
-    private fun noteViewPos(i: Int, sel: LassoSelection?, out: FloatArray): Boolean {
+    protected fun noteViewPos(i: Int, sel: LassoSelection?, out: FloatArray): Boolean {
         val n = notes[i]
         val page = n.page.toInt()
         if (page !in 0 until pageCount) return false
@@ -1651,8 +1651,10 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     /** 第 i 条笔记此刻的气泡几何（不展开/不在页内 → null） */
-    private fun noteBubbleBox(i: Int, sel: LassoSelection?): NoteBubbleGeom.Box? {
+    protected fun noteBubbleBox(i: Int, sel: LassoSelection?, uncapped: Boolean = false): NoteBubbleGeom.Box? {
         val n = notes[i]
+        // uncapped：不管存着的高度上限，量内容全部露出要多高（拖卡片改高度时要它）
+        val card = if (uncapped) n.card?.copy(h = null) else n.card
         if (!NoteBubbleGeom.visible(n, noteExpanded, noteHoverId)) return null
         val pos = FloatArray(2)
         if (!noteViewPos(i, sel, pos)) return null
@@ -1661,7 +1663,7 @@ open class PageCanvasView @JvmOverloads constructor(
         return NoteBubbleGeom.layout(
             pw(), pos[0], pos[1], noteMarkerRadius(),
             contentLeft(), top, contentLeft() + pw(), top + dispH[page],
-            NoteBubbleGeom.sticky(n, noteExpanded), n.card,
+            NoteBubbleGeom.sticky(n, noteExpanded), card,
         ) { cw, fs, lines -> NoteBubbleText.height(context, n.text, cw, fs, lines) }
     }
 

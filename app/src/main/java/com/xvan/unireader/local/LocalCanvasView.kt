@@ -25,6 +25,8 @@ import com.xvan.unireader.shared.NOTE_ALWAYS
 import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.NoteBubbleGeom
 import com.xvan.unireader.shared.NoteBubbleText
+import com.xvan.unireader.shared.NoteCard
+import com.xvan.unireader.shared.NoteCardDrag
 import com.xvan.unireader.shared.OcrWatermark
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PageCanvasView
@@ -910,9 +912,96 @@ class LocalCanvasView @JvmOverloads constructor(
     private val dragLoc = FloatArray(2)
 
     override fun fingerPinHit(x: Float, y: Float): Boolean {
+        cardDrag = null
         dragPin = pinAt(x, y)
         pinsBackup = if (dragPin != null) pins else null
-        return dragPin != null
+        if (dragPin != null) return true
+        cardDrag = cardDragAt(x, y)   // 落在展开着的笔记卡片上：拖 = 挪卡片 / 改大小（没过死区仍是轻点）
+        return cardDrag != null
+    }
+
+    // ---------- 拖笔记卡片（文字 / 图片笔记的气泡；规则在 shared/NoteCardDrag，同 Mac） ----------
+
+    /** 一次拖卡片的起点快照（页内像素）。 */
+    private class CardDrag(
+        val noteId: String, val isImage: Boolean, val page: Int, val zone: NoteCardDrag.Zone,
+        val x0: Float, val y0: Float,
+        val fx: Float, val fy: Float, val fw: Float, val fh: Float, val contentH: Float,
+        val pinX: Float, val pinY: Float, val minW: Float, val minH: Float, val clearance: Float,
+        val before: NoteCard?,
+    ) {
+        var last: NoteCard? = null
+    }
+
+    private var cardDrag: CardDrag? = null
+
+    private fun cardDragAt(x: Float, y: Float): CardDrag? {
+        val corner = dp(26f)
+        val edge = dp(12f)
+        val pos = FloatArray(2)
+        fun make(id: String, image: Boolean, page: Int, b: NoteBubbleGeom.Box, contentH: Float, pinR: Float, before: NoteCard?): CardDrag {
+            val left = contentLeft()
+            val top = barH + offY[page] - scrollY
+            val fs = b.fs
+            val unit = pw() / NoteBubbleGeom.REF_PAGE_W
+            return CardDrag(
+                id, image, page, NoteCardDrag.zoneAt(x - b.x, y - b.y, b.w, b.h, corner, edge), x, y,
+                b.x - left, b.y - top, b.w, b.h, max(contentH, b.h),
+                pos[0] - left, pos[1] - top,
+                minW = max(NoteBubbleGeom.CARD_MIN_W * unit, fs * NoteBubbleGeom.EDIT + b.pad * 2f + fs * 3f),
+                minH = fs * NoteBubbleGeom.LINE_H + b.pad * 2f,
+                clearance = pinR + fs * NoteBubbleGeom.GAP, before = before,
+            )
+        }
+        for (n in imageNotes.asReversed()) {   // 图片气泡画在文字气泡之上，先认它
+            val ib = imageBox(n) ?: continue
+            val b = ib.box
+            if (x < b.x || x > b.x + b.w || y < b.y || y > b.y + b.h) continue
+            if (!imagePinPos(n, pos)) continue
+            return make(n.id, true, n.page, b, b.h, dp(PadConst.PIN.R), n.card)
+        }
+        for (i in notes.indices.reversed()) {
+            val n = notes[i]
+            if (!NoteBubbleGeom.sticky(n, noteExpanded)) continue   // 笔悬停出来的只读预览不能拖
+            val b = noteBubbleBox(i, null) ?: continue
+            if (x < b.x || x > b.x + b.w || y < b.y || y > b.y + b.h) continue
+            if (!noteViewPos(i, null, pos)) continue
+            val full = noteBubbleBox(i, null, uncapped = true)?.h ?: b.h
+            return make(n.id, false, n.page.toInt(), b, full, noteMarkerRadius(), n.card)
+        }
+        return null
+    }
+
+    private fun applyCard(d: CardDrag, card: NoteCard?) {
+        if (d.isImage) imageNotes = imageNotes.map { if (it.id == d.noteId) it.copy(card = card) else it }
+        else {
+            val i = notes.indexOfFirst { it.id == d.noteId }
+            if (i >= 0) notes[i] = notes[i].copy(card = card)
+        }
+        invalidate()
+    }
+
+    private fun moveCard(d: CardDrag, x: Float, y: Float) {
+        if (d.page !in 0 until pageCount) return
+        val c = NoteCardDrag.card(
+            d.zone, d.fx, d.fy, d.fw, d.fh, d.contentH, d.before, x - d.x0, y - d.y0,
+            unit = pw() / NoteBubbleGeom.REF_PAGE_W, pinX = d.pinX, pinY = d.pinY,
+            minW = d.minW, minH = d.minH, pageW = pw(), pageH = dispH[d.page], pinClearance = d.clearance,
+        )
+        d.last = c
+        applyCard(d, c)
+    }
+
+    private fun commitCard(d: CardDrag) {
+        val c = d.last ?: return
+        if (c == d.before) return
+        val q = store ?: return
+        pushNoteUndo()
+        q.submit("笔记卡片位置 ${d.noteId.take(8)}") { s ->
+            runCatching { s.setNoteCard(d.noteId, c) }
+                .onSuccess { Log.i(TAG, "笔记卡片 ${d.noteId.take(8)} → dx=${c.dx} dy=${c.dy} w=${c.w} h=${c.h}") }
+                .onFailure { Log.e(TAG, "笔记卡片写库失败", it) }
+        }
     }
 
     /** 乐观移动：只挪锚点那一枚（页不变，钳位 0~1 由 pageLocClamped 做） */
@@ -925,9 +1014,18 @@ class LocalCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
-    override fun onPinDragMove(x: Float, y: Float) = movePinTo(x, y)
+    override fun onPinDragMove(x: Float, y: Float) {
+        cardDrag?.let { moveCard(it, x, y); return }
+        movePinTo(x, y)
+    }
 
     override fun onPinDragEnd(x: Float, y: Float) {
+        cardDrag?.let { d ->
+            moveCard(d, x, y)
+            cardDrag = null
+            commitCard(d)
+            return
+        }
         movePinTo(x, y)
         val p = dragPin ?: return
         dragPin = null
@@ -937,6 +1035,7 @@ class LocalCanvasView @JvmOverloads constructor(
     }
 
     override fun onPinDragCancel() {
+        cardDrag?.let { d -> applyCard(d, d.before); cardDrag = null }
         pinsBackup?.let { pins = it; invalidate() }
         dragPin = null
         pinsBackup = null

@@ -235,4 +235,33 @@ class NoteFeaturesStoreTest {
             assertEquals(listOf("数学/极限.md"), s.allMdDocs().map { it.relPath })
         }
     }
+
+    /** 平板上拖卡片（2026-11-10）：`card` 键按 Mac 的写法落进 payload，别的键不动，文字 / 图片笔记都行，笔迹不收。 */
+    @Test
+    fun 存笔记卡片的位置与大小() {
+        LibraryStore.open(freshWs("card")).use { s ->
+            val d = doc(s)
+            s.upsertTextNote(d, "N1", 0, 0.2f, 0.2f, "正文", NOTE_ALWAYS)
+            s.setNoteCard("N1", com.xvan.unireader.shared.NoteCard(12.5f, -8f, null, null), at = "2026-11-10T00:00:00.000Z")
+            var row = s.noteById("N1")!!
+            var p = json(row.payload)
+            assertEquals(12.5, p.getJSONObject("card").getDouble("dx"), 1e-6)
+            assertEquals(-8.0, p.getJSONObject("card").getDouble("dy"), 1e-6)
+            assertFalse("没改过的那一维不写", p.getJSONObject("card").has("w") || p.getJSONObject("card").has("h"))
+            assertEquals("正文", p.getString("text"))
+            assertEquals("2026-11-10T00:00:00.000Z", row.updatedAt)
+            s.setNoteCard("N1", com.xvan.unireader.shared.NoteCard(1f, 2f, 150f, 60f))
+            p = json(s.noteById("N1")!!.payload)
+            assertEquals(150.0, p.getJSONObject("card").getDouble("w"), 1e-6)
+            assertEquals(60.0, p.getJSONObject("card").getDouble("h"), 1e-6)
+            // 读回来（画布用的那条路）也认
+            assertEquals(150f, TextNotePayload.parse(s.noteById("N1")!!.payload)!!.card!!.w!!, 1e-4f)
+            // 图片笔记同一个键
+            s.insertImageNote(d, "I1", 1, floatArrayOf(0.5f, 0.5f, 0f, 0f), "SHA1", "", NOTE_TAP, JSONObject().put("kind", "file"))
+            s.setNoteCard("I1", com.xvan.unireader.shared.NoteCard(3f, 4f, 200f, null))
+            p = json(s.noteById("I1")!!.payload)
+            assertEquals(200.0, p.getJSONObject("card").getDouble("w"), 1e-6)
+            assertEquals("SHA1", p.getString("image"))
+        }
+    }
 }

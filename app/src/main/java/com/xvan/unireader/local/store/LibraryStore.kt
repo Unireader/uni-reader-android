@@ -546,6 +546,23 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /** 一行 note（任何 kind）；没有返回 null */
+    /**
+     * 存笔记卡片手动摆的位置 / 大小（payload 键 `card: {dx, dy, w?, h?}`，Mac `NoteCard`；文字笔记 kind=0 与图片笔记 kind=6 同一个键）。
+     * 就地改 JSON：别的键一个不动。同时改 `updated_at`（离线镜像 / 服务器按它取新）。
+     */
+    fun setNoteCard(id: String, card: com.xvan.unireader.shared.NoteCard, at: String = nowIso()) {
+        val old = noteById(id) ?: return
+        if (old.kind != NoteKind.TEXT && old.kind != NoteKind.IMAGE) return
+        val o = JSONObject(String(old.payload, StandardCharsets.UTF_8))
+        o.put("card", JSONObject().apply {
+            put("dx", card.dx.toDouble())
+            put("dy", card.dy.toDouble())
+            card.w?.let { put("w", it.toDouble()) }
+            card.h?.let { put("h", it.toDouble()) }
+        })
+        upsertNote(old.copy(payload = o.toString().toByteArray(StandardCharsets.UTF_8), updatedAt = at))
+    }
+
     fun noteById(id: String): LibNote? =
         db.query("SELECT * FROM note WHERE id=?", arrayOf(id)) { note(it) }.firstOrNull()
 

@@ -294,7 +294,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   键 `id/name/color_key/icon_name`，新 id 大写）；模式2 仍用 `PadPanels.showNoteEditor`。图钉图标 16 个全在 `NoteTypeIcons`。
   · 气泡正文 = `shared/NoteBubbleText`（Markwon + 公式画到画布上，两模式共用）：在固定参考字号下排版再整体缩放（宽字比不随缩放变，捏合不重排）。
   🔴 公式一律在 `MathText` 那**一条**线程上排：Markwon 默认线程池并发，JLaTeXMath 首次静态初始化不是线程安全的，一屏两条公式会抢着初始化、输的回落成源码。
-  · 卡片（payload `card`，Mac `NoteCard`）：`NoteBubbleGeom.layout(card=…)`，存的数 × 页宽÷`REF_PAGE_W`(933) 换算，压住图钉就挪开。平板上拖卡片还没做。
+  · 卡片（payload `card`，Mac `NoteCard`）：`NoteBubbleGeom.layout(card=…)`，存的数 × 页宽÷`REF_PAGE_W`(933) 换算，压住图钉就挪开。
+  **模式1 能拖（2026-11-10）**：纯函数 `shared/NoteCardDrag`（逐条照 Mac `NoteCardZone` / `NoteCardDrag`，手指的角 / 边命中区比鼠标大：26 / 12dp）；
+  手势借拖草稿纸图钉那条路（`LocalCanvasView.fingerPinHit` → `cardDragAt`，过死区才算拖、没过仍是轻点），拖动中只改内存里那条的 `card`，
+  松手 `LibraryStore.setNoteCard`（就地改 JSON、先 `pushNoteUndo()`）；笔悬停出来的只读预览不能拖。模式2 没有（线上 `notes` 不带 `card`）。
   · 图片笔记（kind=6，`../docs/IMAGE-NOTE-PLAN.md`）：存图 `local/ImageAssets`（同 Mac：四种格式原样、其它 / 超 4096 转 PNG、EXIF 转正）、
   画在 `LocalCanvasView`（图钉 + 气泡 + 缩略图缓存）、截取 = `beginSnip` 拖框 → `PdfSource.renderRegion`（按页重渲染，不截屏）。
   引用计数数 note kind=6 + board_item kind=2（本端解 payload，不用 `json_extract`），开工作区对账 + 清 30 天（回收站引用着的不清）。
