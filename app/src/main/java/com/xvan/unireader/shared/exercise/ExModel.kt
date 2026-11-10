@@ -77,6 +77,10 @@ data class ExCard(
      * 模式1 的填空可答（`../docs/EXERCISE-PLAN.md §11.6` → 本轮起模式1 支持，见该文档安卓一轮）。
      */
     val macOnly: Boolean = kind != 0 && kind != 1,
+    /** 显示着的那次作答的 Agent 评语（Markdown，空 = 没有；Mac 上让 Agent 批改写的）。 */
+    val feedback: String = "",
+    /** 显示着的那次作答带手写（Mac 上写的）：本端画不出来，只提示一句。 */
+    val handwritten: Boolean = false,
     /** 题目笔记（Markdown + `$…$`，空 = 没写；模式2 的 `exDeck` 不带它 = 恒空）。判完才显示，同解析。 */
     val note: String = "",
 ) {
@@ -85,6 +89,10 @@ data class ExCard(
     val plainStem: String get() = stem.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
     /** 填空题（本端可作答的那种，主观题不算）。 */
     val isFill: Boolean get() = kind == 3 && !macOnly
+    /** 主观题（本端可打字作答的那种）：一个多行输入框，参考答案是一段 Markdown，一律自己判。 */
+    val isText: Boolean get() = kind == 4 && !macOnly
+    /** 打字作答的题（填空 / 主观题）。 */
+    val isTyped: Boolean get() = isFill || isText
 }
 
 /** 一组题（一个习题标签此刻的样子）。 */

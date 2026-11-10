@@ -76,6 +76,11 @@ data class ExAttemptStats(
     val lastPracticedCorrect: Boolean? = null,
     /** 书上作答那条的 id。 */
     val markedAttemptId: String? = null,
+    /** 最近一次 / 书上那条作答的 Agent 评语（`feedback` 列）与带不带手写（`ink` 列非空）。 */
+    val lastFeedback: String = "",
+    val lastHasInk: Boolean = false,
+    val markedFeedback: String = "",
+    val markedHasInk: Boolean = false,
 )
 
 /** 以前的作答从哪来：App 里练的最近一次（带时间）/ 书上的作答。 */
@@ -111,6 +116,10 @@ data class Exercise(
     val isChoice: Boolean get() = kind == KIND_SINGLE || kind == KIND_MULTIPLE
     /** 填空题（主观题本端仍只显示题干、提示到 Mac 上作答）。 */
     val isFill: Boolean get() = kind == KIND_FILL
+    /** 主观题（计算 / 证明 / 简答）：模式1 能打字作答、自己判（2026-11-10）；手写（`ink` 列）本端不做。 */
+    val isSubjective: Boolean get() = kind == KIND_SUBJECTIVE
+    /** 打字作答的题型（填空 / 主观题）：作答、以前的作答、自己判定走同一条路。 */
+    val isTyped: Boolean get() = isFill || isSubjective
     val hasAnswer: Boolean get() = payload.answer.any { it.isNotEmpty() }
     val answerFromAgent: Boolean get() = hasAnswer && payload.answerSource == "agent"
 
@@ -151,16 +160,22 @@ data class Exercise(
      * 对错**用库里记的**（自己判过的没法现算）。没做过 → null。
      */
     fun earlierFill(s: ExAttemptStats?): Quadruple? {
-        if (!isFill || s == null) return null
+        if (!isTyped || s == null) return null
+        // 主观题的 `answer` 列是原文（同 Mac `ExerciseResponse.decode`），当成一格
+        fun parts(raw: String) = if (isSubjective) listOf(raw) else decodeBlanks(raw)
         if (s.lastAttemptId != null && s.lastAnswer != null)
-            return Quadruple(decodeBlanks(s.lastAnswer), s.lastPracticedCorrect, s.lastAttemptId, ExEarlier.Practiced(s.lastAt))
+            return Quadruple(parts(s.lastAnswer), s.lastPracticedCorrect, s.lastAttemptId, ExEarlier.Practiced(s.lastAt), s.lastFeedback, s.lastHasInk)
         if (s.markedAttemptId != null && s.markedAnswer != null)
-            return Quadruple(decodeBlanks(s.markedAnswer), s.markedCorrect, s.markedAttemptId, ExEarlier.Book)
+            return Quadruple(parts(s.markedAnswer), s.markedCorrect, s.markedAttemptId, ExEarlier.Book, s.markedFeedback, s.markedHasInk)
         return null
     }
 
     /** [earlierFill] 的一份：每空的作答、库里记的对错、那条作答的 id、从哪来。 */
-    class Quadruple(val blanks: List<String>, val correct: Boolean?, val attemptId: String, val earlier: ExEarlier)
+    class Quadruple(
+        val blanks: List<String>, val correct: Boolean?, val attemptId: String, val earlier: ExEarlier,
+        /** 那次作答的 Agent 评语（Markdown，空 = 没有）/ 带不带手写（Mac 上写的，本端只提示一句）。 */
+        val feedback: String = "", val hasInk: Boolean = false,
+    )
 
     /**
      * 以前做过的那次（用户 2026-10-11 定：做过的题直接显示上次结果）：App 里练的最近一次优先，没练过再拿书上的作答。

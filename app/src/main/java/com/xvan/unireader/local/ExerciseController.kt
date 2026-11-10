@@ -201,7 +201,9 @@ class ExerciseController(private val a: Activity) : ExHost {
         render()
         val q = queue ?: return
         q.submit("记填空作答 ${id.take(8)}", { s ->
-            runCatching { s.recordExerciseAttempt(id, Exercise.fillAnswerString(blanks), ans.correct, elapsedMs) }
+            val e = d.items.firstOrNull { it.id == id }
+            val text = if (e != null) d.typedAnswerString(e, blanks) else Exercise.fillAnswerString(blanks)
+            runCatching { s.recordExerciseAttempt(id, text, ans.correct, elapsedMs) }
                 .getOrElse { Log.e(TAG, "记填空作答失败", it); null }
         }, { attemptId ->
             // 没判上（等自己判）不动题目行；判对 / 判错只有「已做 / 共」和错题本要刷

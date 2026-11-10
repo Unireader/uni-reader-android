@@ -251,6 +251,12 @@
     <string name="ex_delete_msg">They go to the Trash together with your answers, and can be restored from there.</string>
     <string name="ex_trash_one">Exercise %1$s</string>
     <string name="ex_trash_many">%1$d exercises</string>
+    <string name="ex_text_hint">Write your answer (Markdown and $…$ work)</string>
+    <string name="ex_feedback">Agent’s Feedback</string>
+    <string name="ex_handwritten_on_mac">This answer has handwriting. Open it on the Mac to see it.</string>
+    <string name="ex_text_right">Marked correct</string>
+    <string name="ex_text_wrong">Marked wrong; added to mistakes</string>
+    <string name="ex_text_pending">Compare with the reference answer below, then tap “Correct” or “Wrong”</string>
     <string name="ex_empty">No exercises here yet. On the Mac, ask the Agent to recognize the exercises in a PDF.</string>
     <string name="ex_open_new_tab">Open in New Tab</string>
     <string name="ex_set_chapter">Set Chapter…</string>

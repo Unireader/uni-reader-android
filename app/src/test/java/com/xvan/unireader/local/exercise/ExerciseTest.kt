@@ -470,6 +470,39 @@ class ExerciseTest {
         assertEquals(ExShown.ROUND, d.view("错题本").cards[0].shown)
     }
 
+    /** 主观题（模式1）：打字作答记成「还没判」、`answer` 列存原文、自己判；以前的作答带评语 / 手写标记。 */
+    @Test
+    fun deckSubjective() {
+        val q = ex("s1", kind = Exercise.KIND_SUBJECTIVE, answer = listOf("先求导", "再代入"))
+        val d = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.Document("D1"))
+        d.applyFresh(LocalExerciseDeck.Fresh(listOf(q), emptyMap(), emptyMap()))
+        var c = d.view("书").cards[0]
+        assertTrue(c.isText && c.isTyped && !c.isFill && !c.macOnly)
+        assertEquals(1, c.fillCount)
+        assertEquals(listOf("先求导\n\n再代入"), c.fillAnswers)
+        assertNull("什么都没写不收", d.submitBlanks("s1", listOf("  ")))
+        val a = d.submitBlanks("s1", listOf("我的解答\n第二行"))!!
+        assertNull("程序判不了", a.correct)
+        assertEquals("原文，不是 JSON", "我的解答\n第二行", d.typedAnswerString(q, a.blanks!!))
+        c = d.view("书").cards[0]
+        assertEquals(ExShown.ROUND, c.shown)
+        assertEquals(ExJudge.NONE, c.correct)
+        assertEquals(listOf("我的解答\n第二行"), c.mineBlanks)
+        d.judgeAttempt("s1", false)
+        assertEquals(ExJudge.WRONG, d.view("书").cards[0].correct)
+        // 以前的作答（Mac 上手写 + Agent 批改过）：原文当一格，带评语与手写标记
+        val d2 = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.Document("D1"))
+        val st = ExAttemptStats(attempts = 1, lastAnswer = "", lastAttemptId = "A1", lastPracticedCorrect = true,
+            lastAt = "2027-01-15T08:00:00.000Z", lastFeedback = "步骤完整", lastHasInk = true)
+        d2.applyFresh(LocalExerciseDeck.Fresh(listOf(q), mapOf("s1" to st), emptyMap()))
+        c = d2.view("书").cards[0]
+        assertEquals(ExShown.PRACTICED, c.shown)
+        assertEquals(ExJudge.RIGHT, c.correct)
+        assertEquals("步骤完整", c.feedback)
+        assertTrue(c.handwritten)
+        assertEquals("A1", c.attemptId)
+    }
+
     @Test
     fun deckSnapshotAndReload() {
         val d = LocalExerciseDeck.shared("/ws-test-${System.nanoTime()}", ExScope.Wrong)

@@ -246,6 +246,12 @@
     <string name="ex_delete_msg">题目和作答记录会一起放进回收站，可以从那里恢复。</string>
     <string name="ex_trash_one">习题 %1$s</string>
     <string name="ex_trash_many">%1$d 道习题</string>
+    <string name="ex_text_hint">写下你的解答（可以写 Markdown 和 $…$ 公式）</string>
+    <string name="ex_feedback">Agent 评语</string>
+    <string name="ex_handwritten_on_mac">这次作答里有手写，到 Mac 上才看得到。</string>
+    <string name="ex_text_right">判为正确</string>
+    <string name="ex_text_wrong">判为错误，已进错题本</string>
+    <string name="ex_text_pending">对照下面的参考答案，再点「答对了」或「答错了」</string>
     <string name="ex_empty">这里还没有题。可以在 Mac 上让 Agent 识别 PDF 里的习题。</string>
     <string name="ex_open_new_tab">在新标签页中打开</string>
     <string name="ex_set_chapter">设置章节…</string>

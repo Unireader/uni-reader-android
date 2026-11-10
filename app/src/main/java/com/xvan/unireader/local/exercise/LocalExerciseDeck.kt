@@ -28,6 +28,8 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         val blanks: List<String>? = null,
         /** 显示着的那次作答的库 id（填空自己判定写回用；这一轮刚交的由调用方在记库后补上）。 */
         val attemptId: String = "",
+        val feedback: String = "",
+        val hasInk: Boolean = false,
     )
 
     /** [read] 在库队列线程上读出来的那一份。 */
@@ -158,9 +160,9 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         answers[e.id]?.let { return it }
         // 「重做上次做错的」：这一组都是要重做的题，以前那次不显示
         if (e.id in redoing || filter == ExFilter.LAST_WRONG) return null
-        if (e.isFill) {
+        if (e.isTyped) {
             val q = e.earlierFill(stats[e.id]) ?: return null
-            return Answer(emptySet(), q.correct, q.earlier, q.blanks, q.attemptId)
+            return Answer(emptySet(), q.correct, q.earlier, q.blanks, q.attemptId, q.feedback, q.hasInk)
         }
         val p = e.earlierAnswer(stats[e.id]) ?: return null
         return Answer(p.first, p.second, p.third)
@@ -194,8 +196,9 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
      */
     fun submitBlanks(id: String, blanks: List<String>): Answer? {
         val e = items.firstOrNull { it.id == id } ?: return null
-        if (!e.isFill) return null
-        val a = Answer(emptySet(), e.judgeFill(blanks), null, blanks)
+        if (!e.isTyped || blanks.all { it.isBlank() }) return null
+        // 主观题程序判不了：一律记成「还没判」，等自己判（或 Mac 上让 Agent 批改）
+        val a = Answer(emptySet(), if (e.isFill) e.judgeFill(blanks) else null, null, blanks)
         answers[id] = a
         redoing.remove(id)
         val s = stats[id] ?: ExAttemptStats()
@@ -204,11 +207,15 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             correct = s.correct + if (a.correct == true) 1 else 0,
             lastCorrect = a.correct,
             lastPracticedCorrect = a.correct,
-            lastAnswer = Exercise.fillAnswerString(blanks),
+            lastAnswer = typedAnswerString(e, blanks),
             lastAt = Iso.now(),
         ))
         return a
     }
+
+    /** 打字作答写进 `answer` 列的串：填空 = JSON 字符串数组，主观题 = 原文（同 Mac `ExerciseResponse.answerString`）。 */
+    fun typedAnswerString(e: Exercise, blanks: List<String>): String =
+        if (e.isSubjective) blanks.firstOrNull().orEmpty() else Exercise.fillAnswerString(blanks)
 
     /** 记库成功后将作答 id 补给这一轮刚交的填空（自己判定写回用）。 */
     fun setAttemptId(id: String, attemptId: String) {
@@ -272,13 +279,20 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             markedCorrect = if (!e.isChoice || st?.markedAnswer == null) ExJudge.NONE else ExJudge.of(st.markedCorrect),
             kind = e.kind,
             // 填空（主观题仍 macOnly，不显示作答）：参考答案 / 显示着的作答 / 每空对不对
-            fillCount = e.blankCount,
-            fillAnswers = if (e.isFill) e.payload.answer else emptyList(),
+            fillCount = if (e.isSubjective) 1 else e.blankCount,
+            // 主观题的参考答案（可能分几段）并成一段 Markdown
+            fillAnswers = when {
+                e.isFill -> e.payload.answer
+                e.isSubjective -> e.payload.answer.filter { it.isNotEmpty() }.joinToString("\n\n").let { if (it.isEmpty()) emptyList() else listOf(it) }
+                else -> emptyList()
+            },
             fillAccept = if (e.isFill) e.payload.accept ?: emptyList() else emptyList(),
-            mineBlanks = if (e.isFill) a?.blanks ?: emptyList() else emptyList(),
+            mineBlanks = if (e.isTyped) a?.blanks ?: emptyList() else emptyList(),
             blankMatch = if (e.isFill && a != null) e.blankMatches(a.blanks.orEmpty()) else emptyList(),
             attemptId = a?.attemptId ?: "",
-            macOnly = e.kind == Exercise.KIND_SUBJECTIVE,
+            macOnly = false,   // 模式1：四种题型都能在本机作答（主观题打字，手写不做）
+            feedback = a?.feedback ?: "",
+            handwritten = a?.hasInk ?: false,
             note = e.note,
         )
     }

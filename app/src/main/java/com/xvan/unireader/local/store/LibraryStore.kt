@@ -965,6 +965,22 @@ class LibraryStore(private val db: Db) : Closeable {
                 )
             }
         }
+        // v21 的评语 / 手写（只读打开的老库没有这两列 → 查不动就当没有）
+        runCatching {
+            db.query("SELECT id, feedback, ink IS NOT NULL FROM exercise_attempt WHERE feedback<>'' OR ink IS NOT NULL") {
+                Triple(it.getString(0), it.getString(1) ?: "", it.getInt(2) != 0)
+            }.associateBy { it.first }
+        }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { extra ->
+            for ((id, st) in out.entries.toList()) {
+                val l = st.lastAttemptId?.let { extra[it] }
+                val m = st.markedAttemptId?.let { extra[it] }
+                if (l == null && m == null) continue
+                out[id] = st.copy(
+                    lastFeedback = l?.second ?: "", lastHasInk = l?.third ?: false,
+                    markedFeedback = m?.second ?: "", markedHasInk = m?.third ?: false,
+                )
+            }
+        }
         return out
     }
 

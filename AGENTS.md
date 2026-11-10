@@ -259,7 +259,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   回车跳下一空、最后一空回车交卷）；全对得上参考答案（规整规则同 Mac `normalizeBlank`，逐条照抄）→ 直接判对，
   有对不上的 → 亮参考答案、用户点「答对了 / 答错了」自己判（写回那条作答的 `correct` + `judged_by='self'`，
   `LibraryStore.judgeExerciseAttempt`，判错进错题本）；作答 / 判定经 `exercise_attempt` 列随镜像 / 服务器同步回 Mac。
-  主观题（kind 4）与模式2 的填空仍只显示题干 + 提示到 Mac 上作答（`ExCard.macOnly`），手写（`ink` 列）本端不做。
+  **主观题模式1 也能作答了（2026-11-10）**：与填空走同一条路（`Exercise.isTyped` / `ExCard.isTyped`）——一个多行输入框当「一格」，
+  `answer` 列存**原文**（不是 JSON，`LocalExerciseDeck.typedAnswerString`，同 Mac），一律记成没判、自己判；参考答案几段并成一段 Markdown。
+  作答统计多带评语 / 手写标记（`ExAttemptStats.lastFeedback` / `lastHasInk`…）：练习页显示「Agent 评语」，Mac 上手写的那次只提示一句。
+  模式2 的填空 / 主观题仍只显示题干（`ExCard.macOnly`，`exDeck` 不发它们的作答数据）；手写（`ink` 列）本端不做。
   · **重做上次做错的（2026-11-10，两模式，`../docs/EXERCISE-PLAN.md §21`）**：顶栏开关，规则逐条照 Mac（`Exercise.lastResultWrong`、
   `ExFilter.LAST_WRONG = 4`、`LocalExerciseDeck.applyLastWrongRound` = Mac `startLastWrongRound`、`lastWrongCount`）；与「只看没做过」至多开一个，
   错题本那一支也有。手机（紧凑排法）两个开关在标题下面单独一行（`ExerciseScreen.filterRow`），⋯ 里只剩「全部重做」。
@@ -278,7 +281,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   否则那一跳退不回来。顶栏 `jumpBack` / `jumpForward`（导航组，直箭头图标；不能退 / 进时灰着），长按 = 整条来路。
   · **全文搜索**：纯逻辑 `shared/TextSearch`（去空白 + 折大小写后找、OCR 命中的页不再报自带文字层、摘要，照 Mac `TextSearch.swift`，`TextSearchTest`）；
   OCR 层用画布里已装好的整本可见行（`PageCanvasView.textLayer()`），自带文字层 `PdfSource.pageText` / `charTopFrac`（与出图共用 `docLock`，
-  插桩 `PdfTextTest`）；面板 `local/SearchSheet`（⋯ 里的「搜索」，停手 300ms 才搜、上一轮作废，最多 500 处）。**没做**：页面上标出命中的字。
+  插桩 `PdfTextTest`）；面板 `local/SearchSheet`（⋯ 里的「搜索」，停手 300ms 才搜、上一轮作废，最多 500 处）。页面上的命中框 = `PageCanvasView.setSearchMarks`
+  （只是显示；OCR 层 `OcrTextSelect.clip` 按字符裁，自带文字层 `PdfSource.charRects`，开着扫描页对齐时后者不换算）。
 - **笔记对齐 Mac（2026-10-29，`../docs/TODO.md` 差距清单 A 组）**：
   · 高亮 / 选区注解三种画法 `HL_FILL/UNDERLINE/BOX`（payload `style`）+ 注解显式颜色，画法只在 `PadOverlays.drawTextFill`；
   手指点中高亮 → `local/NoteSheets.showHighlight`（换色 / 换画法 / 转批注 / 删除，`PageCanvasView.onFingerTapLate` 排在笔记图钉之后）。

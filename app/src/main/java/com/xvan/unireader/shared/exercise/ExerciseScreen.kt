@@ -209,7 +209,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private val fillDrafts = HashMap<String, List<String>>()
     /** 当前填空输入框（按空序；交卷读值 / 「提交」亮不亮看它）。 */
     private var fillEdits = emptyList<android.widget.EditText>()
-    private val submitBtn = Ui.button(a, s(R.string.ex_submit), filled = true) { if (cur()?.isFill == true) submitFill() else submit() }
+    private val submitBtn = Ui.button(a, s(R.string.ex_submit), filled = true) { if (cur()?.isTyped == true) submitFill() else submit() }
     private val resultIcon = ImageView(a)
     private val resultText = TextView(a).apply {
         textSize = 15f
@@ -227,6 +227,16 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private val markNote = note()
     /** 填空 / 主观题：本轮平板上不能作答（`../docs/EXERCISE-PLAN.md §11.6`）。 */
     private val macOnlyNote = note()
+    /** 显示着的那次作答带手写（Mac 上写的，本端画不出来）。 */
+    private val inkNote = note()
+    /** Agent 批改的评语（Mac 上让 Agent 批改写的；Markdown）。 */
+    private val feedbackTitle = TextView(a).apply {
+        text = s(R.string.ex_feedback)
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Ui.onSurface(a))
+    }
+    private val feedbackView = blocks(15f)
     private val explanationTitle = TextView(a).apply {
         text = s(R.string.ex_explanation)
         textSize = 14f
@@ -297,6 +307,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(resultRow, lp(top = 16))
         addView(fillRef, lp(top = 12))
         addView(selfJudgeRow, lp(top = 8))
+        addView(inkNote, lp(top = 6))
+        addView(feedbackTitle, lp(top = 12))
+        addView(feedbackView, lp(top = 6))
         addView(historyNote, lp(top = 4).apply { marginStart = dp(30) })
         addView(agentNote, lp(top = 10))
         addView(markNote, lp(top = 8))
@@ -607,12 +620,13 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         }
         val b = builtFor
         if (b == null || b.id != c.id || b.stem != c.stem || b.options != c.options || b.multiple != c.multiple ||
-            b.explanation != c.explanation || b.note != c.note || b.fillCount != c.fillCount || b.fillAnswers != c.fillAnswers ||
+            b.explanation != c.explanation || b.note != c.note || b.feedback != c.feedback || b.fillCount != c.fillCount || b.fillAnswers != c.fillAnswers ||
             b.mineBlanks != c.mineBlanks || b.blankMatch != c.blankMatch || b.correct != c.correct ||
             b.judged != c.judged || b.shown != c.shown) {
             bindBlocks(stemView, c.stem, 17f)
             bindBlocks(explanationView, c.explanation, 15f)
             bindBlocks(noteView, c.note, 15f)
+            bindBlocks(feedbackView, c.feedback, 15f)
             buildOptions(c)
             buildFill(c)
         }
@@ -640,7 +654,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         loadOriginal(c, showOrig)
 
         val judged = c.judged
-        val isFill = c.isFill
+        val isFill = c.isTyped   // 填空 / 主观题：都是打字作答、交卷后看参考答案、程序判不了就自己判
         val chosen = if (judged) c.chosen.map { it.toString() }.toSet() else picked
         val truth = c.answer.map { it.toString() }.toSet()
         for (i in 0 until optionsBox.childCount) {
@@ -704,6 +718,11 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val hasExp = c.explanation.isNotEmpty()
         explanationTitle.visibility = if (judged && hasExp) View.VISIBLE else View.GONE
         explanationView.visibility = if (judged && hasExp) View.VISIBLE else View.GONE
+        inkNote.visibility = if (judged && c.handwritten) View.VISIBLE else View.GONE
+        if (judged && c.handwritten) inkNote.text = s(R.string.ex_handwritten_on_mac)
+        val hasFeedback = judged && c.feedback.isNotEmpty()
+        feedbackTitle.visibility = if (hasFeedback) View.VISIBLE else View.GONE
+        feedbackView.visibility = if (hasFeedback) View.VISIBLE else View.GONE
         val noteOn = judged && host.canEditNote
         val hasNote = c.note.isNotEmpty()
         noteTitle.visibility = if (noteOn && hasNote) View.VISIBLE else View.GONE
@@ -727,7 +746,12 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     private fun resultLine(c: ExCard): String {
-        if (c.isFill) return when (c.correct) {
+        if (c.isText) return when (c.correct) {
+            ExJudge.RIGHT -> s(R.string.ex_text_right)
+            ExJudge.WRONG -> s(R.string.ex_text_wrong)
+            else -> if (c.fillAnswers.any { it.isNotEmpty() }) s(R.string.ex_text_pending) else s(R.string.ex_fill_no_answer)
+        }
+        if (c.isTyped) return when (c.correct) {
             ExJudge.RIGHT -> s(R.string.ex_fill_right)
             ExJudge.WRONG -> s(R.string.ex_fill_wrong)
             else -> if (c.fillAnswers.any { it.isNotEmpty() }) s(R.string.ex_fill_pending) else s(R.string.ex_fill_no_answer)
@@ -776,6 +800,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         fillBox.removeAllViews()
         fillEdits = emptyList()
         fillRef.removeAllViews()
+        if (c.isText) { buildText(c); return }
         if (!c.isFill) return
         val edits = ArrayList<android.widget.EditText>()
         for (i in 0 until c.fillCount) {
@@ -799,6 +824,48 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             }
             bindBlocks(fillRef, md.toString(), 14f)
         }
+    }
+
+    /**
+     * 主观题的作答区（模式1）：没交 = 一个多行输入框（草稿按题暂存）；交了 = 自己写的那段（按 Markdown 渲染）+ 参考答案。
+     * 手写不做——Mac 上手写的那次只提示一句（[ExCard.handwritten]）。
+     */
+    private fun buildText(c: ExCard) {
+        if (c.judged) {
+            val mine = c.mineBlanks.firstOrNull().orEmpty()
+            fillBox.addView(blocks(16f).also { bindBlocks(it, mine.ifBlank { "—" }, 16f) })
+            c.fillAnswers.firstOrNull()?.takeIf { it.isNotEmpty() }?.let {
+                bindBlocks(fillRef, "**" + s(R.string.ex_fill_reference) + "**\n\n" + it, 15f)
+            }
+            return
+        }
+        var ready = false
+        val edit = android.widget.EditText(a).apply {
+            textSize = 16f
+            setTextColor(Ui.onSurface(a))
+            setHintTextColor(Ui.onVariant(a))
+            hint = s(R.string.ex_text_hint)
+            isSingleLine = false
+            minLines = 4
+            gravity = Gravity.TOP or Gravity.START
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = Ui.round(Ui.container(a), Ui.RADIUS, a, Ui.outline(a))
+            setText(fillDrafts[c.id]?.firstOrNull() ?: "")
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    if (!ready) return
+                    fillDrafts[c.id] = listOf(s?.toString().orEmpty())
+                    val any = !s.isNullOrBlank()
+                    if (submitBtn.isEnabled != any) { submitBtn.isEnabled = any; submitBtn.alpha = if (any) 1f else 0.4f }
+                }
+            })
+        }
+        ready = true
+        fillEdits = listOf(edit)
+        fillBox.addView(edit, LinearLayout.LayoutParams(-1, -2))
     }
 
     /** 一行：「第 N 空」+ 输入框（没交）或锁住的作答 + 对错标记（交卷后）。 */
@@ -1105,9 +1172,13 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         val verdict = when (c.correct) {
             ExJudge.RIGHT -> s(R.string.ex_right)
             ExJudge.WRONG -> s(R.string.ex_wrong)
-            else -> if (c.isFill) s(R.string.ex_unjudged) else s(R.string.ex_not_judged)
+            else -> if (c.isTyped) s(R.string.ex_unjudged) else s(R.string.ex_not_judged)
         }
-        val mine = if (c.isFill) c.mineBlanks.joinToString(" / ") else c.chosen
+        val mine = when {
+            c.isText -> c.mineBlanks.firstOrNull().orEmpty().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+            c.isFill -> c.mineBlanks.joinToString(" / ")
+            else -> c.chosen
+        }
         return s(R.string.ex_mine, mine, verdict)
     }
 
