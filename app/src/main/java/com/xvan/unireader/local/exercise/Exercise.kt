@@ -31,6 +31,11 @@ data class ExPayload(
     val blanks: Int?,
     /** 填空每空另外认可的写法（与 answer 等长；全空没有这个键）。 */
     val accept: List<List<String>>?,
+    /**
+     * 跨页的题：后面几页上各一个框（第 k 个 = `page + 1 + k` 页），同 [region] 的口径；null = 不跨页
+     * （`../docs/EXERCISE-PLAN.md §26`）。只在有 [region] 时才算数（[Exercise.originalSlices]）。
+     */
+    val nextRegions: List<List<Double>>? = null,
 ) {
     companion object {
         /** 坏了 → null（同 Mac：调用方跳过这一行）。 */
@@ -53,7 +58,29 @@ data class ExPayload(
                 accept = (o["accept"] as? List<*>)?.map { row ->
                     (row as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
                 },
+                nextRegions = cleanNext(o["next_regions"]),
             )
+        }
+
+        /** 跨页的题一道最多往后接几页（同 Mac `ExerciseRegion.maxNextPages`）。 */
+        const val MAX_NEXT_PAGES = 3
+
+        /** 一个框合格：4 个 0~1 的数、宽高 > 0（同 Mac `ExerciseRegion.isValid`）。 */
+        fun validBox(r: List<Double>): Boolean =
+            r.size == 4 && r.all { it.isFinite() && it in 0.0..1.0 } && r[2] > 0 && r[3] > 0
+
+        /** 同 Mac `ExerciseRegion.cleanNext`：截到第一个不合格的框之前、至多 [MAX_NEXT_PAGES] 个；一个不剩 / 类型不对 → null。 */
+        fun cleanNext(raw: Any?): List<List<Double>>? {
+            val list = raw as? List<*> ?: return null
+            val out = ArrayList<List<Double>>()
+            for (b in list.take(MAX_NEXT_PAGES)) {
+                val nums = (b as? List<*>)?.map { it as? Double }
+                if (nums == null || nums.any { it == null }) break
+                val box = nums.filterNotNull()
+                if (!validBox(box)) break
+                out.add(box)
+            }
+            return out.ifEmpty { null }
         }
     }
 }
@@ -122,6 +149,26 @@ data class Exercise(
     val isTyped: Boolean get() = isFill || isSubjective
     val hasAnswer: Boolean get() = payload.answer.any { it.isNotEmpty() }
     val answerFromAgent: Boolean get() = hasAnswer && payload.answerSource == "agent"
+
+    /**
+     * 看原题要渲的几段（同 Mac `Exercise.originalSlices`，`../docs/EXERCISE-PLAN.md §26`）：起始页那一块，
+     * 跨页的题再接后面几页各一块，从上到下拼成一张。没有框 = 起始页整页一段（框为 null）。
+     * 给了 [pageCount] 就去掉越过最后一页的。没页码 → 空。
+     */
+    fun originalSlices(pageCount: Int? = null): List<Pair<Int, List<Double>?>> {
+        val p = page ?: return emptyList()
+        val r = payload.region ?: return listOf(p to null)
+        val out = arrayListOf<Pair<Int, List<Double>?>>(p to r)
+        for ((k, n) in (payload.nextRegions ?: emptyList()).withIndex()) {
+            val q = p + 1 + k
+            if (pageCount != null && q >= pageCount) break
+            out.add(q to n)
+        }
+        return out
+    }
+
+    /** 题目印到第几页为止（0 起；不跨页 = [page]）。 */
+    val lastPage: Int? get() = page?.let { it + if (payload.region == null) 0 else payload.nextRegions?.size ?: 0 }
 
     /** 判题：选中的键与答案**完全相同**才算对。没有答案 → null（没法判）。只管选择题。 */
     fun judge(chosen: Set<String>): Boolean? = if (!isChoice || !hasAnswer) null else chosen == payload.answer.toSet()

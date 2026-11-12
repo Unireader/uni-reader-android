@@ -60,6 +60,31 @@ class ExerciseTest {
         assertNull(ExPayload.parse("{bad".toByteArray()))
     }
 
+    /** 跨页的题（`next_regions`，`../docs/EXERCISE-PLAN.md §26`）：解析规则与看原题的几段，同 `../spike/exercise-test.swift` 同名一段。 */
+    @Test
+    fun crossPageRegions() {
+        fun parse(json: String) = ExPayload.parse(json.toByteArray())!!
+        val p = parse("""{"stem":"s","region":[0.1,0.8,0.8,0.18],"next_regions":[[0.1,0.02,0.8,0.3]]}""")
+        assertEquals(listOf(listOf(0.1, 0.02, 0.8, 0.3)), p.nextRegions)
+        // 截到第一个不合格的框之前；类型不对 → 不跨页，整道题照样读得出；至多 3 页
+        assertEquals(listOf(listOf(0.0, 0.0, 1.0, 1.0)),
+            parse("""{"stem":"s","region":[0,0,1,1],"next_regions":[[0,0,1,1],[0,0,2,1],[0,0,1,1]]}""").nextRegions)
+        assertNull(parse("""{"stem":"s","region":[0,0,1,1],"next_regions":"x"}""").nextRegions)
+        assertNull(parse("""{"stem":"s","region":[0,0,1,1],"next_regions":[]}""").nextRegions)
+        assertEquals(ExPayload.MAX_NEXT_PAGES,
+            parse("""{"stem":"s","region":[0,0,1,1],"next_regions":[[0,0,1,1],[0,0,1,1],[0,0,1,1],[0,0,1,1]]}""").nextRegions?.size)
+
+        val e = ex("X", page = 4).copy(payload = payload().copy(region = p.region, nextRegions = p.nextRegions))
+        val sl = e.originalSlices(20)
+        assertEquals(listOf(4 to listOf(0.1, 0.8, 0.8, 0.18), 5 to listOf(0.1, 0.02, 0.8, 0.3)), sl)
+        assertEquals(1, e.originalSlices(5).size)              // 下一页越过最后一页 → 只剩起始页那段
+        assertEquals(5, e.lastPage)
+        val whole = e.copy(payload = e.payload.copy(region = null))
+        assertEquals(listOf(4 to null), whole.originalSlices(20))   // 没有起始页框 = 整页一段，后面几页的框不算
+        assertEquals(4, whole.lastPage)
+        assertTrue(e.copy(page = null).originalSlices().isEmpty())
+    }
+
     /** v21 填空 / 主观题：主观题本端只显示题干；填空模式1 可作答（见 fill* 各条）。选择题的交卷对填空不收。 */
     @Test
     fun freeKindsAreMacOnly() {

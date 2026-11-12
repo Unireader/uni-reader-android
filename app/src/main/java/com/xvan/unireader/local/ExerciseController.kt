@@ -3,6 +3,9 @@ package com.xvan.unireader.local
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.util.Log
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -275,23 +278,62 @@ class ExerciseController(private val a: Activity) : ExHost {
 
     /**
      * 原题那一块：本机 Pdfium 把那一页按够用的宽度出图，再裁出题目框（四周放 1.5% 页宽，同 Mac `ExerciseOriginal`）。
-     * 没有框就整页。拿不到（文件不在）→ null。
+     * 没有框就整页。跨页的题（`next_regions`，`../docs/EXERCISE-PLAN.md §26`）后面几页各裁一块，从上到下拼成一张。
+     * 拿不到（文件不在）→ null；后面某页出不了图就少那一段。
      */
     override fun loadOriginal(id: String, widthPx: Int, done: (Bitmap?) -> Unit) {
         val e = deck?.items?.firstOrNull { it.id == id }
         val docId = e?.documentId
-        val page = e?.page
-        if (e == null || docId == null || page == null) { done(null); return }
-        val region = e.payload.region
+        if (e == null || docId == null || e.page == null) { done(null); return }
         withSource(docId, { done(null) }) { s ->
-            // 页宽按「框宽占页宽的比例」放大，框里的字才够清楚；PdfSource 自己会归到档位上
-            val rw = region?.get(2)?.coerceAtLeast(0.2) ?: 1.0
+            val slices = e.originalSlices(s.pageCount)
+            if (slices.isEmpty()) { done(null); return@withSource }
+            // 页宽按「最宽那段框占页宽的比例」放大，框里的字才够清楚；几段同一个页宽 = 字一样大。PdfSource 自己会归到档位上
+            val rw = slices.maxOf { it.second?.get(2) ?: 1.0 }.coerceAtLeast(0.2)
             val pageW = (widthPx / rw).roundToInt().coerceIn(600, 2880)
-            s.request(page, pageW) { bmp ->
-                val out = bmp?.let { crop(it, region) }
+            val parts = ArrayList<Bitmap>(slices.size)
+            fun finish() {
+                val out = if (parts.isEmpty()) null else stack(parts)
                 Bg.main.post { done(out) }
             }
+            // 一页一页按顺序要（命中缓存时 request 同步回调，几段最多 4 层，不怕递归深）
+            fun next(k: Int) {
+                if (k == slices.size) { finish(); return }
+                val (page, region) = slices[k]
+                s.request(page, pageW) { bmp ->
+                    val part = bmp?.let { crop(it, region) }
+                    if (part == null) { finish(); return@request }
+                    parts.add(part)
+                    next(k + 1)
+                }
+            }
+            next(0)
         }
+    }
+
+    /** 几段从上到下拼成一张（白底、左对齐，段间一条 8px 浅灰分隔，同 Mac `ExerciseOriginal.stack`）。一段就原样返回。 */
+    private fun stack(parts: List<Bitmap>): Bitmap? {
+        if (parts.size == 1) return parts[0]
+        val gap = 8
+        val w = parts.maxOf { it.width }
+        val h = parts.sumOf { it.height } + gap * (parts.size - 1)
+        return runCatching {
+            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val c = Canvas(out)
+            c.drawColor(Color.WHITE)
+            // 图里的分隔线（页面内容的一部分，同 Mac 灰度 0.85），不是界面颜色
+            val sep = Paint().apply { color = Color.rgb(217, 217, 217) }
+            var y = 0f
+            parts.forEachIndexed { i, b ->
+                c.drawBitmap(b, 0f, y, null)
+                y += b.height
+                if (i < parts.size - 1) {
+                    c.drawRect(0f, y, w.toFloat(), y + gap, sep)
+                    y += gap
+                }
+            }
+            out
+        }.getOrNull()
     }
 
     private fun crop(b: Bitmap, r: List<Double>?): Bitmap? {
