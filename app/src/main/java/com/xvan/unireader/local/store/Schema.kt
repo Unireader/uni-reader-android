@@ -34,8 +34,12 @@ object Schema {
      * v23：`agent_context`（Agent 上下文：一段 Agent 对话的交接摘要，`../docs/ACP-AGENT-PLAN.md §12`；
      * 本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步、回收站能恢复）。
      * v24：`exercise` 加 `tags`（题目标签，JSON 字符串数组；本端本轮只建列、随同步走，界面在 Mac 上）。
+     * v25：`agent_memory`（Agent 记忆，`../docs/ACP-AGENT-PLAN.md §21`）+ `agent_turn`（Agent 对话记录，§22）；
+     * 同 v23，本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步；回收站认得 Mac 建的 `agentMemories` 条目并能恢复。
+     * v26：`schedule_plan`（日程计划）+ `schedule_item`（日程事项），`../docs/SCHEDULE-PLAN.md`；
+     * 本端本轮没有日程界面，只建表、随离线镜像 / 服务器同步；回收站认得 Mac 建的 `schedule` 条目并能恢复。
      */
-    const val VERSION = 24
+    const val VERSION = 26
 
     /**
      * v14 `page_align`（`../docs/SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -181,6 +185,93 @@ object Schema {
     )
 
     /**
+     * v25 Agent 记忆（`../docs/ACP-AGENT-PLAN.md §21`），与 Mac `migrate()` 里那段**逐字相同**。
+     * Agent 记下、以后每段新对话自动带上的长期备忘（一两句话，Markdown）；工作区级、不挂文档，`agent` = 写下它的 Agent 的名字。
+     * 本端只建表不读写（平板上没有 Agent 面板）；改这里必须与 Mac `LibraryStore.swift` 同步。
+     */
+    private val AGENT_MEMORY_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS agent_memory (
+          id TEXT PRIMARY KEY,
+          content TEXT NOT NULL DEFAULT '',
+          agent TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+    )
+
+    /**
+     * v25 Agent 对话记录 + 索引（`../docs/ACP-AGENT-PLAN.md §22`），与 Mac `migrate()` 里那段**逐字相同**。
+     * 一轮一行（用户那句话 + Agent 的回复），只追加不改；`conversation_id` = App 那边的一段对话，`session_id` = Agent 的会话 id（空串 = 不知道）。
+     * 本端只建表不读写（平板上没有 Agent 面板）；改这里必须与 Mac `LibraryStore.swift` 同步。
+     */
+    private val AGENT_TURN_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS agent_turn (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL DEFAULT '',
+          agent TEXT NOT NULL DEFAULT '',
+          session_id TEXT NOT NULL DEFAULT '',
+          user_text TEXT NOT NULL DEFAULT '',
+          reply_text TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_agent_turn_conversation ON agent_turn(conversation_id, created_at)",
+    )
+
+    /**
+     * v26 日程计划（`../docs/SCHEDULE-PLAN.md`），与 Mac `migrate()` 里那段**逐字相同**。
+     * 计划 = 一组事项（多半是 Agent 一次排出来的，比如「第三章复习，两周」）；`goal` = 这份计划要达成什么，
+     * `agent` = 排它的 Agent 的名字（用户自己建的为空串）。工作区级、不挂文档。
+     * 本端本轮只建表不读写（平板上还没有日程界面）；改这里必须与 Mac `LibraryStore.swift` 同步。
+     */
+    private val SCHEDULE_PLAN_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS schedule_plan (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          goal TEXT NOT NULL DEFAULT '',
+          agent TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+    )
+
+    /**
+     * v26 日程事项 + 两条索引（`../docs/SCHEDULE-PLAN.md`），与 Mac `migrate()` 里那段**逐字相同**。
+     * `plan_id` 空串 = 不属于哪份计划（只是个标签，没有外键）；`day` = `'YYYY-MM-DD'`（本地日历日，空串 = 还没排日期）；
+     * `start_min` = 当天第几分钟开始（-1 = 不定时），`duration_min` = 预计多少分钟（0 = 没说）；
+     * `done_at` = 做完的时间（ISO 8601，空串 = 没做完），`result` = 做完后写的一句「做得怎样」；`seq` = 同一天里的先后；
+     * `detail` 是 Markdown（可写 `[[书名#page=12]]` 这类链接）。
+     * 本端本轮只建表不读写（平板上还没有日程界面）；改这里必须与 Mac `LibraryStore.swift` 同步。
+     */
+    private val SCHEDULE_ITEM_DDL = listOf(
+        """
+        CREATE TABLE IF NOT EXISTS schedule_item (
+          id TEXT PRIMARY KEY,
+          plan_id TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          detail TEXT NOT NULL DEFAULT '',
+          day TEXT NOT NULL DEFAULT '',
+          start_min INTEGER NOT NULL DEFAULT -1,
+          duration_min INTEGER NOT NULL DEFAULT 0,
+          done_at TEXT NOT NULL DEFAULT '',
+          result TEXT NOT NULL DEFAULT '',
+          seq INTEGER NOT NULL DEFAULT 0,
+          agent TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_schedule_item_day ON schedule_item(day)",
+        "CREATE INDEX IF NOT EXISTS idx_schedule_item_plan ON schedule_item(plan_id)",
+    )
+
+    /**
      * 与 Mac `migrate()` 里那段 `CREATE TABLE IF NOT EXISTS …` 逐字一致，只是拆成了单条语句。
      * 唯一形式上的出入：`location` 建表时就带上 `is_relative`（Mac 是 CREATE 之后 `ADD COLUMN` 补的，
      * 全新库两者列序相同——Mac `MirrorFingerprint` 的列序注释说的就是这份）。
@@ -266,7 +357,8 @@ object Schema {
         )
         """,
         PAGE_ALIGN_DDL,
-    ) + MD_DOC_DDL + BOARD_DDL + EXERCISE_DDL + AGENT_CONTEXT_DDL
+    ) + MD_DOC_DDL + BOARD_DDL + EXERCISE_DDL + AGENT_CONTEXT_DDL + AGENT_MEMORY_DDL + AGENT_TURN_DDL +
+        SCHEDULE_PLAN_DDL + SCHEDULE_ITEM_DDL
 
     /**
      * 老库补列：与 Mac `migrate()` 的 `addColumnIfMissing` **逐条同序**（v1 → v12 攒下来的那些）。
@@ -303,6 +395,8 @@ object Schema {
         Triple("exercise", "note", "TEXT NOT NULL DEFAULT ''"),
         // v24：题目标签（JSON 字符串数组），与 Mac 同序
         Triple("exercise", "tags", "TEXT NOT NULL DEFAULT ''"),
+        // v25 只新增 agent_memory、agent_turn 两张表（上面 DDL 的 CREATE … IF NOT EXISTS 已覆盖，无需 ADD COLUMN）
+        // v26 只新增 schedule_plan、schedule_item 两张表（同上，无需 ADD COLUMN）
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =

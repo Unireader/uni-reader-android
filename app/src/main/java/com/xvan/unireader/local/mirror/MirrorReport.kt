@@ -38,6 +38,10 @@ object MirrorReport {
         "exercise" -> "习题"
         "exercise_attempt" -> "做题记录"
         "agent_context" -> "Agent 上下文"
+        "agent_memory" -> "Agent 记忆"
+        "agent_turn" -> "Agent 对话记录"
+        "schedule_plan" -> "日程计划"
+        "schedule_item" -> "日程事项"
         "meta" -> "工作区设置"
         else -> table
     }

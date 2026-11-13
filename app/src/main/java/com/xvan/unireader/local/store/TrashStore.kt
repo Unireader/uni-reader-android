@@ -27,6 +27,10 @@ object TrashStore {
     val boardTables = listOf("board_note", "board_page", "board_item")
     /** Agent 上下文条目的表（v23，同 Mac `agentContextTables`；本端不建这种条目，只认得、能恢复 Mac 建的） */
     val agentContextTables = listOf("agent_context")
+    /** Agent 记忆条目的表（v25，同 Mac `agentMemoryTables`；本端不建这种条目，只认得、能恢复 Mac 建的） */
+    val agentMemoryTables = listOf("agent_memory")
+    /** 日程条目的表（v26，同 Mac `scheduleTables`，计划在前；本端不建这种条目，只认得、能恢复 Mac 建的） */
+    val scheduleTables = listOf("schedule_plan", "schedule_item")
 
     /** 写进 manifest 的统计（Mac `TrashStore.Counts`，键名一致） */
     class Counts {
@@ -43,15 +47,20 @@ object TrashStore {
         var boardImage = 0
         var exercise = 0
         var agentContext = 0
+        var agentMemory = 0
+        var schedulePlan = 0
+        var scheduleItem = 0
         val total: Int get() =
-            ink + text + highlight + bookmark + image + aiThread + scratchInk + boardInk + boardImage + exercise + agentContext
+            ink + text + highlight + bookmark + image + aiThread + scratchInk + boardInk + boardImage + exercise +
+                agentContext + agentMemory + schedulePlan + scheduleItem
 
         fun toJson(): JSONObject = JSONObject()
             .put("ink", ink).put("text", text).put("highlight", highlight).put("bookmark", bookmark)
             .put("image", image).put("aiThread", aiThread).put("scratchInk", scratchInk)
             .put("inkLayer", inkLayer).put("scratchPad", scratchPad)
             .put("boardInk", boardInk).put("boardImage", boardImage).put("exercise", exercise)
-            .put("agentContext", agentContext)
+            .put("agentContext", agentContext).put("agentMemory", agentMemory)
+            .put("schedulePlan", schedulePlan).put("scheduleItem", scheduleItem)
 
         companion object {
             /** 老条目少键：缺了就是 0（同 Mac 的 decodeIfPresent） */
@@ -61,7 +70,8 @@ object TrashStore {
                 bookmark = o.optInt("bookmark"); image = o.optInt("image"); aiThread = o.optInt("aiThread")
                 scratchInk = o.optInt("scratchInk"); inkLayer = o.optInt("inkLayer"); scratchPad = o.optInt("scratchPad")
                 boardInk = o.optInt("boardInk"); boardImage = o.optInt("boardImage"); exercise = o.optInt("exercise")
-                agentContext = o.optInt("agentContext")
+                agentContext = o.optInt("agentContext"); agentMemory = o.optInt("agentMemory")
+                schedulePlan = o.optInt("schedulePlan"); scheduleItem = o.optInt("scheduleItem")
             }
         }
     }
@@ -194,7 +204,7 @@ object TrashStore {
     fun restore(db: Db, path: File, remapDocumentId: String?): Int = withSnapshot(path) { snap ->
         var written = 0
         db.transaction {
-            for (table in documentTables + boardTables + agentContextTables) {
+            for (table in documentTables + boardTables + agentContextTables + agentMemoryTables + scheduleTables) {
                 if (!hasTable(snap, table)) continue
                 if (remapDocumentId != null && table in setOf("document", "variant", "location")) continue
                 val conflict = if (table in setOf("document", "variant", "board_note", "exercise")) "OR IGNORE" else "OR REPLACE"
@@ -273,6 +283,9 @@ object TrashStore {
         counts.scratchPad = n("scratch_pad")
         counts.exercise = n("exercise")
         counts.agentContext = n("agent_context")
+        counts.agentMemory = n("agent_memory")
+        counts.schedulePlan = n("schedule_plan")
+        counts.scheduleItem = n("schedule_item")
         val hashes = if (!hasTable(snap, "variant")) emptyList() else
             snap.rawQuery("SELECT content_hash FROM variant", null).use { c ->
                 val out = ArrayList<String>()

@@ -185,17 +185,51 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
+        // v25 Agent 记忆与对话记录（`../docs/ACP-AGENT-PLAN.md §21–22`，与 Mac 同序同列）：工作区级、没有子表。
+        // 记忆改了就改 `updated_at`；对话记录只追加（`updated_at` = `created_at`），两张都按 `updated_at` 取新。本端只随同步搬运。
+        TableSpec(
+            "agent_memory", "id",
+            listOf(t("id"), t("content"), t("agent"), t("created_at"), t("updated_at")),
+            lww = "updated_at",
+        ),
+        TableSpec(
+            "agent_turn", "id",
+            listOf(
+                t("id"), t("conversation_id"), t("agent"), t("session_id"),
+                t("user_text"), t("reply_text"), t("created_at"), t("updated_at"),
+            ),
+            lww = "updated_at",
+        ),
+        // v26 日程（`../docs/SCHEDULE-PLAN.md`，与 Mac 同序同列）：工作区级。计划与事项各自按 `updated_at` 取新
+        // （改标题 / 打勾 / 挪日子都改它）；事项的 `plan_id` 只是个标签（没有外键），合并时两张表各管各的行。本端只随同步搬运。
+        TableSpec(
+            "schedule_plan", "id",
+            listOf(t("id"), t("title"), t("goal"), t("agent"), t("created_at"), t("updated_at")),
+            lww = "updated_at",
+        ),
+        TableSpec(
+            "schedule_item", "id",
+            listOf(
+                t("id"), t("plan_id"), t("title"), t("detail"),
+                t("day"), i("start_min"), i("duration_min"), t("done_at"),
+                t("result"), i("seq"), t("agent"),
+                t("created_at"), t("updated_at"),
+            ),
+            lww = "updated_at",
+        ),
         TableSpec("meta", "key", listOf(t("key"), t("value"))),
     )
 
     fun spec(table: String): TableSpec? = specs.firstOrNull { it.table == table }
 
     /**
-     * 这张表是不是「较新的表」（v15 `md_doc` / v16~17 画板 / v20 习题 / v23 `agent_context`）：只读打开过的老库里可能还没建，
+     * 这张表是不是「较新的表」（v15 `md_doc` / v16~17 画板 / v20 习题 / v23 `agent_context` / v25 `agent_memory`、`agent_turn` /
+     * v26 `schedule_plan`、`schedule_item`）：只读打开过的老库里可能还没建，
      * 往里写（离线镜像合并 / 服务器拉下来的行）之前要先 `Schema.migrate`。两处调用（`MirrorApply.write`、`SyncClient`）共用这一条判定。
      */
     fun needsMigrate(table: String): Boolean =
-        table == "md_doc" || table.startsWith("board_") || table.startsWith("exercise") || table == "agent_context"
+        table == "md_doc" || table.startsWith("board_") || table.startsWith("exercise") || table.startsWith("agent_") ||
+            table.startsWith("schedule_")
 
     /**
      * `meta` 表里**参与同步**的键（方案 §4）。`meta` 是个杂物袋：既有工作区级配置（该同步），

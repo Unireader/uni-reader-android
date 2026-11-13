@@ -350,6 +350,8 @@
     <string name="trash_kind_annotations">批注</string>
     <string name="trash_kind_exercises">习题</string>
     <string name="trash_kind_agent_contexts">Agent 上下文</string>
+    <string name="trash_kind_agent_memories">Agent 记忆</string>
+    <string name="trash_kind_schedule">日程</string>
     <string name="trash_items">%1$d 条</string>
     <string name="trash_hint">放进回收站的内容 30 天后自动清除。</string>
     <string name="doc_delete">删除…</string>

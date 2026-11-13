@@ -44,6 +44,8 @@ class TrashSheet(
             Trash.KIND_ANNOTATIONS -> R.string.trash_kind_annotations
             Trash.KIND_EXERCISES -> R.string.trash_kind_exercises
             Trash.KIND_AGENT_CONTEXTS -> R.string.trash_kind_agent_contexts
+            Trash.KIND_AGENT_MEMORIES -> R.string.trash_kind_agent_memories
+            Trash.KIND_SCHEDULE -> R.string.trash_kind_schedule
             else -> R.string.trash_kind_document
         },
     )

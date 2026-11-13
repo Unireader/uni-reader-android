@@ -355,6 +355,8 @@
     <string name="trash_kind_annotations">Annotations</string>
     <string name="trash_kind_exercises">Exercises</string>
     <string name="trash_kind_agent_contexts">Agent Context</string>
+    <string name="trash_kind_agent_memories">Agent Memory</string>
+    <string name="trash_kind_schedule">Schedule</string>
     <string name="trash_items">%1$d items</string>
     <string name="trash_hint">Items are deleted automatically after 30 days.</string>
     <string name="doc_delete">Delete…</string>

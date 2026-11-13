@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 36 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 40 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -151,6 +151,39 @@ class MirrorFpTest {
         "summary" to "## 做到哪了\n- 已导入第二章习题 1~20\n- 第 5 题答案待核对：${'$'}f'(x)=2x${'$'}\n\n## 接下来\n1. 批改主观题",
         "agent" to "Kimi", "session_id" to "session-7f3a",
         "created_at" to "2026-11-02T08:00:00.000Z", "updated_at" to "2026-11-02T08:30:00.000Z",
+    )
+    // v25 Agent 记忆（与 spike/mirror-fp-test.swift 的 agent_memory 那行逐字段一致）：一两句话，含中文、行内公式
+    private val agentMemoryRow: Map<String, Any?> = mapOf(
+        "id" to "DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD",
+        "content" to "用户在复习计算机网络（王道 2027），偏好先给结论再推导；公式写成 ${'$'}C = W\\log_2(1+S/N)${'$'}",
+        "agent" to "Kimi",
+        "created_at" to "2026-11-13T08:00:00.000Z", "updated_at" to "2026-11-13T09:00:00.000Z",
+    )
+    // v25 Agent 对话记录（与 spike/mirror-fp-test.swift 的 agent_turn 那行逐字段一致）：一轮，多行回复
+    private val agentTurnRow: Map<String, Any?> = mapOf(
+        "id" to "EEEEEEEE-EEEE-4EEE-8EEE-EEEEEEEEEEEE",
+        "conversation_id" to "FFFFFFFF-FFFF-4FFF-8FFF-FFFFFFFFFFFF",
+        "agent" to "Claude Code", "session_id" to "session-91c2",
+        "user_text" to "QAM-16 每个码元几比特？",
+        "reply_text" to "**4 比特**：16 = 2^4。\n\n- 码元速率 × 4 = 比特率",
+        "created_at" to "2026-11-13T08:10:00.000Z", "updated_at" to "2026-11-13T08:10:00.000Z",
+    )
+    // v26 日程计划（与 spike/mirror-fp-test.swift 的 schedule_plan 那行逐字段一致）
+    private val schedulePlanRow: Map<String, Any?> = mapOf(
+        "id" to "12121212-1212-4121-8121-121212121212",
+        "title" to "第三章复习（两周）", "goal" to "11 月底前把第三章数据链路层过完，错题清零",
+        "agent" to "Kimi",
+        "created_at" to "2026-11-13T10:00:00.000Z", "updated_at" to "2026-11-13T10:00:00.000Z",
+    )
+    // v26 日程事项（与 spike/mirror-fp-test.swift 的 schedule_item 那行逐字段一致）：定了时间、做完了、带一句结果和一个书页链接
+    private val scheduleItemRow: Map<String, Any?> = mapOf(
+        "id" to "34343434-3434-4343-8343-343434343434",
+        "plan_id" to "12121212-1212-4121-8121-121212121212",
+        "title" to "读 3.4 滑动窗口", "detail" to "读 [[王道计算机网络#page=88]] 到第 96 页，做课后 1\u20136 题",
+        "day" to "2026-11-14", "start_min" to 570L, "duration_min" to 90L,
+        "done_at" to "2026-11-14T03:20:00.000Z", "result" to "GBN 和 SR 的窗口大小还要再看",
+        "seq" to 1L, "agent" to "Kimi",
+        "created_at" to "2026-11-13T10:00:00.000Z", "updated_at" to "2026-11-14T03:20:00.000Z",
     )
 
     @Test
@@ -300,8 +333,43 @@ class MirrorFpTest {
                     "305a1f03323032362d31312d30325430393a30303a30302e3030305a1f031f031f035b22e79c9f" +
                     "e9a298222c2232303233225d",
                 "8408973ce1a292d1"),
+            R(36, "agent_memory", agentMemoryRow,
+                "0344444444444444442d444444442d344444442d384444442d4444444444444444444444441f" +
+                    "03e794a8e688b7e59ca8e5a48de4b9a0e8aea1e7ae97e69cbae7bd91e7bb9cefbc88e78e8be9" +
+                    "81932032303237efbc89efbc8ce5818fe5a5bde58588e7bb99e7bb93e8aebae5868de68ea8e5" +
+                    "afbcefbc9be585ace5bc8fe58699e68890202443203d20575c6c6f675f3228312b532f4e2924" +
+                    "1f034b696d691f03323032362d31312d31335430383a30303a30302e3030305a1f0332303236" +
+                    "2d31312d31335430393a30303a30302e3030305a",
+                "dfdbaf81c01a38a7"),
+            R(37, "agent_turn", agentTurnRow,
+                "0345454545454545452d454545452d344545452d384545452d4545454545454545454545451f" +
+                    "0346464646464646462d464646462d344646462d384646462d4646464646464646464646461f" +
+                    "03436c6175646520436f64651f0373657373696f6e2d393163321f0351414d2d313620e6af8f" +
+                    "e4b8aae7a081e58583e587a0e6af94e789b9efbc9f1f032a2a3420e6af94e789b92a2aefbc9a" +
+                    "3136203d20325e34e380820a0a2d20e7a081e58583e9809fe78e8720c3972034203d20e6af94" +
+                    "e789b9e78e871f03323032362d31312d31335430383a31303a30302e3030305a1f0332303236" +
+                    "2d31312d31335430383a31303a30302e3030305a",
+                "723f3a82e3d1c03b"),
+            R(38, "schedule_plan", schedulePlanRow,
+                "0331323132313231322d313231322d343132312d383132312d3132313231323132313231321f" +
+                    "03e7acace4b889e7aba0e5a48de4b9a0efbc88e4b8a4e591a8efbc891f03313120e69c88e5ba" +
+                    "95e5898de68a8ae7acace4b889e7aba0e695b0e68daee993bee8b7afe5b182e8bf87e5ae8cef" +
+                    "bc8ce99499e9a298e6b885e99bb61f034b696d691f03323032362d31312d31335431303a3030" +
+                    "3a30302e3030305a1f03323032362d31312d31335431303a30303a30302e3030305a",
+                "9cf683081501b226"),
+            R(39, "schedule_item", scheduleItemRow,
+                "0333343334333433342d333433342d343334332d383334332d3334333433343334333433341f" +
+                    "0331323132313231322d313231322d343132312d383132312d3132313231323132313231321f" +
+                    "03e8afbb20332e3420e6bb91e58aa8e7aa97e58fa31f03e8afbb205b5be78e8be98193e8aea1" +
+                    "e7ae97e69cbae7bd91e7bb9c23706167653d38385d5d20e588b0e7acac20393620e9a1b5efbc" +
+                    "8ce5819ae8afbee5908e2031e280933620e9a2981f03323032362d31312d31341f013537301f" +
+                    "0139301f03323032362d31312d31345430333a32303a30302e3030305a1f0347424e20e5928c" +
+                    "20535220e79a84e7aa97e58fa3e5a4a7e5b08fe8bf98e8a681e5868de79c8b1f01311f034b69" +
+                    "6d691f03323032362d31312d31335431303a30303a30302e3030305a1f03323032362d31312d" +
+                    "31345430333a32303a30302e3030305a",
+                "f2f7de73174ca34a"),
         )
-        assertEquals(15, cases.size)
+        assertEquals(19, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -344,10 +412,12 @@ class MirrorFpTest {
     @Test
     fun tableSpecs() {
         assertEquals(
-            // 与 Mac `MirrorFp.specs` 同一份表集合、同一顺序（13 张；location 不在其中；v20 加了习题两张、v23 Agent 上下文）
+            // 与 Mac `MirrorFp.specs` 同一份表集合、同一顺序（17 张；location 不在其中；v20 加了习题两张、v23 Agent 上下文、
+            // v25 Agent 记忆与对话记录、v26 日程两张）
             listOf(
                 "document", "variant", "note", "ink_layer", "scratch_pad", "md_doc",
-                "board_note", "board_page", "board_item", "exercise", "exercise_attempt", "agent_context", "meta",
+                "board_note", "board_page", "board_item", "exercise", "exercise_attempt", "agent_context",
+                "agent_memory", "agent_turn", "schedule_plan", "schedule_item", "meta",
             ),
             MirrorFp.specs.map { it.table },
         )
@@ -370,6 +440,33 @@ class MirrorFpTest {
             MirrorFp.spec("agent_context")!!.columns.map { it.name },
         )
         assertEquals("updated_at", MirrorFp.spec("agent_context")!!.lww)
+        assertEquals(
+            listOf("id", "content", "agent", "created_at", "updated_at"),
+            MirrorFp.spec("agent_memory")!!.columns.map { it.name },
+        )
+        assertEquals("updated_at", MirrorFp.spec("agent_memory")!!.lww)
+        assertEquals(
+            listOf("id", "conversation_id", "agent", "session_id", "user_text", "reply_text", "created_at", "updated_at"),
+            MirrorFp.spec("agent_turn")!!.columns.map { it.name },
+        )
+        assertEquals("updated_at", MirrorFp.spec("agent_turn")!!.lww)
+        assertEquals(
+            listOf("id", "title", "goal", "agent", "created_at", "updated_at"),
+            MirrorFp.spec("schedule_plan")!!.columns.map { it.name },
+        )
+        assertEquals("updated_at", MirrorFp.spec("schedule_plan")!!.lww)
+        assertEquals(
+            listOf(
+                "id", "plan_id", "title", "detail", "day", "start_min", "duration_min", "done_at", "result", "seq", "agent",
+                "created_at", "updated_at",
+            ),
+            MirrorFp.spec("schedule_item")!!.columns.map { it.name },
+        )
+        assertEquals("updated_at", MirrorFp.spec("schedule_item")!!.lww)
+        // v26 两张日程表与 v25 Agent 两张一样：只读打开过的老库里可能还没建，写之前要先迁移
+        for (t in listOf("agent_context", "agent_memory", "agent_turn", "schedule_plan", "schedule_item")) {
+            assertEquals(t, true, MirrorFp.needsMigrate(t))
+        }
         assertEquals(
             listOf("id", "board_id", "sort_key", "width", "height", "template", "created_at", "updated_at"),
             MirrorFp.spec("board_page")!!.columns.map { it.name },

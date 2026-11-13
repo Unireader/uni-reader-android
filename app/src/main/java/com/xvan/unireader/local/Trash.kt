@@ -38,6 +38,10 @@ object Trash {
     const val KIND_EXERCISES = "exercises"
     /** 几份 Agent 上下文（v23，Mac 删的；本端不建这种条目，只列出来、能恢复） */
     const val KIND_AGENT_CONTEXTS = "agentContexts"
+    /** 几条 Agent 记忆（v25，Mac 删的；本端不建这种条目，只列出来、能恢复） */
+    const val KIND_AGENT_MEMORIES = "agentMemories"
+    /** 一份日程计划连同它的事项（v26，Mac 删的；本端不建这种条目，只列出来、能恢复） */
+    const val KIND_SCHEDULE = "schedule"
 
     class Manifest(
         val kind: String,

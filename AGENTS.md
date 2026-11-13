@@ -33,7 +33,7 @@ UniReader 的安卓端：**一个 App 两种模式**（启动页两个标签页�
 
 ```bash
 cd android
-./gradlew assembleDebug              # wrapper 已补齐（gradle 9.5.1），别再用 ~/.gradle 里的裸 gradle
+./gradlew assembleDebug              # 使用项目 Wrapper（Gradle 9.8.0）
 ./gradlew test                       # JVM 单测：WireCodecTest / InkEditTest / ScratchGeomTest
 ./gradlew connectedDebugAndroidTest  # 插桩测试，要设备或模拟器（见下：数据层只能在设备上验）
 ./pack.sh                            # release 打包；adb 恰好一台设备时顺带安装（--debug / --no-install）
@@ -104,12 +104,15 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
-  （`Schema.VERSION = 23`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
-  `CREATE … IF NOT EXISTS` 补齐到 v23 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
+  （`Schema.VERSION = 26`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  `CREATE … IF NOT EXISTS` 补齐到 v26 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
   `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
   `../docs/ACP-AGENT-PLAN.md §12`）本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
-  `agentContexts` 条目并能恢复）+ 与 Mac 同序的 `ADD COLUMN` +
+  `agentContexts` 条目并能恢复）；v25 `agent_memory` / `agent_turn`（Agent 记忆与对话记录，`../docs/ACP-AGENT-PLAN.md §21–22`）同样只建表、
+  随同步（向量 #36 / #37）、回收站认得 `agentMemories`）；v26 `schedule_plan` / `schedule_item`（日程：计划 + 事项，`../docs/SCHEDULE-PLAN.md`）
+  本端本轮没有日程界面，同样只建表、随同步（向量 #38 / #39；`MirrorFp.needsMigrate` 认 `schedule_` 前缀）、回收站认得 Mac 建的 `schedule`
+  条目（manifest 计数键 `schedulePlan` / `scheduleItem`）并能恢复）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
   🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
   补表、`ADD COLUMN` 补列、写 `meta.schema_version`），也可以提出新的表 / 列。剩下的纪律只有一条——
