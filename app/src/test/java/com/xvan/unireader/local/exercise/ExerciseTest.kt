@@ -85,6 +85,23 @@ class ExerciseTest {
         assertTrue(e.copy(page = null).originalSlices().isEmpty())
     }
 
+    /** 跳过的页（`skip_pages`，`../docs/EXERCISE-PLAN.md §30`，同 Mac `exercise-test.swift`「跳过的页」一段）。 */
+    @Test
+    fun skipPages() {
+        fun parse(json: String) = ExPayload.parse(json.toByteArray())!!
+        val p = parse("""{"stem":"s","region":[0.1,0.8,0.8,0.18],"next_regions":[[0.1,0.02,0.8,0.3]],"skip_pages":[0]}""")
+        assertEquals(listOf(0), p.skipPages)
+        val e = ex("X", page = 4).copy(payload = p)
+        assertEquals(listOf(5 to listOf(0.1, 0.02, 0.8, 0.3)), e.originalSlices(20))   // 只剩第 N+1 页那块
+        assertEquals(5, e.lastPage)
+        assertEquals(listOf(4 to listOf(0.1, 0.8, 0.8, 0.18)), e.originalSlices(5))    // 下一页越界 → 退回起始页那块
+        // 全跳过 / 越界 / 不是整数 / 没有起始页框 → 不认
+        assertNull(parse("""{"stem":"s","region":[0,0,1,1],"next_regions":[[0,0,1,1]],"skip_pages":[0,1]}""").skipPages)
+        assertNull(parse("""{"stem":"s","region":[0,0,1,1],"skip_pages":[0]}""").skipPages)
+        assertEquals(listOf(1), parse("""{"stem":"s","region":[0,0,1,1],"next_regions":[[0,0,1,1]],"skip_pages":[1,1,5,0.5]}""").skipPages)
+        assertNull(parse("""{"stem":"s","next_regions":[[0,0,1,1]],"skip_pages":[0]}""").skipPages)
+    }
+
     /** v21 填空 / 主观题：主观题本端只显示题干；填空模式1 可作答（见 fill* 各条）。选择题的交卷对填空不收。 */
     @Test
     fun freeKindsAreMacOnly() {

@@ -277,7 +277,7 @@ class ExerciseController(private val a: Activity) : ExHost {
     }
 
     /**
-     * 原题那一块：本机 Pdfium 把那一页按够用的宽度出图，再裁出题目框（四周放 1.5% 页宽，同 Mac `ExerciseOriginal`）。
+     * 原题那一块：本机 Pdfium 把那一页按够用的宽度出图，再裁出题目框（严格按框，同 Mac `ExerciseOriginal`；2026-11-14 起不再四周留边）。
      * 没有框就整页。跨页的题（`next_regions`，`../docs/EXERCISE-PLAN.md §26`）后面几页各裁一块，从上到下拼成一张。
      * 拿不到（文件不在）→ null；后面某页出不了图就少那一段。
      */
@@ -338,11 +338,10 @@ class ExerciseController(private val a: Activity) : ExHost {
 
     private fun crop(b: Bitmap, r: List<Double>?): Bitmap? {
         if (r == null || r.size != 4) return b
-        val pad = 0.015
-        val x0 = ((r[0] - pad) * b.width).roundToInt().coerceIn(0, b.width - 1)
-        val y0 = ((r[1] - pad * b.width / b.height) * b.height).roundToInt().coerceIn(0, b.height - 1)
-        val x1 = ((r[0] + r[2] + pad) * b.width).roundToInt().coerceIn(x0 + 1, b.width)
-        val y1 = ((r[1] + r[3]) * b.height + pad * b.width).roundToInt().coerceIn(y0 + 1, b.height)
+        val x0 = (r[0] * b.width).roundToInt().coerceIn(0, b.width - 1)
+        val y0 = (r[1] * b.height).roundToInt().coerceIn(0, b.height - 1)
+        val x1 = ((r[0] + r[2]) * b.width).roundToInt().coerceIn(x0 + 1, b.width)
+        val y1 = ((r[1] + r[3]) * b.height).roundToInt().coerceIn(y0 + 1, b.height)
         return runCatching { Bitmap.createBitmap(b, x0, y0, x1 - x0, y1 - y0) }.getOrNull()
     }
 

@@ -36,6 +36,11 @@ data class ExPayload(
      * （`../docs/EXERCISE-PLAN.md §26`）。只在有 [region] 时才算数（[Exercise.originalSlices]）。
      */
     val nextRegions: List<List<Double>>? = null,
+    /**
+     * 不进原题图的页（从 `page` 起的偏移：0 = 题目所在页；升序、不重复、不会全跳过），同 Mac `ExercisePayload.skipPages`
+     * （`../docs/EXERCISE-PLAN.md §30`）。只在有 [region] 时才算数。
+     */
+    val skipPages: List<Int>? = null,
 ) {
     companion object {
         /** 坏了 → null（同 Mac：调用方跳过这一行）。 */
@@ -59,7 +64,18 @@ data class ExPayload(
                     (row as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
                 },
                 nextRegions = cleanNext(o["next_regions"]),
-            )
+            ).let { p ->
+                if (p.region == null) p
+                else p.copy(skipPages = cleanSkip(o["skip_pages"], 1 + (p.nextRegions?.size ?: 0)))
+            }
+        }
+
+        /** 同 Mac `ExerciseRegion.cleanSkip`：只留 0 until [pages] 里的整数、升序去重；全跳过 / 一个不剩 / 类型不对 → null。 */
+        fun cleanSkip(raw: Any?, pages: Int): List<Int>? {
+            val list = raw as? List<*> ?: return null
+            val out = list.mapNotNull { (it as? Double)?.takeIf { d -> d == Math.floor(d) }?.toInt() }
+                .filter { it in 0 until pages }.toSortedSet().toList()
+            return if (out.isEmpty() || out.size >= pages) null else out
         }
 
         /** 跨页的题一道最多往后接几页（同 Mac `ExerciseRegion.maxNextPages`）。 */
@@ -158,17 +174,20 @@ data class Exercise(
     fun originalSlices(pageCount: Int? = null): List<Pair<Int, List<Double>?>> {
         val p = page ?: return emptyList()
         val r = payload.region ?: return listOf(p to null)
-        val out = arrayListOf<Pair<Int, List<Double>?>>(p to r)
+        val all = arrayListOf<Pair<Int, List<Double>?>>(p to r)
         for ((k, n) in (payload.nextRegions ?: emptyList()).withIndex()) {
             val q = p + 1 + k
             if (pageCount != null && q >= pageCount) break
-            out.add(q to n)
+            all.add(q to n)
         }
-        return out
+        // skip_pages 里的页不出（§30）；全被越界去掉时退回起始页那一块
+        val skip = payload.skipPages?.toSet() ?: emptySet()
+        val out = all.filterIndexed { i, _ -> i !in skip }
+        return out.ifEmpty { listOf(all[0]) }
     }
 
-    /** 题目印到第几页为止（0 起；不跨页 = [page]）。 */
-    val lastPage: Int? get() = page?.let { it + if (payload.region == null) 0 else payload.nextRegions?.size ?: 0 }
+    /** 原题图印到第几页为止（0 起；不跨页 = [page]）。 */
+    val lastPage: Int? get() = originalSlices().lastOrNull()?.first
 
     /** 判题：选中的键与答案**完全相同**才算对。没有答案 → null（没法判）。只管选择题。 */
     fun judge(chosen: Set<String>): Boolean? = if (!isChoice || !hasAnswer) null else chosen == payload.answer.toSet()
