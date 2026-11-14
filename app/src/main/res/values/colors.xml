@@ -40,4 +40,7 @@
     <color name="bar_on">#FF14181D</color>
     <color name="bar_on_variant">#FF5B6472</color>
     <color name="bar_outline">#22000000</color>
+
+    <!-- 分步演示里「新出现」的状态色（Mac 用 systemOrange）：橙 -->
+    <color name="anim_new">#FFC4620A</color>
 </resources>

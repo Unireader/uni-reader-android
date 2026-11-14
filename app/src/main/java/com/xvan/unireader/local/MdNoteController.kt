@@ -316,6 +316,11 @@ class MdNoteController(private val a: Activity) {
                     },
                     LinearLayout.LayoutParams(-1, -2).apply { topMargin = Ui.dp(a, 8) },
                 )
+                // 分步演示：能逐步播放的画布（同 Mac 的 ```anim 块）
+                is MdNotes.Segment.Anim -> readBox.addView(
+                    com.xvan.unireader.shared.anim.AnimBlockView(a).apply { setSource(seg.source) },
+                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = Ui.dp(a, 12) },
+                )
                 // 图按原像素大小显示、宽过正文栏才缩（小图拉满一栏会糊）
                 is MdNotes.Segment.Image -> readBox.addView(imageView(seg.target), LinearLayout.LayoutParams(-2, -2).apply {
                     topMargin = Ui.dp(a, 8)

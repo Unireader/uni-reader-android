@@ -491,4 +491,12 @@
     <string name="srv_err_unreachable">Can’t reach the server</string>
     <string name="srv_err_tls">Secure connection failed</string>
     <string name="srv_err_not_on_server">The server doesn’t have this PDF either.</string>
+
+    <!-- 笔记里的 ```anim 分步演示（../docs/ANIM-BLOCK-PLAN.md） -->
+    <string name="anim_prev">Back</string>
+    <string name="anim_next">Next</string>
+    <string name="anim_play">Play</string>
+    <string name="anim_pause">Pause</string>
+    <string name="anim_step_count">%1$d / %2$d</string>
+    <string name="anim_line_error">Line %1$d: %2$s</string>
 </resources>

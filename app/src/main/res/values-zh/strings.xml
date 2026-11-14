@@ -486,4 +486,12 @@
     <string name="srv_err_unreachable">连不上服务器</string>
     <string name="srv_err_tls">安全连接失败</string>
     <string name="srv_err_not_on_server">服务器上也没有这本书的 PDF。</string>
+
+    <!-- 笔记里的 ```anim 分步演示（../docs/ANIM-BLOCK-PLAN.md） -->
+    <string name="anim_prev">上一步</string>
+    <string name="anim_next">下一步</string>
+    <string name="anim_play">播放</string>
+    <string name="anim_pause">暂停</string>
+    <string name="anim_step_count">%1$d / %2$d</string>
+    <string name="anim_line_error">第 %1$d 行：%2$s</string>
 </resources>

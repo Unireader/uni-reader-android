@@ -309,6 +309,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `[别名](uniwiki:目标)`，单独一行的 `![[图]]` 画成图）；界面 `local/MdNoteController`（阅读 / 编辑两态，停手 0.8 秒 / 切走 / 退后台存）；
   标签 docId = `md:<相对路径>`（`TabSet.MD_PREFIX`）；`md_doc` 只当扫描缓存对账。🔴 **只写用户在编辑框里改的**（红线 9），文件已不在就不存；
   删除 = 挪进 `Notes/.trash/`（Obsidian 的回收站目录，两端扫描都跳过），不进 `Trash/`（Mac 不认那种条目）。
+- **笔记里的分步演示 ```anim（2026-11-14，`../docs/ANIM-BLOCK-PLAN.md §11`）**：模式1 Markdown 笔记阅读态里，```anim 块（`MdNotes.Segment.Anim`）
+  画成能逐步播放的 `shared/anim/AnimBlockView`（画布 + 上一步 / 播放 / 下一步 / 进度条，点画布 = 下一步）。编辑态照旧是文字。
+  `shared/anim/` 是 Mac `Sources/Anim/` 的 Kotlin 版：`AnimText`（解析）/ `AnimKits`（一行套件）/ `AnimEngine`（执行 + 链表树图表竖式指针）
+  逐条照抄，🔴 **同一算法两份实现**，跨端向量 `../spike/anim-vectors.txt`（Mac `spike/anim-vectors.swift` 生成，本端 `AnimVectorsTest` 逐行比：
+  展开后的文字、报错原文、每一步的状态摘要）——改了 Swift 的解析 / 套件 / 执行，重生成向量、这边跟着改到测试过。
+  `AnimLayout`（布局）/ `AnimPainter`（插值绘制）规则照抄、坐标不进向量（两端字体不同），观感真机看。颜色只走语义色（新加 `anim_new` 橙）。
 - **回收站 + 定时备份（2026-10-29，`../docs/BACKUP-PLAN.md`）**：`local/Trash`（目录名 / manifest 键 / 时间格式与 Mac 同，Mac 代码实测能恢复本端建的条目）
   + `local/store/TrashStore`（快照**单独开库**逐行复制，不用 ATTACH——本端主库 WAL 连接池里 ATTACH 只挂在一条连接上）+ `local/TrashSheet`。
   🔴 先归档再删（红线 11）：删画板、删文档（书库页长按）都走 `Trash.delete*`，归档失败就什么都不删。

@@ -32,4 +32,6 @@
     <color name="bar_on">#FFE6EDF3</color>
     <color name="bar_on_variant">#FF8B949E</color>
     <color name="bar_outline">#33FFFFFF</color>
+
+    <color name="anim_new">#FFF0883E</color>
 </resources>

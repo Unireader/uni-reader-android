@@ -190,6 +190,8 @@ object MdNotes {
     sealed class Segment {
         class Text(val md: String) : Segment()
         class Image(val target: String) : Segment()
+        /** ```anim 分步演示块：围栏之间的文字（`../docs/ANIM-BLOCK-PLAN.md`，画成能逐步播放的演示） */
+        class Anim(val source: String) : Segment()
     }
 
     fun encode(s: String): String = URLEncoder.encode(s, "UTF-8")
@@ -207,8 +209,26 @@ object MdNotes {
         fun flush() {
             if (buf.isNotEmpty()) { out.add(Segment.Text(buf.toString())); buf.setLength(0) }
         }
+        var anim: StringBuilder? = null      // 正在收的 ```anim 块（没有关上就当普通文字）
+        var animOpen = ""
         for (line in text.split('\n')) {
             val t = line.trim()
+            val a = anim
+            if (a != null) {
+                if (t.startsWith("```")) {
+                    flush()   // 关上了才把前面的文字切出去（没关上的整段留在文字里）
+                    out.add(Segment.Anim(a.toString().trim()))   // 同 Mac：去掉首尾空白再交给引擎
+                    anim = null
+                } else {
+                    a.append(line).append('\n')
+                }
+                continue
+            }
+            if (fence == null && t.startsWith("```") && t.drop(3).trim().lowercase() == "anim") {
+                anim = StringBuilder()
+                animOpen = line
+                continue
+            }
             if (fence != null) {
                 buf.append(line).append('\n')
                 if (t.startsWith(fence!!)) fence = null
@@ -227,6 +247,8 @@ object MdNotes {
             }
             buf.append(wikiLine(line)).append('\n')
         }
+        // 没有关上的 ```anim：原样当代码文字（同 Mac 引擎：没有关闭的围栏不算块）
+        anim?.let { buf.append(animOpen).append('\n').append(it) }
         flush()
         return out
     }

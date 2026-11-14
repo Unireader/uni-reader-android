@@ -84,6 +84,17 @@ class MdNotesTest {
         assertTrue(md, md.contains("[[也不是]]"))
     }
 
+    @Test
+    fun anim块单独成段() {
+        val segs = MdNotes.segments("前\n```anim\narray A = [1]\nstep x\n  mark A[0] done\n```\n后\n```anim\n没关上")
+        assertEquals(3, segs.size)
+        assertEquals("array A = [1]\nstep x\n  mark A[0] done", (segs[1] as MdNotes.Segment.Anim).source)
+        val tail = (segs[2] as MdNotes.Segment.Text).md
+        assertTrue(tail, tail.contains("```anim") && tail.contains("没关上"))
+        // 别的语言的代码块照旧是文字
+        assertTrue(MdNotes.segments("```kotlin\nval x = 1\n```").single() is MdNotes.Segment.Text)
+    }
+
     // ---------- 文件名 ----------
 
     @Test
