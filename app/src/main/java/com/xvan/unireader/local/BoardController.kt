@@ -58,7 +58,15 @@ import org.json.JSONObject
  * 落笔乐观落地，写失败才撤掉并重读；擦除收尾一次 reconcile。
  * 视口不落库不上线，打开一律回画布原点 / 分页停在第一页顶（三端契约）。
  */
-class BoardController(private val a: Activity) {
+class BoardController(
+    private val a: Activity,
+    /**
+     * 题目草稿纸（`../docs/EXERCISE-PLAN.md §29`，习题页上盖着的那张，同 Mac `ExerciseScratchHost`）：一道题一篇画板，
+     * id = 题目 id、`group_name` = [LibraryStore.EXERCISE_SCRATCH_GROUP]。这一份控制栏没有「画板列表」、多一颗「关闭」；
+     * 名字固定显示 [exerciseTitle]、不能改名；永远是无限画布；`board_note` 那一行等第一笔 / 第一张图 / 改纸样时才建。
+     */
+    val exercise: Boolean = false,
+) {
 
     companion object {
         const val TAG = "UniReader/Board"
@@ -100,6 +108,13 @@ class BoardController(private val a: Activity) {
 
     /** 工具条最左那颗键：画板笔记列表（宿主接：切换 / 新建） */
     var onBoardList: (() -> Unit)? = null
+
+    /** 题目草稿纸：工具条上显示的名字（「草稿纸 · 第 3 题」） */
+    var exerciseTitle: String = ""
+        set(v) { field = v; updateBar() }
+
+    /** 题目草稿纸：关闭键（宿主把它收起来） */
+    var onExerciseClose: (() -> Unit)? = null
 
     /** 标题 / 纸样写库成功后回调（宿主刷新标签页标题、抽屉列表） */
     var onBoardChanged: ((BoardNote) -> Unit)? = null
@@ -161,7 +176,9 @@ class BoardController(private val a: Activity) {
             setPadding(Ui.dp(a, 6), h, Ui.dp(a, 6), h)
         }
         val on = Ui.onSurface(a)
-        row.addView(Ui.iconButton(a, R.drawable.ic_list, a.getString(R.string.board_list), on) { onBoardList?.invoke() })
+        row.addView(Ui.iconButton(a, R.drawable.ic_list, a.getString(R.string.board_list), on) { onBoardList?.invoke() }.apply {
+            if (exercise) visibility = View.GONE   // 题目草稿纸没有列表可开
+        })
         barName = Ui.title(a, "", 14f).apply {
             maxLines = 1
             setPadding(Ui.dp(a, 4), 0, Ui.dp(a, 4), 0)
@@ -191,8 +208,14 @@ class BoardController(private val a: Activity) {
             setPadding(Ui.dp(a, 4), 0, Ui.dp(a, 4), 0)
         }
         row.addView(barZoom)
+        if (exercise) row.addView(Ui.iconButton(a, R.drawable.ic_close, a.getString(R.string.ex_scratch_close), on) { onExerciseClose?.invoke() })
         barView = row
         barView.visibility = View.GONE
+    }
+
+    /** 题目草稿纸：库里还没有这一行就先建（`board_item` 的外键要它）。队列线程上调。 */
+    private fun ensureRow(s: LibraryStore, b: BoardNote) {
+        if (exercise && s.board(b.id) == null) s.upsertBoard(b)
     }
 
     /** 切工作区 / 开库之后绑一次（[q] = null 表示工作区关了） */
@@ -442,8 +465,8 @@ class BoardController(private val a: Activity) {
         }
         root.addView(swatches)
 
-        root.addView(Ui.groupTitle(a, "管理"))
-        root.addView(
+        if (!exercise) root.addView(Ui.groupTitle(a, "管理"))
+        if (!exercise) root.addView(
             PadPanels.iconRow(a, R.drawable.ic_text, a.getString(R.string.board_rename)) {
                 dlg?.dismiss()
                 showRename()
@@ -776,7 +799,7 @@ class BoardController(private val a: Activity) {
         canvas.addCommitted(Stroke(0, pen, pts, id))
         pendingInk.add(id)
         q.submit("画板落笔 点数=${pts.size}", { s ->
-            runCatching { s.insertBoardStroke(b.id, pen, pts, id, ps) }
+            runCatching { ensureRow(s, b); s.insertBoardStroke(b.id, pen, pts, id, ps) }
                 .onSuccess { Log.i(TAG, "画板落笔 点数=${pts.size} id=${id.take(8)}") }
                 .onFailure { Log.e(TAG, "画板落笔写库失败（这一笔会丢）", it) }
                 .isSuccess
@@ -899,6 +922,7 @@ class BoardController(private val a: Activity) {
                     val ps = pageSet
                     pushUndo()
                     queue?.submit("画板插图", { s ->
+                        ensureRow(s, b)
                         s.insertImageIfAbsent(
                             com.xvan.unireader.local.store.LibImage(p.sha256, p.ext, p.width, p.height, p.data.size.toLong(), com.xvan.unireader.local.store.Iso.now(), null),
                         )
@@ -1048,7 +1072,7 @@ class BoardController(private val a: Activity) {
     private fun updateBar() {
         onHudChanged?.invoke()
         val b = board ?: return
-        barName.setTextIfChanged(displayName(b))
+        barName.setTextIfChanged(if (exercise) exerciseTitle else displayName(b))
         val pct = canvas.zoomPct()
         barZoom.setTextIfChanged(if (pct == 100) "" else "$pct%")
         val paged = pageSet.paged

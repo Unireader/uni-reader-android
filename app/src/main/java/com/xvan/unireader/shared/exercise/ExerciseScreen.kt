@@ -119,6 +119,11 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         if (deck.filter == FILTER_LAST_WRONG) host.restartLastWrong() else host.redo(deck.cards.map { it.id }, 0)
         setListMode(false)
     }
+    /**
+     * 草稿纸（开关，按下 = 这道题的草稿纸盖在练习页上，`../docs/EXERCISE-PLAN.md §29`；同 PDF 上开草稿纸：平时不显示，关了回到题目）。
+     * 只有宿主接了 [onScratchCard] 才有（模式2：同一块草稿纸画布、Mac 上同一张纸）。
+     */
+    private val scratchBtn = pill(s(R.string.ex_scratch)) { setScratchShown(!scratchOn) }
     private val practiceTab = pill(s(R.string.ex_practice)) { setListMode(false) }
     private val listTab = pill(s(R.string.ex_list)) { setListMode(true) }
     /** 窄屏时「全部重做」收进这里（系统 `PopupMenu`）；两个筛选开关窄屏单独一行（[filterRow]），不用点开菜单。 */
@@ -148,6 +153,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         for (v in listOf(redoAllBtn, lastWrongBtn, unansweredBtn)) {
             addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         }
+        addView(scratchBtn, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         addView(practiceTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
         addView(listTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) })
         addView(moreBtn, LinearLayout.LayoutParams(dp(Ui.TOUCH), dp(Ui.TOUCH)).apply { marginStart = dp(2) })
@@ -366,11 +372,194 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(columnHost, FrameLayout.LayoutParams(-1, -2))
     }
 
+    // ---------- 这道题的草稿纸（`../docs/EXERCISE-PLAN.md §29`，模式2） ----------
+
+    /**
+     * 宿主接上 = 有草稿纸：眼前这道题变了（或收起 / 到列表页，给 null）就告诉宿主，宿主把草稿纸画布放进 [scratchSlot]、
+     * 对上 Mac 那边这道题的那张纸。`title` = 工具条上显示的名字（「草稿纸 · 第 3 题」）。
+     */
+    var onScratchCard: ((id: String?, title: String) -> Unit)? = null
+        set(v) {
+            field = v
+            applyScratch()
+        }
+    /** 草稿纸画布放这里（宿主 addView / removeView）：开着时盖满练习区（顶栏留着）。 */
+    val scratchSlot = object : FrameLayout(a) {
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            post { placeCard() }
+        }
+    }.apply {
+        isClickable = true
+        visibility = View.GONE
+    }
+
+    // ---- 草稿纸上浮着的题目卡片（用户 2026-11-14：「草稿纸全屏了有办法把题目也显示吗」，同 Mac `ExerciseQuestionCard`） ----
+    // 拖标题那一行挪位置，点一下收成一行 / 展开；位置（占纸的比例）和收没收记在本机。正文最高占纸的 45%，里面滚。
+
+    private var cardCollapsed = prefs.getBoolean(KEY_CARD_COLLAPSED, false)
+    private var cardText = ""
+    private val cardTitle = TextView(a).apply {
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Ui.onSurface(a))
+        maxLines = 1
+        ellipsize = TextUtils.TruncateAt.END
+    }
+    private val cardChevron = ImageView(a).apply { setColorFilter(Ui.onSurface(a)) }
+    private val cardBlocks = blocks(15f)
+    private val cardBody: ScrollView = object : ScrollView(a) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val max = maxOf(dp(80), (scratchSlot.height * 0.45f).toInt())
+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(max, MeasureSpec.AT_MOST))
+        }
+    }.apply {
+        setPadding(dp(14), 0, dp(14), dp(12))
+        addView(cardBlocks)
+    }
+    private val cardHeader: LinearLayout = object : LinearLayout(a) {
+        private var downX = 0f
+        private var downY = 0f
+        private var startX = 0f
+        private var startY = 0f
+        private var dragging = false
+        override fun onTouchEvent(ev: MotionEvent): Boolean {
+            val card = qCard
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = ev.rawX; downY = ev.rawY; startX = card.translationX; startY = card.translationY; dragging = false
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = ev.rawX - downX
+                    val dy = ev.rawY - downY
+                    if (!dragging && abs(dx) + abs(dy) < dp(6)) return true
+                    dragging = true
+                    moveCard(startX + dx, startY + dy)
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (dragging) {
+                        val w = maxOf(1, scratchSlot.width).toFloat()
+                        val h = maxOf(1, scratchSlot.height).toFloat()
+                        prefs.edit().putFloat(KEY_CARD_X, card.translationX / w).putFloat(KEY_CARD_Y, card.translationY / h).apply()
+                    } else {
+                        cardCollapsed = !cardCollapsed
+                        prefs.edit().putBoolean(KEY_CARD_COLLAPSED, cardCollapsed).apply()
+                        syncCard()
+                    }
+                }
+            }
+            return true
+        }
+    }.apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(8), dp(10), dp(8))
+        addView(cardTitle, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(cardChevron, LinearLayout.LayoutParams(dp(20), dp(20)))
+    }
+    private val qCard: LinearLayout = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        background = Ui.round(Ui.surface(a), 14, a, Ui.outline(a))
+        elevation = Ui.dpf(a, 6f)
+        isClickable = true   // 卡片上的笔 / 手指别穿到纸上
+        addView(cardHeader, LinearLayout.LayoutParams(-1, -2))
+        addView(cardBody, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    /** 卡片换成眼前这道题（题干 + 选项）。 */
+    private fun bindCard(c: ExCard) {
+        if (qCard.parent == null) scratchSlot.addView(qCard, FrameLayout.LayoutParams(dp(320), -2))
+        cardTitle.text = s(R.string.ex_card_title, c.number.ifEmpty { (deck.index + 1).toString() })
+        var md = c.stem
+        for ((k, t) in c.options) md += "\n\n**$k.** $t"
+        if (md != cardText) {
+            cardText = md
+            bindBlocks(cardBlocks, md, 15f)
+            cardBody.scrollTo(0, 0)
+        }
+        syncCard()
+    }
+
+    private fun syncCard() {
+        cardBody.visibility = if (cardCollapsed) View.GONE else View.VISIBLE
+        cardChevron.setImageResource(if (cardCollapsed) R.drawable.ic_chevron_down else R.drawable.ic_chevron_up)
+        cardHeader.contentDescription = s(if (cardCollapsed) R.string.ex_card_expand else R.string.ex_card_collapse)
+        qCard.post { placeCard() }
+    }
+
+    /** 按记住的比例摆、宽最多 520dp，夹在纸里。 */
+    private fun placeCard() {
+        if (qCard.parent == null || scratchSlot.width <= 0) return
+        val w = minOf(dp(520), scratchSlot.width - dp(32))
+        val lp = qCard.layoutParams
+        if (lp.width != w) { lp.width = w; qCard.layoutParams = lp }
+        moveCard(scratchSlot.width * prefs.getFloat(KEY_CARD_X, 0.03f), scratchSlot.height * prefs.getFloat(KEY_CARD_Y, 0.14f))
+    }
+
+    private fun moveCard(x: Float, y: Float) {
+        val maxX = maxOf(dp(8), scratchSlot.width - qCard.width - dp(8)).toFloat()
+        val maxY = maxOf(dp(8), scratchSlot.height - qCard.height - dp(8)).toFloat()
+        qCard.translationX = x.coerceIn(dp(8).toFloat(), maxX)
+        qCard.translationY = y.coerceIn(dp(8).toFloat(), maxY)
+    }
+    /** 草稿纸开着（不记在本机：每次进来都先看题）。 */
+    private var scratchOn = false
+    /** 草稿纸开着吗（宿主的返回键先关它）。 */
+    val scratchShown: Boolean get() = scratchSlot.visibility == View.VISIBLE
+
+    /** 开 / 关这道题的草稿纸（纸上的关闭键、返回键也走这里）。 */
+    fun setScratchShown(on: Boolean) {
+        if (scratchOn == on) return
+        scratchOn = on
+        applyScratch()
+    }
+    /** 宿主告诉的「画布上已经是这道题的纸了」：没对上之前盖一层说明、吃掉触摸（别写到上一道题的纸上）。 */
+    private val scratchCover = TextView(a).apply {
+        text = s(R.string.ex_scratch_loading)
+        textSize = 14f
+        gravity = Gravity.CENTER
+        setTextColor(Ui.onSurface(a))
+        setBackgroundColor(Ui.surface(a))
+        isClickable = true
+    }
     /** 练习页 = 题目（滚动）+ 底部固定的上一题 / 下一题。 */
     private val practicePane = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
         addView(practice, LinearLayout.LayoutParams(-1, 0, 1f))
         addView(navBar, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    /** 开关 / 换题 / 进出列表页之后：摆好草稿纸那一块，告诉宿主眼前是哪道题（不显示 = null）。 */
+    private fun applyScratch() {
+        val has = onScratchCard != null
+        scratchBtn.visibility = if (has) View.VISIBLE else View.GONE
+        paintPill(scratchBtn, scratchOn)
+        val c = cur()
+        if (listMode || !has) scratchOn = false
+        val show = scratchOn && c != null
+        scratchSlot.visibility = if (show) View.VISIBLE else View.GONE
+        if (show) bindCard(c!!)
+        val id = if (show) c!!.id else null
+        val title = if (c == null) "" else s(R.string.ex_scratch_title, c.number.ifEmpty { (deck.index + 1).toString() })
+        if (id != scratchFor || title != scratchTitle) {
+            scratchFor = id
+            scratchTitle = title
+            onScratchCard?.invoke(id, title)
+        }
+    }
+    private var scratchFor: String? = null
+    private var scratchTitle = ""
+
+    /** 宿主：草稿纸画布上是不是眼前这道题的纸（没对上就盖着说明）。 */
+    fun setScratchReady(ready: Boolean) {
+        if (ready) {
+            (scratchCover.parent as? ViewGroup)?.removeView(scratchCover)
+        } else if (scratchCover.parent == null) {
+            scratchSlot.addView(scratchCover, FrameLayout.LayoutParams(-1, -1))
+        } else {
+            scratchCover.bringToFront()
+        }
     }
 
     // ---------- 列表页 ----------
@@ -434,6 +623,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             FrameLayout(a).apply {
                 addView(practicePane, FrameLayout.LayoutParams(-1, -1))
                 addView(listPane, FrameLayout.LayoutParams(-1, -1))
+                addView(scratchSlot, FrameLayout.LayoutParams(-1, -1))
             },
             LinearLayout.LayoutParams(-1, 0, 1f),
         )
@@ -586,6 +776,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         listPane.visibility = if (listMode) View.VISIBLE else View.GONE
         paintPill(practiceTab, !listMode)
         paintPill(listTab, listMode)
+        applyScratch()
     }
 
     // ---------- 练习页 ----------
@@ -593,6 +784,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private fun cur(): ExCard? = deck.current
 
     private fun refreshPractice() {
+        applyScratch()
         val c = cur()
         if (c == null) {
             column.visibility = View.GONE
@@ -1415,6 +1607,10 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     }
 
     private companion object {
+        /** 草稿纸上题目卡片的位置（占纸的比例）与收没收。 */
+        const val KEY_CARD_X = "scratchCardX"
+        const val KEY_CARD_Y = "scratchCardY"
+        const val KEY_CARD_COLLAPSED = "scratchCardCollapsed"
         /** 视图宽小于它（dp）= 手机 / 窄分屏，用紧凑排法。 */
         const val COMPACT_BELOW_DP = 600
         /** [ExDeckView.filter] 的「重做上次做错的」（线上 `exDeck.filter` = 4，`../docs/PROTOCOL.md §4.9`）。 */

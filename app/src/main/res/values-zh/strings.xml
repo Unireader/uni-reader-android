@@ -198,6 +198,13 @@
     <string name="ex_more">更多</string>
     <string name="ex_practice">练习</string>
     <string name="ex_list">列表</string>
+    <string name="ex_scratch">草稿纸</string>
+    <string name="ex_scratch_title">草稿纸 · 第 %1$s 题</string>
+    <string name="ex_scratch_loading">正在打开这道题的草稿纸…</string>
+    <string name="ex_scratch_close">关闭草稿纸</string>
+    <string name="ex_card_title">第 %1$s 题</string>
+    <string name="ex_card_expand">展开题目</string>
+    <string name="ex_card_collapse">收起题目</string>
     <string name="ex_unanswered_only">只看没做过</string>
     <string name="ex_result_correct">回答正确</string>
     <string name="ex_result_wrong">回答错误，正确答案是 %1$s。</string>

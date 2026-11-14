@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -250,6 +251,11 @@ class ReaderActivity : Activity() {
      * 它加在 [canvasHost] 里但一直是 GONE（不画、不收触摸；退出时随界面一起拆，定时器跟着收）。
      */
     private var boardTools: LocalCanvasView? = null
+    /** 习题页上盖着的题目草稿纸（`../docs/EXERCISE-PLAN.md §29`；同画板一份控制器，存成 group_name = exercise 的画板）。 */
+    private lateinit var exScratch: BoardController
+
+    /** 习题标签上草稿纸开着（笔、撤销、剪贴板都对着它，工具状态用 [boardTools]）。 */
+    private fun exScratchOpen(): Boolean = curTab()?.isExercise == true && exScratch.board != null
 
     /** 工作区的画板笔记列表（`board_note`，最近打开在前）：抽屉 / 「+」/ 标签标题都用它 */
     private var libBoards = listOf<BoardNote>()
@@ -382,12 +388,13 @@ class ReaderActivity : Activity() {
      * 模式 / 笔 / 尺子 / 笔胶囊 / 侧键走这里；翻页、撤销、框选剪贴板这些「页面上的事」仍只认 [cur]。
      */
     private fun toolCanvas(): LocalCanvasView? =
-        cur() ?: if (curTab()?.isBoard == true) boardTools else null
+        cur() ?: if (curTab()?.isBoard == true || exScratchOpen()) boardTools else null
 
     /** 顶栏「剪切 / 复制」：画板标签 → 画板；草稿纸开着 → 纸；否则页里的选中集 */
     private fun clipCopy(cut: Boolean) {
         when {
             curTab()?.isBoard == true -> board.clipCopy(cut)
+            exScratchOpen() -> exScratch.clipCopy(cut)
             scratch.isOpen -> scratch.clipCopy(cut)
             else -> cur()?.requestClipCopy(cut)
         }
@@ -532,10 +539,14 @@ class ReaderActivity : Activity() {
             // 撤销/重做：模式1 本机就是真源，栈在 `LocalCanvasView`（**只管笔迹**，见那里的注释）
             // 画板标签有自己的撤销栈（BoardController.undo），PDF 标签走画布那条
             icon("undo", R.drawable.ic_undo, "撤销") {
-                if (curTab()?.isBoard == true) board.undo(redo = false) else cur()?.requestUndo(redo = false)
+                if (curTab()?.isBoard == true) board.undo(redo = false)
+                else if (exScratchOpen()) exScratch.undo(redo = false)
+                else cur()?.requestUndo(redo = false)
             }
             icon("redo", R.drawable.ic_redo, "重做") {
-                if (curTab()?.isBoard == true) board.undo(redo = true) else cur()?.requestUndo(redo = true)
+                if (curTab()?.isBoard == true) board.undo(redo = true)
+                else if (exScratchOpen()) exScratch.undo(redo = true)
+                else cur()?.requestUndo(redo = true)
             }
             // 剪贴板三件：只在框选模式下出现（对象就是选中集，见 refreshHud）。剪贴板是**进程级**的
             // （`InkClipLocal`），于是跨标签页、跨文档都能粘。
@@ -545,6 +556,7 @@ class ReaderActivity : Activity() {
             icon("clipPaste", R.drawable.ic_paste, "粘贴到视口中央") {
                 when {
                     curTab()?.isBoard == true -> board.clipPaste()
+                    exScratchOpen() -> exScratch.clipPaste()
                     scratch.isOpen -> scratch.clipPaste()
                     else -> cur()?.requestClipPaste()
                 }
@@ -746,6 +758,14 @@ class ReaderActivity : Activity() {
             onBoardChanged = { b -> onBoardRowChanged(b) }
             canvas.onLassoSelChanged = { refreshHud() }
         }
+        exScratch = BoardController(this, exercise = true).apply {
+            toolsProvider = this@ReaderActivity.board.toolsProvider   // 同一份工具状态（boardTools）
+            onExerciseClose = { this@ReaderActivity.exercise.screen.setScratchShown(false) }
+            canvas.onLassoSelChanged = { refreshHud() }
+            onHudChanged = { if (exScratchOpen()) refreshHud() }
+        }
+        // 习题页「草稿纸」：眼前这道题的那张盖在练习区上（null = 收起 / 换走）
+        exercise.screen.onScratchCard = { id, title -> showExerciseScratch(id, title) }
         // 两颗胶囊各自 wrap：不给 penStat 显式 LayoutParams 的话它默认 MATCH_PARENT，
         // 在 wrap 的竖向容器里就被夹成「最宽那颗」的宽度——「翻页 · 拖动平移」会被截成「拖动平」。
         capsules = LinearLayout(this).apply {
@@ -793,10 +813,12 @@ class ReaderActivity : Activity() {
             below = selectBar.view
             adopt(scratch.barView as LinearLayout, Toolbox.SCRATCH_BAR_KEYS) { scratch.barView.visibility == View.VISIBLE }
             adopt(board.barView as LinearLayout, Toolbox.BOARD_BAR_KEYS) { board.barView.visibility == View.VISIBLE }
+            adopt(exScratch.barView as LinearLayout, Toolbox.BOARD_BAR_KEYS + "padClose") { exScratch.barView.visibility == View.VISIBLE }
             attach(root)
         }
         scratch.onBarShown = { bar.tools.refresh() }
         board.onBarShown = { bar.tools.refresh() }
+        exScratch.onBarShown = { bar.tools.refresh() }
         board.onHudChanged = { if (curTab()?.isBoard == true) refreshHud() }   // 画板滚动 / 加页 → 顶栏页码跟着变
         setContentView(root)
         barH = bar.height()
@@ -900,6 +922,7 @@ class ReaderActivity : Activity() {
         libDocs = o.docs
         libBoards = o.boards
         board.bind(q, dir)
+        exScratch.bind(q, dir)
         // 习题：书名先给一份（恢复习题标签时要拿范围名），抽屉的分组随后从库里读
         exercise.bind(q, dir)
         md.bind(q, dir)   // 扫 Notes/ + md_doc 对账，扫完刷抽屉
@@ -1072,6 +1095,8 @@ class ReaderActivity : Activity() {
         scratch.close()   // 开着的草稿纸属于这个工作区的文档，随它一起收
         scratch.bind(null, "", emptyList())
         board.bind(null, null)   // 画板同理（bind(null) 顺带收起）
+        exercise.screen.setScratchShown(false)
+        exScratch.bind(null, null)
         libBoards = emptyList()
         exercise.close()
         exercise.screen.view.visibility = View.GONE
@@ -1832,6 +1857,44 @@ class ReaderActivity : Activity() {
     }
 
     /**
+     * 习题页上的题目草稿纸（`../docs/EXERCISE-PLAN.md §29`）：[id] = 眼前这道题（null = 收起）。画布挪进习题页那一块，
+     * 读这道题的画板（没有就用一份新的，第一笔落下才建库里那一行）。工具状态用 [boardTools]（同画板标签）。
+     */
+    private var exScratchWant: String? = null
+
+    private fun showExerciseScratch(id: String?, title: String) {
+        exScratchWant = id
+        val slot = exercise.screen.scratchSlot
+        val c = exScratch.canvas
+        if (id == null) {
+            exScratch.close()
+            (c.parent as? ViewGroup)?.removeView(c)
+            refreshHud()
+            return
+        }
+        ensureBoardTools()
+        exScratch.exerciseTitle = title
+        if (c.parent !== slot) {
+            (c.parent as? ViewGroup)?.removeView(c)
+            slot.addView(c, 0, FrameLayout.LayoutParams(-1, -1))
+        }
+        exercise.screen.setScratchReady(true)
+        val q = queue ?: return
+        if (exScratch.board?.id.equals(id, ignoreCase = true)) { refreshHud(); return }
+        exScratch.close()
+        q.submit("读题目草稿纸 ${id.take(8)}", { s -> s.board(id.uppercase()) }, { row ->
+            if (exScratchWant != id || !exercise.screen.scratchShown) return@submit   // 读的时候已经收起 / 换走了
+            val now = com.xvan.unireader.local.store.Iso.now()
+            val b = row ?: BoardNote(
+                id = id.uppercase(), title = "", bg = "rgba(255,255,255,1.0)", pattern = "grid",
+                groupName = LibraryStore.EXERCISE_SCRATCH_GROUP, createdAt = now, updatedAt = now, lastOpenedAt = null,
+            )
+            exScratch.open(b, emptyList())
+            refreshHud()
+        })
+    }
+
+    /**
      * 画板那份工具状态第一次要用时建出来：有开着的文档画布就照它抄（笔 / 橡皮 / 夜间…同 [attachTab]
      * 的 donor 口径），否则从 [ToolPrefs] 复原。画板是用来写的：抄过来如果是翻页 / 选字模式就切到笔。
      */
@@ -1842,7 +1905,7 @@ class ReaderActivity : Activity() {
         val donor = tabs.firstOrNull { it.canvas != null }?.canvas
         if (donor != null) copyTools(donor, c) else ToolPrefs.load(this, c)
         if (c.mode != MODE_NOTE && c.mode != MODE_ERASE) c.setModeLocal(MODE_NOTE)
-        c.onHud = { if (curTab()?.isBoard == true) refreshHud() }
+        c.onHud = { if (curTab()?.isBoard == true || exScratchOpen()) refreshHud() }
         boardTools = c
     }
 
@@ -1904,6 +1967,7 @@ class ReaderActivity : Activity() {
     private fun deactivate(t: Tab) {
         if (t.isBoard) board.close()   // 画板标签切走即收（视口不落库，重开回中，三端契约）
         if (t.isExercise) {
+            exercise.screen.setScratchShown(false)   // 题目草稿纸跟着收起（下次进来先看题）
             exercise.close()           // 练到哪了在 LocalExerciseDeck 里，切回来接着练
             exercise.screen.view.visibility = View.GONE
         }
@@ -2367,9 +2431,14 @@ class ReaderActivity : Activity() {
         for (k in arrayOf("prev", "next", "scratch", "lock", "canvas")) bar.setVisible(k, !isBoard && !isEx)
         bar.setEnabled("jumpBack", curTab()?.jumps?.canGoBack == true)
         bar.setEnabled("jumpForward", curTab()?.jumps?.canGoForward == true)
-        for (k in arrayOf("undo", "redo")) bar.setVisible(k, !isEx)   // 画板也能撤销（2026-10-29）
+        val exPaper = exScratchOpen()
+        for (k in arrayOf("undo", "redo")) bar.setVisible(k, !isEx || exPaper)   // 画板也能撤销（2026-10-29）
         if (isBoard) {
-            refreshBoardHud()
+            refreshBoardHud(board)
+            return
+        }
+        if (exPaper) {   // 习题页上开着草稿纸：同画板（笔 / 尺子 / 剪贴板对着这张纸）
+            refreshBoardHud(exScratch)
             return
         }
         if (isEx) {
@@ -2439,7 +2508,7 @@ class ReaderActivity : Activity() {
      * 画板标签的顶栏 / 胶囊：模式键、笔、尺子照常（对 [boardTools]），页码处显示「—」与画板缩放，
      * 框选模式下剪贴板三件作用在画板上（[BoardController.clipCopy]），图层胶囊收起（画板不分图层）。
      */
-    private fun refreshBoardHud() {
+    private fun refreshBoardHud(board: BoardController) {
         val c = boardTools
         bar.setPageLabel(board.hudPage(), board.hudZoom())   // 分页画板显示「当前页/总页数」，无限画布「—」
         val lasso = c?.mode == MODE_LASSO
@@ -2822,6 +2891,7 @@ class ReaderActivity : Activity() {
         curTab()?.let { saveProgress(it) }
         // 顶栏切的夜间、环形盘/切笔键换的笔——都在这一刻存下来（面板改的已经即时存过了）
         toolCanvas()?.let { ToolPrefs.save(this, it) }
+        exScratch.flushViewportSave()
         board.flushViewportSave()   // 画板视口同理：节流中的那次立即写一次，没开画板时空操作
         md.flush()                  // Markdown 笔记：没存的输入立即写盘（同 Mac「App 退出」那条）
         backupNow(force = false)    // 退到后台也备份一次（节流 30 分钟；同 Mac「退出前」那条）
@@ -2879,6 +2949,10 @@ class ReaderActivity : Activity() {
         }
         if (scratch.isOpen) {
             scratch.close()
+            return
+        }
+        if (curTab()?.isExercise == true && exercise.screen.scratchShown) {   // 题目草稿纸：收起来
+            exercise.screen.setScratchShown(false)
             return
         }
         if (cur()?.snipping == true) {   // 正在框一块存图片笔记：返回 = 不框了

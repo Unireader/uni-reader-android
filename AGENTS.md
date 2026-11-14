@@ -275,6 +275,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （Mac 是页内边写边存，本端没照做）；`LibraryStore.setExerciseNote` 同时改 `updated_at`。列表长按多选 →「删除」，
   🔴 先归档再删：`Trash.deleteExercises`（归档到的题数对不上就不删，同 Mac）。两样都经 `ExHost.canEditNote` / `canDelete` 开关，
   模式2 线格式不带笔记、没有删题动作 → 不显示。插桩测试 `ExerciseStoreTest`（题目行用裸 SQL 造）。
+  · **每道题一张草稿纸（2026-11-14，只有模式2，`../docs/EXERCISE-PLAN.md §29`）**：`ExerciseScreen` 宿主接了 `onScratchCard` 才有「草稿纸」开关；平时不显示，点了 `scratchSlot` 盖满练习区（关闭键 / 返回键收起）；
+  `PadActivity.placeScratchCanvas` 把**原来那块草稿纸画布**（`PadScratch.canvas`）挪进去 / 挪回根上，`PadScratch.exerciseTitle` 非空 = 习题模式（同画板：纸固定）。
+  线格式没改：Mac 在平板开着习题页时把 `scratchpads` / `scratchStrokes` 换成眼前这道题的那张（id = 题目 id），平板对不上 id 就盖着「正在打开…」不让写。
+  模式1（同日）：`BoardController(exercise = true)` 第二份接在 `ReaderActivity.showExerciseScratch`，工具状态共用 `boardTools`，本机库 `boards()` 滤掉 `group_name = exercise`。
+  🔴 别再给习题另做写字区（用户 2026-11-14 否决过：笔架用不了、和草稿纸两套）。
 - **模式1 追平 Mac 第二轮（2026-11-10，`../docs/TODO.md` 差距清单 F2 / F3 / G1 / G2 / G3）**：
   · **文档分组**（`document.group_name`）：`LibDocument.group`；分段规则只在 `shared/DocGroups.sections`（同 Mac 侧栏：没有分组不分段，
   有则「未分组」在前、其余按名字；`DocGroupsTest`），书库页与抽屉共用。书库页长按一本书「移动到分组…」（现有 / 新建），长按组名改名 / 解散。

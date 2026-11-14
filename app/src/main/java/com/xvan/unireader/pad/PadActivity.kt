@@ -16,6 +16,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
@@ -256,6 +257,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private var exShown = ""
     private lateinit var exHost: RemoteExHost
     private lateinit var exScreen: com.xvan.unireader.shared.exercise.ExerciseScreen
+    /** 整个界面的根（草稿纸画布平时住在这里，习题页开着时挪进习题页那一块，`../docs/EXERCISE-PLAN.md §29`）。 */
+    private lateinit var rootView: FrameLayout
+    /** 习题页上眼前这道题（草稿纸那一块显示着的时候；null = 没显示 / 不在习题页）与它的草稿纸名字。 */
+    private var exScratchId: String? = null
+    private var exScratchTitle = ""
 
     // —— 量化指标（rtt/e2e/nackRTT/mv-s，照 udp-pad-sim.py refresh）——
     private var rtt = -1.0
@@ -387,9 +393,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 覆盖层与浮条让开顶栏（纸不铺进顶栏那条带子，§7.1）；顶栏收起时让到 0 */
     private fun applyScratchMargin() {
         val top = if (topbar.visibility == View.VISIBLE) barHeightPx else 0
-        (scratch.canvas.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.topMargin = top
-            scratch.canvas.layoutParams = it
+        // 画布挪进习题页时不让（那一块本来就在顶栏下面）
+        if (!::rootView.isInitialized || scratch.canvas.parent === rootView) {
+            (scratch.canvas.layoutParams as? FrameLayout.LayoutParams)?.let {
+                it.topMargin = top
+                scratch.canvas.layoutParams = it
+            }
         }
         if (::bar.isInitialized) bar.tools.relayout()   // 浮着的工具组：没挪过的贴顶栏下方，挪过的不许钻进顶栏
         (mdEmpty.layoutParams as? FrameLayout.LayoutParams)?.let {
@@ -674,6 +683,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
         exScreen = com.xvan.unireader.shared.exercise.ExerciseScreen(this, exHost).apply {
             view.visibility = View.GONE
+            // 这道题的草稿纸：就是草稿纸那块画布（笔架、橡皮、框选、撤销都照旧），Mac 上同一张纸（`../docs/EXERCISE-PLAN.md §29`）
+            onScratchCard = { id, title ->
+                exScratchId = id
+                exScratchTitle = title
+                placeScratchCanvas()
+            }
         }
 
         // 标签页栏：Mac `docs` 广播的只读镜像（见字段注释），只列**当前工作区**那几篇。
@@ -722,7 +737,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             )
         }
 
-        val root = FrameLayout(this).apply {
+        val root = FrameLayout(this).also { rootView = it }.apply {
             addView(padView, FrameLayout.LayoutParams(-1, -1))
             addView(mdEmpty, FrameLayout.LayoutParams(-1, -1))
             // 草稿纸覆盖层：在顶栏**之下**（topMargin 让开顶栏那条带子——handoff §7.1 的白压白坑，
@@ -759,10 +774,14 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         bar.tools.apply {
             minTop = { if (topbar.visibility == View.VISIBLE) barHeightPx else 0 }
             below = drawer.view
-            adopt(scratch.barView as LinearLayout, Toolbox.PAD2_BAR_KEYS) { scratch.barView.visibility == View.VISIBLE }
+            // 习题页上草稿纸那一块没显示（收起 / 列表页）时，纸的几颗键也收起来
+            adopt(scratch.barView as LinearLayout, Toolbox.PAD2_BAR_KEYS) {
+                scratch.barView.visibility == View.VISIBLE && (exShown.isEmpty() || exScratchId != null)
+            }
             attach(root)
         }
         scratch.onBarShown = { bar.tools.refresh() }
+        scratch.onExerciseClose = { exScreen.setScratchShown(false) }
         scratch.onHudChanged = { if (scratch.boardMode) refresh() }   // 分页画板滚动 → 顶栏页码跟着变
         setContentView(root)
         barHeightPx = bar.height() + tabsBar.height()
@@ -793,7 +812,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     override fun onBackPressed() {
         if (drawer.isOpen) { drawer.close(); return }
         // 画板会话里那张「纸」关不掉（§4.8）：返回键照常走
-        if (scratch.isOpen && !scratch.boardMode) { scratch.requestClose(); return }
+        if (exShown.isNotEmpty() && exScreen.scratchShown) { exScreen.setScratchShown(false); return }   // 题目草稿纸：收起来
+        if (scratch.isOpen && !scratch.fixedPaper) { scratch.requestClose(); return }
         @Suppress("DEPRECATION")
         super.onBackPressed()
     }
@@ -1340,10 +1360,40 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             if (want.isEmpty()) exScreen.onHidden() else exScreen.showLoading(titleOf(want))
         }
         exScreen.view.visibility = if (want.isEmpty()) View.GONE else View.VISIBLE
+        placeScratchCanvas()
         drawer.setExerciseCurrent(want)
         applyBoardSurface()
         rebuildTabs()
         refresh()
+    }
+
+    /**
+     * 草稿纸画布住哪：习题页开着、草稿纸那一块显示着 → 挪进那一块（Mac 这时发来的就是眼前这道题的纸，id = 题目 id）；
+     * 否则回到根上原来的位置（习题页之下）。`exerciseTitle` 跟着习题页开没开设（开着 = 那张纸固定、不能关）。
+     */
+    private fun placeScratchCanvas() {
+        if (!::rootView.isInitialized) return
+        val inEx = exShown.isNotEmpty()
+        scratch.exerciseTitle = if (inEx) exScratchTitle.ifEmpty { getString(R.string.ex_scratch) } else null
+        val c = scratch.canvas
+        val target: ViewGroup = if (inEx && exScratchId != null) exScreen.scratchSlot else rootView
+        if (c.parent !== target) {
+            (c.parent as? ViewGroup)?.removeView(c)
+            if (target === rootView) {
+                rootView.addView(c, rootView.indexOfChild(exScreen.view), FrameLayout.LayoutParams(-1, -1))
+                applyScratchMargin()
+            } else {
+                target.addView(c, 0, FrameLayout.LayoutParams(-1, -1))
+            }
+        }
+        refreshExerciseScratchReady()
+        bar.tools.refresh()
+    }
+
+    /** 画布上开着的是不是眼前这道题的纸（换题后 Mac 回推之前、老 Mac 不发时都不是）：不是就盖着说明，别写到别的题上。 */
+    private fun refreshExerciseScratchReady() {
+        val id = exScratchId ?: return
+        exScreen.setScratchReady(scratch.isOpen && scratch.openId.equals(id, ignoreCase = true))
     }
 
     private fun titleOf(key: String): String =
@@ -1524,6 +1574,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onScratchPads(open: Int, list: List<WireCodec.ScratchPadEntry>) = runOnUiThread {
         scratch.applyPads(open, list)   // Mac 是「开着哪张纸」的唯一真源：照做（开/关/换纸）
+        refreshExerciseScratchReady()
         refresh()
     }
 

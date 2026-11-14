@@ -202,6 +202,13 @@
     <string name="ex_more">More</string>
     <string name="ex_practice">Practice</string>
     <string name="ex_list">List</string>
+    <string name="ex_scratch">Scratch Paper</string>
+    <string name="ex_scratch_title">Scratch Paper · Question %1$s</string>
+    <string name="ex_scratch_loading">Opening this question’s scratch paper…</string>
+    <string name="ex_scratch_close">Close the scratch paper</string>
+    <string name="ex_card_title">Question %1$s</string>
+    <string name="ex_card_expand">Show the question</string>
+    <string name="ex_card_collapse">Fold the question away</string>
     <string name="ex_unanswered_only">Not Done Only</string>
     <string name="ex_result_correct">Correct</string>
     <string name="ex_result_wrong">Wrong. The answer is %1$s.</string>

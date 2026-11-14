@@ -39,6 +39,11 @@ import org.json.JSONObject
 class LibraryStore(private val db: Db) : Closeable {
 
     companion object {
+        /**
+         * 题目草稿纸（`../docs/EXERCISE-PLAN.md §29`）：一道题一张，存成画板（`board_note.id` = 题目 id），
+         * `group_name` 记这个值——不是画板笔记，画板列表里不算（同 Mac `LibraryStore.exerciseScratchGroup`）。
+         */
+        const val EXERCISE_SCRATCH_GROUP = "exercise"
         const val TAG = "UniReader/Store"
 
         /**
@@ -1589,9 +1594,13 @@ class LibraryStore(private val db: Db) : Closeable {
     /** 两张表都在不在（只读连接上可能不在：补建只在可写打开时做，见 [open]） */
     fun hasBoardTables(): Boolean = hasTable("board_note") && hasTable("board_item")
 
+    /** 画板笔记列表（不含题目草稿纸：`group_name` = [EXERCISE_SCRATCH_GROUP]，同 Mac `LibraryStore.boards()`）。 */
     fun boards(): List<BoardNote> {
         if (!hasTable("board_note")) return emptyList()
-        return db.query("SELECT * FROM board_note ORDER BY COALESCE(last_opened_at, created_at) DESC") { board(it) }
+        return db.query(
+            "SELECT * FROM board_note WHERE group_name <> ? ORDER BY COALESCE(last_opened_at, created_at) DESC",
+            arrayOf(EXERCISE_SCRATCH_GROUP),
+        ) { board(it) }
     }
 
     fun board(id: String): BoardNote? {

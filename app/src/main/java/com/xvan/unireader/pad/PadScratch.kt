@@ -146,7 +146,7 @@ class PadScratch(private val a: Activity) {
             if (barView.visibility != View.VISIBLE) { barView.visibility = View.VISIBLE; onBarShown?.invoke() }
         }
         onPinsChanged?.invoke(
-            if (boardMode) emptyList()
+            if (fixedPaper) emptyList()
             else list.mapIndexed { i, p -> PadView.ScratchPin(i, p.page.toInt(), p.nx, p.ny) },
         )
         updateBar()
@@ -273,6 +273,28 @@ class PadScratch(private val a: Activity) {
             applyBoardMode()
         }
 
+    /**
+     * 习题页上眼前这道题的草稿纸（`../docs/EXERCISE-PLAN.md §29`）：非 null = 习题模式，值是工具条上显示的名字
+     * （「草稿纸 · 第 3 题」）。这时 Mac 发来的那张纸（id = 题目 id）同画板一样永远开着：不能关、没有页面底图 /
+     * 列表 / 改名 / 删除，只有纸样。宿主（PadActivity）在习题页显示时设、离开时清。
+     */
+    var exerciseTitle: String? = null
+        set(v) {
+            if (field == v) return
+            val modeChanged = (field == null) != (v == null)
+            field = v
+            if (modeChanged) applyBoardMode() else updateBar()
+        }
+
+    /** 题目草稿纸上的关闭键 / 返回键：宿主把它收起来（不发 `scratchOpen`，那张纸在 Mac 上一直开着）。 */
+    var onExerciseClose: (() -> Unit)? = null
+
+    /** 这张纸是固定的（画板会话 / 习题页上的题目草稿纸）：没有列表与页面底图；画板不能关，题目草稿纸关 = 收起。 */
+    val fixedPaper: Boolean get() = boardMode || exerciseTitle != null
+
+    /** 此刻开着的那张纸的 id（习题页据此认出是不是眼前这道题的纸）。 */
+    val openId: String? get() = openPadId
+
     /** 画板的显示名（宿主从 `boards.list` 里按 current 取，Mac 已兜底；null = 还没收到） */
     var boardTitle: String? = null
         set(v) {
@@ -289,20 +311,22 @@ class PadScratch(private val a: Activity) {
     }
 
     private fun applyBoardMode() {
-        val gone = if (boardMode) View.GONE else View.VISIBLE
+        val gone = if (fixedPaper) View.GONE else View.VISIBLE
         pageBtn.visibility = gone
-        closeBtn.visibility = gone
+        closeBtn.visibility = if (exerciseTitle != null) View.VISIBLE else gone
+        // 题目草稿纸：没有列表可开（画板会话里这颗键是画板笔记列表）
+        listBtn.visibility = if (exerciseTitle != null) View.GONE else View.VISIBLE
         listBtn.contentDescription = if (boardMode) a.getString(R.string.board_list) else "草稿纸列表"
-        canvas.emptyHintTitle = if (boardMode) a.getString(R.string.board_empty_hint) else null
+        canvas.emptyHintTitle = if (boardMode && exerciseTitle == null) a.getString(R.string.board_empty_hint) else null
         // 离开画板会话：页一并撤掉（草稿纸永远是无限画布）；切进来时若这一篇的页已经先到了，现在补上
-        if (!boardMode) {
+        if (!boardMode || exerciseTitle != null) {   // 题目草稿纸永远是无限画布
             if (canvas.paged) canvas.setPages(0f, 0f, IntArray(0))
         } else if (pagesBoardId != null && pagesBoardId == boardId) {
             canvas.setPages(pageW, pageH, pageTemplates, replace = true)
         }
         canvas.invalidate()
-        // 图钉：画板会话里那张「纸」没有锚点，别在（藏在底下的）PDF 页面上插一枚
-        if (boardMode) onPinsChanged?.invoke(emptyList())
+        // 图钉：画板会话 / 题目草稿纸那张「纸」没有锚点，别在（藏在底下的）PDF 页面上插一枚
+        if (fixedPaper) onPinsChanged?.invoke(emptyList())
         else onPinsChanged?.invoke(pads.mapIndexed { i, p -> PadView.ScratchPin(i, p.page.toInt(), p.nx, p.ny) })
         updateBar()
     }
@@ -453,7 +477,8 @@ class PadScratch(private val a: Activity) {
     }
 
     fun requestClose() {
-        if (boardMode) return   // 画板不能关（Mac 也会丢这一帧，§4.8）
+        if (exerciseTitle != null) { onExerciseClose?.invoke(); return }   // 题目草稿纸：收起来，回到题目
+        if (fixedPaper) return   // 画板不能关（Mac 也会丢这一帧，§4.8）
         sendCtl?.invoke(WireCodec.encodeScratchOpen(-1))
     }
 
@@ -510,6 +535,7 @@ class PadScratch(private val a: Activity) {
     // ---------- 列表（顶栏入口 / 工具条最左图标） ----------
 
     private fun displayName(p: WireCodec.ScratchPadEntry): String {
+        exerciseTitle?.let { return it }
         // 画板会话：标题一律取 boards.list 里已兜底的显示名（scratchpads 里那份可能是空串，§4.8）
         if (boardMode) return boardTitle ?: p.title.ifEmpty { a.getString(R.string.board_untitled) }
         val i = pads.indexOfFirst { it.id == p.id }
@@ -622,16 +648,16 @@ class PadScratch(private val a: Activity) {
         }
         root.addView(swatches)
 
-        // 管理（v10 起线上有 scratchRename/scratchDelete 了，与模式1 的面板一字排开）
-        root.addView(Ui.groupTitle(a, "管理"))
-        root.addView(
+        // 管理（v10 起线上有 scratchRename/scratchDelete 了，与模式1 的面板一字排开）。题目草稿纸没有名字可改、不能删
+        if (exerciseTitle == null) root.addView(Ui.groupTitle(a, "管理"))
+        if (exerciseTitle == null) root.addView(
             PadPanels.iconRow(a, R.drawable.ic_text, if (boardMode) a.getString(R.string.board_rename) else "改名…") {
                 dlg?.dismiss()
                 showRename(index, entry)
             },
         )
         // 画板会话里没有「删除」：删画板只在 Mac 侧栏做（§4.8，Mac 也会丢 scratchDelete）
-        if (!boardMode) {
+        if (!fixedPaper) {
             root.addView(
                 PadPanels.iconRow(a, R.drawable.ic_delete, "删除这张草稿纸", Ui.col(a, R.color.danger)) {
                     dlg?.dismiss()
@@ -641,7 +667,7 @@ class PadScratch(private val a: Activity) {
         }
 
         sheet.content(root)
-        sheet.action(if (boardMode) a.getString(R.string.common_done) else "完成", primary = true)
+        sheet.action(if (fixedPaper) a.getString(R.string.common_done) else "完成", primary = true)
         dlg = sheet.show()
     }
 
@@ -791,7 +817,7 @@ class PadScratch(private val a: Activity) {
         pageW = w
         pageH = h
         pageTemplates = templates
-        canvas.setPages(w, h, if (boardMode) pageTemplates else IntArray(0), replace)
+        canvas.setPages(w, h, if (boardMode && exerciseTitle == null) pageTemplates else IntArray(0), replace)
         updateBar()
     }
 
