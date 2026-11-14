@@ -290,6 +290,7 @@
     <string name="note_manage_types">Manage Types…</string>
     <string name="hl_fill">Highlight</string>
     <string name="hl_underline">Underline</string>
+    <string name="hl_strike">Strikethrough</string>
     <string name="hl_box">Box</string>
     <string name="hl_title">Highlight</string>
     <string name="hl_page">Page %1$d</string>

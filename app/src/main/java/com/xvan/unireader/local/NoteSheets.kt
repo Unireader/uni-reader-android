@@ -18,6 +18,7 @@ import com.xvan.unireader.local.store.NoteTypeDef
 import com.xvan.unireader.local.store.Palette
 import com.xvan.unireader.shared.HL_BOX
 import com.xvan.unireader.shared.HL_FILL
+import com.xvan.unireader.shared.HL_STRIKE
 import com.xvan.unireader.shared.HL_UNDERLINE
 import com.xvan.unireader.shared.NOTE_ALWAYS
 import com.xvan.unireader.shared.NOTE_HOVER
@@ -63,6 +64,7 @@ object NoteSheets {
         Triple(HL_FILL, R.drawable.ic_hl_fill, R.string.hl_fill),
         Triple(HL_UNDERLINE, R.drawable.ic_hl_underline, R.string.hl_underline),
         Triple(HL_BOX, R.drawable.ic_hl_box, R.string.hl_box),
+        Triple(HL_STRIKE, R.drawable.ic_hl_strike, R.string.hl_strike),
     )
 
     private val GENERAL_RGB = intArrayOf(142, 142, 147)   // Mac `NoteType.general` 的 gray

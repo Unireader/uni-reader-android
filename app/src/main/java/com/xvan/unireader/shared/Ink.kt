@@ -137,7 +137,7 @@ data class TextNote(
      * 图钉仍按类型色（同 Mac）。模式2 线上没有这个字段，恒 null。
      */
     val color: IntArray? = null,
-    /** 选区上怎么画（[HL_FILL] / [HL_UNDERLINE] / [HL_BOX]，payload `style`）；点注解无行框，无意义 */
+    /** 选区上怎么画（[HL_FILL] / [HL_UNDERLINE] / [HL_BOX] / [HL_STRIKE]，payload `style`）；点注解无行框，无意义 */
     val style: Int = HL_FILL,
     /** 被注解的原文（payload `quote`）；编辑器里显示。模式2 恒空 */
     val quote: String = "",
@@ -162,12 +162,13 @@ const val NOTE_HOVER = 1
 const val NOTE_ALWAYS = 2
 
 /**
- * 高亮 / 选区注解的画法（Mac `HighlightStyle`；payload 键 `style` 存 `fill`/`underline`/`box`，
- * 缺键 = 铺色，零迁移）。本端只在内存里用这三个数，换算只在 `TextNotePayload`。
+ * 高亮 / 选区注解的画法（Mac `HighlightStyle`；payload 键 `style` 存 `fill`/`underline`/`box`/`strike`，
+ * 缺键 = 铺色，零迁移；2026-11-14 加 `strike`）。本端只在内存里用这四个数，换算只在 `TextNotePayload`。
  */
 const val HL_FILL = 0
 const val HL_UNDERLINE = 1
 const val HL_BOX = 2
+const val HL_STRIKE = 3   // 删除线：行框垂直中间一条线（2026-11-14）
 
 /**
  * 一片**文字铺色**：kind=3 高亮的荧光底，或 kind=0 选区注解的类型色底（`PageCellView` 的最底两层）。
@@ -192,7 +193,7 @@ data class TextFill(
      * 否则拖走的是图钉、底色留在原地。
      */
     val noteId: String = "",
-    /** 画法：[HL_FILL] 铺色 / [HL_UNDERLINE] 行框底边一条线 / [HL_BOX] 行框描边（同 Mac `PageMarksLayer`） */
+    /** 画法：[HL_FILL] 铺色 / [HL_UNDERLINE] 行框底边一条线 / [HL_BOX] 行框描边 / [HL_STRIKE] 行框中间一条线（同 Mac `PageMarksLayer`） */
     val style: Int = HL_FILL,
     /** 这片色是哪条**高亮**（kind=3）的；手指点中高亮弹操作面板靠它。注解的底色不填 */
     val highlightId: String = "",

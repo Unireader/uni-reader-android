@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  **生成物，勿手改** —— 改 `tools/icons/gen.py` 后重跑 `python3 tools/icons/gen.py`。
+  删除线：字母 S + 中间一道横线
+  规格：24 画布 / 内容活动区 20 / 描边 1.8 round / 无投影渐变。
+  颜色恒为白，真实颜色由代码 imageTintList 给（语义色，跟随深浅色）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M16.6,6.2 C15.6,4.4 13.9,3.8 12,3.8 C9.4,3.8 7.6,5.3 7.6,7.6 C7.6,10 9.8,10.9 12,12 C14.2,13.1 16.4,14 16.4,16.4 C16.4,18.7 14.6,20.2 12,20.2 C10.1,20.2 8.4,19.6 7.4,17.8 M4.4,12 L19.6,12"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

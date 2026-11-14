@@ -222,6 +222,15 @@ class PadOverlays(private val density: Float) {
                 c.drawLine(rect.left - pt, y, rect.right + pt, y, p)
                 p.strokeCap = Paint.Cap.BUTT
             }
+            // 删除线：同画线的线宽与外伸，压在行框垂直中间
+            HL_STRIKE -> {
+                val w = maxOf(1.5f * pt, rect.height() * 0.07f)
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = w
+                p.strokeCap = Paint.Cap.ROUND
+                c.drawLine(rect.left - pt, rect.centerY(), rect.right + pt, rect.centerY(), p)
+                p.strokeCap = Paint.Cap.BUTT
+            }
             // 画框：行框外扩 (1.5pt, 1pt)，1.5pt 描边、圆角 2pt
             HL_BOX -> {
                 rect.inset(-1.5f * pt, -pt)

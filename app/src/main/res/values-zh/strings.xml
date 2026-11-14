@@ -285,6 +285,7 @@
     <string name="note_manage_types">管理类型…</string>
     <string name="hl_fill">高亮</string>
     <string name="hl_underline">画线</string>
+    <string name="hl_strike">删除线</string>
     <string name="hl_box">画框</string>
     <string name="hl_title">高亮</string>
     <string name="hl_page">第 %1$d 页</string>

@@ -3,6 +3,7 @@ package com.xvan.unireader.local.store
 import android.util.Log
 import com.xvan.unireader.shared.HL_BOX
 import com.xvan.unireader.shared.HL_FILL
+import com.xvan.unireader.shared.HL_STRIKE
 import com.xvan.unireader.shared.HL_UNDERLINE
 import com.xvan.unireader.shared.NOTE_ALWAYS
 import com.xvan.unireader.shared.NOTE_HOVER
@@ -389,6 +390,7 @@ class TextNotePayload(val raw: JSONObject) {
     val style: Int get() = when (raw.optString("style")) {
         "underline" -> HL_UNDERLINE
         "box" -> HL_BOX
+        "strike" -> HL_STRIKE
         else -> HL_FILL
     }
 
@@ -501,6 +503,7 @@ class TextNotePayload(val raw: JSONObject) {
         fun styleKey(s: Int): String = when (s) {
             HL_UNDERLINE -> "underline"
             HL_BOX -> "box"
+            HL_STRIKE -> "strike"
             else -> "fill"
         }
     }

@@ -13,6 +13,7 @@ import android.widget.Toast
 import com.xvan.unireader.R
 import com.xvan.unireader.shared.HL_BOX
 import com.xvan.unireader.shared.HL_FILL
+import com.xvan.unireader.shared.HL_STRIKE
 import com.xvan.unireader.shared.HL_UNDERLINE
 import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.TextSelection
@@ -41,8 +42,8 @@ class TextSelectBar(private val ctx: Context) {
 
     private val prefs = ctx.getSharedPreferences("textSelect", Context.MODE_PRIVATE)
     /** 当前画法（本机偏好，同 Mac `quickHighlightColor` 那种「记住上次」） */
-    private var style = prefs.getInt("hlStyle", HL_FILL).takeIf { it in HL_FILL..HL_BOX } ?: HL_FILL
-    private val styleButtons = ArrayList<Pair<Int, ImageButton>>(3)
+    private var style = prefs.getInt("hlStyle", HL_FILL).takeIf { it in HL_FILL..HL_STRIKE } ?: HL_FILL
+    private val styleButtons = ArrayList<Pair<Int, ImageButton>>(4)
 
     /**
      * 这条浮条的视图。**由宿主自己 addView 定 z 序**（同 `ScratchController.barView` 的做法）——
@@ -74,6 +75,7 @@ class TextSelectBar(private val ctx: Context) {
             Triple(HL_FILL, R.drawable.ic_hl_fill, "铺色"),
             Triple(HL_UNDERLINE, R.drawable.ic_hl_underline, "画线"),
             Triple(HL_BOX, R.drawable.ic_hl_box, "画框"),
+            Triple(HL_STRIKE, R.drawable.ic_hl_strike, "删除线"),
         )) {
             val b = Ui.iconButton(ctx, icon, desc) { pickStyle(st) }
             styleButtons.add(st to b)
