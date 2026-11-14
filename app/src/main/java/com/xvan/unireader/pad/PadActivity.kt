@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
@@ -39,7 +38,6 @@ import com.xvan.unireader.shared.MODE_PAGE
 import com.xvan.unireader.shared.NOTE_TAP
 import com.xvan.unireader.shared.DocTabsBar
 import com.xvan.unireader.shared.LibItem
-import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.PalmSettings
 import com.xvan.unireader.shared.PadPanels
 import com.xvan.unireader.shared.ReaderDrawer
@@ -57,15 +55,11 @@ import com.xvan.unireader.shared.TextNote
 import com.xvan.unireader.shared.TopBar
 import com.xvan.unireader.shared.Toolbox
 import com.xvan.unireader.shared.Ui
-import com.xvan.unireader.shared.brushName
-import com.xvan.unireader.shared.capsule
-import com.xvan.unireader.shared.setPenSwatch
 import com.xvan.unireader.shared.setTextIfChanged
-import kotlin.math.roundToInt
 
 /**
  * 主界面：全屏 PadView + 顶栏（连接点、延迟、文档、页码/缩放、◀▶、模式、笔、夜间、文字、尺子、
- * 页图、锁缩放、⚙）+ 左下两枚状态胶囊（笔/橡皮、图层）+ 延迟曲线悬浮。
+ * 页图、锁缩放、⚙）+ 延迟曲线悬浮。笔 / 橡皮设置 = 长按「切换笔」，图层 = ⋯ 里「图层」。
  * 连接设置弹窗（host/token/扫码/连接 + 延迟曲线开关）：未连接自动弹出，⚙ 随时重开。
  * host/token SharedPreferences 持久化（authOK 才存）；扫码内容为 http://ip:8770/?token=XXXX。
  *
@@ -101,10 +95,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     private lateinit var dot: View
     private lateinit var latText: TextView
-    private lateinit var penStat: TextView
-    private lateinit var layerStat: TextView
-    /** 左下那两颗胶囊的容器：习题页上收起（做题不需要，还会压住底部「上一题」） */
-    private lateinit var capsules: LinearLayout
     private lateinit var padView: PadView
     private lateinit var graphView: LatencyGraphView
 
@@ -515,7 +505,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             // 模式键：位置/图标/激活口径与模式1 逐字一致（两边的顶栏必须还是同一条栏）
             icon("mode", TopBar.modeIcon(MODE_NOTE), "切换模式") { padView.cycleMode() }
             // 「切换笔」只在笔模式下出现且染当前笔色（refresh() 维护），其余模式占位纯属误导
-            icon("pen", R.drawable.ic_pen, "切换笔") { padView.cyclePen() }
+            // 长按 = 笔 / 橡皮设置面板（含「相对粗细」）——左下角的笔胶囊 2026-11-14 去掉了，设置都从这里进
+            icon("pen", R.drawable.ic_pen, "切换笔") { padView.cyclePen() }.setOnLongClickListener {
+                PadPanels.showPenPanel(this@PadActivity, padView, ::schedulePenset, ::scheduleEraser)
+                true
+            }
             icon("ruler", R.drawable.ic_ruler, "尺子") { padView.toggleRuler() }
             // 撤销/重做：栈在 Mac（`../docs/PROTOCOL.md §4.1`），这里只发意图。常亮——本端不知道
             // Mac 那边还有没有得撤，为此再加一条 S→C 广播不值当，点了没得撤就是个空操作。
@@ -614,21 +608,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 Ui.RADIUS,
                 Ui.barOn(this@PadActivity),
             )
-        }
-
-        // 左下状态胶囊：笔/橡皮 与 图层（对应网页 PenStat / LayerStat）
-        penStat = capsule(this).apply {
-            setOnClickListener {
-                PadPanels.showPenPanel(this@PadActivity, padView, ::schedulePenset, ::scheduleEraser)
-            }
-        }
-        layerStat = capsule(this).apply { setOnClickListener { showLayerPanel() } }
-        capsules = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(layerStat, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
-            // 显式 wrap：默认的 MATCH_PARENT 会被 wrap 的竖向容器夹成「最宽那颗」的宽度，
-            // 「翻页 · 拖动平移」会被截掉尾巴（模式1 同处一样）
-            addView(penStat, LinearLayout.LayoutParams(-2, -2))
         }
 
         graphView = LatencyGraphView(this)
@@ -754,12 +733,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
                 showBarBtn,
                 FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
                     topMargin = dp(8); marginEnd = dp(8)
-                },
-            )
-            addView(
-                capsules,
-                FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply {
-                    leftMargin = dp(10); bottomMargin = dp(10)
                 },
             )
             addView(
@@ -1131,8 +1104,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         // 顶栏这几行与模式1 的 `refreshHud` 是同一套表达（shared/TopBar）：
         // 模式键换图标、开关键上 accent 底色。两边各写一份文案的时代就此结束。
         // 跟着 Mac 看的是分页画板：页码显示画板的「当前页/总页数」（画布缩放），不是底下那篇 PDF 的
-        // 习题页（含开着题目草稿纸时）不显示左下的图层 / 笔胶囊：做题用不上，竖屏还会压住底部「上一题」
-        capsules.visibility = if (exShown.isNotEmpty()) View.GONE else View.VISIBLE
         val bc = scratch.canvas
         if (exShown.isNotEmpty()) bar.setPageLabel("—", "")   // 习题页：没有页
         else if (scratch.boardMode && bc.paged) bar.setPageLabel("${bc.currentPageIndex() + 1}/${bc.pageCount}", "${bc.zoomPct()}%")
@@ -1165,21 +1136,6 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         scratch.canvas.twoFingerScroll = padView.twoFingerScroll
         scratch.canvas.hLocked = padView.hLocked
 
-        // 笔胶囊：笔记模式显示当前笔（色块 · 类型 · 粗细），其余模式显示模式名（同网页 PenStat）
-        val pen = padView.curPenOrNull()
-        val notePen = pen.takeIf { padView.mode == MODE_NOTE }
-        penStat.setTextIfChanged(
-            when (padView.mode) {
-                MODE_NOTE ->
-                    if (pen != null) "${PadConst.brushLabel(brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
-                    else "笔记"
-                MODE_ERASE -> "橡皮擦"
-                MODE_LASSO -> "框选移动"
-                else -> "翻页 · 拖动平移"
-            }
-        )
-        penStat.setPenSwatch(notePen?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) })
-        layerStat.setTextIfChanged(layers.getOrNull(layerIdx)?.let { "图层：${it.name}" } ?: "图层")
         if (::bar.isInitialized) bar.tools.refresh()   // 哪些工具此刻能用变了就重排（没变不重量，见 Toolbox.refresh）
     }
 

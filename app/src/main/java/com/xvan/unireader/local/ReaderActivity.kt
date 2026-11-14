@@ -6,7 +6,6 @@ import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -71,16 +70,12 @@ import com.xvan.unireader.shared.TocItem
 import com.xvan.unireader.shared.TopBar
 import com.xvan.unireader.shared.Toolbox
 import com.xvan.unireader.shared.Ui
-import com.xvan.unireader.shared.brushName
-import com.xvan.unireader.shared.capsule
 import com.xvan.unireader.shared.onSystemInsets
 import com.xvan.unireader.shared.runInBackground
-import com.xvan.unireader.shared.setPenSwatch
 import com.xvan.unireader.shared.setTextIfChanged
 import com.xvan.unireader.shared.showAlert
 import java.io.File
 import kotlin.math.max
-import kotlin.math.roundToInt
 
 /**
  * 模式1 的阅读界面：本机 Pdfium 出图 + `LocalCanvasView`（与模式2 同一套几何/手势）。
@@ -234,9 +229,6 @@ class ReaderActivity : Activity() {
     /** 左侧拉抽屉（目录 / 书库），与模式2 共用一份。目录由 [PdfSource.toc] 喂，书库由库队列读 */
     private lateinit var drawer: ReaderDrawer
     private lateinit var openingLabel: TextView
-    private lateinit var capsules: LinearLayout
-    private lateinit var penStat: TextView
-    private lateinit var layerStat: TextView
 
     /** 草稿纸（模式1 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板 + 库读写 */
     private lateinit var scratch: ScratchController
@@ -247,7 +239,7 @@ class ReaderActivity : Activity() {
     /**
      * 画板标签的**工具状态**（笔 / 橡皮 / 模式 / 尺子 / 双指滚动）。工具在模式1 是挂在每块阅读画布上的，
      * 而画板标签没有阅读画布——于是单独留一块**不显示**的 [LocalCanvasView] 只当工具状态的容器，
-     * 顶栏的模式 / 笔 / 尺子、笔胶囊、侧键都照旧对它操作（[toolCanvas]），面板一行不用改。
+     * 顶栏的模式 / 笔 / 尺子、笔设置面板、侧键都照旧对它操作（[toolCanvas]），面板一行不用改。
      * 它加在 [canvasHost] 里但一直是 GONE（不画、不收触摸；退出时随界面一起拆，定时器跟着收）。
      */
     private var boardTools: LocalCanvasView? = null
@@ -385,7 +377,7 @@ class ReaderActivity : Activity() {
 
     /**
      * 工具状态从哪块画布读写：文档标签 = 它自己的阅读画布；画板标签 = [boardTools]。
-     * 模式 / 笔 / 尺子 / 笔胶囊 / 侧键走这里；翻页、撤销、框选剪贴板这些「页面上的事」仍只认 [cur]。
+     * 模式 / 笔 / 尺子 / 笔设置面板 / 侧键走这里；翻页、撤销、框选剪贴板这些「页面上的事」仍只认 [cur]。
      */
     private fun toolCanvas(): LocalCanvasView? =
         cur() ?: if (curTab()?.isBoard == true || exScratchOpen()) boardTools else null
@@ -533,7 +525,14 @@ class ReaderActivity : Activity() {
                 warnIfNoTextLayer()
             }
             // 「切换笔」只在笔模式下出现且染当前笔色（refreshHud() 维护），其余模式占位纯属误导
-            icon("pen", R.drawable.ic_pen, "切换笔") { toolCanvas()?.cyclePen(); refreshHud() }
+            // 长按 = 笔 / 橡皮设置面板（含「相对粗细」）——左下角的笔胶囊 2026-11-14 去掉了，设置都从这里进。
+            // 面板改完即时生效（基类自己管），这里只负责存下来（模式1 没有 Mac，不存退出即丢，见 ToolPrefs）
+            icon("pen", R.drawable.ic_pen, "切换笔") { toolCanvas()?.cyclePen(); refreshHud() }.setOnLongClickListener {
+                val c = toolCanvas() ?: return@setOnLongClickListener true
+                val save = { ToolPrefs.save(this@ReaderActivity, c) }
+                PadPanels.showPenPanel(this@ReaderActivity, c, onPenset = save, onEraser = save, onRelInk = save)
+                true
+            }
             // 尺子（45° 吸附，首版范围 §3）：走基类的 toggleRuler，吸附算法与两端同源（PadConst.rulerSnap）
             icon("ruler", R.drawable.ic_ruler, "尺子") { toolCanvas()?.toggleRuler(); refreshHud() }
             // 撤销/重做：模式1 本机就是真源，栈在 `LocalCanvasView`（**只管笔迹**，见那里的注释）
@@ -699,20 +698,6 @@ class ReaderActivity : Activity() {
             onOpenSource = { docId, page, frac -> openExerciseSource(docId, page, frac) }
             screen.view.visibility = View.GONE
         }
-        // 左下状态胶囊：与模式2 同一份样式与文案格式（shared/Widgets.kt + PadPanels）。
-        // 面板改完即时生效（基类自己管），这里只负责把结果存下来——模式2 那两个回调是上行给 Mac 的，
-        // 模式1 没有 Mac，改完不存的话退出即丢（见 ToolPrefs）。
-        penStat = capsule(this).apply {
-            setOnClickListener {
-                val c = toolCanvas() ?: return@setOnClickListener
-                PadPanels.showPenPanel(
-                    this@ReaderActivity, c,
-                    onPenset = { ToolPrefs.save(this@ReaderActivity, c) },
-                    onEraser = { ToolPrefs.save(this@ReaderActivity, c) },
-                )
-            }
-        }
-        layerStat = capsule(this).apply { setOnClickListener { showLayers() } }
         openingLabel = Ui.body(this, "正在打开…").apply { textSize = 15f }
         // 草稿纸：覆盖层画布 + 浮条 + 回调（数据读写全在 ScratchController，这里只接线）
         scratch = ScratchController(this).apply {
@@ -766,13 +751,6 @@ class ReaderActivity : Activity() {
         }
         // 习题页「草稿纸」：眼前这道题的那张盖在练习区上（null = 收起 / 换走）
         exercise.screen.onScratchCard = { id, title -> showExerciseScratch(id, title) }
-        // 两颗胶囊各自 wrap：不给 penStat 显式 LayoutParams 的话它默认 MATCH_PARENT，
-        // 在 wrap 的竖向容器里就被夹成「最宽那颗」的宽度——「翻页 · 拖动平移」会被截成「拖动平」。
-        capsules = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(layerStat, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
-            addView(penStat, LinearLayout.LayoutParams(-2, -2))
-        }
         // 顶栏 + 标签页栏是一整块"上边的壳"：画布在它下面铺满，靠 setBarHeight 让开这块高度
         val chrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -794,12 +772,6 @@ class ReaderActivity : Activity() {
             addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(chrome, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-            addView(
-                capsules,
-                FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply {
-                    leftMargin = dp(10); bottomMargin = dp(10)
-                },
-            )
             // 划字动作条：贴屏幕底部居中，只在有选区时显形（见 TextSelectBar）
             addView(selectBar.view, selectBar.layoutParams())
             // 抽屉加在最后 = 盖在最上层（含 chrome 与全部浮层）：开着时下面一律不响应（同模式2）
@@ -828,18 +800,12 @@ class ReaderActivity : Activity() {
         // 开到第三篇时一秒钟要写三次库）
         handler.postDelayed(saver, SAVE_INTERVAL_MS)
         // 顶栏避开状态栏：不处理的话按钮压在时钟上，点击会被系统栏吃掉（见 shared/Insets.kt）。
-        // 胶囊同理要避开底部导航栏——模式2 不用管这个（它整屏沉浸），模式1 有系统栏。
         root.onSystemInsets { left, top, right, bottom ->
             barH = bar.applyTopInset(top)
             applyChromeHeight()
             // 习题页铺到屏幕底：底部「上一题 / 下一题」那条要让开手势条 / 导航栏（手机上才明显，平板底边一直有余量），
             // 横屏手机侧边的导航栏 / 挖孔同理
             exercise.screen.setSystemInsets(left, right, bottom)
-            val clp = capsules.layoutParams as FrameLayout.LayoutParams
-            if (clp.bottomMargin != dp(10) + bottom) {
-                clp.bottomMargin = dp(10) + bottom
-                capsules.layoutParams = clp
-            }
         }
     }
 
@@ -2439,27 +2405,21 @@ class ReaderActivity : Activity() {
         }
         if (exPaper) {   // 习题页上开着草稿纸：同画板（笔 / 尺子 / 剪贴板对着这张纸）
             refreshBoardHud(exScratch)
-            // 做题时不显示左下的笔胶囊（顶栏的笔键照常能换笔）：竖屏会压住底部「上一题」
-            capsules.visibility = View.GONE
             return
         }
         if (isEx) {
-            // 习题标签：没有页、没有笔——页码处一道横线，笔 / 剪贴板 / 胶囊都收起来
+            // 习题标签：没有页、没有笔——页码处一道横线，笔 / 剪贴板都收起来
             bar.setPageLabel("—", "")
             bar.setVisible("pen", false)
             for (k in arrayOf("clipCut", "clipCopy", "clipPaste")) bar.setVisible(k, false)
-            capsules.visibility = View.GONE
             return
         }
         if (canvas == null) {
-            // 没有当前画布（还在装载 / 刚关掉最后一篇）：胶囊收起来，别显示上一篇的笔和图层
+            // 没有当前画布（还在装载 / 刚关掉最后一篇）：笔键收起来
             bar.setPageLabel("—/—", "100%")
             bar.setVisible("pen", false)
-            capsules.visibility = View.GONE
             return
         }
-        capsules.visibility = View.VISIBLE
-        layerStat.visibility = View.VISIBLE   // 画板标签里收起过（画板不分图层）
         bar.setPageLabel(canvas.hudPage(), canvas.hudZoom())
         drawer.setCurrentPage(canvas.topVisiblePage())   // 目录的「当前章节」追踪（同模式2）
         // 模式键的图标随当前模式变，开关键按下去是 accent 底色——两模式同一套表达（shared/TopBar）
@@ -2489,26 +2449,11 @@ class ReaderActivity : Activity() {
         // 防误触是一个模式、不是两个：草稿纸那块画布跟着页内画布走（幂等赋值，不触发重绘）
         scratch.canvas.twoFingerScroll = canvas.twoFingerScroll
         scratch.canvas.hLocked = canvas.hLocked
-        // 胶囊文案与模式2 逐字一致（PadActivity.refresh）：两模式看起来必须是同一个 App
-        val pen = canvas.curPenOrNull()
-        val notePen = pen.takeIf { canvas.mode == MODE_NOTE }
-        penStat.setTextIfChanged(
-            when (canvas.mode) {
-                MODE_NOTE ->
-                    if (pen != null) "${PadConst.brushLabel(brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
-                    else "笔记"
-                MODE_ERASE -> "橡皮擦"
-                MODE_LASSO -> "框选移动"
-                else -> "翻页 · 拖动平移"
-            },
-        )
-        penStat.setPenSwatch(notePen?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) })
-        layerStat.setTextIfChanged(activeLayer()?.let { "图层：${it.name}" } ?: "图层")
     }
 
     /**
-     * 画板标签的顶栏 / 胶囊：模式键、笔、尺子照常（对 [boardTools]），页码处显示「—」与画板缩放，
-     * 框选模式下剪贴板三件作用在画板上（[BoardController.clipCopy]），图层胶囊收起（画板不分图层）。
+     * 画板标签的顶栏：模式键、笔、尺子照常（对 [boardTools]），页码处显示「—」与画板缩放，
+     * 框选模式下剪贴板三件作用在画板上（[BoardController.clipCopy]）。
      */
     private fun refreshBoardHud(board: BoardController) {
         val c = boardTools
@@ -2520,11 +2465,8 @@ class ReaderActivity : Activity() {
         bar.setEnabled("clipCopy", board.canvas.hasLassoSelection())
         if (c == null) {
             bar.setVisible("pen", false)
-            capsules.visibility = View.GONE
             return
         }
-        capsules.visibility = View.VISIBLE
-        layerStat.visibility = View.GONE
         bar.setIcon("mode", TopBar.modeIcon(c.mode))
         bar.setActive("mode", c.mode != MODE_PAGE)
         bar.setActive("ruler", c.rulerOn)
@@ -2536,21 +2478,6 @@ class ReaderActivity : Activity() {
         board.canvas.twoFingerScroll = c.twoFingerScroll
         board.canvas.hLocked = c.hLocked
         bar.setActive("hLock", c.hLocked)
-        val pen = c.curPenOrNull()
-        penStat.setTextIfChanged(
-            when (c.mode) {
-                MODE_NOTE ->
-                    if (pen != null) "${PadConst.brushLabel(brushName(pen.brush))} · ${(pen.w * 100).toInt() / 100f}pt"
-                    else "笔记"
-                MODE_ERASE -> "橡皮擦"
-                MODE_LASSO -> "框选移动"
-                else -> "拖动平移"
-            },
-        )
-        penStat.setPenSwatch(
-            pen.takeIf { c.mode == MODE_NOTE }
-                ?.let { Color.argb((it.a * 255f).roundToInt().coerceIn(0, 255), it.r, it.g, it.b) },
-        )
     }
 
     // ---------- 图层（面板与模式2 共用一份，见 shared/PadPanels.kt） ----------

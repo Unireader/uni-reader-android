@@ -68,12 +68,17 @@ object PadPanels {
      *
      * @param onPenset 笔宽变了。模式2 用来防抖上行 `penset`；模式1 只有本地状态，传空即可。
      * @param onEraser 橡皮设置变了。模式2 防抖上行 `eraser`（与 Mac PenRack 的橡皮 popover 双向同步）。
+     * @param onRelInk 「相对粗细」开关变了（开关本身经 [PageCanvasView.toggleRelativeInkWidth]，模式2 由它上行 `relInk`）；
+     *   模式1 用来存 ToolPrefs。同 Mac 笔编辑面板里的「相对」勾选框，⋯ 里那一项照旧。
+     *
+     * 入口：长按顶栏「切换笔」（2026-11-14 起，左下角的笔 / 图层胶囊去掉了）。
      */
     fun showPenPanel(
         a: Activity,
         pad: PageCanvasView,
         onPenset: () -> Unit = {},
         onEraser: () -> Unit = {},
+        onRelInk: () -> Unit = {},
     ) {
         val sheet = Sheet(a).title("笔 / 橡皮")
         val root = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
@@ -111,6 +116,17 @@ object PadPanels {
             r.addView(value, LinearLayout.LayoutParams(a.dp(30), LinearLayout.LayoutParams.WRAP_CONTENT))
             root.addView(r)
         }
+        root.addView(
+            CheckBox(a).apply {
+                text = a.getString(R.string.tools_relative_ink)
+                setTextColor(Ui.onSurface(a))
+                isChecked = pad.relativeInkWidth
+                setOnCheckedChangeListener { _, on ->
+                    if (on != pad.relativeInkWidth) pad.toggleRelativeInkWidth()
+                    onRelInk()
+                }
+            },
+        )
 
         root.addView(Ui.groupTitle(a, "橡皮"))
 

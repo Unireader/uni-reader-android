@@ -154,7 +154,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 模式1：标签页 docId 存 `board:<id>`（`TabSet.BOARD_PREFIX`，于是标签页组存取一行没改）；画板标签**没有**
   阅读画布，整页是 `local/BoardController` 那块 `ScratchCanvas`（照 `ScratchController` 写，读写 `board_note` /
   `board_item`：笔迹 kind=1，payload 同草稿纸 kind=4 但**不写 padId**）。工具状态挂在一块不显示的
-  `LocalCanvasView`（`ReaderActivity.boardTools`）上，顶栏模式 / 笔 / 尺子、笔胶囊、侧键都经 `toolCanvas()`。
+  `LocalCanvasView`（`ReaderActivity.boardTools`）上，顶栏模式 / 笔 / 尺子、笔设置面板（长按「切换笔」；左下角的笔 / 图层胶囊 2026-11-14 已去掉）、侧键都经 `toolCanvas()`。
   入口：书库页一组、抽屉书库页一组（`ReaderDrawer.setBoards`，模式2 不设 = 不显示）、「+」、⋯、画板浮条最左键。
   🔴 **新 id 一律大写 UUID**（`newBoardId()`）：Mac 把这两张表的 id 解析成 `UUID` 再按 `uuidString`（大写）写回，
   小写 id 会让 Mac 那边 `ON CONFLICT(id)` 对不上、多出重复行。
