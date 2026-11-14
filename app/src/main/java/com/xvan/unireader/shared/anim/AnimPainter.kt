@@ -79,7 +79,8 @@ class AnimText2D(private val density: Float) : AnimMeasure {
 
     /** 字号按 dp 算（同 Mac 的「点」，不跟系统字体放大：框和字一起按密度缩放，比例不变）。版式按像素排，画的时候再除回 dp。 */
     private fun paint(size: Float, bold: Boolean) = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = size * density
+        // 🔴 别写成裸 `density`：TextPaint 自己有个 `density` 字段（默认 1），apply 里会先认它，字就小了几倍（2026-11-14 实测）
+        textSize = size * this@AnimText2D.density
         typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
     }
 

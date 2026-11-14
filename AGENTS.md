@@ -315,6 +315,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   逐条照抄，🔴 **同一算法两份实现**，跨端向量 `../spike/anim-vectors.txt`（Mac `spike/anim-vectors.swift` 生成，本端 `AnimVectorsTest` 逐行比：
   展开后的文字、报错原文、每一步的状态摘要）——改了 Swift 的解析 / 套件 / 执行，重生成向量、这边跟着改到测试过。
   `AnimLayout`（布局）/ `AnimPainter`（插值绘制）规则照抄、坐标不进向量（两端字体不同），观感真机看。颜色只走语义色（新加 `anim_new` 橙）。
+  整块按 `AnimBlockView.SCALE`（1.3）放大画：演示正文 12 ≈ Mac 的点，原样在平板上比笔记正文（16sp）小一号（用户 11-14 报字小）。
+  🔴 `TextPaint(...).apply { }` 里别写裸 `density`——`TextPaint` 自己有个 `density` 字段（默认 1），会先认它，字小好几倍（11-14 踩过）。
 - **回收站 + 定时备份（2026-10-29，`../docs/BACKUP-PLAN.md`）**：`local/Trash`（目录名 / manifest 键 / 时间格式与 Mac 同，Mac 代码实测能恢复本端建的条目）
   + `local/store/TrashStore`（快照**单独开库**逐行复制，不用 ATTACH——本端主库 WAL 连接池里 ATTACH 只挂在一条连接上）+ `local/TrashSheet`。
   🔴 先归档再删（红线 11）：删画板、删文档（书库页长按）都走 `Trash.delete*`，归档失败就什么都不删。

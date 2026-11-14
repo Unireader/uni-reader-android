@@ -24,7 +24,9 @@ import kotlin.math.ceil
  */
 @SuppressLint("ViewConstructor")
 class AnimBlockView(context: Context) : LinearLayout(context) {
-    private val density = resources.displayMetrics.density
+    /** 画布换算：dp × [SCALE]。演示正文是 12（同 Mac 的点），平板笔记正文是 16sp，原样画汉字偏小（用户 2026-11-14）——
+     *  整块（格子、线、字）一起放大，比例不变；逻辑宽度按放大后折算，块照旧不超出笔记栏。 */
+    private val density = resources.displayMetrics.density * SCALE
     private val text2d = AnimText2D(density)
     private var palette = AnimPalette(context)
 
@@ -240,6 +242,8 @@ class AnimBlockView(context: Context) : LinearLayout(context) {
     }
 
     companion object {
+        /** 整块放大倍数：12 × 1.3 ≈ 16，与笔记正文差不多大。 */
+        const val SCALE = 1.3f
         const val MAX_WIDTH = 720f
         const val HOLD_MS = 1400L
         const val MAX_ERROR_LINES = 4
