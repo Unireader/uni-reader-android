@@ -103,6 +103,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     private lateinit var latText: TextView
     private lateinit var penStat: TextView
     private lateinit var layerStat: TextView
+    /** 左下那两颗胶囊的容器：习题页上收起（做题不需要，还会压住底部「上一题」） */
+    private lateinit var capsules: LinearLayout
     private lateinit var padView: PadView
     private lateinit var graphView: LatencyGraphView
 
@@ -621,7 +623,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             }
         }
         layerStat = capsule(this).apply { setOnClickListener { showLayerPanel() } }
-        val capsules = LinearLayout(this).apply {
+        capsules = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(layerStat, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
             // 显式 wrap：默认的 MATCH_PARENT 会被 wrap 的竖向容器夹成「最宽那颗」的宽度，
@@ -1129,6 +1131,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         // 顶栏这几行与模式1 的 `refreshHud` 是同一套表达（shared/TopBar）：
         // 模式键换图标、开关键上 accent 底色。两边各写一份文案的时代就此结束。
         // 跟着 Mac 看的是分页画板：页码显示画板的「当前页/总页数」（画布缩放），不是底下那篇 PDF 的
+        // 习题页（含开着题目草稿纸时）不显示左下的图层 / 笔胶囊：做题用不上，竖屏还会压住底部「上一题」
+        capsules.visibility = if (exShown.isNotEmpty()) View.GONE else View.VISIBLE
         val bc = scratch.canvas
         if (exShown.isNotEmpty()) bar.setPageLabel("—", "")   // 习题页：没有页
         else if (scratch.boardMode && bc.paged) bar.setPageLabel("${bc.currentPageIndex() + 1}/${bc.pageCount}", "${bc.zoomPct()}%")

@@ -2439,6 +2439,8 @@ class ReaderActivity : Activity() {
         }
         if (exPaper) {   // 习题页上开着草稿纸：同画板（笔 / 尺子 / 剪贴板对着这张纸）
             refreshBoardHud(exScratch)
+            // 做题时不显示左下的笔胶囊（顶栏的笔键照常能换笔）：竖屏会压住底部「上一题」
+            capsules.visibility = View.GONE
             return
         }
         if (isEx) {
