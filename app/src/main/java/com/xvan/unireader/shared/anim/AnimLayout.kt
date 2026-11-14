@@ -491,7 +491,7 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
                 nameH + rows * SHEET_ROW + 4
             }
             is AnimElementKind.Grid -> {
-                val g = gridGeometry(w, k.values.firstOrNull()?.size ?: 0, k.rowLabels.isNotEmpty(), k.colLabels.isNotEmpty())
+                val g = gridGeometry(w, k.values.firstOrNull()?.size ?: 0, k.rowLabels, k.colLabels.isNotEmpty())
                 nameH + g.colLabelH + k.values.size * g.cell + 4 + band
             }
             else -> 0f
@@ -697,20 +697,21 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
 
     private class GridGeometry(val cell: Float, val rowLabelW: Float, val colLabelH: Float)
 
-    private fun gridGeometry(w: Float, cols: Int, rowLabels: Boolean, colLabels: Boolean): GridGeometry {
-        val rowLabelW = if (rowLabels) 28f else 0f
-        val cell = minOf(40f, maxOf(16f, floor((w - rowLabelW) / maxOf(cols, 1))))
+    /** 行标题宽按最长的那个量（最多 80），同 Mac。 */
+    private fun gridGeometry(w: Float, cols: Int, rowLabels: List<String>, colLabels: Boolean): GridGeometry {
+        val rowLabelW = if (rowLabels.isEmpty()) 0f else minOf(80f, (rowLabels.maxOfOrNull { measure(it, AnimMetrics.SMALL, true).w } ?: 0f) + 8)
+        val cell = minOf(40f, maxOf(11f, floor((w - rowLabelW) / maxOf(cols, 1))))   // 窄屏放 20 列：最小 11（字号跟着变小），同 Mac
         return GridGeometry(cell, rowLabelW, if (colLabels) 16f else 0f)
     }
 
     private fun gridItems(id: String, name: String, rect: ARect, state: AnimSceneState, tone: AnimTone,
                           anchors: MutableMap<AnimPointerTarget, AnimAnchor>): List<AnimItem> {
         val g = state.grids[name] ?: return emptyList()
-        val geo = gridGeometry(rect.w, g.cols, g.rowLabels.isNotEmpty(), g.colLabels.isNotEmpty())
+        val geo = gridGeometry(rect.w, g.cols, g.rowLabels, g.colLabels.isNotEmpty())
         val items = ArrayList<AnimItem>()
         val x0 = rect.minX + geo.rowLabelW
         val y0 = rect.minY + geo.colLabelH
-        val font = if (geo.cell < 24) AnimMetrics.SMALL else AnimMetrics.BODY
+        val font = if (geo.cell < 16) AnimMetrics.SMALL - 2 else if (geo.cell < 24) AnimMetrics.SMALL else AnimMetrics.BODY
         for ((j, label) in g.colLabels.withIndex()) {
             items.add(AnimItem("$id.cl$j", AnimShape.Text(label, ARect(x0 + j * geo.cell, rect.minY, geo.cell, 14f), AnimMetrics.SMALL, true, AnimRole.Secondary, AnimAlign.CENTER, false)))
         }

@@ -97,7 +97,7 @@ object AnimKits {
         }
         skipSpace()
         val name = word().lowercase()
-        if (name.isEmpty()) throw AnimParseError("usage: kit NAME options… (${NAMES.joinToString(", ")})")
+        if (name.isEmpty()) throw AnimParseError("usage: kit NAME options… (${(NAMES + AnimKits2.NAMES).joinToString(", ")})")
         val args = Args()
         while (true) {
             skipSpace()
@@ -147,7 +147,7 @@ object AnimKits {
             "preorder", "inorder", "postorder", "levelorder" -> traverseKit(name, args, w)
             "bfs", "dfs" -> searchKit(name, args, w)
             "dijkstra" -> dijkstraKit(args, w)
-            else -> throw AnimParseError("unknown kit “$name” (${NAMES.joinToString(", ")})")
+            else -> AnimKits2.generate(name, args, w) ?: throw AnimParseError("unknown kit “$name” (${(NAMES + AnimKits2.NAMES).joinToString(", ")})")
         }
     }
 
