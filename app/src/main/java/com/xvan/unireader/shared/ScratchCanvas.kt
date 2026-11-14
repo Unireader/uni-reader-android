@@ -2154,13 +2154,14 @@ class ScratchCanvas @JvmOverloads constructor(
         c.drawText("用笔书写 · 单指平移 · 双指捏合缩放", cx, cy + dp(16f), hintPaint)
     }
 
-    // ---------- minimap（右下角小窗：笔迹骨架线 + 视口框，点/拖即跳） ----------
+    // ---------- minimap（左上角小窗：笔迹骨架线 + 视口框，点/拖即跳） ----------
 
+    /** 放左上角（2026-11-14 用户定）：右下角正好在写字那只手的手掌下面，一压就跳视口 */
     private fun layoutMinimap() {
         val w = dp(MINI_W)
         val h = dp(MINI_H)
         val m = dp(MINI_PAD)
-        miniRect.set(width - m - w, height - m - h, width - m, height - m)
+        miniRect.set(m, m, m + w, m + h)
     }
 
     private fun inMinimap(x: Float, y: Float): Boolean {
