@@ -16,15 +16,15 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import com.xvan.unireader.R
 import com.xvan.unireader.local.store.StoreQueue
 import com.xvan.unireader.shared.Bg
+import com.xvan.unireader.shared.MdDisplay
+import com.xvan.unireader.shared.MdRender
 import com.xvan.unireader.shared.NoteNode
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Ui
-import com.xvan.unireader.shared.exercise.MathText
 import java.io.File
 
 /**
@@ -297,37 +297,7 @@ class MdNoteController(private val a: Activity) {
     }
 
     private fun render(text: String) {
-        readBox.removeAllViews()
-        if (text.isBlank()) {
-            readBox.addView(Ui.body(a, a.getString(R.string.md_empty)), LinearLayout.LayoutParams(-1, -2).apply {
-                topMargin = Ui.dp(a, 16)
-            })
-            return
-        }
-        for (seg in MdNotes.segments(text)) {
-            when (seg) {
-                is MdNotes.Segment.Text -> readBox.addView(
-                    TextView(a).apply {
-                        textSize = 16f
-                        setTextColor(Ui.onSurface(a))
-                        setLineSpacing(0f, 1.25f)
-                        setTextIsSelectable(false)
-                        MathText.bindNote(this, seg.md) { link -> onLink(link) }
-                    },
-                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = Ui.dp(a, 8) },
-                )
-                // 分步演示：能逐步播放的画布（同 Mac 的 ```anim 块）
-                is MdNotes.Segment.Anim -> readBox.addView(
-                    com.xvan.unireader.shared.anim.AnimBlockView(a).apply { setSource(seg.source) },
-                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = Ui.dp(a, 12) },
-                )
-                // 图按原像素大小显示、宽过正文栏才缩（小图拉满一栏会糊）
-                is MdNotes.Segment.Image -> readBox.addView(imageView(seg.target), LinearLayout.LayoutParams(-2, -2).apply {
-                    topMargin = Ui.dp(a, 8)
-                })
-            }
-        }
-        readBox.addView(View(a), LinearLayout.LayoutParams(-1, Ui.dp(a, 48)))
+        MdRender.into(a, readBox, text, ::imageView, ::onLink)
     }
 
     /** 单独一行的 `![[图]]`：按附件解析，后台解码（找不到就写一行字） */
@@ -352,14 +322,14 @@ class MdNoteController(private val a: Activity) {
 
     private fun onLink(link: String) {
         when {
-            link.startsWith(MdNotes.WIKI_SCHEME) -> {
-                val target = MdNotes.decode(link.removePrefix(MdNotes.WIKI_SCHEME))
+            link.startsWith(MdDisplay.WIKI_SCHEME) -> {
+                val target = MdDisplay.decode(link.removePrefix(MdDisplay.WIKI_SCHEME))
                 val rel = index?.note(target)
                 if (rel == null) Toast.makeText(a, a.getString(R.string.md_not_found, target), Toast.LENGTH_SHORT).show()
                 else onOpenNote(rel)
             }
-            link.startsWith(MdNotes.IMG_SCHEME) -> {
-                val target = MdNotes.decode(link.removePrefix(MdNotes.IMG_SCHEME))
+            link.startsWith(MdDisplay.IMG_SCHEME) -> {
+                val target = MdDisplay.decode(link.removePrefix(MdDisplay.IMG_SCHEME))
                 val rel = index?.file(target)
                 if (rel == null) Toast.makeText(a, a.getString(R.string.md_not_found, target), Toast.LENGTH_SHORT).show()
                 else showAttachment(rel)

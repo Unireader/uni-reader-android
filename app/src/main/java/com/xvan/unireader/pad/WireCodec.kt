@@ -136,6 +136,9 @@ object WireCodec {
     const val OP_EX_INDEX = 0x61
     const val OP_EX_ACT = 0x62
 
+    /** Markdown 笔记阅读（S→C，2026-11-14，`../docs/PROTOCOL.md §4.10`）：被跟随的 md 标签那一篇的正文 + 图片表 */
+    const val OP_MD_NOTE = 0x63
+
     /** `exAct.act`（只许尾部追加，与 Mac `AppModel+Exercise.applyExAct` 同表） */
     const val EX_ACT_SUBMIT = 0
     const val EX_ACT_STAR = 1
@@ -339,6 +342,12 @@ object WireCodec {
 
         /** 抽屉「习题」一段（全量镜像，摊平的分组；空 = 这个工作区没有题） */
         data class ExGroups(val list: List<com.xvan.unireader.shared.exercise.ExGroup>) : Msg()
+
+        /**
+         * Mac 正在看的那篇 Markdown 笔记（只读）：[key] = 笔记身份，[text] = 拼好的正文，
+         * [images] = 正文里 `![[目标]]` 能解析到的图片：收拾过的目标 → 文件内容 sha（按 `/image?h=` 取）。
+         */
+        data class MdNote(val key: String, val title: String, val text: String, val images: Map<String, String>) : Msg()
 
         /** 平板开着那一组的全量（[view] 的 `scope` 为空 = 那一组开不了了，平板关掉习题页） */
         data class ExDeck(val view: com.xvan.unireader.shared.exercise.ExDeckView) : Msg()
@@ -995,6 +1004,19 @@ object WireCodec {
                     Msg.ExGroups(list)
                 }
                 OP_EX_DECK -> Msg.ExDeck(decodeExDeck(r))
+                OP_MD_NOTE -> {
+                    val key = r.str()
+                    val title = r.str()
+                    val n = r.u16()
+                    val text = StringBuilder()
+                    var i = 0
+                    while (i < n) { text.append(r.str()); i++ }   // 正文分段，按序拼回原文（截断 = 整帧丢弃，同 Mac）
+                    val m = r.u16()
+                    val images = LinkedHashMap<String, String>()
+                    var k = 0
+                    while (k < m) { images[r.str()] = r.str(); k++ }
+                    Msg.MdNote(key, title, text.toString(), images)
+                }
                 OP_EX_INDEX -> Msg.ExIndex(r.str(), r.u16())
                 OP_NACK -> {
                     val n = r.u16()

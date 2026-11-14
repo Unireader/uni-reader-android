@@ -232,6 +232,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     /** 「Mac 正在看 Markdown 笔记」的空状态（kind=1 时盖住页面视图，不停在上一篇 PDF 上） */
     private lateinit var mdEmpty: LinearLayout
+    /** Mac 正在看的 Markdown 笔记（只读，`../docs/PROTOCOL.md §4.10`）；没收到过 `mdNote`（老 Mac）就显示 [mdEmpty] */
+    private lateinit var mdReader: PadMdReader
 
     // —— 习题（`../docs/EXERCISE-PLAN.md §10.4`，协议 `../docs/PROTOCOL.md §4.9`）——
     // 用户 2026-10-11 定：「mac 和 pad 同步，但是 tab 页可以不一样」。平板可以自己开一组题（标签栏末尾一个、能关），
@@ -393,9 +395,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             }
         }
         if (::bar.isInitialized) bar.tools.relayout()   // 浮着的工具组：没挪过的贴顶栏下方，挪过的不许钻进顶栏
-        (mdEmpty.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.topMargin = top
-            mdEmpty.layoutParams = it
+        for (v in arrayOf(mdEmpty, mdReader.view)) {
+            (v.layoutParams as? FrameLayout.LayoutParams)?.let {
+                it.topMargin = top
+                v.layoutParams = it
+            }
         }
         (exScreen.view.layoutParams as? FrameLayout.LayoutParams)?.let {
             it.topMargin = top
@@ -718,9 +722,12 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             )
         }
 
+        mdReader = PadMdReader(this)
+
         val root = FrameLayout(this).also { rootView = it }.apply {
             addView(padView, FrameLayout.LayoutParams(-1, -1))
             addView(mdEmpty, FrameLayout.LayoutParams(-1, -1))
+            addView(mdReader.view, FrameLayout.LayoutParams(-1, -1))
             // 草稿纸覆盖层：在顶栏**之下**（topMargin 让开顶栏那条带子——handoff §7.1 的白压白坑，
             // applyScratchMargin 负责），在页面画布之上（纸开着时吃掉全部指针事件，PDF 上一笔都
             // 落不下——这是这个功能的定义；probe/环形盘也因此天然不会在纸上触发）
@@ -1073,7 +1080,8 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
         fetcher = PageFetcher(host, pageDisk, PageWidths.cacheBytes(this))
         // 画板图片：按 host 取（换了 Mac 就换一份缓存——sha 虽不会串，但那台 Mac 未必有这张图）
-        boardImages = BoardImageFetcher(host).also { scratch.canvas.picSource = it }
+        boardImages = BoardImageFetcher(host).also { scratch.canvas.picSource = it; mdReader.images = it }
+        mdReader.clear()   // 上一台 Mac 的那篇笔记：新的这台会随 boards 重发
         docV = ""
         // 换一台 Mac：自己开的习题标签属于原来那台，收掉；原题图缓存作废
         exOwn = ""
@@ -1398,6 +1406,11 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         }
     }
 
+    override fun onMdNote(m: WireCodec.Msg.MdNote) = runOnUiThread {
+        mdReader.show(m)
+        applyBoardSurface()
+    }
+
     override fun onExIndex(scope: String, index: Int) = runOnUiThread {
         if (scope == exShown) exScreen.showIndex(index)
     }
@@ -1612,7 +1625,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         val pdf = boardKind == WireCodec.BOARD_KIND_PDF && !ex
         // INVISIBLE 而不是 GONE：保留布局与几何，切回 PDF 时不用重新量一遍
         padView.visibility = if (pdf) View.VISIBLE else View.INVISIBLE
-        mdEmpty.visibility = if (boardKind == WireCodec.BOARD_KIND_MARKDOWN && !ex) View.VISIBLE else View.GONE
+        // Markdown 笔记：收到过正文就显示正文，没收到过（老 Mac 不发）显示空状态
+        val md = boardKind == WireCodec.BOARD_KIND_MARKDOWN && !ex
+        mdReader.view.visibility = if (md && mdReader.key != null) View.VISIBLE else View.GONE
+        mdEmpty.visibility = if (md && mdReader.key == null) View.VISIBLE else View.GONE
         if (!pdf) padView.clearTransient()   // 盘 / 环留在藏起来的页面上没有意义
         // 翻页 / 草稿纸 / 画板模式都是「PDF 页面」上的事，画板与 Markdown 会话里收起来
         for (k in arrayOf("prev", "next", "scratch", "canvas")) bar.setVisible(k, pdf)

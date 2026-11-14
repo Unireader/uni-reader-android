@@ -337,6 +337,8 @@
     <string name="md_not_found">找不到「%1$s」。</string>
     <string name="md_gone">这篇笔记已经不在工作区里了。</string>
     <string name="md_empty">空笔记。点「编辑」开始写。</string>
+    <string name="md_empty_readonly">空笔记。</string>
+    <string name="md_link_on_mac">笔记里的链接请在 Mac 上点开。</string>
     <string name="board_view_image">查看原图</string>
     <string name="board_image">图片</string>
     <!-- 回收站 / 备份（模式1，2026-10-29，BACKUP-PLAN.md） -->

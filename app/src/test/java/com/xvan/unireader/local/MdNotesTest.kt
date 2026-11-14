@@ -1,5 +1,6 @@
 package com.xvan.unireader.local
 
+import com.xvan.unireader.shared.MdDisplay
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -64,35 +65,35 @@ class MdNotesTest {
 
     @Test
     fun 维基链接换成标准链接且显示别名() {
-        val segs = MdNotes.segments("看 [[极限|定义]] 与 [[力学]]")
-        val md = (segs.single() as MdNotes.Segment.Text).md
-        assertTrue(md, md.contains("[定义](${MdNotes.WIKI_SCHEME}${MdNotes.encode("极限")})"))
-        assertTrue(md, md.contains("[力学](${MdNotes.WIKI_SCHEME}${MdNotes.encode("力学")})"))
+        val segs = MdDisplay.segments("看 [[极限|定义]] 与 [[力学]]")
+        val md = (segs.single() as MdDisplay.Segment.Text).md
+        assertTrue(md, md.contains("[定义](${MdDisplay.WIKI_SCHEME}${MdDisplay.encode("极限")})"))
+        assertTrue(md, md.contains("[力学](${MdDisplay.WIKI_SCHEME}${MdDisplay.encode("力学")})"))
     }
 
     @Test
     fun 单独一行的图成为图片段() {
-        val segs = MdNotes.segments("前\n![[attachments/图.png]]\n后")
+        val segs = MdDisplay.segments("前\n![[attachments/图.png]]\n后")
         assertEquals(3, segs.size)
-        assertEquals("attachments/图.png", (segs[1] as MdNotes.Segment.Image).target)
+        assertEquals("attachments/图.png", (segs[1] as MdDisplay.Segment.Image).target)
     }
 
     @Test
     fun 代码里的维基链接不动() {
-        val md = (MdNotes.segments("`[[不是链接]]` 与\n```\n[[也不是]]\n```\n").first() as MdNotes.Segment.Text).md
+        val md = (MdDisplay.segments("`[[不是链接]]` 与\n```\n[[也不是]]\n```\n").first() as MdDisplay.Segment.Text).md
         assertTrue(md, md.contains("`[[不是链接]]`"))
         assertTrue(md, md.contains("[[也不是]]"))
     }
 
     @Test
     fun anim块单独成段() {
-        val segs = MdNotes.segments("前\n```anim\narray A = [1]\nstep x\n  mark A[0] done\n```\n后\n```anim\n没关上")
+        val segs = MdDisplay.segments("前\n```anim\narray A = [1]\nstep x\n  mark A[0] done\n```\n后\n```anim\n没关上")
         assertEquals(3, segs.size)
-        assertEquals("array A = [1]\nstep x\n  mark A[0] done", (segs[1] as MdNotes.Segment.Anim).source)
-        val tail = (segs[2] as MdNotes.Segment.Text).md
+        assertEquals("array A = [1]\nstep x\n  mark A[0] done", (segs[1] as MdDisplay.Segment.Anim).source)
+        val tail = (segs[2] as MdDisplay.Segment.Text).md
         assertTrue(tail, tail.contains("```anim") && tail.contains("没关上"))
         // 别的语言的代码块照旧是文字
-        assertTrue(MdNotes.segments("```kotlin\nval x = 1\n```").single() is MdNotes.Segment.Text)
+        assertTrue(MdDisplay.segments("```kotlin\nval x = 1\n```").single() is MdDisplay.Segment.Text)
     }
 
     // ---------- 文件名 ----------

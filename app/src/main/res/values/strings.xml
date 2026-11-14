@@ -342,6 +342,8 @@
     <string name="md_not_found">Can’t find “%1$s”.</string>
     <string name="md_gone">This note is no longer in the workspace.</string>
     <string name="md_empty">Empty note. Tap Edit to start writing.</string>
+    <string name="md_empty_readonly">Empty note.</string>
+    <string name="md_link_on_mac">Open links in this note on the Mac.</string>
     <string name="board_view_image">View Full Size</string>
     <string name="board_image">Image</string>
     <!-- 回收站 / 备份（模式1，2026-10-29，BACKUP-PLAN.md） -->

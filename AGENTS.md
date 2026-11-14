@@ -314,6 +314,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `[别名](uniwiki:目标)`，单独一行的 `![[图]]` 画成图）；界面 `local/MdNoteController`（阅读 / 编辑两态，停手 0.8 秒 / 切走 / 退后台存）；
   标签 docId = `md:<相对路径>`（`TabSet.MD_PREFIX`）；`md_doc` 只当扫描缓存对账。🔴 **只写用户在编辑框里改的**（红线 9），文件已不在就不存；
   删除 = 挪进 `Notes/.trash/`（Obsidian 的回收站目录，两端扫描都跳过），不进 `Trash/`（Mac 不认那种条目）。
+- **模式2 阅读 Markdown 笔记（2026-11-14，只读，`../docs/MARKDOWN-NOTES-PLAN.md §21`）**：Mac 标签是 Markdown 笔记时收 `mdNote`（0x63，`../docs/PROTOCOL.md §4.10`），
+  界面 `pad/PadMdReader`（盖在页面视图上，没收到过正文才显示老的空状态 `mdEmpty`）；图片按 sha 走 `/image?h=`，与画板的图共用 `BoardImageFetcher`。
+  显示用的解析 `shared/MdDisplay` 与阅读态排版 `shared/MdRender` 两模式共用（原在 `local/MdNotes` / `MdNoteController`，`MdNotes.linkTarget` 转调过去）。
 - **笔记里的分步演示 ```anim（2026-11-14，`../docs/ANIM-BLOCK-PLAN.md §11`）**：模式1 Markdown 笔记阅读态里，```anim 块（`MdNotes.Segment.Anim`）
   画成能逐步播放的 `shared/anim/AnimBlockView`（画布 + 上一步 / 播放 / 下一步 / 进度条，点画布 = 下一步）。编辑态照旧是文字。
   `shared/anim/` 是 Mac `Sources/Anim/` 的 Kotlin 版：`AnimText`（解析）/ `AnimKits`（一行套件）/ `AnimEngine`（执行 + 链表树图表竖式指针）

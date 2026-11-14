@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 122 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 124 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -674,10 +674,27 @@ class WireCodecTest {
         assertEquals(listOf<Int?>(5, null, 0), (WireCodec.decode(gNone) as WireCodec.Msg.ExGroups).list.map { it.done })
     }
 
+    @Test
+    fun decodeMdNote() {
+        // #123 mdNote：正文一段 + 一张图
+        val m = WireCodec.decode(unhex(VECTORS[122])) as WireCodec.Msg.MdNote
+        assertEquals("workspace:数学/极限.md", m.key)
+        assertEquals("极限", m.title)
+        assertEquals("# 极限\n![[图.png]]\n", m.text)
+        assertEquals(mapOf("图.png" to "ab12"), m.images)
+        // #124 空笔记
+        val e = WireCodec.decode(unhex(VECTORS[123])) as WireCodec.Msg.MdNote
+        assertEquals("", e.key)
+        assertEquals("", e.text)
+        assertTrue(e.images.isEmpty())
+        // 截断 = 整帧丢弃
+        assertNull(WireCodec.decode(unhex(VECTORS[122]).let { it.copyOf(it.size - 3) }))
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(122, VECTORS.size)
+        assertEquals(124, VECTORS.size)
     }
 
     @Test
@@ -690,7 +707,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 122 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 124 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -841,6 +858,9 @@ class WireCodecTest {
             "600d0077726f6e673a646f633a442d311300e99499e9a298e69cac20c2b720e9ab98e695b000000000000000000001",
             // #122 exGroups 尾部 done（每组做过几道，2026-11-02）
             "5e03000300616c6c0c00e585a8e983a8e4b9a0e9a2980c0000050077726f6e670900e99499e9a298e69cac0300001d00636861703a442d313a5b22e7acace4ba8ce7aba020e5afbce695b0225d1000e7acace4ba8ce7aba020e5afbce695b0050001050003000000",
+            // #123~#124 Markdown 笔记阅读（`../docs/PROTOCOL.md §4.10`）：mdNote(0x63) 正文 + 一张图 / 空笔记
+            "631a00776f726b73706163653ae695b0e5ada62fe69e81e999902e6d640600e69e81e99990010016002320e69e81e999900a215b5be59bbe2e706e675d5d0a01000700e59bbe2e706e67040061623132",
+            "630000000000000000",
         )
     }
 }
