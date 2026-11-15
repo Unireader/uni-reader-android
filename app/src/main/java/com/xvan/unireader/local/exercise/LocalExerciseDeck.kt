@@ -53,7 +53,8 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
     private val answers = HashMap<String, Answer>()
     private val redoing = HashSet<String>()
     /** 这一组（不管筛选）有哪些题：「重做上次做错的」要按全组数一数有几道（开关能不能点），同 Mac `scopeItems`。 */
-    private var scopeItems: List<Exercise> = emptyList()
+    var scopeItems: List<Exercise> = emptyList()
+        private set
 
     /** 这一组里上一次做错的有几道（[Exercise.lastResultWrong]；按内存里的统计，这一轮刚答的也算进去了）。 */
     val lastWrongCount: Int get() = scopeItems.count { it.lastResultWrong(stats[it.id]) }

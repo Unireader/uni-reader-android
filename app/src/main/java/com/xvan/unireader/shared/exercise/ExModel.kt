@@ -169,6 +169,10 @@ interface ExHost {
     val canDelete: Boolean get() = false
     /** 删这几道题（界面已经确认过）。只有 [canDelete] 为真时会调。 */
     fun delete(ids: List<String>) {}
+    /** 能不能清除做题记录（只有模式1；清之前先进回收站，`../docs/EXERCISE-PLAN.md §31`）。 */
+    val canClearRecords: Boolean get() = false
+    /** 清除这几道题的做题记录（界面已经确认过）；null = 这一组的全部题（不管筛选）。只有 [canClearRecords] 为真时会调。 */
+    fun clearRecords(ids: List<String>?) {}
     /** 能不能「设置章节…」（只有模式1）。 */
     val canSetChapter: Boolean get() = false
     /** 设置章节（长按列表多选之后）。只有 [canSetChapter] 为真时会调。 */

@@ -94,6 +94,8 @@ class MacClient(
         fun onExIndex(scope: String, index: Int)
         /** Mac 正在看的那篇 Markdown 笔记（只读显示，`../docs/PROTOCOL.md §4.10`） */
         fun onMdNote(m: WireCodec.Msg.MdNote) {}
+        /** 当前文档全部高亮 / 选区批注的标记（全量镜像，`../docs/PROTOCOL.md §4.11`） */
+        fun onMarks(list: List<MarkEntry>) {}
         /** 连接断开（含自动重连中的每一次失败）；msg 供顶栏显示 */
         fun onDisconnected(msg: String)
     }
@@ -193,6 +195,7 @@ class MacClient(
             is WireCodec.Msg.ExDeck -> cb.onExDeck(m.view)
             is WireCodec.Msg.ExIndex -> cb.onExIndex(m.scope, m.index)
             is WireCodec.Msg.MdNote -> cb.onMdNote(m)
+            is WireCodec.Msg.Marks -> cb.onMarks(m.list)
             else -> {}   // page 等不消费的消息忽略
         }
     }

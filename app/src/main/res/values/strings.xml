@@ -509,4 +509,16 @@
     <string name="anim_pause">Pause</string>
     <string name="anim_step_count">%1$d / %2$d</string>
     <string name="anim_line_error">Line %1$d: %2$s</string>
+    <!-- 清除做题记录（../docs/EXERCISE-PLAN.md §31） -->
+    <string name="ex_clear_records">Clear Records</string>
+    <string name="ex_clear_group">Clear Practice Records of This Group…</string>
+    <string name="ex_clear_group_q">Clear the practice records of this group?</string>
+    <string name="ex_clear_one_q">Clear the practice record of this exercise?</string>
+    <string name="ex_clear_many_q">Clear the practice records of these %1$d exercises?</string>
+    <string name="ex_clear_msg">Every answer you gave is removed, and the Mistakes list is updated to match. Answers imported from the book stay. The records go to the Trash and can be restored from there.</string>
+    <string name="ex_clear">Clear</string>
+    <string name="ex_clear_none">No practice records to clear.</string>
+    <string name="ex_clear_done">Cleared the practice records of %1$d exercises.</string>
+    <string name="ex_clear_trash_one">Practice Record · Exercise %1$s</string>
+    <string name="ex_clear_trash_many">Practice Records · %1$d exercises</string>
 </resources>

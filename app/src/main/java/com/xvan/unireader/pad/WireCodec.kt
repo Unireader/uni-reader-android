@@ -139,6 +139,9 @@ object WireCodec {
     /** Markdown 笔记阅读（S→C，2026-11-14，`../docs/PROTOCOL.md §4.10`）：被跟随的 md 标签那一篇的正文 + 图片表 */
     const val OP_MD_NOTE = 0x63
 
+    /** 高亮与选区批注的标记全量（S→C，2026-11-15，`../docs/PROTOCOL.md §4.11`）：模式2 的页图不带高亮，平板自己画 */
+    const val OP_MARKS = 0x64
+
     /** `exAct.act`（只许尾部追加，与 Mac `AppModel+Exercise.applyExAct` 同表） */
     const val EX_ACT_SUBMIT = 0
     const val EX_ACT_STAR = 1
@@ -348,6 +351,9 @@ object WireCodec {
          * [images] = 正文里 `![[目标]]` 能解析到的图片：收拾过的目标 → 文件内容 sha（按 `/image?h=` 取）。
          */
         data class MdNote(val key: String, val title: String, val text: String, val images: Map<String, String>) : Msg()
+
+        /** 当前文档全部高亮 / 选区批注的标记（全量镜像，`../docs/PROTOCOL.md §4.11`） */
+        data class Marks(val list: List<MarkEntry>) : Msg()
 
         /** 平板开着那一组的全量（[view] 的 `scope` 为空 = 那一组开不了了，平板关掉习题页） */
         data class ExDeck(val view: com.xvan.unireader.shared.exercise.ExDeckView) : Msg()
@@ -1017,6 +1023,26 @@ object WireCodec {
                     while (k < m) { images[r.str()] = r.str(); k++ }
                     Msg.MdNote(key, title, text.toString(), images)
                 }
+                OP_MARKS -> {
+                    val n = r.u16()
+                    val list = ArrayList<MarkEntry>(n)
+                    var i = 0
+                    while (i < n) {
+                        val id = r.str()
+                        val kind = r.u8()
+                        val page = r.u32()
+                        val cr = r.u8()
+                        val cg = r.u8()
+                        val cb = r.u8()
+                        val style = r.u8()
+                        val nr = r.u16()
+                        val rects = ArrayList<FloatArray>(nr)
+                        var k = 0
+                        while (k < nr) { rects.add(floatArrayOf(r.f32(), r.f32(), r.f32(), r.f32())); k++ }
+                        list.add(MarkEntry(id, kind, page, cr, cg, cb, style, rects)); i++
+                    }
+                    Msg.Marks(list)   // 截断 = 整帧丢弃（读越界抛异常，同 Mac）
+                }
                 OP_EX_INDEX -> Msg.ExIndex(r.str(), r.u16())
                 OP_NACK -> {
                     val n = r.u16()
@@ -1032,3 +1058,18 @@ object WireCodec {
         }
     }
 }
+
+/**
+ * `marks`(0x64) 的一条：[kind] 0 = 高亮、1 = 选区批注（[id] 同 `notes` 那条）；[r]/[g]/[b] 基色（不含透明度，Mac 已选好）；
+ * [style] 0 铺色 / 1 下划线 / 2 方框 / 3 删除线（同 `HL_*`）；[rects] 页内归一化逐行框 `[x, y, w, h]`。
+ */
+data class MarkEntry(
+    val id: String,
+    val kind: Int,
+    val page: Long,
+    val r: Int,
+    val g: Int,
+    val b: Int,
+    val style: Int,
+    val rects: List<FloatArray>,
+)

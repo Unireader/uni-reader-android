@@ -52,6 +52,10 @@ import com.xvan.unireader.shared.ScratchCanvas
 import com.xvan.unireader.shared.Stroke
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.TextNote
+import com.xvan.unireader.shared.TextFill
+import com.xvan.unireader.shared.HL_FILL
+import com.xvan.unireader.shared.HL_STRIKE
+import com.xvan.unireader.shared.PadConst
 import com.xvan.unireader.shared.TopBar
 import com.xvan.unireader.shared.Toolbox
 import com.xvan.unireader.shared.Ui
@@ -617,6 +621,15 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
         graphView = LatencyGraphView(this)
 
         drawer = ReaderDrawer(this).apply {
+            // 没有目录的标签（习题 / 画板 / 笔记 / 没开着标签）打开抽屉时直接停在对应那一页
+            pageKind = {
+                when {
+                    visibleExercises().isNotEmpty() -> ReaderDrawer.KIND_EXERCISE
+                    visDocs.isEmpty() || boardKind == WireCodec.BOARD_KIND_BOARD ||
+                        boardKind == WireCodec.BOARD_KIND_MARKDOWN -> ReaderDrawer.KIND_OTHER
+                    else -> ReaderDrawer.KIND_PDF
+                }
+            }
             onJump = { page, frac ->
                 // 本地立刻滚过去 + 上行让 Mac 跟到同一处（Mac 走它自己那条 origin="toc" 锚点路径，
                 // 跳完再 viewport 回推——本地已在位，回推是同一处，不会打架）
@@ -1501,6 +1514,28 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
 
     override fun onNotes(list: List<TextNote>) = runOnUiThread {
         padView.setNotes(list)
+    }
+
+    /**
+     * 高亮与选区批注的标记（`marks` 0x64）：Mac 的页图不带这一层，平板按模式1 同一套画法自己画。
+     * 透明度口径同模式1（`LibraryStore` 读库那段）：铺色时高亮 0.38、批注 0.32，画线 / 画框 / 删除线 0.9。
+     * 批注带上 noteId（框选挪动时底色跟着图钉走）；高亮不填 highlightId——模式2 点中高亮没有操作面板。
+     */
+    override fun onMarks(list: List<MarkEntry>) = runOnUiThread {
+        padView.setTextFills(
+            list.map { m ->
+                val st = if (m.style in HL_FILL..HL_STRIKE) m.style else HL_FILL
+                val a = when {
+                    st != HL_FILL -> PadConst.FILL.STROKE_A
+                    m.kind == 1 -> PadConst.FILL.NOTE_A
+                    else -> PadConst.FILL.HIGHLIGHT_A
+                }
+                TextFill(
+                    page = m.page, rects = m.rects, r = m.r, g = m.g, b = m.b, a = a,
+                    noteId = if (m.kind == 1) m.id else "", style = st,
+                )
+            },
+        )
     }
 
     override fun onLayers(active: Int, list: List<Layer>) = runOnUiThread {

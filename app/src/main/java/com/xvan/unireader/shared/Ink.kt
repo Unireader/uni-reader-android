@@ -177,7 +177,7 @@ const val HL_STRIKE = 3   // 删除线：行框垂直中间一条线（2026-11-1
  * 迟早有一处漏乘）；`a` 是**最终绘制透明度**，已经含了 Mac 的 `Highlight.fillOpacity`/注解 0.32
  * （画线 / 画框是 `Highlight.strokeOpacity` 0.9）那层口径（见 `PadConst.FILL`），绘制方直接用即可。
  *
- * 模式2 目前不用它（Mac 的页图是另一条管线，高亮画在 Mac 那边），列表恒空；放在这里是因为
+ * 模式2 由 Mac 的 `marks`(0x64) 给（`PadActivity.onMarks`，Mac 的页图不带高亮）；放在这里是因为
  * 「页面上铺一层色」属于渲染层能力，不属于某一种模式。
  */
 data class TextFill(

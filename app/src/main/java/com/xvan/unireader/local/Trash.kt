@@ -212,6 +212,20 @@ object Trash {
         return e
     }
 
+    /**
+     * 清除几道题的做题记录（同 Mac `WorkspaceManager.clearExerciseAttempts`）：先归档（题 + App 里的作答，条目种类「习题」），
+     * 成了才清（红线 11）。[ids] 须已筛成「在 App 里做过的」（[LibraryStore.exercisesWithAttempts]）。
+     */
+    fun clearExerciseAttempts(s: LibraryStore, ws: File, ids: List<String>, title: String, documentTitle: String): Entry {
+        val e = archive(ws, title) { snap ->
+            val a = s.trashArchiveExerciseAttempts(ids, snap)
+            if (a.counts.exercise != ids.size) throw java.io.IOException("只归档到 ${a.counts.exercise} / ${ids.size} 道题")
+            Manifest(KIND_EXERCISES, Date(), title, documentTitle = documentTitle, counts = a.counts)
+        }
+        s.clearExerciseAttempts(ids)
+        return e
+    }
+
     // ---------- 恢复 / 彻底删除 ----------
 
     /** 恢复结果：写回几行、是不是并入了已有的那一篇（PDF 重新导入过） */

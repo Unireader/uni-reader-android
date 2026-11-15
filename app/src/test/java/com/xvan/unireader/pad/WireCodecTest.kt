@@ -21,7 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 124 条** canonical 向量。
+ * 字节级一致性测试：对照 spike/wire-vectors-swift.txt 的**全部 126 条** canonical 向量。
  * 每条向量对应的 canonical 消息值见 spike/wire-codec-test.swift 的 canonical 表（行号一一对应）；
  * Swift 那张表只允许在末尾追加新消息，故行号恒定（往中间插会静默错位掉整套跨语言凭据）。
  * 编码类断言 encode 结果逐字节等于 hex；解码类断言 decode(hex) 的字段正确。
@@ -691,10 +691,38 @@ class WireCodecTest {
         assertNull(WireCodec.decode(unhex(VECTORS[122]).let { it.copyOf(it.size - 3) }))
     }
 
+    @Test
+    fun decodeMarks() {
+        // #125 一条下划线高亮 + 一条两行的选区批注
+        val m = WireCodec.decode(unhex(VECTORS[124])) as WireCodec.Msg.Marks
+        assertEquals(2, m.list.size)
+        val h = m.list[0]
+        assertEquals("H-1", h.id)
+        assertEquals(0, h.kind)
+        assertEquals(3L, h.page)
+        assertEquals(listOf(255, 214, 40), listOf(h.r, h.g, h.b))
+        assertEquals(1, h.style)
+        assertEquals(1, h.rects.size)
+        assertEquals(0.125f, h.rects[0][0])
+        assertEquals(0.03125f, h.rects[0][3])
+        val n = m.list[1]
+        assertEquals("N-1", n.id)
+        assertEquals(1, n.kind)
+        assertEquals(0L, n.page)
+        assertEquals(0, n.style)
+        assertEquals(2, n.rects.size)
+        assertEquals(0.1f, n.rects[1][0])
+        assertEquals(0.15f, n.rects[1][2])
+        // #126 空
+        assertTrue((WireCodec.decode(unhex(VECTORS[125])) as WireCodec.Msg.Marks).list.isEmpty())
+        // 截断 = 整帧丢弃
+        assertNull(WireCodec.decode(unhex(VECTORS[124]).let { it.copyOf(it.size - 3) }))
+    }
+
     /** 行号即凭据：表长变了说明上游 canonical 表动过，先核对再改这里（往中间插会整套错位） */
     @Test
     fun vectorTableSize() {
-        assertEquals(124, VECTORS.size)
+        assertEquals(126, VECTORS.size)
     }
 
     @Test
@@ -707,7 +735,7 @@ class WireCodecTest {
     }
 
     companion object {
-        /** spike/wire-vectors-swift.txt 原样 124 行（只在末尾追加，行号即 canonical 表序号） */
+        /** spike/wire-vectors-swift.txt 原样 126 行（只在末尾追加，行号即 canonical 表序号） */
         val VECTORS = listOf(
             "010600616263313233",
             "02000000000000",
@@ -861,6 +889,9 @@ class WireCodecTest {
             // #123~#124 Markdown 笔记阅读（`../docs/PROTOCOL.md §4.10`）：mdNote(0x63) 正文 + 一张图 / 空笔记
             "631a00776f726b73706163653ae695b0e5ada62fe69e81e999902e6d640600e69e81e99990010016002320e69e81e999900a215b5be59bbe2e706e675d5d0a01000700e59bbe2e706e67040061623132",
             "630000000000000000",
+            // #125~#126 高亮 / 选区批注标记（`../docs/PROTOCOL.md §4.11`）：marks(0x64) 一条下划线高亮 + 一条两行批注 / 空
+            "6402000300482d310003000000ffd6280101000000003e0000803e0000003f0000003d03004e2d310100000000ffd126000200cdcccc3dcdcc4c3e9a99993e0ad7a33ccdcccc3d0000803e9a99193e0ad7a33c",
+            "640000",
         )
     }
 }

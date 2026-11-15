@@ -107,6 +107,45 @@ class ExerciseStoreTest {
     }
 
     @Test
+    fun 清除做题记录_书上的留着_错题本重算_能恢复() {
+        val ws = freshWs("clear")
+        seed(ws, listOf("E1", "E2", "E3"))
+        LibraryStore.open(ws).use { s ->
+            s.recordExerciseAttempt("E1", "A", false, 1000)   // 只有 App 作答（错过）
+            s.recordExerciseAttempt("E1", "B", true, 1000)
+            s.recordExerciseAttempt("E2", "B", true, 1000)    // App 作答 + 书上答错
+        }
+        // 书上的作答（source = mark，只有 Mac 经 MCP 导入），裸 SQL 造
+        SQLiteDatabase.openDatabase(File(ws, "UniReader/library.sqlite").path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL(
+                "INSERT INTO exercise_attempt(id,exercise_id,answer,correct,elapsed_ms,created_at,source) VALUES(?,?,?,?,?,?,?)",
+                arrayOf<Any?>("MARK-E2", "E2", "A", 0, 0, "2026-11-01T00:00:00.000Z", "mark"),
+            )
+            db.execSQL("UPDATE exercise SET wrong=1 WHERE id='E2'")
+        }
+        LibraryStore.open(ws).use { s ->
+            val ids = listOf("E1", "E2", "E3")
+            assertEquals(setOf("E1", "E2"), s.exercisesWithAttempts(ids).toSet())
+            val todo = s.exercisesWithAttempts(ids)
+            Trash.clearExerciseAttempts(s, ws, todo, "做题记录 · 2 道题", "习题册")
+            val st = s.exerciseAttemptStats()
+            assertNull("第一道一条不剩", st["E1"])
+            assertEquals("第二道只剩书上那条", 1, st["E2"]!!.attempts)
+            assertFalse("第一道移出错题本", s.exercise("E1")!!.wrong)
+            assertTrue("第二道书上答错，留在错题本", s.exercise("E2")!!.wrong)
+            assertTrue(s.exercisesWithAttempts(ids).isEmpty())
+            val m = Trash.scan(ws).single().manifest
+            assertEquals(Trash.KIND_EXERCISES, m.kind)
+            assertEquals(2, m.counts.exercise)
+            // 恢复：作答回来
+            Trash.restore(s, Trash.scan(ws).single())
+            val back = s.exerciseAttemptStats()
+            assertEquals(2, back["E1"]!!.attempts)
+            assertEquals(2, back["E2"]!!.attempts)
+        }
+    }
+
+    @Test
     fun 归档到的题数对不上就不删() {
         val ws = freshWs("mismatch")
         val docId = seed(ws, listOf("E1"))

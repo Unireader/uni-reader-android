@@ -562,6 +562,28 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         }
     }
 
+    /** 清除做题记录（[ids] null = 这一组全部）：先问一次，确认了交给宿主（宿主先归档再清，一道都没做过会提示）。 */
+    private fun confirmClearRecords(ids: List<String>?) {
+        com.xvan.unireader.shared.Sheet(a)
+            .title(
+                when {
+                    ids == null -> s(R.string.ex_clear_group_q)
+                    ids.size == 1 -> s(R.string.ex_clear_one_q)
+                    else -> s(R.string.ex_clear_many_q, ids.size)
+                },
+            )
+            .subtitle(s(R.string.ex_clear_msg))
+            .action(s(R.string.common_cancel))
+            .action(s(R.string.ex_clear), primary = true) {
+                host.clearRecords(ids)
+                selecting = false
+                selected.clear()
+                refreshSelBar()
+                adapter.notifyDataSetChanged()
+            }
+            .show()
+    }
+
     // ---------- 列表页 ----------
 
     private var selecting = false
@@ -703,17 +725,23 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     private fun refreshHeaderButtons() {
         redoAllBtn.visibility = if (compact) View.GONE else View.VISIBLE
         unansweredBtn.visibility = if (deck.noFilter) View.GONE else View.VISIBLE
-        moreBtn.visibility = if (compact) View.VISIBLE else View.GONE
+        moreBtn.visibility = if (compact || host.canClearRecords) View.VISIBLE else View.GONE
         filterRow.visibility = if (compact) View.VISIBLE else View.GONE
     }
 
-    /** ⋯（窄屏）：全部重做（没有显示着作答的题时灰着）。 */
+    /** ⋯：全部重做（只在窄屏，没有显示着作答的题时灰着）+ 清除这一组的做题记录（宿主支持时，宽窄屏都有）。 */
     private fun showMore() {
         val menu = PopupMenu(a, moreBtn, Gravity.END)
-        val redo = menu.menu.add(0, 1, 0, dimIfDisabled(s(R.string.ex_redo_all), deck.hasShown))
-        redo.isEnabled = deck.hasShown
+        if (compact) {
+            val redo = menu.menu.add(0, 1, 0, dimIfDisabled(s(R.string.ex_redo_all), deck.hasShown))
+            redo.isEnabled = deck.hasShown
+        }
+        if (host.canClearRecords) menu.menu.add(0, 2, 1, s(R.string.ex_clear_group))
         menu.setOnMenuItemClickListener { mi ->
-            if (mi.itemId == 1) redoAllBtn.performClick()
+            when (mi.itemId) {
+                1 -> redoAllBtn.performClick()
+                2 -> confirmClearRecords(null)
+            }
             true
         }
         menu.show()
@@ -1346,6 +1374,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             })
             if (c.wrong) selActions.addView(Ui.textButton(a, s(R.string.ex_remove_mistake)) { host.removeFromMistakes(c.id) })
             if (c.hasOriginal) selActions.addView(Ui.textButton(a, s(R.string.ex_open_page)) { host.openSource(c.id) })
+        }
+        if (host.canClearRecords && cards.any { it.tries > 0 }) {
+            selActions.addView(Ui.textButton(a, s(R.string.ex_clear_records)) { confirmClearRecords(cards.map { it.id }) })
         }
         if (host.canDelete && cards.isNotEmpty()) {
             selActions.addView(Ui.textButton(a, s(R.string.act_delete)) { confirmDelete(cards.map { it.id }) })

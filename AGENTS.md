@@ -314,6 +314,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `[别名](uniwiki:目标)`，单独一行的 `![[图]]` 画成图）；界面 `local/MdNoteController`（阅读 / 编辑两态，停手 0.8 秒 / 切走 / 退后台存）；
   标签 docId = `md:<相对路径>`（`TabSet.MD_PREFIX`）；`md_doc` 只当扫描缓存对账。🔴 **只写用户在编辑框里改的**（红线 9），文件已不在就不存；
   删除 = 挪进 `Notes/.trash/`（Obsidian 的回收站目录，两端扫描都跳过），不进 `Trash/`（Mac 不认那种条目）。
+- **模式2 显示高亮 / 选区批注底色（2026-11-15）**：Mac 的页图只画 PDF，这一层平板自己画：收 `marks`(0x64，`../docs/PROTOCOL.md §4.11`)
+  → `PadActivity.onMarks` → `setTextFills`（共用的 `TextFill` / `PadOverlays.drawTextFill`），透明度口径同模式1 读库那段。
+  批注带 `noteId`（框选挪动时底色跟着图钉走）；高亮不填 `highlightId`，模式2 点中高亮没有操作面板。
+- **清除做题记录（2026-11-15，模式1，`../docs/EXERCISE-PLAN.md §31`）**：列表多选操作条 + 练习页 ⋯；`ExHost.canClearRecords` / `clearRecords`，
+  `Trash.clearExerciseAttempts`（先归档再清，书上的作答留着，错题本重算），库层照抄 Mac。
 - **模式2 阅读 Markdown 笔记（2026-11-14，只读，`../docs/MARKDOWN-NOTES-PLAN.md §21`）**：Mac 标签是 Markdown 笔记时收 `mdNote`（0x63，`../docs/PROTOCOL.md §4.10`），
   界面 `pad/PadMdReader`（盖在页面视图上，没收到过正文才显示老的空状态 `mdEmpty`）；图片按 sha 走 `/image?h=`，与画板的图共用 `BoardImageFetcher`。
   显示用的解析 `shared/MdDisplay` 与阅读态排版 `shared/MdRender` 两模式共用（原在 `local/MdNotes` / `MdNoteController`，`MdNotes.linkTarget` 转调过去）。

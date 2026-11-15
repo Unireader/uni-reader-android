@@ -110,6 +110,7 @@ class LibraryStore(private val db: Db) : Closeable {
     fun trashArchiveDocument(documentId: String, path: File) = TrashStore.archiveDocument(db, documentId, path)
     fun trashArchiveBoard(boardId: String, path: File) = TrashStore.archiveBoard(db, boardId, path)
     fun trashArchiveExercises(ids: List<String>, path: File) = TrashStore.archiveExercises(db, ids, path)
+    fun trashArchiveExerciseAttempts(ids: List<String>, path: File) = TrashStore.archiveExerciseAttempts(db, ids, path)
     fun trashMergeTarget(path: File): String? = TrashStore.mergeTarget(db, path)
     fun trashRestore(path: File, remapDocumentId: String?): Int = TrashStore.restore(db, path, remapDocumentId)
 
@@ -1062,6 +1063,35 @@ class LibraryStore(private val db: Db) : Closeable {
     /** 题目笔记（同 Mac `setExerciseNote`）：空串 = 删掉。同时改 `updated_at`（离线镜像 / 服务器按它取新）。 */
     fun setExerciseNote(id: String, note: String, at: String = nowIso()) {
         db.exec("UPDATE exercise SET note=?, updated_at=? WHERE id=?", arrayOf(note, at, id))
+    }
+
+    /** 这几道题里在 App 里做过的那几道（有 `source <> mark` 的作答）——清除做题记录只管这些（同 Mac）。 */
+    fun exercisesWithAttempts(ids: List<String>): List<String> {
+        if (ids.isEmpty()) return emptyList()
+        val mark = com.xvan.unireader.local.exercise.Exercise.MARK_SOURCE
+        return db.query(
+            "SELECT DISTINCT exercise_id FROM exercise_attempt WHERE exercise_id IN (${ids.joinToString(",") { "?" }}) AND source <> ?",
+            (ids + mark).toTypedArray(),
+        ) { it.getString(0) }
+    }
+
+    /**
+     * 清除做题记录（同 Mac `clearExerciseAttempts`，`../docs/EXERCISE-PLAN.md §31`）：删掉这几道题在 App 里做的全部作答，
+     * **书上的作答留着**；错题本按剩下的记录重算（书上答错的仍在错题本，否则移出）。一个事务。
+     * 🔴 归档进回收站由上层先做（[com.xvan.unireader.local.Trash.clearExerciseAttempts]）。
+     */
+    fun clearExerciseAttempts(ids: List<String>, at: String = nowIso()) {
+        if (ids.isEmpty()) return
+        val marks = ids.joinToString(",") { "?" }
+        val mark = com.xvan.unireader.local.exercise.Exercise.MARK_SOURCE
+        val stillWrong = "EXISTS (SELECT 1 FROM exercise_attempt a WHERE a.exercise_id = exercise.id AND a.correct = 0)"
+        db.transaction {
+            db.exec("DELETE FROM exercise_attempt WHERE exercise_id IN ($marks) AND source <> ?", (ids + mark).toTypedArray())
+            db.exec(
+                "UPDATE exercise SET wrong = $stillWrong, updated_at = ? WHERE id IN ($marks) AND wrong <> $stillWrong",
+                (listOf(at) + ids).toTypedArray(),
+            )
+        }
     }
 
     /** 删几道题（作答记录随外键级联删掉）。🔴 归档进回收站由上层先做（[com.xvan.unireader.local.Trash.deleteExercises]）。 */

@@ -119,6 +119,22 @@ object TrashStore {
     }
 
     /**
+     * 清除做题记录前的归档（同 Mac `TrashStore.archiveExerciseAttempts`，`../docs/EXERCISE-PLAN.md §31`）：那几道题本身 +
+     * 它们在 App 里做的作答（不含 `source = mark` 书上的作答）。题目行一起存是为了恢复时外键有着落；条目种类仍是「习题」。
+     */
+    fun archiveExerciseAttempts(db: Db, ids: List<String>, path: File): Archived {
+        val marks = ids.joinToString(",") { "?" }
+        val mark = com.xvan.unireader.local.exercise.Exercise.MARK_SOURCE
+        return archive(
+            db, path,
+            listOf(
+                Pick("exercise", "id IN ($marks)", ids.toTypedArray()),
+                Pick("exercise_attempt", "exercise_id IN ($marks) AND source <> ?", (ids + mark).toTypedArray()),
+            ),
+        )
+    }
+
+    /**
      * 把选中的行搬进 [path] 处的**新**快照库（文件必须尚不存在：回收站里已有的快照一份都不许动）。
      * 失败时只清自己刚建的那个半截文件，然后抛出——调用方据此**放弃删除**（红线 11：先归档再删）。
      */

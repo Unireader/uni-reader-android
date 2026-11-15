@@ -1122,8 +1122,8 @@ open class PageCanvasView @JvmOverloads constructor(
     }
 
     /**
-     * 文字铺色（高亮 kind=3 与选区注解 kind=0 的底色，M5）。模式1 从库里读；模式2 恒空
-     * ——那边页图由 Mac 渲染，高亮画在 Mac 那一侧，线格式里根本没有这个消息。
+     * 文字铺色（高亮 kind=3 与选区注解 kind=0 的底色，M5）。模式1 从库里读；模式2 由 Mac 的
+     * `marks`(0x64) 全量镜像给（Mac 的页图只画 PDF 本身，2026-11-15 起这一层平板自己画）。
      */
     protected val fills = ArrayList<TextFill>()
 

@@ -504,4 +504,16 @@
     <string name="anim_pause">暂停</string>
     <string name="anim_step_count">%1$d / %2$d</string>
     <string name="anim_line_error">第 %1$d 行：%2$s</string>
+    <!-- 清除做题记录（../docs/EXERCISE-PLAN.md §31） -->
+    <string name="ex_clear_records">清除做题记录</string>
+    <string name="ex_clear_group">清除这一组的做题记录…</string>
+    <string name="ex_clear_group_q">清除这一组的做题记录吗？</string>
+    <string name="ex_clear_one_q">清除这道题的做题记录吗？</string>
+    <string name="ex_clear_many_q">清除这 %1$d 道题的做题记录吗？</string>
+    <string name="ex_clear_msg">你做过的每一次作答都会删掉，错题本也跟着更新。从书上导入的作答会留着。记录会放进回收站，可以从那里恢复。</string>
+    <string name="ex_clear">清除</string>
+    <string name="ex_clear_none">没有可清除的做题记录。</string>
+    <string name="ex_clear_done">已清除 %1$d 道题的做题记录。</string>
+    <string name="ex_clear_trash_one">做题记录 · 习题 %1$s</string>
+    <string name="ex_clear_trash_many">做题记录 · %1$d 道题</string>
 </resources>

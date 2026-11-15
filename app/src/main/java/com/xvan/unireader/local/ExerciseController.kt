@@ -402,6 +402,43 @@ class ExerciseController(private val a: Activity) : ExHost {
         })
     }
 
+    // ---------- 清除做题记录（同 Mac，`../docs/EXERCISE-PLAN.md §31`） ----------
+
+    override val canClearRecords: Boolean get() = true
+
+    /**
+     * 先归档进回收站、成了才清（红线 11）：只清在 App 里做的作答，书上的作答留着；错题本按剩下的记录重算。
+     * [ids] 为 null = 这一组的全部题（不管筛选）。一道都没做过 → 提示一句，什么都不动。
+     */
+    override fun clearRecords(ids: List<String>?) {
+        val q = queue ?: return
+        val ws = workspace ?: return
+        val d = deck ?: return
+        val pool = d.scopeItems.associateBy { it.id } + d.items.associateBy { it.id }
+        val want = ids ?: d.scopeItems.map { it.id }
+        q.submit("清除做题记录 ${want.size} 道", { s ->
+            val todo = s.exercisesWithAttempts(want)
+            if (todo.isEmpty()) return@submit emptyList<String>()
+            val first = pool[todo[0]]
+            val title = if (todo.size == 1) a.getString(R.string.ex_clear_trash_one, first?.number?.ifEmpty { null } ?: todo[0].take(8))
+            else a.getString(R.string.ex_clear_trash_many, todo.size)
+            val docTitle = first?.documentId?.let { id -> docs.firstOrNull { it.first == id }?.second } ?: ""
+            runCatching { com.xvan.unireader.local.Trash.clearExerciseAttempts(s, ws, todo, title, docTitle) }
+                .onFailure { Log.e(TAG, "做题记录归档失败，没清", it) }
+                .fold({ todo }, { null })
+        }, { done ->
+            val n = done?.size ?: -1
+            if (!done.isNullOrEmpty()) d.forgetAnswers(done)
+            when {
+                n < 0 -> Toast.makeText(a, R.string.trash_failed, Toast.LENGTH_LONG).show()
+                n == 0 -> Toast.makeText(a, R.string.ex_clear_none, Toast.LENGTH_SHORT).show()
+                else -> Toast.makeText(a, a.getString(R.string.ex_clear_done, n), Toast.LENGTH_SHORT).show()
+            }
+            reload()
+            refreshGroups()
+        })
+    }
+
     // ---------- 设置章节（列表多选之后，同 Mac「设置章节…」） ----------
 
     override val canSetChapter: Boolean get() = true
