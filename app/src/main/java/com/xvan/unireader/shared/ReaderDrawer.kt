@@ -41,11 +41,23 @@ class ReaderDrawer(private val a: Activity) {
         /** 习题（`../docs/EXERCISE-PLAN.md §10.1`）：工作区里有题才出现这一页 */
         const val TAB_EX = 2
 
+        /** 当前标签页是哪一类（[pageKind]）：决定点开抽屉时默认停在哪一页 */
+        const val KIND_PDF = 0
+        /** 习题标签：默认停「习题」 */
+        const val KIND_EXERCISE = 1
+        /** 画板 / Markdown 笔记 / 没有开着的标签：没有目录，默认停「书库」 */
+        const val KIND_OTHER = 2
+
         private const val MAX_W = 340        // 面板最宽（dp）：平板上不让它占掉半屏
         private const val WIDTH_RATIO = 0.82f
     }
 
     private var tab = TAB_TOC
+    /** 在 PDF 标签上用户自己选过的那一页（只有 PDF 有目录，别的标签不改它） */
+    private var pdfTab = TAB_TOC
+
+    /** 宿主告诉抽屉当前标签是哪一类（KIND_*），[toggle] 打开时按它挑默认页 */
+    var pageKind: () -> Int = { KIND_PDF }
     private var toc: List<TocItem> = emptyList()
     private var tocDocId = ""
     private var docV = ""
@@ -166,7 +178,14 @@ class ReaderDrawer(private val a: Activity) {
     val isOpen: Boolean get() = view.visibility == View.VISIBLE
 
     fun toggle() {
-        if (isOpen) close() else open(tab)
+        if (isOpen) close() else open(defaultTab())
+    }
+
+    /** PDF 标签沿用上次选的页；习题标签停「习题」；画板 / 笔记 / 没有标签停「书库」 */
+    private fun defaultTab(): Int = when (pageKind()) {
+        KIND_EXERCISE -> if (exGroups.isNotEmpty()) TAB_EX else TAB_LIB
+        KIND_OTHER -> TAB_LIB
+        else -> if (pdfTab == TAB_EX && exGroups.isEmpty()) TAB_LIB else pdfTab
     }
 
     fun open(which: Int = tab) {
@@ -181,6 +200,7 @@ class ReaderDrawer(private val a: Activity) {
 
     private fun switchTo(which: Int) {
         tab = which
+        if (pageKind() == KIND_PDF) pdfTab = which
         rebuild()
     }
 

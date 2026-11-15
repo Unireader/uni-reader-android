@@ -660,6 +660,15 @@ class ReaderActivity : Activity() {
         // 左侧拉抽屉（目录 / 书库），与模式2 共用一份。目录来自本机 Pdfium 书签、书库来自工作区库，
         // 两样都在这里转成中立模型喂给它（shared/ 不认识 SQLite 也不认识线格式）。
         drawer = ReaderDrawer(this).apply {
+            // 没有目录的标签（习题 / 画板 / 笔记 / 没开着标签）打开抽屉时直接停在对应那一页
+            pageKind = {
+                val t = curTab()
+                when {
+                    t == null || t.isBoard || t.isMarkdown -> ReaderDrawer.KIND_OTHER
+                    t.isExercise -> ReaderDrawer.KIND_EXERCISE
+                    else -> ReaderDrawer.KIND_PDF
+                }
+            }
             onJump = { page, frac ->
                 // frac 恒 0（Pdfium 只给页号，见 PdfSource.toc），所以这一跳落在页顶
                 jumpTo(page, frac, com.xvan.unireader.shared.JumpKind.TOC)
