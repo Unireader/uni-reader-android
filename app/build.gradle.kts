@@ -7,7 +7,8 @@ plugins {
 kotlin {
     // AGP 9 内置 Kotlin：jvmTarget 与 compileOptions 对齐
     compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        // 2026-11-15 由 11 提到 17：Koog（安卓 Agent）是 JVM 17 字节码，内联它的函数要求本端也是 17
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -54,10 +55,14 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 }
+
+// ⚠️ 别排除 Koog 带进来的 slf4j-simple：kotlin-logging 的安卓版（android-debug 变体）走的是 slf4j，
+// 2026-11-15 排除过一次，连带丢了 slf4j-api → 一建 OpenAILLMClient 就 NoClassDefFoundError(org.slf4j.LoggerFactory)。
+// slf4j-simple 在安卓上把日志写到 stderr（进 logcat），无害。
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
@@ -81,6 +86,14 @@ dependencies {
     implementation("io.noties.markwon:ext-latex:4.6.2")
     implementation("io.noties.markwon:ext-tables:4.6.2")
     implementation("io.noties.markwon:inline-parser:4.6.2")
+    // 安卓 Agent（`../docs/ANDROID-AGENT-PLAN.md`，2026-11-15 用户选 Koog）：只取 OpenAI 兼容客户端 + 工具描述，
+    // 不要 koog-agents 全家桶（会带进全部厂商客户端）。HTTP 走 Koog 的 OkHttp 适配（与本工程同一个 OkHttp 5.3.2），不引 Ktor 引擎。
+    // Koog 1.3.0 是 Kotlin 2.3.10 编的（元数据 2.3），在 AGP 9.2.0 内置的 Kotlin 2.2.0 可读范围内——升 Koog 前先查它的 Kotlin 版本，
+    // 同 pdfiumandroid 那条。
+    implementation("ai.koog:prompt-executor-openai-client:1.3.0")
+    implementation("ai.koog:http-client-okhttp:1.3.0")
+    implementation("ai.koog:agents-tools:1.3.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     testImplementation("junit:junit:4.13.2")
     // 插桩测试（:app:connectedDebugAndroidTest）：数据层要在真 SQLite 上验，JVM 单测跑不了。
     // 这两条只影响 androidTest 变体，不进 APK、也不影响 :app:assembleDebug 的离线构建。

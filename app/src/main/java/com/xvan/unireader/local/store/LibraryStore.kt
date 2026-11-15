@@ -874,6 +874,29 @@ class LibraryStore(private val db: Db) : Closeable {
         db.query("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name)) { it.getString(0) }
             .isNotEmpty()
 
+    // ---------- Agent 记忆（agent_memory，v25；`../docs/ACP-AGENT-PLAN.md §21`、`../docs/ANDROID-AGENT-PLAN.md §5`）----------
+    //
+    // SQL 逐条照抄 Mac `LibraryStore.swift` 的同名一节。删除本端暂不做（要先归档进回收站，红线 11）。
+
+    /** 全部记忆，最近改过的在前。老库没这张表 → 空。 */
+    fun agentMemories(): List<LibAgentMemory> {
+        if (!hasTable("agent_memory")) return emptyList()
+        return db.query("SELECT * FROM agent_memory ORDER BY updated_at DESC, created_at DESC") {
+            LibAgentMemory(it.str("id"), it.str("content"), it.str("agent"), it.str("created_at"), it.str("updated_at"))
+        }
+    }
+
+    /** 新建或整行覆盖（同 id）。`updated_at` 由调用方给（离线镜像 / 服务器同步按它取新）。 */
+    fun upsertAgentMemory(m: LibAgentMemory) {
+        db.exec(
+            """
+            INSERT INTO agent_memory(id, content, agent, created_at, updated_at) VALUES(?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET content=excluded.content, agent=excluded.agent, updated_at=excluded.updated_at
+            """.trimIndent(),
+            arrayOf(m.id, m.content, m.agent, m.createdAt, m.updatedAt),
+        )
+    }
+
     // ---------- 习题（exercise / exercise_attempt，v20；`../docs/EXERCISE-PLAN.md §10.2`）----------
     //
     // SQL 逐条照抄 Mac `LibraryStore.swift` 的习题一节（含 ORDER BY）。本端只读题目、记作答、改收藏 / 错题本 / 章节；
@@ -1148,11 +1171,14 @@ class LibraryStore(private val db: Db) : Closeable {
         display: Int = NOTE_TAP,
         color: IntArray? = null,
         style: Int = HL_FILL,
+        /** payload 的 `source`（同 Mac `TextNotePayload.Src`：kind / provider / url / at）；null = 用户自己写的 */
+        source: JSONObject? = null,
     ) {
         val now = nowIso()
         val p = TextNotePayload.ofPointNote(text, typeId, display)
         p.withColor(color).withStyle(style)
         p.raw.put("quote", quote)
+        if (source != null) p.raw.put("source", source)
         p.withRects(rects.map { doubleArrayOf(it[0].toDouble(), it[1].toDouble(), it[2].toDouble(), it[3].toDouble()) })
         upsertNote(
             LibNote(

@@ -54,6 +54,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - **只打 `arm64-v8a`**（Pdfium 是 native 库，多 ABI 会把 APK 撑几十 MB）→ **x86_64 模拟器装不上**，是刻意取舍。
 - `io.legere:pdfiumandroid` 锁在 **2.0.1**，别随手升：AGP 9.2.0 内置的 Kotlin 编译器是 2.2.0、最多读元数据 2.3.0，
   而 2.0.2+ 是 Kotlin 2.4 编的 → 整个 `compileDebugKotlin` 直接失败（连 `kotlin.Unit` 都报 incompatible）。
+- **Koog（安卓 Agent，`../docs/ANDROID-AGENT-PLAN.md`）锁在 1.3.0**：同 pdfiumandroid，受 AGP 内置 Kotlin 2.2.0 卡着（1.3.0 是 Kotlin 2.3.10 编的、刚好读得了）；
+  它是 JVM 17 字节码，本工程 `jvmTarget` 因此是 17。只取 `prompt-executor-openai-client` / `http-client-okhttp` / `agents-tools` 三个，别换成 `koog-agents` 全家桶。
 - **数据层的测试只能跑在设备上**：`android.database.sqlite` 在 JVM 单测里是空壳，故 `local/store/` 的用例都在 `androidTest`。
   跑单个类：`./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=<全限定类名>`
   （**不能带 `--offline`**，UTP 的插件要联网解析）。同一台机器经 mDNS 注册两次时 Gradle 会当成两台设备、
@@ -109,7 +111,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
   `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
   `../docs/ACP-AGENT-PLAN.md §12`）本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
-  `agentContexts` 条目并能恢复）；v25 `agent_memory` / `agent_turn`（Agent 记忆与对话记录，`../docs/ACP-AGENT-PLAN.md §21–22`）同样只建表、
+  `agentContexts` 条目并能恢复）；v25 `agent_memory` / `agent_turn`（Agent 记忆与对话记录，`../docs/ACP-AGENT-PLAN.md §21–22`）建表、`agent_memory` 2026-11-15 起本端 Agent 也读写，
   随同步（向量 #36 / #37）、回收站认得 `agentMemories`）；v26 `schedule_plan` / `schedule_item`（日程：计划 + 事项，`../docs/SCHEDULE-PLAN.md`）
   本端本轮没有日程界面，同样只建表、随同步（向量 #38 / #39；`MirrorFp.needsMigrate` 认 `schedule_` 前缀）、回收站认得 Mac 建的 `schedule`
   条目（manifest 计数键 `schedulePlan` / `scheduleItem`）并能恢复）+ 与 Mac 同序的 `ADD COLUMN` +
@@ -368,6 +370,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 缓存放 `/storage/emulated/0/Documents/UniReader/Servers/<主机-端口>/<名字>.unrd`；入口：启动页「本机工作区」页「连接服务器…」+ 每台服务器一段
   （2026-10-29 用户定放这一页）；书库页 ⋯「上传到服务器…」（原文件夹就地成为缓存）/「立即同步」/「变回本地工作区…」（只给不在缓存目录里的）；
   没下载的书在书库页、阅读界面都能点「从服务器下载」。离线副本与服务器工作区互斥（副本不能上传、有借出不能上传、服务器工作区不再做副本）。
+- **安卓 Agent（模式1，2026-11-15，`../docs/ANDROID-AGENT-PLAN.md`）** 全在 `local/agent/`：`AgentConfig`（地址 / Key / 模型，本机、Key 经 Keystore 加密）、
+  `AgentEngine`（Koog 的 OpenAI 兼容客户端 + 自己的工具循环）、`AgentTools`（`AgentHost` 宿主接口 + 第一批工具，名字参数照 Mac MCP）、`AgentPanel`（阅读界面右侧一栏）。
+  🔴 工具只经 `AgentHost`（`ReaderActivity.agentHost`）碰阅读界面，读写库经 `StoreQueue.read`；新工具别直接摸 Activity 字段。
+  记忆读写 `LibraryStore.agentMemories` / `upsertAgentMemory`（SQL 照抄 Mac）。插桩测试 `AgentEngineTest`（假 SSE 服务，不要 Key）+ `AgentToolsTest`（真工作区 + 假宿主）。
+  写入：批注 / 高亮写进开着的那篇走 `LocalCanvasView.writeNotesExternally`（先进撤销栈，同界面新建）；`edit_markdown` 改的是编辑器里的字
+  （`MdNoteController.liveText` / `applyExternalText`，用户没存的输入保留），规则 `MdEdit` 逐条照 Mac `MCPMarkdownText`（`MdEditTest`）。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，

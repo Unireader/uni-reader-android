@@ -84,7 +84,7 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
                     mutableListOf("mode", "pen", "writeLock", "ruler", "undo", "redo", "clipCut", "clipCopy", "clipPaste"),
                     docked = true,
                 ),
-                Group(G_PAGE, "", mutableListOf("scratch", "lock", "canvas", "ref"), docked = true),
+                Group(G_PAGE, "", mutableListOf("scratch", "lock", "canvas", "ref", "agent"), docked = true),
                 Group(G_STATUS, "", mutableListOf("fingerState", "latency", "pageLabel"), docked = true, pin = PIN_RIGHT),
                 Group(
                     G_PAD, "",

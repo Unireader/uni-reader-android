@@ -163,6 +163,15 @@ data class LibMdDoc(
     val lastOpenedAt: String,
 )
 
+/** `agent_memory` 表一行（v25，Mac `LibAgentMemory`）：Agent 记下的长期备忘，随同步。时间是 ISO 8601 串。 */
+data class LibAgentMemory(
+    val id: String,
+    val content: String,
+    val agent: String,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
 /** `image` 表一行（v13，Mac `LibImage`）：图片本体按内容寻址，`orphanedAt` 非空 = 没人引用了（待删除） */
 data class LibImage(
     val sha256: String,

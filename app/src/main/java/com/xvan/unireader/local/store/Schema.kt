@@ -187,7 +187,7 @@ object Schema {
     /**
      * v25 Agent 记忆（`../docs/ACP-AGENT-PLAN.md §21`），与 Mac `migrate()` 里那段**逐字相同**。
      * Agent 记下、以后每段新对话自动带上的长期备忘（一两句话，Markdown）；工作区级、不挂文档，`agent` = 写下它的 Agent 的名字。
-     * 本端只建表不读写（平板上没有 Agent 面板）；改这里必须与 Mac `LibraryStore.swift` 同步。
+     * 本端 Agent（`../docs/ANDROID-AGENT-PLAN.md`，2026-11-15）读写它（`LibraryStore.agentMemories` / `upsertAgentMemory`）；改这里必须与 Mac `LibraryStore.swift` 同步。
      */
     private val AGENT_MEMORY_DDL = listOf(
         """

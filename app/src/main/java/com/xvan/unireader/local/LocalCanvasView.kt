@@ -760,6 +760,21 @@ class LocalCanvasView @JvmOverloads constructor(
         )
     }
 
+    /**
+     * 界面以外的写入（安卓 Agent 的 `add_note` / `add_highlight`，`../docs/ANDROID-AGENT-PLAN.md §5`）：
+     * 同界面新建一样先进撤销栈、写完回推。[done] 在主线程调，参数 = 写库时抛的异常（null = 成功）；
+     * 失败照样回推一次（库没变，界面也就不变），撤销栈里多一步空操作无害。
+     */
+    fun writeNotesExternally(what: String, work: (LibraryStore) -> Unit, done: (Throwable?) -> Unit) {
+        val q = store ?: return done(IllegalStateException("the document is not open"))
+        pushNoteUndo()
+        q.submit(
+            what,
+            { s -> runCatching { work(s) }.exceptionOrNull() to noteSnapshot(s) },
+            { (err, snap) -> applyNotes(snap.notes, snap.fills); done(err) },
+        )
+    }
+
     /** 一条待写的选区注解（编辑器保存时才真落库，见 [beginSelectionNote]） */
     class PendingNote(
         val page: Int,

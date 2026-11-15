@@ -516,4 +516,28 @@
     <string name="ex_clear_done">已清除 %1$d 道题的做题记录。</string>
     <string name="ex_clear_trash_one">做题记录 · 习题 %1$s</string>
     <string name="ex_clear_trash_many">做题记录 · %1$d 道题</string>
+    <!-- Agent 面板（../docs/ANDROID-AGENT-PLAN.md，2026-11-15） -->
+    <string name="agent_toolbar">Agent</string>
+    <string name="agent_input_hint">问问这本书或你的笔记</string>
+    <string name="agent_send">发送</string>
+    <string name="agent_stop">停止</string>
+    <string name="agent_new_chat">新对话</string>
+    <string name="agent_settings">Agent 设置</string>
+    <string name="agent_close">关闭</string>
+    <string name="agent_stopped">已停止。</string>
+    <string name="agent_error">请求失败：%1$s</string>
+    <string name="agent_thinking">思考中…</string>
+    <string name="agent_thought">思考过程（点开查看）</string>
+    <string name="agent_empty">模型：%1$s。提个问题开始吧。</string>
+    <string name="agent_need_settings">先设置服务地址、API Key 和模型（上方 ⋯ 按钮）。</string>
+    <string name="agent_no_workspace">请先打开一个工作区。</string>
+    <string name="agent_base_url">服务地址</string>
+    <string name="agent_base_url_hint">例如 https://api.deepseek.com/v1</string>
+    <string name="agent_api_key">API Key</string>
+    <string name="agent_api_key_hint">只加密存在这台设备上</string>
+    <string name="agent_model">模型</string>
+    <string name="agent_model_hint">例如 deepseek-chat</string>
+    <string name="agent_chat_path">请求路径（可不填）</string>
+    <string name="agent_chat_path_hint">默认 chat/completions</string>
+    <string name="agent_settings_tip">兼容 OpenAI 接口的服务都能用。这些设置只存在这台设备上，不随同步。</string>
 </resources>

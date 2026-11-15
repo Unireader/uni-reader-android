@@ -411,6 +411,20 @@ def ICONS():
         F(circle(15.6, 9.2, 1.3)),
     ])
 
+    # —— Agent 面板（2026-11-15，`../docs/ANDROID-AGENT-PLAN.md`）——
+    def sparkle(cx, cy, r, k):
+        """四角星：四个尖之间是内凹的弧，k = 控制点离中心的距离（越小腰越细）。"""
+        top, right, bottom, left = (cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)
+        return (Path().M(*top)
+                .C(cx, cy - k, cx + k, cy, *right)
+                .C(cx + k, cy, cx, cy + k, *bottom)
+                .C(cx, cy + k, cx - k, cy, *left)
+                .C(cx - k, cy, cx, cy - k, *top).Z())
+    ic["agent"] = Icon("Agent（sparkles）：一大一小两颗四角星", [
+        S(sparkle(10.6, 13.0, 8.0, 1.6)),
+        S(sparkle(18.0, 6.0, 3.2, 0.7)),
+    ])
+
     # —— 笔记类型的图标（Mac `NoteType.iconCandidates` 里本端原先没有的那几个，2026-10-29；
     #    名字 ↔ SF Symbol 的对应只在 `local/NoteTypeIcons.kt`）——
     ic["note"] = Icon("通用笔记（note.text）：竖页 + 三行字", [

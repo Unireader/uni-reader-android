@@ -521,4 +521,28 @@
     <string name="ex_clear_done">Cleared the practice records of %1$d exercises.</string>
     <string name="ex_clear_trash_one">Practice Record · Exercise %1$s</string>
     <string name="ex_clear_trash_many">Practice Records · %1$d exercises</string>
+    <!-- Agent 面板（../docs/ANDROID-AGENT-PLAN.md，2026-11-15） -->
+    <string name="agent_toolbar">Agent</string>
+    <string name="agent_input_hint">Ask about this book or your notes</string>
+    <string name="agent_send">Send</string>
+    <string name="agent_stop">Stop</string>
+    <string name="agent_new_chat">New chat</string>
+    <string name="agent_settings">Agent Settings</string>
+    <string name="agent_close">Close</string>
+    <string name="agent_stopped">Stopped.</string>
+    <string name="agent_error">Request failed: %1$s</string>
+    <string name="agent_thinking">Thinking…</string>
+    <string name="agent_thought">Thought (tap to show)</string>
+    <string name="agent_empty">Model: %1$s. Ask a question to start.</string>
+    <string name="agent_need_settings">Set the service address, API key and model first (the ⋯ button above).</string>
+    <string name="agent_no_workspace">Open a workspace first.</string>
+    <string name="agent_base_url">Service address</string>
+    <string name="agent_base_url_hint">e.g. https://api.deepseek.com/v1</string>
+    <string name="agent_api_key">API key</string>
+    <string name="agent_api_key_hint">Stored encrypted on this device only</string>
+    <string name="agent_model">Model</string>
+    <string name="agent_model_hint">e.g. deepseek-chat</string>
+    <string name="agent_chat_path">Request path (optional)</string>
+    <string name="agent_chat_path_hint">Default: chat/completions</string>
+    <string name="agent_settings_tip">Any OpenAI-compatible service works. These settings stay on this device and are not synced.</string>
 </resources>

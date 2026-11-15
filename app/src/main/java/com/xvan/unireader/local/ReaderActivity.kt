@@ -267,6 +267,66 @@ class ReaderActivity : Activity() {
         }
     }
 
+    /**
+     * Agent 碰阅读界面的唯一入口（`../docs/ANDROID-AGENT-PLAN.md §4`，同 Mac 的 `MCPFacade`）。
+     * 工具只认这个接口，全部在主线程调。
+     */
+    private val agentHost = object : com.xvan.unireader.local.agent.AgentHost {
+        override val workspaceDir: File? get() = workspace
+        override val workspaceName: String get() = this@ReaderActivity.workspaceName
+        override fun storeQueue(): StoreQueue? = queue
+
+        override fun currentView(): com.xvan.unireader.local.agent.AgentView? {
+            val t = curTab() ?: return null
+            val kind = when {
+                t.isBoard -> "board"
+                t.isMarkdown -> "markdown"
+                t.isExercise -> "exercise"
+                else -> "pdf"
+            }
+            return com.xvan.unireader.local.agent.AgentView(
+                kind, t.docId, t.title, t.canvas?.topVisiblePage() ?: 0, t.pdf?.pageCount ?: 0,
+            )
+        }
+
+        override fun loadedPdf(documentId: String): com.xvan.unireader.local.agent.AgentPdf? {
+            val t = tabs.firstOrNull { it.docId == documentId } ?: return null
+            val pdf = t.pdf ?: return null
+            val c = t.canvas ?: return null
+            return com.xvan.unireader.local.agent.AgentPdf(pdf, c.textLayer())
+        }
+
+        override fun openDocument(documentId: String) {
+            if (documentId in libTitles) openDoc(documentId)
+        }
+
+        // 同习题的「到 PDF 原页」：切过去，几何就绪再跳（记进跳转历史，能退回来）
+        override fun gotoPage(documentId: String, page: Int, frac: Float) =
+            openExerciseSource(documentId, page, frac)
+
+        override fun writeNotes(documentId: String, what: String, work: (LibraryStore) -> Unit, done: (Throwable?) -> Unit) {
+            val c = tabs.firstOrNull { it.docId == documentId }?.canvas
+            if (c != null) { c.writeNotesExternally(what, work, done); return }
+            val q = queue ?: return done(IllegalStateException("No workspace is open."))
+            q.submit(what, { s -> runCatching { work(s) }.exceptionOrNull() }, done)
+        }
+
+        override fun bookmarksChanged() = pushDrawerBookmarks()
+
+        override fun markdownLiveText(rel: String): String? = md.liveText(rel)
+
+        override fun markdownApply(rel: String, text: String): Boolean = md.applyExternalText(rel, text)
+
+        override fun markdownTreeChanged(then: () -> Unit) = md.refresh { pushDrawerLibrary(); then() }
+
+        override fun openMarkdown(rel: String) = openDoc(TabSet.mdKey(rel))
+    }
+
+    /** 右侧 Agent 面板（`../docs/ANDROID-AGENT-PLAN.md §6`）：顶栏「agent」键开关，不盖遮罩 */
+    private val agent by lazy {
+        com.xvan.unireader.local.agent.AgentPanel(this, agentHost).apply { onClosed = { refreshHud() } }
+    }
+
     /** 当前工作区。切工作区时整个换掉 */
     private var workspace: File? = null
 
@@ -647,6 +707,10 @@ class ReaderActivity : Activity() {
                 cur() != null || curTab()?.isBoard == true
             }) { if (curTab()?.isBoard == true) board.insertImage() else importImageNote() }
             icon("snipImage", R.drawable.ic_snip, getString(R.string.img_snip), available = pdf) { snipImageNote() }
+            // Agent（`../docs/ANDROID-AGENT-PLAN.md`）：右侧面板，OpenAI 兼容接口 + 本机工具
+            icon("agent", R.drawable.ic_agent, getString(R.string.agent_toolbar), toggle = true) {
+                agent.toggle(); refreshHud()
+            }
             icon("workspace", R.drawable.ic_folder, getString(R.string.tools_workspace)) { showWorkspaceSwitcher() }
             icon("trash", R.drawable.ic_delete, getString(R.string.trash_open)) { showTrash() }
             icon("backups", R.drawable.ic_copy, getString(R.string.backup_open)) { showBackups() }
@@ -783,6 +847,8 @@ class ReaderActivity : Activity() {
             addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             // 划字动作条：贴屏幕底部居中，只在有选区时显形（见 TextSelectBar）
             addView(selectBar.view, selectBar.layoutParams())
+            // Agent 面板：盖在 chrome 与浮层之上、抽屉之下；覆盖层本身不吃触摸，面板外照常翻书写字
+            addView(agent.view, FrameLayout.LayoutParams(-1, -1))
             // 抽屉加在最后 = 盖在最上层（含 chrome 与全部浮层）：开着时下面一律不响应（同模式2）
             addView(drawer.view, FrameLayout.LayoutParams(-1, -1))
         }
@@ -892,6 +958,7 @@ class ReaderActivity : Activity() {
             onNotes = { md.onRemoteFilesChanged() },
         ) { rows -> onRemoteRows(rows) }
         libTitles = o.docs.associate { it.id to it.title }
+        agent.workspaceChanged()   // 对话挂在工作区上（工具读的是它）：换了就清空重来
         workspaceName = o.name.ifEmpty { dir.name }
         tabsBar.setWorkspace(workspaceName)
         libDocs = o.docs
@@ -2398,6 +2465,7 @@ class ReaderActivity : Activity() {
     private fun refreshHudInner() {
         val canvas = cur()
         bar.setActive("scratch", scratch.isOpen)
+        bar.setActive("agent", agent.isOpen)
         PalmSettings.setActive(bar)
         // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式）；
         // 撤销重做画板也有（BoardController 自己一条栈），只有习题 / Markdown 标签收起来
@@ -2885,6 +2953,10 @@ class ReaderActivity : Activity() {
             drawer.close()
             return
         }
+        if (agent.isOpen) {
+            agent.close()
+            return
+        }
         if (scratch.isOpen) {
             scratch.close()
             return
@@ -2902,6 +2974,7 @@ class ReaderActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        agent.destroy()   // 停掉在飞的请求
         refSource?.close()   // 参考窗那份 Pdfium 也要放，否则文件一直吊着（同 closeWorkspace 的理由）
         refSource = null
         // 校验还没回来就退出：窗口先收掉，否则 WindowLeaked

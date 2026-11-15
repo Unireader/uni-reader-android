@@ -141,6 +141,7 @@ class MdNoteController(private val a: Activity) {
         scan = null
         index = null
         current = null
+        shown = null
         if (dir != null) refresh()
     }
 
@@ -212,6 +213,7 @@ class MdNoteController(private val a: Activity) {
                 edit.setText(text)
                 loading = false
                 dirty = false
+                shown = rel
                 if (text.isEmpty()) editing = true   // 空笔记直接进编辑
                 showMode()
             }
@@ -234,10 +236,35 @@ class MdNoteController(private val a: Activity) {
         if (!dirty) open(rel)
     }
 
+    /** 编辑器里装着的是哪一篇（读文件回来才设；[current] 先变、这个后变，两者之间编辑器里还是旧的） */
+    private var shown: String? = null
+
+    /**
+     * 这篇此刻编辑器里的正文（含没存的输入）；没开着 / 还没读进来 = null，调用方读文件。
+     * 安卓 Agent 的 `edit_markdown` 在它上面改（同 Mac「改的是编辑器里的字，用户没存的输入保留」）。
+     */
+    fun liveText(rel: String): String? = if (current == rel && shown == rel) edit.text.toString() else null
+
+    /**
+     * 界面以外改了这篇的整份正文（Agent）：开着就换掉编辑器里的字并马上存，返回 true；
+     * 没开着返回 false，调用方直接写文件。
+     */
+    fun applyExternalText(rel: String, text: String): Boolean {
+        if (current != rel || shown != rel) return false
+        loading = true
+        edit.setText(text)
+        loading = false
+        dirty = true
+        flush()
+        if (!editing) render(text)
+        return true
+    }
+
     /** 切走 / 关掉：先存，再收起 */
     fun close() {
         flush()
         current = null
+        shown = null
         editing = false
         hideKeyboard()
         view.visibility = View.GONE
