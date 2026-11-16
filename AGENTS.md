@@ -111,7 +111,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
-  （`Schema.VERSION = 27`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  （`Schema.VERSION = 28`——v28 不改表，只为新旧版本不混着同步，`../docs/EXERCISE-PLAN.md §33.2`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
   `CREATE … IF NOT EXISTS` 补齐到 v27 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
   `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
@@ -328,6 +328,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `ExerciseScreen.practiceSplit` 宽 ≥ 820dp 文章在左、否则在上；点文章里的 (21) 跳题（按点到的字认）。高亮 = v27 `exercise.marks`（`ExMark` ↔ Mac `ExerciseMark`，
   按显示出来的文字 + 第几处记），判完后正文可长按选中、菜单多「高亮 / 去掉高亮」（`shared/exercise/ExMarks`），`ExHost.canMark` / `setMarks` 只有模式1；
   模式2 由 Mac 把文章拼进题干发过来，没有高亮。MirrorFp 向量 #40（v27 `marks` 列，#30/#33/#35 随列规格变）。
+  · **不关联 PDF 的题 + 分组**（2026-11-16，`../docs/EXERCISE-PLAN.md §33`）：`document_id` 为空、章节路径第一级 = 分组名；范围里占一个固定的
+  「文档 id」`ExScope.LOOSE_ID = "-"`（同 Mac `ExerciseScope.looseId`，`documentId` 对这一支返回 null，原样的用 `ownerId`）；抽屉里每个分组一行、排在书后面
+  （`ExGroupNode.looseGroups`）。本端能看能练，解除关联 / 移到分组 / 改名只在 Mac。🔴 **删 PDF 不删题**：`Trash.deleteDocument` 归档后先
+  `LibraryStore.detachExercises` 再删行；`MirrorApply.write` 删文档前先把题摘下来（否则作答被外键级联删掉、还会同步出去）。
 - **清除做题记录（2026-11-15，模式1，`../docs/EXERCISE-PLAN.md §31`）**：列表多选操作条 + 练习页 ⋯；`ExHost.canClearRecords` / `clearRecords`，
   `Trash.clearExerciseAttempts`（先归档再清，书上的作答留着，错题本重算），库层照抄 Mac。
 - **模式2 阅读 Markdown 笔记（2026-11-14，只读，`../docs/MARKDOWN-NOTES-PLAN.md §21`）**：Mac 标签是 Markdown 笔记时收 `mdNote`（0x63，`../docs/PROTOCOL.md §4.10`），

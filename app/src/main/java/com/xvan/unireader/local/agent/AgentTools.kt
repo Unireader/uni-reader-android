@@ -1014,7 +1014,13 @@ class AgentToolset(private val host: AgentHost) {
             val scope: com.xvan.unireader.local.exercise.ExScope = when (list) {
                 "mistakes" -> if (docId != null) com.xvan.unireader.local.exercise.ExScope.WrongDocument(docId) else com.xvan.unireader.local.exercise.ExScope.Wrong
                 "starred" -> if (docId != null) com.xvan.unireader.local.exercise.ExScope.StarredDocument(docId) else com.xvan.unireader.local.exercise.ExScope.Starred
-                else -> if (docId != null) com.xvan.unireader.local.exercise.ExScope.Document(docId) else com.xvan.unireader.local.exercise.ExScope.All
+                else -> when {
+                    docId != null -> com.xvan.unireader.local.exercise.ExScope.Document(docId)
+                    // 只给了一道不关联 PDF 的题（`../docs/EXERCISE-PLAN.md §33`）：开它那个分组（没分组的那一行），同 Mac `homeScope`
+                    ex != null -> com.xvan.unireader.local.exercise.ExScope.Chapter(
+                        com.xvan.unireader.local.exercise.ExScope.LOOSE_ID, listOfNotNull(ex.group))
+                    else -> com.xvan.unireader.local.exercise.ExScope.All
+                }
             }
             if (ex != null) require(scope.includes(ex)) { "exercise ${ex.id.take(8)} is not in that group (check list / document)" }
             main { openExercises(scope.key, ex?.id) }

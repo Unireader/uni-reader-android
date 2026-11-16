@@ -182,6 +182,9 @@
     <string name="ex_mistakes">错题本</string>
     <string name="ex_starred">收藏</string>
     <string name="ex_no_chapter">未分章节</string>
+    <string name="ex_no_group">未分组</string>
+    <string name="ex_no_group_title">未分组的习题</string>
+    <string name="ex_loose_all">不关联 PDF 的习题</string>
     <string name="ex_star">收藏</string>
     <string name="ex_unstar">已收藏</string>
     <string name="ex_original">原题</string>

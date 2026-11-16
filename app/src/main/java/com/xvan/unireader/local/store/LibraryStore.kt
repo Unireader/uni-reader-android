@@ -1117,6 +1117,36 @@ class LibraryStore(private val db: Db) : Closeable {
         return rows.filterNotNull()
     }
 
+    /** 不关联 PDF 的题（`document_id` 为空，`../docs/EXERCISE-PLAN.md §33`，同 Mac `looseExercises`），按先后排。 */
+    fun looseExercises(): List<com.xvan.unireader.local.exercise.Exercise> {
+        if (!hasExerciseTables()) return emptyList()
+        return db.query("SELECT * FROM exercise WHERE document_id IS NULL ORDER BY seq, created_at") { exercise(it) }.filterNotNull()
+    }
+
+    /**
+     * 一本书的题全部解除关联（删这本书之前调：删 PDF 不删题，§33，同 Mac `detachExercises`）：`document_id` / `page` 置空，
+     * 章节路径前面接上分组名 [group]（一般是书名），改 `updated_at`（同步按它取新）。payload 里的原题框留着不动——
+     * 没有文档时各处都不用它（Mac 那边解除关联时会顺手去掉，这里不重写 payload，免得两端 JSON 写法不一样）。返回动了几道。
+     */
+    fun detachExercises(documentId: String, group: String): Int {
+        if (!hasExerciseTables()) return 0
+        val rows = db.query("SELECT id, chapter FROM exercise WHERE document_id=?", arrayOf(documentId)) {
+            it.getString(0) to (it.getString(1) ?: "")
+        }
+        if (rows.isEmpty()) return 0
+        val now = nowIso()
+        db.transaction {
+            for ((id, chapter) in rows) {
+                val path = listOf(group) + com.xvan.unireader.local.exercise.ExChapter.parse(chapter)
+                db.exec(
+                    "UPDATE exercise SET document_id=NULL, page=NULL, chapter=?, updated_at=? WHERE id=?",
+                    arrayOf(com.xvan.unireader.local.exercise.ExChapter.text(path), now, id),
+                )
+            }
+        }
+        return rows.size
+    }
+
     fun exercise(id: String): com.xvan.unireader.local.exercise.Exercise? {
         if (!hasExerciseTables()) return null
         return db.query("SELECT * FROM exercise WHERE id=?", arrayOf(id)) { exercise(it) }.firstOrNull()
@@ -1130,18 +1160,19 @@ class LibraryStore(private val db: Db) : Closeable {
         var starred = 0
         val byDoc = HashMap<String, Int>()
         db.query(
-            "SELECT COALESCE(document_id, ''), COUNT(*), SUM(wrong), SUM(starred) FROM exercise GROUP BY document_id",
-        ) { Triple(it.getString(0) ?: "", it.getInt(1), it.getInt(2) to it.getInt(3)) }.forEach { (doc, n, ws) ->
+            // 不关联 PDF 的题记在 `ExScope.LOOSE_ID` 底下（§33，同 Mac `looseExerciseOwner`）
+            "SELECT COALESCE(document_id, '-'), COUNT(*), SUM(wrong), SUM(starred) FROM exercise GROUP BY document_id",
+        ) { Triple(it.getString(0) ?: "-", it.getInt(1), it.getInt(2) to it.getInt(3)) }.forEach { (doc, n, ws) ->
             total += n
             wrong += ws.first
             starred += ws.second
-            if (doc.isNotEmpty()) byDoc[doc] = n
+            byDoc[doc] = n
         }
         val chapters = HashMap<String, MutableMap<List<String>, com.xvan.unireader.local.exercise.ExChapterStat>>()
         db.query(
             """
-            SELECT document_id, chapter, COUNT(*), MIN(page), SUM(wrong), SUM(starred) FROM exercise WHERE document_id IS NOT NULL
-            GROUP BY document_id, chapter
+            SELECT COALESCE(document_id, '-'), chapter, COUNT(*), MIN(page), SUM(wrong), SUM(starred)
+            FROM exercise GROUP BY document_id, chapter
             """.trimIndent(),
         ) {
             val first = if (it.isNull(3)) Int.MAX_VALUE else it.getInt(3)
@@ -1159,8 +1190,8 @@ class LibraryStore(private val db: Db) : Closeable {
         if (!hasExerciseTables()) return emptyList()
         return db.query(
             """
-            SELECT document_id, chapter, COUNT(*), SUM(starred) FROM exercise e
-            WHERE document_id IS NOT NULL AND EXISTS (SELECT 1 FROM exercise_attempt a WHERE a.exercise_id = e.id)
+            SELECT COALESCE(document_id, '-'), chapter, COUNT(*), SUM(starred) FROM exercise e
+            WHERE EXISTS (SELECT 1 FROM exercise_attempt a WHERE a.exercise_id = e.id)
             GROUP BY document_id, chapter
             """.trimIndent(),
         ) {

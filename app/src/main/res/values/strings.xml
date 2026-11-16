@@ -186,6 +186,9 @@
     <string name="ex_mistakes">Mistakes</string>
     <string name="ex_starred">Starred</string>
     <string name="ex_no_chapter">No Chapter</string>
+    <string name="ex_no_group">Ungrouped</string>
+    <string name="ex_no_group_title">Ungrouped Exercises</string>
+    <string name="ex_loose_all">Exercises Without a PDF</string>
     <string name="ex_star">Star</string>
     <string name="ex_unstar">Starred</string>
     <string name="ex_original">Original</string>

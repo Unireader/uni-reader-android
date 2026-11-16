@@ -359,7 +359,7 @@ class ExerciseTest {
     @Test
     fun groupsBuildAndFlatten() {
         val docs = listOf("nodoc" to "没题的书", "D3" to "书三")
-        val g = ExGroupNode.build(sum, docs, { it.key }, "未分章节")
+        val g = ExGroupNode.build(sum, docs, { it.key }, "未分章节", "未分组")
         assertEquals(listOf(ExScope.All, ExScope.Wrong, ExScope.Starred, ExScope.Document("D3")), g.map { it.scope })
         assertEquals(listOf(4, 2, 2, 4), g.map { it.count })
         assertEquals(listOf(ExScope.WrongDocument("D3")), g[1].children.map { it.scope })
@@ -377,19 +377,19 @@ class ExerciseTest {
         )
         // 没有收藏 → 收藏那一行不展开
         val noStar = sum.copy(starred = 0, chapters = mapOf("D3" to stats.mapValues { it.value.copy(starred = 0) }))
-        assertTrue(ExGroupNode.build(noStar, docs, { it.key }, "x")[2].children.isEmpty())
+        assertTrue(ExGroupNode.build(noStar, docs, { it.key }, "x", "y")[2].children.isEmpty())
         val flat = ExGroupNode.flatten(g)
         assertEquals(0, flat[0].second)
         assertEquals(ExScope.Wrong, flat[1].first.scope)
         assertEquals(ExScope.WrongDocument("D3") to 1, flat[2].first.scope to flat[2].second)
         assertEquals(2, flat[3].second)
-        assertTrue(ExGroupNode.build(ExSummary(), docs, { it.key }, "x").isEmpty())
+        assertTrue(ExGroupNode.build(ExSummary(), docs, { it.key }, "x", "y").isEmpty())
         // 有设有没设 → 末尾一行「未分章节」
         val withNone = sum.copy(chapters = mapOf("D3" to stats + (emptyList<String>() to ExChapterStat(2, 0, 0))))
-        assertEquals("未分章节", ExGroupNode.build(withNone, docs, { it.key }, "未分章节")[3].children.last().title)
+        assertEquals("未分章节", ExGroupNode.build(withNone, docs, { it.key }, "未分章节", "未分组")[3].children.last().title)
         // 一道都没设 → 书不展开
         val noneOnly = sum.copy(chapters = mapOf("D3" to mapOf(emptyList<String>() to ExChapterStat(4, 0, 0))))
-        assertTrue(ExGroupNode.build(noneOnly, docs, { it.key }, "未分章节")[3].children.isEmpty())
+        assertTrue(ExGroupNode.build(noneOnly, docs, { it.key }, "未分章节", "未分组")[3].children.isEmpty())
     }
 
     // ---------- 目录查章节（同 Mac `ExerciseChapter.path`） ----------
@@ -656,7 +656,7 @@ class ExerciseTest {
                 ),
             ),
         )
-        val tree = ExGroupNode.build(sum, listOf(d to "进度"), { it.key }, "未分章节").map { it.withDone(done) }
+        val tree = ExGroupNode.build(sum, listOf(d to "进度"), { it.key }, "未分章节", "未分组").map { it.withDone(done) }
         val book = tree.first { it.scope == ExScope.Document(d) }
         assertEquals("书那一行：2/4", 2, book.done)
         assertEquals(4, book.count)
@@ -666,7 +666,7 @@ class ExerciseTest {
         assertEquals("全部", 2, tree[0].done)
         assertEquals("收藏", 1, tree[2].done)
         // 没给做题进度的树（调用方没调 withDone）一行都不显示
-        assertTrue(ExGroupNode.build(sum, listOf(d to "进度"), { it.key }, "x").all { it.done == null })
+        assertTrue(ExGroupNode.build(sum, listOf(d to "进度"), { it.key }, "x", "y").all { it.done == null })
     }
 
     // ---------- 阅读理解 / 完形填空 + 高亮（`../docs/EXERCISE-PLAN.md §32`，↔ spike/exercise-test.swift 同名两段） ----------
@@ -695,6 +695,82 @@ class ExerciseTest {
         val e = ex("e1", doc = "docP").copy(payload = p)
         assertEquals("docP|p1", e.passageKey)
         assertNull(ex("e2").passageKey)
+    }
+
+    // ---------- 不关联 PDF 的题与分组（`../docs/EXERCISE-PLAN.md §33`，对应 Mac `spike/exercise-test.swift` 同名一段）----------
+
+    @Test
+    fun loose() {
+        val l = ExScope.LOOSE_ID
+        assertEquals("-", l)
+        val g = ExScope.Chapter(l, listOf("2024 英语一"))
+        assertEquals("chap:-:[\"2024 英语一\"]", g.key)
+        assertEquals(g, ExScope.parse(g.key))
+        assertEquals(ExScope.Document(l), ExScope.parse("doc:-"))
+        assertEquals(ExScope.WrongChapter(l, listOf("A", "B")), ExScope.parse("wrong:chap:-:[\"A\",\"B\"]"))
+        assertEquals(ExScope.StarredChapter(l, emptyList()), ExScope.parse("starred:chap:-:"))
+        // 分组不属于哪本书，但认得出是不关联 PDF 的那一支
+        assertNull(g.documentId)
+        assertEquals(l, g.ownerId)
+        assertTrue(g.isLoose)
+        assertEquals(listOf("2024 英语一"), g.loosePath)
+        assertFalse(ExScope.Document("D1").isLoose || ExScope.All.isLoose)
+        assertNull(ExScope.Chapter("D1", listOf("x")).loosePath)
+        assertEquals("D1", ExScope.Chapter("D1", listOf("x")).documentId)
+
+        val e1 = ex("lo-1", doc = null, page = null, chapter = listOf("真题"))
+        val e2 = ex("lo-2", doc = null, page = null, chapter = listOf("真题", "阅读"), wrong = true)
+        val e3 = ex("lo-3", doc = null, page = null, chapter = listOf("模拟"), starred = true)
+        val e4 = ex("lo-4", doc = null, page = null)
+        val b1 = ex("bk-1", doc = "D1", chapter = listOf("第一章"))
+        assertEquals(l, e1.ownerId)
+        assertEquals("真题", e1.group)
+        assertNull(e4.group)
+        assertNull(b1.group)
+        assertEquals("D1", b1.ownerId)
+        assertTrue(ExScope.Chapter(l, listOf("真题")).includes(e1) && ExScope.Chapter(l, listOf("真题")).includes(e2))
+        assertFalse(ExScope.Chapter(l, listOf("模拟")).includes(e1))
+        assertTrue(ExScope.Chapter(l, emptyList()).includes(e4))
+        assertFalse(ExScope.Chapter(l, emptyList()).includes(e1))
+        assertTrue(ExScope.Document(l).includes(e1) && ExScope.Document(l).includes(e4) && ExScope.All.includes(e1))
+        assertFalse(ExScope.Document(l).includes(b1) || ExScope.Document("D1").includes(e1))
+        assertTrue(ExScope.WrongChapter(l, listOf("真题")).includes(e2))
+        assertFalse(ExScope.WrongChapter(l, listOf("真题")).includes(e1))
+
+        // 侧栏：每个分组一行（排在书后面、按名字），没分组的在最后；错题本 / 收藏底下也有
+        val chapters = mapOf(
+            l to mapOf(
+                listOf("真题") to ExChapterStat(1, Int.MAX_VALUE), listOf("真题", "阅读") to ExChapterStat(1, Int.MAX_VALUE, wrong = 1),
+                listOf("模拟") to ExChapterStat(1, Int.MAX_VALUE, starred = 1), emptyList<String>() to ExChapterStat(1, Int.MAX_VALUE),
+            ),
+            "D1" to mapOf(listOf("第一章") to ExChapterStat(1, 3)),
+        )
+        val sum = ExSummary(5, 1, 1, mapOf(l to 4, "D1" to 1), chapters)
+        assertEquals(2, sum.count(ExScope.Chapter(l, listOf("真题"))))
+        assertEquals(1, sum.count(ExScope.Chapter(l, emptyList())))
+        assertEquals(4, sum.count(ExScope.Document(l)))
+        assertEquals(1, sum.count(ExScope.WrongChapter(l, listOf("真题"))))
+        val rows = ExGroupNode.build(sum, listOf("D1" to "书一"), { it.key }, "未分章节", "未分组")
+        val mine = rows.filter { it.scope.isLoose }
+        assertEquals(listOf("模拟", "真题", "未分组"), mine.map { it.title })
+        assertEquals(listOf(1, 2, 1), mine.map { it.count })
+        assertEquals(listOf(ExScope.Chapter(l, listOf("真题", "阅读"))), mine[1].children.map { it.scope })
+        assertTrue(rows.indexOfFirst { it.scope == ExScope.Document("D1") } < rows.indexOfFirst { it.scope.isLoose })
+        assertTrue(rows[1].children.any { it.scope == ExScope.WrongChapter(l, listOf("真题")) && it.count == 1 })
+        assertTrue(rows[2].children.any { it.scope == ExScope.StarredChapter(l, listOf("模拟")) && it.count == 1 })
+        // 没有分组、只有没分组的题：那一行照样有
+        val onlyNone = ExSummary(1, 0, 0, mapOf(l to 1), mapOf(l to mapOf(emptyList<String>() to ExChapterStat(1, Int.MAX_VALUE))))
+        assertEquals(listOf("未分组"), ExGroupNode.build(onlyNone, emptyList(), { it.key }, "未分章节", "未分组").filter { it.scope.isLoose }.map { it.title })
+
+        // 练习顺序：按分组名、分组在它的小节前面、没分组的最后
+        assertEquals(listOf("lo-3", "lo-1", "lo-2", "lo-4"), ExScope.looseOrdered(listOf(e1, e2, e3, e4)).map { it.id })
+
+        // 文章按「分组 + 文章 id」认
+        val ps = ExPassage("p1", "reading", null, "T")
+        fun withP(e: Exercise) = e.copy(payload = e.payload.copy(passage = ps))
+        assertTrue(withP(e1).passageKey != withP(e3).passageKey)
+        assertTrue(withP(e1).passageKey != withP(b1).passageKey)
+        assertEquals(withP(e1).passageKey, withP(e2).passageKey)
     }
 
     @Test

@@ -184,7 +184,11 @@ object Trash {
         return e
     }
 
-    /** 删一篇文档：先归档（文档 + 版本 + 路径 + 全部笔记 / 图层 / 草稿纸 / 习题），成了才删行（级联） */
+    /**
+     * 删一篇文档：先归档（文档 + 版本 + 路径 + 全部笔记 / 图层 / 草稿纸 / 习题），成了才删行（级联）。
+     * 🔴 删 PDF 不删题（`../docs/EXERCISE-PLAN.md §33`，同 Mac `trashDocument`）：归档之后、删行之前先把它的题解除关联
+     * （进一个以书名命名的分组），不然外键把题和作答一起级联删掉。
+     */
     fun deleteDocument(s: LibraryStore, ws: File, d: LibDocument): Entry {
         val e = archive(ws, d.title) { snap ->
             val a = s.trashArchiveDocument(d.id, snap)
@@ -193,6 +197,7 @@ object Trash {
                 pageCount = a.pageCount, counts = a.counts, images = a.images, contentHashes = a.contentHashes,
             )
         }
+        s.detachExercises(d.id, d.title.trim().ifEmpty { d.id })
         s.deleteDocument(d.id)
         s.reconcileImageOrphans(e.manifest.images.toSet())
         return e

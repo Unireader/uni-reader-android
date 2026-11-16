@@ -115,7 +115,7 @@ class ExerciseController(private val a: Activity) : ExHost {
 
     private fun groups(): List<ExGroup> =
         ExGroupNode.flatten(
-            ExGroupNode.build(summary, docs, ::scopeTitle, a.getString(R.string.ex_no_chapter)).map { it.withDone(doneSummary) },
+            ExGroupNode.build(summary, docs, ::scopeTitle, a.getString(R.string.ex_no_chapter), a.getString(R.string.ex_no_group)).map { it.withDone(doneSummary) },
         ).map { (n, depth) -> ExGroup(n.scope.key, n.title, n.count, depth, n.done) }
 
     /** 范围名（同 Mac `exerciseScopeTitle`）：标签栏、习题页顶上都用它。 */
@@ -123,8 +123,17 @@ class ExerciseController(private val a: Activity) : ExHost {
         ExScope.All -> a.getString(R.string.ex_all)
         ExScope.Wrong -> a.getString(R.string.ex_mistakes)
         ExScope.Starred -> a.getString(R.string.ex_starred)
-        is ExScope.Document -> docTitle(sc.id)
-        is ExScope.Chapter -> docTitle(sc.id) + " · " + (sc.path.lastOrNull() ?: a.getString(R.string.ex_no_chapter))
+        is ExScope.Document -> if (sc.isLoose) a.getString(R.string.ex_loose_all) else docTitle(sc.id)
+        // 分组（§33，同 Mac）：分组名；底下的小节 = 分组名 · 小节名；没分组的那一行
+        is ExScope.Chapter -> if (sc.isLoose) {
+            when (sc.path.size) {
+                0 -> a.getString(R.string.ex_no_group_title)
+                1 -> sc.path[0]
+                else -> sc.path[0] + " · " + sc.path.last()
+            }
+        } else {
+            docTitle(sc.id) + " · " + (sc.path.lastOrNull() ?: a.getString(R.string.ex_no_chapter))
+        }
         is ExScope.WrongDocument -> a.getString(R.string.ex_mistakes) + " · " + scopeTitle(ExScope.Document(sc.id))
         is ExScope.WrongChapter -> a.getString(R.string.ex_mistakes) + " · " + scopeTitle(ExScope.Chapter(sc.id, sc.path))
         is ExScope.StarredDocument -> a.getString(R.string.ex_starred) + " · " + scopeTitle(ExScope.Document(sc.id))

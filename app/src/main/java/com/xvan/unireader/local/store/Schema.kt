@@ -39,8 +39,11 @@ object Schema {
      * v26：`schedule_plan`（日程计划）+ `schedule_item`（日程事项），`../docs/SCHEDULE-PLAN.md`；
      * 本端本轮没有日程界面，只建表、随离线镜像 / 服务器同步；回收站认得 Mac 建的 `schedule` 条目并能恢复。
      * v27：`exercise` 加 `marks`（用户在题干 / 文章 / 选项上划的高亮，JSON 数组，`../docs/EXERCISE-PLAN.md §32`；本端模式1 读写）。
+     * v28：**不改表**。习题可以不关联 PDF（`exercise.document_id` 为空，`../docs/EXERCISE-PLAN.md §33`），删文档 / 解除关联时题目留下——
+     * 合并写入要先把题从要删的文档上摘下来（`MirrorApply.write`），老版本没有这一步、会连题带作答级联删掉。
+     * 升版本号只为让新旧版本不混着同步（服务器要求两边版本号相同）。
      */
-    const val VERSION = 27
+    const val VERSION = 28
 
     /**
      * v14 `page_align`（`../docs/SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并

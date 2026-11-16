@@ -294,8 +294,17 @@ data class Exercise(
     /** 用户划的高亮（v27 `exercise.marks`，`../docs/EXERCISE-PLAN.md §32`）。 */
     val marks: List<ExMark> = emptyList(),
 ) {
-    /** 同一篇文章的认法：文档 + 文章 id（同 Mac `passageKey`）；不属于文章 → null。 */
-    val passageKey: String? get() = payload.passage?.let { (documentId ?: "") + "|" + it.id }
+    /**
+     * 同一篇文章的认法：文档 + 文章 id（同 Mac `passageKey`）；不属于文章 → null。
+     * 不关联 PDF 的题按「分组 + 文章 id」认（`../docs/EXERCISE-PLAN.md §33`）：两个分组里各有一篇 `p1` 不是同一篇。
+     */
+    val passageKey: String? get() = payload.passage?.let { (documentId ?: (ExScope.LOOSE_ID + (group ?: ""))) + "|" + it.id }
+
+    /** 这道题归在哪一行底下：那篇 PDF 的 id；不关联 PDF 的题 = [ExScope.LOOSE_ID]（§33，同 Mac `ownerId`）。 */
+    val ownerId: String get() = documentId ?: ExScope.LOOSE_ID
+
+    /** 不关联 PDF 的题所在的分组（= 章节路径第一级，§33）；关联着 PDF 的题 / 没分组 → null。 */
+    val group: String? get() = if (documentId == null) chapter.firstOrNull() else null
 
     val multiple: Boolean get() = kind == KIND_MULTIPLE
     /** 选择题（单选 / 多选）。 */
@@ -598,8 +607,23 @@ sealed class ExScope {
             is StarredChapter -> STARRED_PREFIX + Chapter(id, path).key
         }
 
-    /** 这个范围属于哪本书（全部 / 错题本 / 收藏不属于某一本）。 */
-    val documentId: String?
+    /** 这个范围属于哪本书（全部 / 错题本 / 收藏不属于某一本；不关联 PDF 的那一支也不属于哪本书）。 */
+    val documentId: String? get() = ownerId?.takeIf { it != LOOSE_ID }
+
+    /** 这个范围是不是不关联 PDF 的那一支（§33）。 */
+    val isLoose: Boolean get() = ownerId == LOOSE_ID
+
+    /** 不关联 PDF 的那一支里的章节路径（第一级 = 分组名）；别的范围 → null。 */
+    val loosePath: List<String>?
+        get() = when (this) {
+            is Chapter -> path.takeIf { id == LOOSE_ID }
+            is WrongChapter -> path.takeIf { id == LOOSE_ID }
+            is StarredChapter -> path.takeIf { id == LOOSE_ID }
+            else -> null
+        }
+
+    /** 范围里写的那个「文档 id」原样：一本书的 id，或 [LOOSE_ID]。 */
+    val ownerId: String?
         get() = when (this) {
             is Document -> id
             is Chapter -> id
@@ -617,15 +641,39 @@ sealed class ExScope {
         All -> true
         Wrong -> e.wrong
         Starred -> e.starred
-        is Document -> e.documentId == id
-        is Chapter -> e.documentId == id && ExChapter.contains(path, e.chapter)
-        is WrongDocument -> e.wrong && e.documentId == id
-        is WrongChapter -> e.wrong && e.documentId == id && ExChapter.contains(path, e.chapter)
-        is StarredDocument -> e.starred && e.documentId == id
-        is StarredChapter -> e.starred && e.documentId == id && ExChapter.contains(path, e.chapter)
+        is Document -> e.ownerId == id
+        is Chapter -> e.ownerId == id && ExChapter.contains(path, e.chapter)
+        is WrongDocument -> e.wrong && e.ownerId == id
+        is WrongChapter -> e.wrong && e.ownerId == id && ExChapter.contains(path, e.chapter)
+        is StarredDocument -> e.starred && e.ownerId == id
+        is StarredChapter -> e.starred && e.ownerId == id && ExChapter.contains(path, e.chapter)
     }
 
     companion object {
+        /**
+         * 不关联 PDF 的题（`document_id` 为空，`../docs/EXERCISE-PLAN.md §33`）在范围里占的「文档 id」：
+         * `Chapter(LOOSE_ID, ["分组名", …])` = 一个分组（章节路径第一级就是分组名）、`Chapter(LOOSE_ID, [])` = 没分组的那些、
+         * `Document(LOOSE_ID)` = 全部不关联 PDF 的题。🔴 与 Mac `ExerciseScope.looseId` 同值（范围键原样过线 / 进标签页）。
+         */
+        const val LOOSE_ID = "-"
+
+        /**
+         * 不关联 PDF 的题的练习顺序（同 Mac `Exercise.looseOrdered`）：按章节路径逐级比名字，没分组的排最后；
+         * 同一节里保持传进来的先后。名字怎么比同抽屉那棵树（`ExChapterTree.build` 的 `naturalCompare`），两处顺序一致。
+         */
+        fun looseOrdered(list: List<Exercise>): List<Exercise> {
+            fun cmp(a: List<String>, b: List<String>): Int {
+                if (a == b) return 0
+                if (a.isEmpty() != b.isEmpty()) return if (b.isEmpty()) -1 else 1
+                for (i in 0 until minOf(a.size, b.size)) if (a[i] != b[i]) return ExChapterTree.naturalCompare(a[i], b[i])
+                return a.size.compareTo(b.size)
+            }
+            return list.withIndex().sortedWith { x, y ->
+                val c = cmp(x.value.chapter, y.value.chapter)
+                if (c != 0) c else x.index.compareTo(y.index)
+            }.map { it.value }
+        }
+
         private const val WRONG_PREFIX = "wrong:"
         private const val STARRED_PREFIX = "starred:"
 
@@ -849,6 +897,7 @@ data class ExGroupNode(
             documents: List<Pair<String, String>>,
             title: (ExScope) -> String,
             noChapter: String,
+            noGroup: String,
         ): List<ExGroupNode> {
             if (s.total <= 0) return emptyList()
             val wrongChildren = documents.filter { s.count(ExScope.WrongDocument(it.first)) > 0 }.map { (id, t) ->
@@ -870,7 +919,30 @@ data class ExGroupNode(
                 rows += ExGroupNode(ExScope.Document(id), t, n,
                     chapters(s.chapters[id] ?: emptyMap(), noChapter) { ExScope.Chapter(id, it) })
             }
+            // 不关联 PDF 的题（§33，同 Mac）：每个分组一行、和书并列，排在书后面；错题本 / 收藏底下同样接在书后面
+            val loose = ExScope.LOOSE_ID
+            rows[1] = rows[1].copy(children = rows[1].children +
+                looseGroups(s.mistakeChapters(loose), noGroup) { ExScope.WrongChapter(loose, it) })
+            rows[2] = rows[2].copy(children = rows[2].children +
+                looseGroups(s.starredChapters(loose), noGroup) { ExScope.StarredChapter(loose, it) })
+            rows += looseGroups(s.chapters[loose] ?: emptyMap(), noGroup) { ExScope.Chapter(loose, it) }
             return rows
+        }
+
+        /**
+         * 不关联 PDF 的题的那几行（同 Mac `looseGroups`）：章节路径第一级 = 分组名，每个分组一行，底下照旧是章节树；
+         * 没分组的（空路径）末尾一行「未分组」。一个分组也没有时「未分组」那行照样要有。
+         */
+        fun looseGroups(
+            stats: Map<List<String>, ExChapterStat>,
+            noGroup: String,
+            scope: (List<String>) -> ExScope,
+        ): List<ExGroupNode> {
+            fun make(t: ExChapterTree): ExGroupNode = ExGroupNode(scope(t.path), t.label, t.count, t.children.map(::make))
+            val out = ExChapterTree.build(stats).map(::make).toMutableList()
+            val none = stats[emptyList()]
+            if (none != null && none.count > 0) out += ExGroupNode(scope(emptyList()), noGroup, none.count)
+            return out
         }
 
         /**

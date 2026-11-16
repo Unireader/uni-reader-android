@@ -79,13 +79,18 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             val docId = scope.documentId
             val items = if (docId != null) {
                 s.exercises(docId).filter(scope::includes)
+            } else if (scope.isLoose) {
+                // 不关联 PDF 的题（§33）：一个分组 / 没分组的 / 全部
+                ExScope.looseOrdered(s.looseExercises().filter(scope::includes))
             } else {
                 val order = s.allDocuments().withIndex().associate { it.value.id to it.index }
-                s.exercises().filter(scope::includes).withIndex().sortedWith { a, b ->
+                val sorted = s.exercises().filter(scope::includes).withIndex().sortedWith { a, b ->
                     val oa = a.value.documentId?.let { order[it] } ?: Int.MAX_VALUE
                     val ob = b.value.documentId?.let { order[it] } ?: Int.MAX_VALUE
                     if (oa != ob) oa.compareTo(ob) else a.index.compareTo(b.index)   // 同一篇里保持库里排好的「页 → 先后」
                 }.map { it.value }
+                // 不关联 PDF 的题排在各本书后面，自己那一段按分组排（同 Mac）
+                sorted.filter { it.documentId != null } + ExScope.looseOrdered(sorted.filter { it.documentId == null })
             }
             val have = items.map { it.id }.toHashSet()
             val outside = keep.filter { it !in have }.associateWith { s.exercise(it) }

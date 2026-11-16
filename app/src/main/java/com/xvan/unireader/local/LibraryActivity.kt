@@ -285,7 +285,7 @@ class LibraryActivity : Activity() {
         }
         // 行尾「已做 / 共」同 Mac 侧栏（`../docs/EXERCISE-PLAN.md §16`）：错题本那一行只有题数
         val done = com.xvan.unireader.local.exercise.ExDoneSummary.of(store.exerciseDoneCounts())
-        return ExGroupNode.build(store.exerciseSummary(), docs.map { it.id to it.title }, title, getString(R.string.ex_no_chapter))
+        return ExGroupNode.build(store.exerciseSummary(), docs.map { it.id to it.title }, title, getString(R.string.ex_no_chapter), getString(R.string.ex_no_group))
             .map { it.withDone(done) }
             .map { ExRow(it.scope.key, it.title, it.count, it.scope.key in openKeys, it.done) }
     }
