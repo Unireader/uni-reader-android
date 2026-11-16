@@ -534,6 +534,15 @@
     <string name="agent_new_chat">New chat</string>
     <string name="agent_settings">Agent Settings</string>
     <string name="agent_close">Close</string>
+    <string name="agent_float">Floating window</string>
+    <string name="agent_dock">Dock to the right</string>
+    <string name="agent_collapse">Collapse</string>
+    <string name="agent_expand">Expand</string>
+    <string name="agent_resize">Resize</string>
+    <string name="agent_sys_overlay">Keep floating over other apps</string>
+    <string name="agent_sys_need_perm">Allow “Display over other apps” for UniReader, then come back</string>
+    <string name="agent_back_to_app">Back to UniReader</string>
+    <string name="agent_sys_on">The chat will float over other apps when you leave UniReader</string>
     <string name="agent_stopped">Stopped.</string>
     <string name="agent_error">Request failed: %1$s</string>
     <string name="agent_thinking">Thinking…</string>

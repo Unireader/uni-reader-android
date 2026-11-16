@@ -529,6 +529,15 @@
     <string name="agent_new_chat">新对话</string>
     <string name="agent_settings">Agent 设置</string>
     <string name="agent_close">关闭</string>
+    <string name="agent_float">悬浮小窗</string>
+    <string name="agent_dock">停回右侧</string>
+    <string name="agent_collapse">收起</string>
+    <string name="agent_expand">展开</string>
+    <string name="agent_resize">改大小</string>
+    <string name="agent_sys_overlay">离开 App 时悬浮在其他应用上</string>
+    <string name="agent_sys_need_perm">请给 UniReader 打开「显示在其他应用上层」，再回来</string>
+    <string name="agent_back_to_app">回到 UniReader</string>
+    <string name="agent_sys_on">离开 UniReader 时，对话会悬浮在其他应用上</string>
     <string name="agent_stopped">已停止。</string>
     <string name="agent_error">请求失败：%1$s</string>
     <string name="agent_thinking">思考中…</string>

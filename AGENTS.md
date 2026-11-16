@@ -380,7 +380,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （2026-10-29 用户定放这一页）；书库页 ⋯「上传到服务器…」（原文件夹就地成为缓存）/「立即同步」/「变回本地工作区…」（只给不在缓存目录里的）；
   没下载的书在书库页、阅读界面都能点「从服务器下载」。离线副本与服务器工作区互斥（副本不能上传、有借出不能上传、服务器工作区不再做副本）。
 - **安卓 Agent（模式1，2026-11-15，`../docs/ANDROID-AGENT-PLAN.md`）** 全在 `local/agent/`：`AgentConfig`（地址 / Key / 模型，本机、Key 经 Keystore 加密）、
-  `AgentEngine`（Koog 的 OpenAI 兼容客户端 + 自己的工具循环）、`AgentTools`（`AgentHost` 宿主接口 + 第一批工具，名字参数照 Mac MCP）、`AgentPanel`（阅读界面右侧一栏）。
+  `AgentEngine`（Koog 的 OpenAI 兼容客户端 + 自己的工具循环）、`AgentTools`（`AgentHost` 宿主接口 + 第一批工具，名字参数照 Mac MCP）、`AgentPanel`（阅读界面右侧一栏，或可拖动 / 改大小 / 收起的悬浮小窗，§9.1；位置按比例记在 prefs `agent`）。
   🔴 工具只经 `AgentHost`（`ReaderActivity.agentHost`）碰阅读界面，读写库经 `StoreQueue.read`；新工具别直接摸 Activity 字段。
   记忆读写 `LibraryStore.agentMemories` / `upsertAgentMemory`（SQL 照抄 Mac）；对话记录 `insertAgentTurn` / `agentTurns` / `recentAgentConversations`（面板一轮答完记一行）。
   Agent 上下文 `agentContexts` / `upsertAgentContext`（工具三个 + 面板 ⋯ 菜单存 / 带上，文字规则 `AgentContextText` 照 Mac）。

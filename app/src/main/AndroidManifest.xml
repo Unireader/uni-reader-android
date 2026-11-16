@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Agent 系统悬浮窗（ANDROID-AGENT-PLAN §9.2）：离开 App 时对话盖在别的 App 上；要用户在系统设置里手动打开。
+         REORDER_TASKS：悬浮窗上「回到 UniReader」把任务调回前台。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+
     <!--
       模式1 独立版要直接打开任意路径下的 .unrd 工作区（含 U 盘/SD/同步目录），且用的是裸
       SQLiteDatabase（需要真实文件路径，SAF 的 tree Uri 给不了）→ 只能走全盘文件权限。
