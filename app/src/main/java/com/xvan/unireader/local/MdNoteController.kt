@@ -429,20 +429,28 @@ class MdNoteController(private val a: Activity) {
      * 改名 = 改文件名（同 Mac `renameNote`）。🔴 指向它的 `[[旧名字]]` 会断链——不改别人的正文（红线 9），
      * 这是用户明确接受的代价。目标已存在就不改。成功交回新相对路径。
      */
-    fun rename(rel: String, name: String, then: (String?) -> Unit) {
+    fun rename(rel: String, name: String, then: (String?) -> Unit) = rename(rel, name, null, quiet = false, then = then)
+
+    /**
+     * 同上，另可挪到 `Notes/` 里的另一个目录（[folder]：相对 `Notes/`，空串 = 根；null = 原目录；没有就建）。
+     * [quiet] = 撞名不弹提示（Agent 调用，原因由工具报给模型）。
+     */
+    fun rename(rel: String, name: String, folder: String?, quiet: Boolean, then: (String?) -> Unit) {
         val dir = ws ?: return
         val clean = name.trim()
         if (clean.isEmpty()) return then(null)
         if (rel == current) flush()
         val item = MdNotes.Item(rel)
         val ext = rel.substringAfterLast('.', "md")
-        val newRel = (if (item.folder.isEmpty()) "" else item.folder + "/") + MdNotes.safeFileName(clean) + "." + ext
+        val toFolder = folder?.trim('/')?.split('/')?.filter { it.isNotBlank() }?.joinToString("/") { MdNotes.safeFileName(it) } ?: item.folder
+        val newRel = (if (toFolder.isEmpty()) "" else "$toFolder/") + MdNotes.safeFileName(clean) + "." + ext
         if (newRel == rel) return then(rel)
         val dst = MdNotes.file(dir, newRel)
         if (dst.exists()) {
-            Toast.makeText(a, a.getString(R.string.md_name_taken), Toast.LENGTH_SHORT).show()
+            if (!quiet) Toast.makeText(a, a.getString(R.string.md_name_taken), Toast.LENGTH_SHORT).show()
             return then(null)
         }
+        dst.parentFile?.mkdirs()
         val ok = MdNotes.file(dir, rel).renameTo(dst)
         if (!ok) return then(null)
         if (current == rel) {

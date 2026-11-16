@@ -543,4 +543,20 @@
     <string name="agent_trash_annotations">批注</string>
     <string name="agent_trash_and_more">“%1$s”及另外 %2$d 条</string>
     <string name="agent_trash_memories">%d 条 Agent 记忆</string>
+    <string name="agent_context_untitled">上下文 %1$s</string>
+    <string name="agent_menu">更多</string>
+    <string name="agent_ctx_save">保存这段对话为上下文</string>
+    <string name="agent_ctx_attach">随下一句话带上</string>
+    <string name="agent_ctx_none">还没有保存的上下文</string>
+    <string name="agent_settings_item">设置…</string>
+    <string name="agent_ctx_request">请把这段对话写成交接摘要，我要换个 Agent 接着做。</string>
+    <string name="agent_ctx_saved">已保存为上下文「%1$s」。在新对话里从 ⋯ 菜单带上它就能接着做。</string>
+    <string name="agent_ctx_no_summary">Agent 没有写出摘要，上下文没有保存。</string>
+    <string name="agent_ctx_save_failed">上下文保存失败。</string>
+    <string name="agent_ctx_not_saved">上下文没有保存。</string>
+    <string name="agent_ctx_pending">随下一句话带上的上下文</string>
+    <string name="agent_ctx_carried">已带上上下文「%1$s」。</string>
+    <string name="agent_ctx_remove">移除</string>
+    <string name="agent_trash_plans">%d 份计划</string>
+    <string name="agent_trash_schedule_items">%d 件日程</string>
 </resources>

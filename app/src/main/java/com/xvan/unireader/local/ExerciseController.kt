@@ -173,8 +173,28 @@ class ExerciseController(private val a: Activity) : ExHost {
         val keep = if (fresh) emptyList() else d.items.map { it.id }
         q.submit("读习题 ${d.scope.key.take(24)}", { s -> LocalExerciseDeck.read(s, d.scope, keep) }, { f ->
             if (fresh) d.applyFresh(f) else d.applyReload(f)
+            takeFocus(d)
             if (deck === d) render()
         })
+    }
+
+    /** 要停在哪道题（Agent `open_exercises` 的 `exercise_id`）：这一组读进来之后跳过去，跳完清掉。 */
+    private var pendingFocus: String? = null
+
+    /** 停在这道题：眼下这组已读好就当场跳，否则等 [reload] 读完再跳（同 Mac `open_exercises` 的 `exercise_id`）。 */
+    fun focus(exerciseId: String) {
+        pendingFocus = exerciseId
+        val d = deck ?: return
+        if (d.loaded && takeFocus(d)) render()
+    }
+
+    private fun takeFocus(d: LocalExerciseDeck): Boolean {
+        val id = pendingFocus ?: return false
+        val i = d.items.indexOfFirst { it.id == id }
+        if (i < 0) return false
+        d.index = i
+        pendingFocus = null
+        return true
     }
 
     /** 写了改题目行的东西（收藏 / 错题本 / 章节）：重读这一组 + 抽屉的数。 */

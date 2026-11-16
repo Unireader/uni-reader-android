@@ -133,6 +133,18 @@ object TrashStore {
         return archive(db, path, listOf(Pick("agent_memory", "id IN ($marks)", ids.toTypedArray())))
     }
 
+    /** 几份日程计划（连同名下的事项）+ 几件单独的事项（同 Mac `TrashStore.archiveSchedule`）。两样都可以空（不能都空，调用方保证）。 */
+    fun archiveSchedule(db: Db, planIds: List<String>, itemIds: List<String>, path: File): Archived {
+        fun marks(n: Int) = if (n == 0) "NULL" else List(n) { "?" }.joinToString(",")
+        return archive(
+            db, path,
+            listOf(
+                Pick("schedule_plan", "id IN (${marks(planIds.size)})", planIds.toTypedArray()),
+                Pick("schedule_item", "id IN (${marks(itemIds.size)}) OR plan_id IN (${marks(planIds.size)})", (itemIds + planIds).toTypedArray()),
+            ),
+        )
+    }
+
     /**
      * 清除做题记录前的归档（同 Mac `TrashStore.archiveExerciseAttempts`，`../docs/EXERCISE-PLAN.md §31`）：那几道题本身 +
      * 它们在 App 里做的作答（不含 `source = mark` 书上的作答）。题目行一起存是为了恢复时外键有着落；条目种类仍是「习题」。

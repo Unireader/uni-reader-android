@@ -40,7 +40,7 @@ object Trash {
     const val KIND_AGENT_CONTEXTS = "agentContexts"
     /** 几条 Agent 记忆（v25；本端 Agent `delete_memory` 也建，`../docs/ANDROID-AGENT-PLAN.md §5.3`） */
     const val KIND_AGENT_MEMORIES = "agentMemories"
-    /** 一份日程计划连同它的事项（v26，Mac 删的；本端不建这种条目，只列出来、能恢复） */
+    /** 一份日程计划连同它的事项（v26；本端 Agent `delete_schedule` 也建，`../docs/ANDROID-AGENT-PLAN.md §5.9`） */
     const val KIND_SCHEDULE = "schedule"
 
     class Manifest(
@@ -238,6 +238,22 @@ object Trash {
         }
         s.deleteNotes(documentId, ids)
         s.reconcileImageOrphans(e.manifest.images.toSet())
+        return e
+    }
+
+    /**
+     * 删几份日程计划（连同名下的事项）和几件事项：先归档，计划份数对得上、事项不少于要删的才删（同 Mac `WorkspaceManager.trashSchedule`）。
+     * [itemIds] 里属于要删的计划的由调用方先剔掉。
+     */
+    fun deleteSchedule(s: LibraryStore, ws: File, planIds: List<String>, itemIds: List<String>, title: String): Entry {
+        val e = archive(ws, title) { snap ->
+            val a = s.trashArchiveSchedule(planIds, itemIds, snap)
+            if (a.counts.schedulePlan != planIds.size || a.counts.scheduleItem < itemIds.size) {
+                throw java.io.IOException("只归档到 ${a.counts.schedulePlan} / ${planIds.size} 份计划、${a.counts.scheduleItem} 件事项")
+            }
+            Manifest(KIND_SCHEDULE, Date(), title, counts = a.counts)
+        }
+        s.deleteSchedule(planIds, itemIds)
         return e
     }
 

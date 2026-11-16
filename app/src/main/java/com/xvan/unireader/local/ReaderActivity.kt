@@ -321,12 +321,38 @@ class ReaderActivity : Activity() {
 
         override fun openMarkdown(rel: String) = openDoc(TabSet.mdKey(rel))
 
-        override fun annotationsDeleted(documentId: String) {
+        override fun annotationsChanged(documentId: String) {
             tabs.filter { it.docId == documentId }.forEach { t -> t.canvas?.let { it.reloadNotes(); it.reloadImageNotes() } }
             pushDrawerBookmarks()
         }
 
         override fun string(id: Int, vararg args: Any): String = getString(id, *args)
+
+        override fun exercisesChanged() = exercise.reloadFromRemote()
+
+        override fun markdownRename(rel: String, name: String, folder: String?, then: (String?) -> Unit) =
+            renameMarkdown(rel, name, folder, quiet = true, then = then)
+
+        override fun markdownDelete(rel: String, then: (Boolean) -> Unit) = deleteMarkdown(rel, then)
+
+        override fun libraryChanged() {
+            val q = queue ?: return
+            q.submit("读书库列表（Agent 改了书名 / 分组）", { s -> s.allDocuments() }, { docs ->
+                libDocs = docs
+                libTitles = docs.associate { it.id to it.title }
+                for (t in tabs) libTitles[t.docId]?.let { t.title = it }   // 开着的那篇标签上的名字跟着换
+                refreshTabsBar()
+                pushDrawerLibrary()
+            })
+        }
+
+        override fun documentToc(documentId: String): List<com.xvan.unireader.shared.TocItem>? =
+            tabs.firstOrNull { it.docId == documentId }?.pdf?.toc
+
+        override fun openExercises(scopeKey: String, exerciseId: String?) {
+            exerciseId?.let { exercise.focus(it) }
+            openExercises(scopeKey, newTab = false)
+        }
     }
 
     /** 右侧 Agent 面板（`../docs/ANDROID-AGENT-PLAN.md §6`）：顶栏「agent」键开关，不盖遮罩 */
@@ -1447,12 +1473,7 @@ class ReaderActivity : Activity() {
                     .subtitle(getString(R.string.md_delete_msg))
                     .action(getString(R.string.act_cancel))
                     .action(getString(R.string.act_delete), primary = true) {
-                        md.delete(rel) { ok ->
-                            if (!ok) return@delete
-                            val i = tabs.indexOfFirst { it.docId == TabSet.mdKey(rel) }
-                            if (i >= 0) closeTab(i)
-                            pushDrawerLibrary()
-                        }
+                        deleteMarkdown(rel) {}
                     }
                     .show()
             }
@@ -1465,17 +1486,7 @@ class ReaderActivity : Activity() {
                 Sheet(this).title(getString(R.string.md_rename_title)).content(edit)
                     .action(getString(R.string.act_cancel))
                     .action(getString(R.string.act_save), primary = true) {
-                        md.rename(rel, edit.text.toString()) { newRel ->
-                            if (newRel == null || newRel == rel) return@rename
-                            // 开着的标签跟着换身份（路径就是身份）
-                            tabs.firstOrNull { it.docId == TabSet.mdKey(rel) }?.let { t ->
-                                val i = tabs.indexOf(t)
-                                tabs[i] = Tab(TabSet.mdKey(newRel), md.titleOf(newRel))
-                            }
-                            refreshTabsBar()
-                            saveTabSet()
-                            pushDrawerLibrary()
-                        }
+                        renameMarkdown(rel, edit.text.toString(), null, quiet = false) {}
                     }
                     .show()
             }
@@ -1522,6 +1533,34 @@ class ReaderActivity : Activity() {
             if (sc == null || (sc.documentId != null && sc.documentId !in libTitles)) null else exercise.scopeTitle(sc)
         }
         else -> libTitles[docId]
+    }
+
+    /** 删一篇 Markdown 笔记（挪进 `Notes/.trash/`），开着的标签关掉。抽屉菜单与 Agent `delete_markdown` 共用。 */
+    private fun deleteMarkdown(rel: String, then: (Boolean) -> Unit) {
+        md.delete(rel) { ok ->
+            if (ok) {
+                val i = tabs.indexOfFirst { it.docId == TabSet.mdKey(rel) }
+                if (i >= 0) closeTab(i)
+                pushDrawerLibrary()
+            }
+            then(ok)
+        }
+    }
+
+    /** 改名 / 挪目录，开着的标签跟着换身份（路径就是身份）。抽屉菜单与 Agent `rename_markdown` 共用；[then] 拿到新路径（失败 null）。 */
+    private fun renameMarkdown(rel: String, name: String, folder: String?, quiet: Boolean, then: (String?) -> Unit) {
+        md.rename(rel, name, folder, quiet) { newRel ->
+            if (newRel != null && newRel != rel) {
+                tabs.firstOrNull { it.docId == TabSet.mdKey(rel) }?.let { t ->
+                    val i = tabs.indexOf(t)
+                    tabs[i] = Tab(TabSet.mdKey(newRel), md.titleOf(newRel))
+                }
+                refreshTabsBar()
+                saveTabSet()
+                pushDrawerLibrary()
+            }
+            then(newRel)
+        }
     }
 
     // ---------- 习题（`../docs/EXERCISE-PLAN.md §10.2`，同 Mac `TabsModel.openExercises`） ----------

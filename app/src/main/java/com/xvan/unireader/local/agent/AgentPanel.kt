@@ -15,6 +15,7 @@ import android.widget.TextView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.xvan.unireader.R
+import com.xvan.unireader.local.store.LibAgentContext
 import com.xvan.unireader.local.store.LibAgentMemory
 import com.xvan.unireader.shared.Sheet
 import com.xvan.unireader.shared.Ui
@@ -24,6 +25,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import com.xvan.unireader.local.store.Iso
+import java.util.Date
 import kotlin.math.min
 
 /**
@@ -31,7 +34,8 @@ import kotlin.math.min
  * 对应 Mac Inspector 的「Agent」页，只是平板上没有 Inspector，做成贴右边满高的一栏。
  *
  * **不盖遮罩**：面板外面照常能翻书、写字（边看边聊）；整个覆盖层不吃触摸，只有面板本身吃。
- * 对话不落库（同 Mac D4：本轮不存对话记录）；记忆在每段新对话的第一句话里自动带上（同 Mac §21）。
+ * 一轮正常答完记进对话记录（`agent_turn`，同 Mac §22）；记忆在每段新对话的第一句话里自动带上（同 Mac §21）；
+ * ⋯ 菜单存 / 带上 Agent 上下文（同 Mac §12）。
  */
 class AgentPanel(private val a: Activity, private val host: AgentHost) {
 
@@ -72,6 +76,22 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
     }
     private val sendBtn = Ui.button(a, a.getString(R.string.agent_send), filled = true) { onSendOrStop() }
 
+    /** 「随下一句话带上的上下文」那一块（输入框上方，同 Mac `AgentQueueView` 只有「移除」的那种）；没有就不显示。 */
+    private val handoffBar = LinearLayout(a).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(8), dp(12), 0)
+        visibility = View.GONE
+    }
+
+    /** 标题行的 ⋯（菜单锚在它上面） */
+    private lateinit var moreBtn: View
+
+    /** 挂着、随下一句话带过去的上下文（`../docs/ANDROID-AGENT-PLAN.md §5.5`） */
+    private val handoffs = ArrayList<LibAgentContext>()
+
+    /** 这段对话里说过话没有（「保存这段对话为上下文」要有话可总结） */
+    private var hasUserTurn = false
+
     private val panel = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
         setBackgroundColor(Ui.surface(a))
@@ -83,7 +103,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
                 setPadding(dp(16), dp(6), dp(6), dp(6))
                 addView(Ui.title(a, "Agent", 18f), LinearLayout.LayoutParams(0, -2, 1f))
                 addView(Ui.iconButton(a, R.drawable.ic_plus, a.getString(R.string.agent_new_chat), Ui.onSurface(a)) { newChat() })
-                addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.agent_settings), Ui.onSurface(a)) { showSettings() })
+                addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.agent_menu), Ui.onSurface(a)) { showMenu(moreBtn) }.also { moreBtn = it })
                 addView(Ui.iconButton(a, R.drawable.ic_close, a.getString(R.string.agent_close), Ui.onSurface(a)) { close() })
             },
             LinearLayout.LayoutParams(-1, -2),
@@ -91,6 +111,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         addView(Ui.divider(a))
         addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         addView(Ui.divider(a))
+        addView(handoffBar, LinearLayout.LayoutParams(-1, -2))
         addView(
             LinearLayout(a).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -144,6 +165,9 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         engine?.close(); engine = null
         engineKey = ""
         conversationId = newConversationId()
+        hasUserTurn = false
+        handoffs.clear()
+        refreshHandoffBar()
         clearTranscript()
     }
 
@@ -175,33 +199,59 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
 
     // ---------------- 发送 ----------------
 
-    private fun onSendOrStop() {
-        if (job?.isActive == true) { job?.cancel(); return }
-        val text = input.text.toString().trim()
-        if (text.isEmpty()) return
+    /** 按当前设置拿引擎：设置不全 → 弹设置、返回 null；设置变了 → 重建（对话从头来）。 */
+    private fun ensureEngine(): AgentEngine? {
         val s = AgentConfig.load(a)
-        if (!s.isComplete) { showSettings(); return }
+        if (!s.isComplete) { showSettings(); return null }
         val key = "${s.baseUrl}|${s.chatPath}|${s.model}|${s.apiKey.hashCode()}"
         if (engine == null || key != engineKey) {
             engine?.close()
             engine = AgentEngine(s, AgentToolset(host).tools, systemPrompt())
             engineKey = key
             fresh = true
+            hasUserTurn = false
             conversationId = newConversationId()
         }
-        val eng = engine ?: return
+        return engine
+    }
+
+    private fun onSendOrStop() {
+        if (job?.isActive == true) { job?.cancel(); return }
+        val text = input.text.toString().trim()
+        if (text.isEmpty()) return
+        ensureEngine() ?: return
         input.setText("")
+        // 挂着的上下文随这一句带过去（同 Mac `AgentChat.send` 的 handoffs），带完就摘下
+        val carried = handoffs.toList()
+        handoffs.clear()
+        refreshHandoffBar()
+        val hidden = carried.map { c ->
+            AgentContextText.handoff(c.title, c.summary, c.agent, c.id, Iso.instant(c.updatedAt)?.let { Date.from(it) } ?: Date())
+        }
+        val notices = carried.map { a.getString(R.string.agent_ctx_carried, it.title) }
+        runTurn(text, hidden, notices, onDone = { reply -> recordTurn(text, reply) })
+    }
+
+    /**
+     * 发一轮：显示用户那句话 → 拼上下文块（[hidden] 放进块里，用户看不到）→ 跑到模型不再调工具。
+     * 正常答完调 [onDone]（参数 = 回复正文）；停止 / 出错调 [onFail]。
+     */
+    private fun runTurn(text: String, hidden: List<String>, notices: List<String>, onDone: (String) -> Unit, onFail: () -> Unit = {}) {
+        val eng = engine ?: return
         if (transcript.childCount == 1 && transcript.getChildAt(0).tag == "empty") transcript.removeAllViews()
         addUser(text)
+        for (n in notices) transcript.addView(Ui.body(a, n).apply { setPadding(0, dp(6), 0, 0); textSize = 13f })
+        hasUserTurn = true
         val firstOfChat = fresh
         fresh = false
         job = scope.launch {
             setBusy(true)
             val turn = TurnView()
+            var ok = false
             try {
-                val ctx = contextBlock(firstOfChat)
+                val ctx = contextBlock(firstOfChat, hidden)
                 eng.send(text, ctx) { ev -> turn.on(ev) }
-                recordTurn(text, turn.reply())
+                ok = true
             } catch (e: CancellationException) {
                 turn.note(a.getString(R.string.agent_stopped))
             } catch (e: Exception) {
@@ -211,7 +261,107 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
                 turn.finish()
                 setBusy(false)
             }
+            if (ok) onDone(turn.reply()) else onFail()
         }
+    }
+
+    // ---------------- 上下文（`../docs/ANDROID-AGENT-PLAN.md §5.5`，同 Mac `ACP-AGENT-PLAN.md §12.2`）----------------
+
+    /** 标题行 ⋯：保存这段对话为上下文 / 随下一句话带上 › 已存的几份 / 设置…（系统 `PopupMenu`，同顶栏 ⋯） */
+    private fun showMenu(anchor: View) {
+        val q = host.storeQueue()
+        if (q == null) { popMenu(anchor, emptyList()); return }
+        q.submit("Agent 列上下文", { s -> runCatching { s.agentContexts() }.getOrDefault(emptyList()) }) { list -> popMenu(anchor, list) }
+    }
+
+    private fun popMenu(anchor: View, contexts: List<LibAgentContext>) {
+        val m = android.widget.PopupMenu(a, anchor, Gravity.END)
+        val busy = job?.isActive == true
+        m.menu.add(0, 1, 0, a.getString(R.string.agent_ctx_save)).isEnabled =
+            !busy && hasUserTurn && engine != null && host.storeQueue() != null
+        val sub = m.menu.addSubMenu(0, 2, 1, a.getString(R.string.agent_ctx_attach))
+        if (contexts.isEmpty()) sub.add(a.getString(R.string.agent_ctx_none)).isEnabled = false
+        for ((i, c) in contexts.take(30).withIndex()) {
+            sub.add(1, 100 + i, i, c.title).apply {
+                isCheckable = true
+                isChecked = handoffs.any { it.id == c.id }
+                setOnMenuItemClickListener {
+                    if (handoffs.any { it.id == c.id }) handoffs.removeAll { it.id == c.id } else handoffs.add(c)
+                    refreshHandoffBar()
+                    true
+                }
+            }
+        }
+        m.menu.add(0, 3, 2, a.getString(R.string.agent_settings_item))
+        m.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> { saveContext(); true }
+                3 -> { showSettings(); true }
+                else -> false
+            }
+        }
+        m.show()
+    }
+
+    private fun refreshHandoffBar() {
+        handoffBar.removeAllViews()
+        handoffBar.visibility = if (handoffs.isEmpty()) View.GONE else View.VISIBLE
+        if (handoffs.isEmpty()) return
+        handoffBar.addView(Ui.body(a, a.getString(R.string.agent_ctx_pending)).apply { textSize = 12f })
+        for (c in handoffs.toList()) {
+            handoffBar.addView(
+                LinearLayout(a).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(Ui.body(a, c.title, variant = false).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(Ui.textButton(a, a.getString(R.string.agent_ctx_remove)) {
+                        handoffs.removeAll { it.id == c.id }
+                        refreshHandoffBar()
+                    })
+                },
+                LinearLayout.LayoutParams(-1, -2),
+            )
+        }
+    }
+
+    /**
+     * 保存这段对话为上下文（同 Mac `AgentChat.saveContext`）：发一句可见的请求 + 隐藏的写法要求；这一轮正常答完，
+     * 把回复按第一个标题行切成标题与正文存下。停止 / 出错 = 不存。这一轮不记进对话记录（同 Mac）。
+     */
+    private fun saveContext() {
+        if (job?.isActive == true || engine == null || !hasUserTurn) return
+        runTurn(
+            a.getString(R.string.agent_ctx_request), listOf(AgentContextText.SAVE_INSTRUCTION), emptyList(),
+            onDone = { reply -> finishSave(reply) },
+            onFail = { notice(a.getString(R.string.agent_ctx_not_saved), error = true) },
+        )
+    }
+
+    private fun finishSave(reply: String) {
+        val (title, summary) = AgentContextText.parse(reply)
+        val q = host.storeQueue()
+        if (summary.isEmpty() || q == null) { notice(a.getString(R.string.agent_ctx_no_summary), error = true); return }
+        val fallback = a.getString(
+            R.string.agent_context_untitled,
+            java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(Date()),
+        )
+        q.submit("Agent 存上下文", { s -> runCatching { AgentToolset.addContext(s, title, summary, AgentToolset.AGENT_NAME, fallback) } }) { r ->
+            r.fold(
+                { c -> notice(a.getString(R.string.agent_ctx_saved, c.title), error = false) },
+                { e -> Log.w(TAG, "上下文没存进去", e); notice(a.getString(R.string.agent_ctx_save_failed), error = true) },
+            )
+        }
+    }
+
+    private fun notice(s: String, error: Boolean) {
+        transcript.addView(
+            Ui.body(a, s).apply {
+                setPadding(0, dp(6), 0, 0)
+                textSize = 13f
+                if (error) setTextColor(Ui.col(a, R.color.danger))
+            },
+        )
+        scrollToEnd()
     }
 
     private fun setBusy(b: Boolean) {
@@ -222,6 +372,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         job?.cancel()
         engine?.reset(systemPrompt())
         fresh = true
+        hasUserTurn = false
         conversationId = newConversationId()
         clearTranscript()
     }
@@ -230,13 +381,15 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         You are the assistant inside UniReader, a PDF and Markdown note reader, running on the user's Android tablet.
         One workspace is one subject: its PDFs, the user's annotations (text notes, highlights, bookmarks), Markdown notes and memories.
         Use the tools to look things up instead of guessing; pages are 1-based. Call get_state first when you need to know what the user is looking at.
+        To find something anywhere in the workspace (PDF pages, Markdown notes, annotations, exercises, memories, contexts, earlier conversations), use search first, then follow up with read_pages, read_markdown and the other tools.
         When you learn something worth keeping for later conversations in this workspace (the user's goals, preferences, what they study and how far they got), save it with save_memory: one short fact per memory, in the user's language.
         Earlier conversations in this workspace are saved too: to recall what was discussed, use list_conversations and read_conversation.
+        Agent contexts (Agent 上下文) are handoff summaries of earlier conversations, possibly with other agents, saved in this workspace. When the user asks to continue earlier work or mentions a saved context, find it with list_agent_contexts and read it with read_agent_context. The user saves one from the panel's ⋯ menu; call save_agent_context only when the user asks you to.
         Reply in the user's language. Keep answers concise; use Markdown, and $…$ for formulas.
     """.trimIndent()
 
     /** 每条消息前附带的上下文块（用户看不到）：当前在看什么；新对话第一句再带上记忆。 */
-    private suspend fun contextBlock(withMemories: Boolean): String {
+    private suspend fun contextBlock(withMemories: Boolean, extra: List<String> = emptyList()): String {
         val v = host.currentView()
         val sb = StringBuilder("[UniReader context]\n")
         sb.append("Workspace: ").append(host.workspaceName.ifEmpty { "(none)" }).append('\n')
@@ -253,7 +406,17 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
                 sb.append("Workspace memories (saved earlier, id prefix in brackets):\n")
                 for (m in mems.take(50)) sb.append("- [").append(m.id.take(8)).append("] ").append(m.content).append('\n')
             }
+            // 日程（同 Mac `scheduleAgentLine`）：今天几件、过期几件，一行；没有日程就不带
+            runCatching {
+                host.storeQueue()?.read("Agent 读日程") { st ->
+                    val today = com.xvan.unireader.local.schedule.ScheduleDay.today()
+                    com.xvan.unireader.local.schedule.ScheduleText.agentLine(
+                        today, st.scheduleItems(today, today), st.overdueScheduleItems(today).size, st.schedulePlans().size,
+                    )
+                }
+            }.getOrNull()?.let { sb.append(it).append('\n') }
         }
+        for (e in extra) sb.append(e).append('\n')
         sb.append("[/UniReader context]")
         return sb.toString()
     }

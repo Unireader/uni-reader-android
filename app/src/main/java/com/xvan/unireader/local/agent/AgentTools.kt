@@ -69,11 +69,31 @@ interface AgentHost {
 
     // ---- 删除（第三批，`../docs/ANDROID-AGENT-PLAN.md §5.3`）----
 
-    /** 这篇的批注在库里被删了（已归档进回收站）：开着的标签从库里重读批注 / 图片笔记、刷书签。 */
-    fun annotationsDeleted(documentId: String)
+    /** 这篇的批注在库里被删了 / 改了：开着的标签从库里重读批注 / 图片笔记、刷书签。 */
+    fun annotationsChanged(documentId: String)
 
     /** 界面文案（回收站条目名要随系统语言）。 */
     fun string(id: Int, vararg args: Any): String
+
+    // ---- 习题（`../docs/ANDROID-AGENT-PLAN.md §5.8`）----
+
+    /** 作答 / 错题本在库里变了（Agent 批改）：开着的练习页、抽屉的数就地刷新。 */
+    fun exercisesChanged()
+
+    /** 改名 / 挪目录（[folder] 相对 `Notes/`，null = 原目录）；开着的标签跟着换。[then] 在主线程，拿到新路径（撞名 / 失败 null）。 */
+    fun markdownRename(rel: String, name: String, folder: String?, then: (String?) -> Unit)
+
+    /** 删一篇（挪进 `Notes/.trash/`），开着的标签关掉。 */
+    fun markdownDelete(rel: String, then: (Boolean) -> Unit)
+
+    /** 书库里的书名 / 分组变了：刷抽屉、开着的标签上的名字。 */
+    fun libraryChanged()
+
+    /** 开在标签里的那本书的目录（Pdfium 读的书签树）；没开着 = null。 */
+    fun documentToc(documentId: String): List<com.xvan.unireader.shared.TocItem>?
+
+    /** 在公用习题标签里开一组题（范围键同 Mac `ExerciseScope.key`），[exerciseId] 非空 = 停在那道题。 */
+    fun openExercises(scopeKey: String, exerciseId: String?)
 }
 
 data class AgentView(
@@ -110,6 +130,20 @@ class AgentToolset(private val host: AgentHost) {
         DeleteAnnotations(), DeleteMemory(),
         // 对话记录（agent_turn，2026-11-16）
         ListConversations(), ReadConversation(),
+        // Agent 上下文（agent_context，2026-11-16）
+        ListAgentContexts(), ReadAgentContext(), SaveAgentContext(),
+        // 全工作区搜索（关键词，2026-11-16）
+        Search(),
+        // 改批注（2026-11-16）
+        UpdateAnnotations(),
+        // 习题（2026-11-16）
+        ListExercises(), ListExerciseAttempts(), GradeExerciseAttempts(), OpenExercises(),
+        // 日程（2026-11-16）
+        ListSchedule(), AddScheduleItems(), UpdateScheduleItems(), DeleteSchedule(),
+        // Markdown 笔记：打开 / 改名挪目录 / 删除（2026-11-16）
+        OpenMarkdown(), RenameMarkdown(), DeleteMarkdown(),
+        // 书：目录 / 改名改分组（2026-11-16）
+        GetDocument(), UpdateDocument(),
     )
 
     // ---------------- 小工具 ----------------
@@ -421,6 +455,930 @@ class AgentToolset(private val host: AgentHost) {
         }
     }
 
+    // ================= Agent 上下文（`../docs/ANDROID-AGENT-PLAN.md §5.5`，同 Mac `MCPTools+AgentContext.swift`）=================
+
+    private fun resolveContext(all: List<com.xvan.unireader.local.store.LibAgentContext>, id: String) =
+        all.firstOrNull { it.id.equals(id, true) }
+            ?: id.uppercase().let { key -> if (key.length >= 8) all.filter { it.id.uppercase().startsWith(key) } else emptyList() }
+                .let { hits ->
+                    require(hits.size == 1) {
+                        if (hits.isEmpty()) "no agent context with id $id; call list_agent_contexts" else "id $id matches several agent contexts; give the full id"
+                    }
+                    hits[0]
+                }
+
+    private inner class ListAgentContexts : T(
+        "list_agent_contexts",
+        "List the agent contexts saved in this workspace, most recently updated first. An agent context (Agent 上下文) is a handoff summary of an earlier conversation with some agent, saved so that any agent can continue that work. Read one with read_agent_context.",
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val all = db("Agent 列上下文") { it.agentContexts() }
+            if (all.isEmpty()) return "No agent contexts are saved in this workspace."
+            return "${all.size} agent context(s):\n" + all.joinToString("\n") { c ->
+                "- ${c.title} (id ${c.id}${if (c.agent.isNotEmpty()) ", by ${c.agent}" else ""}, updated ${c.updatedAt}, ${c.summary.length} characters)"
+            }
+        }
+    }
+
+    private inner class ReadAgentContext : T(
+        "read_agent_context",
+        "Read one saved agent context: its title and the full handoff summary (Markdown). Use it as background to continue the work it describes.",
+        req = listOf(str("id", "context id from list_agent_contexts (full, or its first 8 characters)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val id = args.optString("id").trim()
+            require(id.isNotEmpty()) { "id is required" }
+            val c = resolveContext(db("Agent 读上下文") { it.agentContexts() }, id)
+            return "# ${c.title}\n\n${c.summary}"
+        }
+    }
+
+    private inner class SaveAgentContext : T(
+        "save_agent_context",
+        "Save a handoff summary of the current conversation as an agent context in the workspace, so the user can continue this work later with any agent. Only when the user asks to save the context. Write the summary in the user's language as Markdown: the goal, what was done and decided, key facts the next agent needs (document titles with document id, note_ref, page numbers, ids), the current state, open questions and next steps. Give id to replace the title / summary of an existing context instead of adding a new one.",
+        req = listOf(str("title", "short title (at most 30 characters)"), str("summary", "the handoff summary (Markdown), without the title")),
+        opt = listOf(str("id", "existing context id to update (optional)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val title = args.optString("title")
+            val summary = args.optString("summary").trim()
+            require(summary.isNotEmpty()) { "title and a non-empty summary are required" }
+            val idArg = args.optString("id", "").trim()
+            val fallback = main { string(com.xvan.unireader.R.string.agent_context_untitled, java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date())) }
+            return db("Agent 存上下文") { s ->
+                if (idArg.isNotEmpty()) {
+                    val c = resolveContext(s.agentContexts(), idArg)
+                    "Updated the agent context “${updateContext(s, c, title, summary).title}”."
+                } else {
+                    "Saved the agent context “${addContext(s, title, summary, AGENT_NAME, fallback).title}”."
+                }
+            }
+        }
+    }
+
+    // ================= 全工作区搜索（`../docs/ANDROID-AGENT-PLAN.md §5.6`，同 Mac `MCPTools+Search.swift` 的关键词那路）=================
+
+    private inner class Search : T(
+        "search",
+        "Search everything in the workspace at once: the text of every PDF page (OCR text where the workspace has it; for books without OCR, only those open in a tab), Markdown notes, annotations (text notes, highlights, bookmarks, image-note captions), exercises, saved agent contexts, workspace memories and earlier Agent-panel conversations. Matching ignores spaces, line breaks, case and full-width/half-width differences, so a phrase broken across lines in a scanned book still matches. Several words = all must appear (if nothing matches, any of them); put a phrase in quotes to keep it together. Results are ranked, one per PDF page / note section, with ids to follow up: read_pages or search_text for PDF pages, read_markdown with start_line = line for notes, list_annotations, read_conversation (offset = turn), read_agent_context.",
+        req = listOf(str("query", "Words or phrases to find. Chinese works without spaces; separate several keywords with spaces.")),
+        opt = listOf(
+            strArray("kinds", "Only these kinds (default: all): ${com.xvan.unireader.local.search.WorkspaceSearch.KINDS.joinToString(", ")}"),
+            strArray("document_ids", "Only these PDFs (their pages, annotations and exercises)"),
+            str("note_folder", "Markdown notes: only notes under this folder (relative to the Notes folder)"),
+            int("limit", "Max results (default 20, max 100)"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val WS = com.xvan.unireader.local.search.WorkspaceSearch
+            val query = args.optString("query").trim()
+            require(query.isNotEmpty()) { "query is required" }
+            val kinds = args.optJSONArray("kinds")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }?.takeIf { it.isNotEmpty() }
+                ?: WS.KINDS.toSet()
+            require(kinds.all { it in WS.KINDS }) { "kinds must be among ${WS.KINDS.joinToString(", ")}" }
+            val limit = args.optInt("limit", 20).coerceIn(1, 100)
+            val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+            val docsAll = db("Agent 列文档") { it.allDocuments() }
+            val owners = args.optJSONArray("document_ids")?.let { a -> (0 until a.length()).map { resolveDoc(a.optString(it)).id }.toSet() }.orEmpty()
+            val docs = if (owners.isEmpty()) docsAll else docsAll.filter { it.id in owners }
+            val titles = docsAll.associate { it.id to it.title }
+
+            class Got(val chunks: List<com.xvan.unireader.local.search.WorkspaceSearch.SearchChunk>, val missing: Map<String, List<Int>>)
+            val got = db("Agent 搜索取内容") { s ->
+                val out = ArrayList<com.xvan.unireader.local.search.WorkspaceSearch.SearchChunk>()
+                val missing = HashMap<String, List<Int>>()
+                for (d in docs) {
+                    if ("pdf" in kinds) {
+                        val part = WS.pdfPart(s, d.id, d.title, d.pageCount)
+                        out += part.chunks
+                        if (part.missingPages.isNotEmpty()) missing[d.id] = part.missingPages
+                    }
+                    if ("annotation" in kinds) out += WS.annotationChunks(s, d.id, d.title)
+                }
+                if ("exercise" in kinds) out += WS.exerciseChunks(s, titles).filter { owners.isEmpty() || it.sub.removePrefix("doc:") in owners }
+                if (owners.isEmpty()) out += WS.agentChunks(s, kinds)
+                Got(out, missing)
+            }
+            val chunks = ArrayList(got.chunks)
+            // 没 OCR 的页：书开在标签里就用 PDF 自带文字层补；没开的记下来告诉模型（本机只有标签里的 Pdfium 实例）
+            val skipped = ArrayList<String>()
+            for ((docId, pages) in got.missing) {
+                val p = main { loadedPdf(docId) }
+                if (p == null) {
+                    // 只有整本都没 OCR 文字才算「没搜到」（个别空白页、插图页不提）
+                    if (pages.size >= (docs.firstOrNull { it.id == docId }?.pageCount ?: 0)) skipped += titles[docId].orEmpty()
+                    continue
+                }
+                withContext(Dispatchers.IO) {
+                    for (pg in pages) {
+                        val t = runCatching { p.pdf.pageText(pg) }.getOrDefault("")
+                        if (t.isNotBlank()) chunks += WS.pageChunks(docId, titles[docId].orEmpty(), pg, t)
+                    }
+                }
+            }
+            if ("markdown" in kinds && owners.isEmpty()) {
+                chunks += withContext(Dispatchers.IO) { WS.markdownChunks(ws, args.optString("note_folder", "")) }
+            }
+            val r = withContext(Dispatchers.Default) { WS.keyword(chunks, query, limit) }
+            val lines = r.hits.mapIndexed { i, h ->
+                val c = h.chunk
+                val head = when (c.kind) {
+                    "pdf" -> "[PDF] “${c.title}” p.${(c.page ?: 0) + 1} (document_id ${c.owner})"
+                    "markdown" -> "[Note] “${c.title}” line ${c.line}${if (c.heading.isNotEmpty()) " § ${c.heading}" else ""} (note_ref ${c.owner})"
+                    "annotation" -> "[${c.heading}] “${c.title}” p.${(c.page ?: 0) + 1} (id ${c.sub.take(8)}, document_id ${c.owner})"
+                    "exercise" -> "[Exercise] ${if (c.title.isEmpty()) "" else "“${c.title}” "}(exercise_id ${c.owner}${c.page?.let { ", p.${it + 1}" } ?: ""})"
+                    "memory" -> "[Memory] (memory_id ${c.owner.take(8)})"
+                    "conversation" -> "[Conversation] “${c.title}” turn ${c.line} (conversation_id ${c.owner})"
+                    else -> "[Context] “${c.title}” (context_id ${c.owner})"
+                }
+                "${i + 1}. $head\n   ${com.xvan.unireader.local.search.SearchText.snippet(c.body, r.terms)}"
+            }
+            var text = if (r.hits.isEmpty()) "No results for “$query”."
+            else "${r.hits.size} result(s) for “$query” (keyword${if (r.relaxed) ", any word" else ""}):\n" + lines.joinToString("\n")
+            if (skipped.isNotEmpty()) {
+                text += "\nNot searched (no OCR text on this device and not open in a tab): " + skipped.joinToString(", ") { "“$it”" } +
+                    ". Open one with open_document, or use search_text on it, to search its own text layer."
+            }
+            return text
+        }
+    }
+
+    // ================= 改批注（`../docs/ANDROID-AGENT-PLAN.md §5.7`，同 Mac `MCPFacade+Annotations.updateAnnotations`）=================
+
+    private inner class UpdateAnnotations : T(
+        "update_annotations",
+        "Change existing annotations of one document in place, keeping their ids: a text note's text, color, style, type or display; a highlight's color or style; a bookmark's title; an image note's caption or display. Take ids from list_annotations. All changes in one call apply together; if any id is unknown or a field does not fit that kind, nothing is changed. Position, quote and handwriting cannot be changed (delete and re-add instead). Change annotations only when the user asks. The user can undo it.",
+        req = listOf(
+            ToolParameterDescriptor(
+                "updates", "changes to apply (at most $MAX_DELETE_IDS); fields left out stay as they are",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            str("id", "annotation id from list_annotations (full id or its 8-character prefix)"),
+                            str("text", "text note: the new note text; image note: the new caption"),
+                            str("title", "bookmark: the new title (must not be empty)"),
+                            str("color", "text note or highlight: ${HIGHLIGHT_PALETTE.keys.joinToString(", ")} or #RRGGBB; for a text note, \"none\" goes back to the note type's color"),
+                            enumOf("style", "text note or highlight: how the selection is drawn", "fill", "underline", "box", "strike"),
+                            str("type", "text note: note type name as shown in UniReader (must already exist); \"\" = the generic type"),
+                            enumOf("display", "text note or image note: how the bubble opens on the page", "tap", "hover", "always"),
+                        ),
+                        listOf("id"),
+                    ),
+                ),
+            ),
+        ),
+        opt = listOf(str("document", "document id (or title); default = the PDF in the current tab")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val list = args.optJSONArray("updates")
+            require(list != null && list.length() > 0) { "updates must be a non-empty array of objects" }
+            require(list.length() <= MAX_DELETE_IDS) { "at most $MAX_DELETE_IDS updates per call" }
+            val doc = resolveDoc(args.optString("document", ""))
+            val rows = db("Agent 列批注") { s -> s.notes(doc.id) }.filter { it.kind in ANNOTATION_KINDS }
+            val types = db("Agent 读笔记类型") { it.noteTypes() }
+            val problems = ArrayList<String>()
+            val out = ArrayList<com.xvan.unireader.local.store.LibNote>()
+            val report = ArrayList<String>()
+            val now = com.xvan.unireader.local.store.nowIso()
+            for (i in 0 until list.length()) {
+                val u = list.optJSONObject(i) ?: run { problems += "updates[$i] is not an object"; null } ?: continue
+                val label = if (list.length() > 1) "updates[$i] " else ""
+                val key = u.optString("id").trim().uppercase()
+                val hits = if (key.length >= 8) rows.filter { it.id.uppercase().startsWith(key) } else emptyList()
+                if (hits.size != 1) {
+                    problems += "${label}id '${u.optString("id")}' " + if (hits.isEmpty()) "not found (take ids from list_annotations)" else "matches several annotations; pass the full id"
+                    continue
+                }
+                val n = hits[0]
+                if (out.any { it.id == n.id }) { problems += "${label}id '${u.optString("id")}' appears twice"; continue }
+                val touched = listOf("text", "title", "color", "style", "type", "display").filter { u.has(it) }
+                fun reject(kind: String, allowed: List<String>): Boolean {
+                    if (touched.isEmpty()) { problems += "${label}nothing to change for $kind ${u.optString("id")}"; return true }
+                    val bad = touched.filter { it !in allowed }
+                    if (bad.isNotEmpty()) { problems += "${label}a $kind has no ${bad.joinToString("/")} (it can change ${allowed.joinToString(", ")})"; return true }
+                    return false
+                }
+                fun color(): Pair<Boolean, IntArray?> {   // (ok, rgb；null = none)
+                    val v = u.optString("color").trim()
+                    if (v.isEmpty() || v.equals("none", true)) return true to null
+                    val rgb = HIGHLIGHT_PALETTE.entries.firstOrNull { it.key.equals(v, true) }?.value ?: parseHex(v)
+                    if (rgb == null) problems += "${label}color must be one of ${HIGHLIGHT_PALETTE.keys.joinToString(", ")}, #RRGGBB or none"
+                    return (rgb != null) to rgb
+                }
+                fun style(): Int? = when (u.optString("style").lowercase()) {
+                    "fill" -> com.xvan.unireader.shared.HL_FILL
+                    "underline" -> com.xvan.unireader.shared.HL_UNDERLINE
+                    "box" -> com.xvan.unireader.shared.HL_BOX
+                    "strike" -> com.xvan.unireader.shared.HL_STRIKE
+                    else -> { problems += "${label}style must be fill, underline, box or strike"; null }
+                }
+                fun displayKey(): String? = u.optString("display").takeIf { it in listOf("tap", "hover", "always") }
+                    ?: run { problems += "${label}display must be tap, hover or always"; null }
+                val o = runCatching { JSONObject(String(n.payload, Charsets.UTF_8)) }.getOrDefault(JSONObject())
+                val kind: String
+                when (n.kind) {
+                    NoteKind.TEXT -> {
+                        kind = "note"
+                        if (reject("text note", listOf("text", "color", "style", "type", "display"))) continue
+                        val p = TextNotePayload(o)
+                        if (u.has("text")) {
+                            val t = u.optString("text")
+                            if (p.quote.isEmpty() && t.isBlank()) { problems += "${label}a note without a quote needs text"; continue }
+                            o.put("text", t)
+                        }
+                        if (u.has("color")) { val (ok, rgb) = color(); if (!ok) continue; p.withColor(rgb) }
+                        if (u.has("style")) { p.withStyle(style() ?: continue) }
+                        if (u.has("display")) o.put("display", displayKey() ?: continue)
+                        if (u.has("type")) {
+                            val name = if (u.isNull("type")) "" else u.optString("type").trim()
+                            if (name.isEmpty()) p.withTypeId(null) else {
+                                val ty = types.firstOrNull { it.name.equals(name, true) }
+                                if (ty == null) { problems += "${label}note type '$name' does not exist; available: ${types.joinToString(", ") { it.name }.ifEmpty { "(none)" }}"; continue }
+                                p.withTypeId(ty.id)
+                            }
+                        }
+                    }
+                    NoteKind.HIGHLIGHT -> {
+                        kind = "highlight"
+                        if (reject("highlight", listOf("color", "style"))) continue
+                        val p = TextNotePayload(o)
+                        if (u.has("color")) {
+                            val (ok, rgb) = color(); if (!ok) continue
+                            if (rgb == null) { problems += "${label}a highlight needs a color; it cannot be cleared"; continue }
+                            p.withColor(rgb)
+                        }
+                        if (u.has("style")) { p.withStyle(style() ?: continue) }
+                    }
+                    NoteKind.BOOKMARK -> {
+                        kind = "bookmark"
+                        if (reject("bookmark", listOf("title"))) continue
+                        val t = u.optString("title").trim()
+                        if (t.isEmpty()) { problems += "${label}a bookmark title must not be empty"; continue }
+                        o.put("title", t)
+                    }
+                    else -> {
+                        kind = "image_note"
+                        if (reject("image note", listOf("text", "title", "display"))) continue
+                        if (u.has("text") || u.has("title")) o.put("caption", if (u.has("text")) u.optString("text") else u.optString("title"))
+                        if (u.has("display")) o.put("display", displayKey() ?: continue)
+                    }
+                }
+                out += n.copy(payload = o.toString().toByteArray(Charsets.UTF_8), updatedAt = now)
+                report += "- p.${n.page + 1} $kind [${n.id.take(8)}] ${touched.joinToString(", ")}"
+            }
+            if (problems.isNotEmpty()) throw IllegalArgumentException(problems.joinToString("; ") + ". Nothing was changed.")
+            writeNotes(doc.id, "Agent 改批注") { s -> s.transaction { out.forEach(s::upsertNote) } }
+            main { annotationsChanged(doc.id) }
+            return (listOf("Changed ${out.size} annotation(s); ids stay the same.") + report).joinToString("\n")
+        }
+    }
+
+    // ================= 习题（`../docs/ANDROID-AGENT-PLAN.md §5.8`，同 Mac `MCPTools+Exercises.swift` / `MCPFacade+Exercises.swift`）=================
+
+    private fun exType(e: com.xvan.unireader.local.exercise.Exercise) = when (e.kind) {
+        com.xvan.unireader.local.exercise.Exercise.KIND_SINGLE -> "single"
+        com.xvan.unireader.local.exercise.Exercise.KIND_MULTIPLE -> "multiple"
+        com.xvan.unireader.local.exercise.Exercise.KIND_FILL -> "fill"
+        else -> "subjective"
+    }
+
+    /** 参考答案一行（同 Mac `referenceAnswerText`）：选择题字母；填空「(1) 2 [also: 2.0]; (2) 4」；主观题正文。没有 → 空串。 */
+    private fun referenceAnswer(e: com.xvan.unireader.local.exercise.Exercise): String = when {
+        e.isChoice -> e.payload.answer.joinToString("")
+        e.isSubjective -> e.payload.answer.filter { it.isNotEmpty() }.joinToString("\n\n")
+        !e.hasAnswer -> ""
+        else -> (0 until e.blankCount).joinToString("; ") { i ->
+            val forms = e.acceptedForms(i)
+            "(${i + 1}) ${forms.firstOrNull().orEmpty()}" + if (forms.size > 1) " [also: ${forms.drop(1).joinToString(", ")}]" else ""
+        }
+    }
+
+    private fun resolveExercises(all: List<com.xvan.unireader.local.exercise.Exercise>, raw: List<String>) =
+        resolveIds(raw, all, { it.id }, "list_exercises")
+
+    private inner class ListExercises : T(
+        "list_exercises",
+        "List the exercises saved in UniReader for a document (or the whole workspace with all_documents), in practice order, with ids, question numbers, stems, options, reference answers and the user's practice stats. With exercise_ids it returns just those questions.",
+        opt = listOf(
+            str("document", "document id (or title); default = the PDF in the current tab"),
+            bool("all_documents", "list every document in the workspace instead of one (default false)"),
+            strArray("exercise_ids", "only these exercises (full id or first 8 characters), in this order; other filters are ignored"),
+            enumOf("filter", "only the user's mistakes or starred ones (default all)", "all", "mistakes", "starred"),
+            int("offset", "skip this many (paging)"),
+            int("limit", "at most this many (default 50, max 200)"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val offset = maxOf(0, args.optInt("offset", 0))
+            val limit = args.optInt("limit", 50).coerceIn(1, 200)
+            val filter = args.optString("filter", "all").ifEmpty { "all" }
+            require(filter in listOf("all", "mistakes", "starred")) { "filter must be all, mistakes or starred" }
+            val idsArg = args.optJSONArray("exercise_ids")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            val docs = db("Agent 列文档") { it.allDocuments() }
+            val titles = docs.associate { it.id to it.title }
+            val docOrder = docs.withIndex().associate { it.value.id to it.index }
+            val (list, header) = if (idsArg.isNotEmpty()) {
+                val all = db("Agent 列习题") { it.exercises() }
+                resolveExercises(all, idsArg) to ""
+            } else {
+                val doc = if (args.optBoolean("all_documents", false)) null else resolveDoc(args.optString("document", ""))
+                val rows = db("Agent 列习题") { it.exercises(doc?.id) }
+                    .sortedWith(compareBy({ docOrder[it.documentId] ?: Int.MAX_VALUE }, { it.page ?: -1 }, { it.seq }, { it.createdAt }))
+                    .filter { filter == "all" || (filter == "mistakes" && it.wrong) || (filter == "starred" && it.starred) }
+                rows to (doc?.let { " in “${it.title}”" } ?: " in the workspace")
+            }
+            val stats = db("Agent 读作答统计") { it.exerciseAttemptStats() }
+            val page = list.drop(offset).take(limit)
+            val out = StringBuilder("${list.size} exercise(s)$header; showing ${page.size} from $offset.")
+            for (e in page) {
+                val st = stats[e.id]
+                out.append("\n\n- [${e.id.take(8)}] ${e.id}")
+                if (e.documentId != null) out.append(" · “${titles[e.documentId].orEmpty()}”")
+                e.page?.let { out.append(" p.${it + 1}") }
+                if (e.number.isNotEmpty()) out.append(" #${e.number}")
+                out.append(" · ${exType(e)}")
+                val ch = (e.chapter + e.section).filter { it.isNotEmpty() }
+                if (ch.isNotEmpty()) out.append(" · ${ch.joinToString(" › ")}")
+                if (e.wrong) out.append(" · in mistakes")
+                if (e.starred) out.append(" · starred")
+                out.append("\n  Stem: ${e.payload.stem.trim().take(600)}")
+                for (o in e.payload.options) out.append("\n  ${o.key}. ${o.text.trim().take(200)}")
+                val ref = referenceAnswer(e)
+                out.append("\n  Answer: ${ref.ifEmpty { "—" }.take(400)}${e.payload.answerSource?.takeIf { e.hasAnswer }?.let { " ($it)" } ?: ""}")
+                if (st != null && st.attempts > 0) {
+                    out.append("\n  Practice: ${st.attempts} attempt(s), ${st.correct} right, ${st.wrong} wrong")
+                    st.lastCorrect?.let { out.append(", last ${if (it) "right" else "wrong"}") }
+                }
+            }
+            return out.toString()
+        }
+    }
+
+    private fun attemptText(a: com.xvan.unireader.local.store.LibExerciseAttempt, e: com.xvan.unireader.local.exercise.Exercise): String {
+        val sb = StringBuilder("- attempt ${a.id} · exercise ${e.id.take(8)}${if (e.number.isNotEmpty()) " #${e.number}" else ""} · ${exType(e)} · ${a.createdAt}")
+        sb.append(" · ${if (a.source == com.xvan.unireader.local.exercise.Exercise.MARK_SOURCE) "book" else "practice"}")
+        sb.append("\n  Stem: ${e.payload.stem.trim().take(600)}")
+        sb.append("\n  Reference answer: ${referenceAnswer(e).ifEmpty { "(none)" }.take(800)}")
+        if (e.isFill) {
+            val blanks = com.xvan.unireader.local.exercise.Exercise.decodeBlanks(a.answer)
+            sb.append("\n  User's answer: ${blanks.joinToString(" / ").ifEmpty { "(empty)" }}")
+            sb.append(" · blank matches: ${e.blankMatches(blanks).joinToString(", ")}")
+        } else {
+            sb.append("\n  User's answer: ${a.answer.ifEmpty { "(empty)" }.take(1500)}")
+        }
+        if (a.hasInk) sb.append("\n  (has handwriting, which cannot be shown on this device)")
+        e.payload.explanation?.takeIf { it.isNotBlank() }?.let { sb.append("\n  Explanation: ${it.trim().take(600)}") }
+        sb.append("\n  Verdict: " + when (a.correct) {
+            null -> "not graded"
+            else -> (if (a.correct) "right" else "wrong") + " (by " + when (a.judgedBy) { "self" -> "user"; "agent" -> "agent"; else -> "app" } + ")"
+        })
+        if (a.feedback.isNotEmpty()) sb.append("\n  Feedback: ${a.feedback.take(600)}")
+        return sb.toString()
+    }
+
+    private inner class ListExerciseAttempts : T(
+        "list_exercise_attempts",
+        "List the user's answers to exercises, newest first — with the question, its reference answer and the verdict — so you can grade fill-in-the-blank and subjective answers (then save your verdict with grade_exercise_attempts). Narrow it with exercise_ids or document; ungraded_only lists only fill / subjective answers nobody has graded yet.",
+        opt = listOf(
+            strArray("exercise_ids", "only answers to these exercises (full id or first 8 characters)"),
+            str("document", "only exercises of this document (id or title)"),
+            bool("ungraded_only", "only fill / subjective answers that are not graded yet (default false)"),
+            int("offset", "skip this many (paging)"),
+            int("limit", "at most this many (default 20, max 100)"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val offset = maxOf(0, args.optInt("offset", 0))
+            val limit = args.optInt("limit", 20).coerceIn(1, 100)
+            val ungraded = args.optBoolean("ungraded_only", false)
+            val idsArg = args.optJSONArray("exercise_ids")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            val all = db("Agent 列习题") { it.exercises() }
+            val exIds = if (idsArg.isNotEmpty()) resolveExercises(all, idsArg).map { it.id } else null
+            val docId = if (exIds == null && args.optString("document", "").isNotBlank()) resolveDoc(args.optString("document")).id else null
+            val (rows, total) = db("Agent 列作答") { it.exerciseAttemptPage(exIds, docId, ungraded, null, offset, limit) }
+            if (total == 0) return if (ungraded) "No ungraded fill / subjective answers." else "No answers yet."
+            val byId = all.associateBy { it.id }
+            return "$total answer(s); showing ${rows.size} from $offset.\n\n" +
+                rows.mapNotNull { a -> byId[a.exerciseId]?.let { attemptText(a, it) } }.joinToString("\n\n")
+        }
+    }
+
+    private inner class GradeExerciseAttempts : T(
+        "grade_exercise_attempts",
+        "Save your verdict (right / wrong) and feedback on the user's fill-in-the-blank or subjective answers, after comparing them with the reference answer (list_exercise_attempts). Your verdict replaces any earlier one, including the user's own; a wrong answer puts the question into the user's mistake list. When there is no reference answer, judge it yourself and say so in the feedback. Choice questions are judged by the app and cannot be graded here. Every grade is checked first; if any one is invalid, nothing is saved.",
+        req = listOf(
+            ToolParameterDescriptor(
+                "grades", "verdicts, one per answer (at most 50)",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            str("attempt_id", "attempt id from list_exercise_attempts (full, or its first 8 characters)"),
+                            bool("correct", "your verdict: true = right, false = wrong"),
+                            str("feedback", "short feedback for the user (Markdown + \$math\$): what is right, what is missing or wrong, how to fix it; in the user's language"),
+                        ),
+                        listOf("attempt_id", "correct"),
+                    ),
+                ),
+            ),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val list = args.optJSONArray("grades")
+            require(list != null && list.length() > 0) { "grades must be a non-empty array" }
+            require(list.length() <= 50) { "at most 50 grades per call" }
+            class G(val id: String, val correct: Boolean, val feedback: String)
+            val gs = (0 until list.length()).map { i ->
+                val o = list.optJSONObject(i) ?: throw IllegalArgumentException("grades[$i] must be an object")
+                val id = o.optString("attempt_id").trim()
+                require(id.isNotEmpty()) { "grades[$i].attempt_id is required" }
+                require(o.has("correct") && !o.isNull("correct")) { "grades[$i].correct is required" }
+                G(id, o.optBoolean("correct"), o.optString("feedback", "").trim())
+            }
+            val result = db("Agent 批改") { s ->
+                // 整批先校验（id 对得上、不是选择题），有一条不对就一条都不写（同 Mac）
+                val found = gs.map { g ->
+                    require(g.id.length >= 8) { "attempt id '${g.id}' is too short; pass at least 8 characters" }
+                    val rows = s.exerciseAttemptPage(prefix = g.id, limit = 2).first
+                    require(rows.size == 1) { if (rows.isEmpty()) "answer ${g.id} not found; call list_exercise_attempts" else "attempt id '${g.id}' is ambiguous; pass the full id" }
+                    val a = rows[0]
+                    val e = s.exercise(a.exerciseId) ?: throw IllegalStateException("the exercise of answer ${g.id} is gone; nothing was saved")
+                    require(!e.isChoice) { "answer ${a.id.take(8)} is to a ${exType(e)}-choice question, which the app judges by itself; nothing was saved" }
+                    a to e
+                }
+                s.transaction {
+                    for ((g, ae) in gs.zip(found)) s.judgeExerciseAttempt(ae.first.id, g.correct, by = "agent", feedback = g.feedback)
+                }
+                val fresh = s.exerciseAttemptPage(exerciseIds = found.map { it.second.id }.distinct(), limit = 500).first.associateBy { it.id }
+                found.mapNotNull { (a, e) -> fresh[a.id]?.let { attemptText(it, e) } }
+            }
+            main { exercisesChanged() }
+            return "Graded ${gs.size} answer(s).\n\n" + result.joinToString("\n\n")
+        }
+    }
+
+    private inner class OpenExercises : T(
+        "open_exercises",
+        "Show exercises in UniReader's practice tab: a book's questions, the mistakes (错题本) or the starred ones (收藏) — and stop on one question with exercise_id (e.g. the one you are explaining, or the next one the user should do). With just exercise_id it opens that question in its own book.",
+        opt = listOf(
+            str("exercise_id", "stop on this question (full id or its first 8 characters)"),
+            str("document", "only this book (id or title); default: the book of exercise_id, or every book for mistakes / starred"),
+            enumOf("list", "all questions, the mistakes or the starred ones (default all)", "all", "mistakes", "starred"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val list = args.optString("list", "all").ifEmpty { "all" }
+            require(list in listOf("all", "mistakes", "starred")) { "list must be all, mistakes or starred" }
+            val exArg = args.optString("exercise_id", "").trim()
+            val ex = if (exArg.isEmpty()) null else resolveExercises(db("Agent 列习题") { it.exercises() }, listOf(exArg)).single()
+            val docId = args.optString("document", "").takeIf { it.isNotBlank() }?.let { resolveDoc(it).id } ?: ex?.documentId
+            val scope: com.xvan.unireader.local.exercise.ExScope = when (list) {
+                "mistakes" -> if (docId != null) com.xvan.unireader.local.exercise.ExScope.WrongDocument(docId) else com.xvan.unireader.local.exercise.ExScope.Wrong
+                "starred" -> if (docId != null) com.xvan.unireader.local.exercise.ExScope.StarredDocument(docId) else com.xvan.unireader.local.exercise.ExScope.Starred
+                else -> if (docId != null) com.xvan.unireader.local.exercise.ExScope.Document(docId) else com.xvan.unireader.local.exercise.ExScope.All
+            }
+            if (ex != null) require(scope.includes(ex)) { "exercise ${ex.id.take(8)} is not in that group (check list / document)" }
+            main { openExercises(scope.key, ex?.id) }
+            return "Opened the exercises (${scope.key})${ex?.let { " at ${it.id.take(8)}${if (it.number.isNotEmpty()) " #${it.number}" else ""}" } ?: ""}."
+        }
+    }
+
+    // ================= 日程（`../docs/ANDROID-AGENT-PLAN.md §5.9`，同 Mac `MCPTools+Schedule.swift`）=================
+
+    private fun resolvePlan(all: List<com.xvan.unireader.local.store.LibSchedulePlan>, id: String) =
+        all.firstOrNull { it.id.equals(id.trim(), true) }
+            ?: id.trim().uppercase().let { k -> if (k.length >= 8) all.filter { it.id.uppercase().startsWith(k) } else emptyList() }.let { hits ->
+                require(hits.size == 1) { if (hits.isEmpty()) "no plan with id $id; call list_schedule" else "id $id matches several plans; give the full id" }
+                hits[0]
+            }
+
+    private fun resolveItem(s: LibraryStore, id: String): com.xvan.unireader.local.store.LibScheduleItem {
+        val key = id.trim()
+        s.scheduleItem(key)?.let { return it }
+        s.scheduleItem(key.uppercase())?.let { return it }
+        val hits = if (key.length >= 8) s.scheduleItemsByPrefix(key) else emptyList()
+        require(hits.size == 1) { if (hits.isEmpty()) "no schedule item with id $id; call list_schedule" else "id $id matches several items; give the full id" }
+        return hits[0]
+    }
+
+    private inner class ListSchedule : T(
+        "list_schedule",
+        "Read the workspace schedule (日程, calendar + to-dos): the plans and the items on each day — what to do, when, how long, whether it is done, and the note the user wrote on how it went. By default: today and the next 13 days, plus every overdue item (not done, earlier day) and the items with no day yet. plan_id lists one plan's items on every day. Use this before planning or rescheduling.",
+        opt = listOf(
+            str("from", "first day, YYYY-MM-DD (default today)"),
+            str("to", "last day, YYYY-MM-DD (default from + 13 days; at most 366 days)"),
+            str("plan_id", "only this plan's items (all its days unless from / to are given)"),
+            enumOf("status", "which items (default all)", "all", "open", "done"),
+            bool("include_overdue", "also list overdue items before from (default true)"),
+            bool("include_undated", "also list items with no day (default true)"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val D = com.xvan.unireader.local.schedule.ScheduleDay
+            val today = D.today()
+            val f = args.optString("from", "").trim().ifEmpty { null }
+            val t = args.optString("to", "").trim().ifEmpty { null }
+            for ((k, v) in listOf("from" to f, "to" to t)) require(v == null || D.isValid(v)) { "$k must be YYYY-MM-DD, got $v" }
+            val status = args.optString("status", "all").ifEmpty { "all" }
+            require(status in listOf("all", "open", "done")) { "status must be all, open or done" }
+            val withOverdue = args.optBoolean("include_overdue", true)
+            val withUndated = args.optBoolean("include_undated", true)
+            val planArg = args.optString("plan_id", "").trim()
+            return db("Agent 读日程") { s ->
+                val plans = s.schedulePlans()
+                val plan = if (planArg.isEmpty()) null else resolvePlan(plans, planArg)
+                var start = f ?: today
+                var end = t ?: (D.adding(13, start) ?: start)
+                if (end < start) { val x = start; start = end; end = x }
+                if ((D.days(start, end) ?: 0) > 366) end = D.adding(366, start) ?: end
+                var items: List<com.xvan.unireader.local.store.LibScheduleItem>
+                if (plan != null && f == null && t == null) {
+                    items = s.scheduleItems(plan.id)
+                    val days = items.map { it.day }.filter { it.isNotEmpty() }
+                    if (days.isNotEmpty()) { start = days.min(); end = days.max() }
+                } else {
+                    items = s.scheduleItems(start, end, plan?.id)
+                    if (withOverdue) items = s.overdueScheduleItems(minOf(start, today)).filter { plan == null || it.planId == plan.id } + items
+                    if (withUndated) items = items + s.undatedScheduleItems().filter { plan == null || it.planId == plan.id }
+                }
+                val seen = HashSet<String>()
+                items = items.filter { seen.add(it.id) }
+                items = when (status) { "open" -> items.filter { !it.isDone }; "done" -> items.filter { it.isDone }; else -> items }
+                val counts = s.schedulePlanCounts()
+                val lines = arrayListOf("Today is $today. Listing $start … $end.")
+                val shownPlans = plans.filter { plan == null || it.id == plan.id }
+                if (shownPlans.isNotEmpty()) {
+                    lines += "Plans:"
+                    for (p in shownPlans) {
+                        val c = counts[p.id] ?: (0 to 0)
+                        val days = s.scheduleItems(p.id).map { it.day }.filter { it.isNotEmpty() }
+                        var x = "- ${p.title} (plan_id ${p.id}): ${c.second}/${c.first} done"
+                        if (days.isNotEmpty()) x += ", ${days.min()} … ${days.max()}"
+                        if (p.goal.isNotEmpty()) x += " — goal: ${p.goal}"
+                        lines += x
+                    }
+                }
+                if (items.isEmpty()) lines += "No items."
+                val titles = plans.associate { it.id to it.title }
+                var lastDay: String? = "\u0000"
+                for (m in items.take(500)) {
+                    if (m.day != lastDay) { lines += if (m.day.isEmpty()) "\nNo day yet" else "\n${m.day}"; lastDay = m.day }
+                    var x = "  [${if (m.isDone) "x" else " "}] "
+                    com.xvan.unireader.local.schedule.ScheduleTime.string(m.startMin)?.let { x += "$it " }
+                    x += m.title
+                    if (m.durationMin > 0) x += " (${com.xvan.unireader.local.schedule.ScheduleTime.durationText(m.durationMin)})"
+                    if (!m.isDone && m.day.isNotEmpty() && m.day < today) x += " — overdue"
+                    titles[m.planId]?.let { x += " · $it" }
+                    x += " · item_id ${m.id}"
+                    lines += x
+                    if (m.detail.isNotEmpty()) lines += "      " + m.detail.replace("\n", "\n      ")
+                    if (m.result.isNotEmpty()) lines += "      result: " + m.result
+                }
+                if (items.size > 500) lines += "\n(more than 500 items; narrow from / to)"
+                lines.joinToString("\n")
+            }
+        }
+    }
+
+    private inner class AddScheduleItems : T(
+        "add_schedule_items",
+        "Add items to the workspace schedule, e.g. a study plan the user asked for. Give plan (title + goal) to group the items as one new plan; or plan_id to add to an existing plan; or neither for loose items. Each item is one concrete task on one day: a short title, day (YYYY-MM-DD, omit for no day yet), optional start (HH:mm, only when the user gave times), duration_minutes, and detail with exact pages as [[book title#page=N]] links or which exercises to do. Keep each day realistic, and check list_schedule first so you don't duplicate items. The user sees the schedule in UniReader on the Mac (this tablet has no schedule screen yet).",
+        req = listOf(
+            ToolParameterDescriptor(
+                "items", "the items, in order (at most 300)",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            str("title", "what to do (short)"),
+                            str("day", "YYYY-MM-DD; omit or empty = no day yet"),
+                            str("start", "HH:mm; omit = any time that day"),
+                            int("duration_minutes", "estimated minutes (0–1440)"),
+                            str("detail", "details (Markdown, [[book title#page=N]] links)"),
+                        ),
+                        listOf("title"),
+                    ),
+                ),
+            ),
+        ),
+        opt = listOf(
+            ToolParameterDescriptor(
+                "plan", "make a new plan for these items",
+                ToolParameterType.Object(listOf(str("title", "plan name, e.g. 第三章复习（两周）"), str("goal", "what it should achieve, by when")), listOf("title")),
+            ),
+            str("plan_id", "add to this existing plan instead"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val ST = com.xvan.unireader.local.schedule.ScheduleText
+            val list = args.optJSONArray("items")
+            require(list != null && list.length() > 0) { "items is required" }
+            require(list.length() <= 300) { "at most 300 items per call" }
+            class Draft(val title: String, val day: String, val start: Int, val dur: Int, val detail: String)
+            val drafts = (0 until list.length()).map { i ->
+                val o = list.optJSONObject(i) ?: throw IllegalArgumentException("items[$i] must be an object")
+                val title = o.optString("title").trim()
+                require(title.isNotEmpty()) { "items[$i].title is required" }
+                val day = o.optString("day", "").trim()
+                require(day.isEmpty() || com.xvan.unireader.local.schedule.ScheduleDay.isValid(day)) { "items[$i].day must be YYYY-MM-DD, got $day" }
+                val st = o.optString("start", "").trim()
+                val start = if (st.isEmpty()) -1 else com.xvan.unireader.local.schedule.ScheduleTime.minutes(st)
+                    ?: throw IllegalArgumentException("items[$i].start must be HH:mm, got $st")
+                Draft(title, day, start, o.optInt("duration_minutes", 0).coerceIn(0, 1440), o.optString("detail", ""))
+            }
+            val planObj = args.optJSONObject("plan")
+            val planArg = args.optString("plan_id", "").trim()
+            require(planObj == null || planArg.isEmpty()) { "give plan or plan_id, not both" }
+            return db("Agent 排日程") { s ->
+                require(s.hasScheduleTables()) { "this workspace has no schedule tables (open it once in a newer UniReader)" }
+                val now = com.xvan.unireader.local.store.nowIso()
+                var pid = ""
+                if (planArg.isNotEmpty()) pid = resolvePlan(s.schedulePlans(), planArg).id
+                else if (planObj != null) {
+                    val t = ST.clean(planObj.optString("title"), ST.TITLE_MAX)
+                    require(t.isNotEmpty()) { "plan.title is required" }
+                    pid = UUID.randomUUID().toString().uppercase()
+                    s.upsertSchedulePlan(com.xvan.unireader.local.store.LibSchedulePlan(pid, t, ST.clean(planObj.optString("goal", ""), ST.DETAIL_MAX), AGENT_NAME, now, now))
+                }
+                // 同 Mac `addScheduleItems`：同一天里新加的排在已有的后面、按给的先后；created_at 依次加 1 毫秒保住先后
+                val nextSeq = HashMap<String, Int>()
+                val base = java.time.Instant.now()
+                val out = drafts.mapIndexed { i, d ->
+                    val seq = nextSeq[d.day] ?: s.nextScheduleSeq(d.day)
+                    nextSeq[d.day] = seq + 1
+                    val at = com.xvan.unireader.local.store.Iso.string(base.plusMillis(i.toLong()))
+                    com.xvan.unireader.local.store.LibScheduleItem(
+                        UUID.randomUUID().toString().uppercase(), pid, ST.clean(d.title, ST.TITLE_MAX), ST.clean(d.detail, ST.DETAIL_MAX),
+                        d.day, if (d.start in 0 until 1440) d.start else -1, d.dur, "", "", seq, AGENT_NAME, at, at,
+                    )
+                }
+                s.upsertScheduleItems(out)
+                "Added ${out.size} item(s)${if (pid.isNotEmpty()) " to plan $pid" else ""}. Item ids: ${out.joinToString(", ") { it.id }}"
+            }
+        }
+    }
+
+    private inner class UpdateScheduleItems : T(
+        "update_schedule_items",
+        "Change existing schedule items: reschedule (day, or empty day for no day; start, or empty start for any time), rename, rewrite details, set duration, tick off or reopen (done), write the result note, or move to another plan (plan_id, empty = none). Only the fields you give change. plans renames a plan or rewrites its goal. Move overdue items forward instead of adding duplicates.",
+        opt = listOf(
+            ToolParameterDescriptor(
+                "items", "items to change (at most 300)",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            str("item_id", "item id (full, or its first 8 characters)"),
+                            str("title", "new title"), str("detail", "new details"),
+                            str("day", "YYYY-MM-DD, or empty for no day"), str("start", "HH:mm, or empty for any time"),
+                            int("duration_minutes", "estimated minutes (0 = not given)"),
+                            bool("done", "true = tick off, false = reopen"), str("result", "note on how it went"),
+                            str("plan_id", "move to this plan; empty = no plan"),
+                        ),
+                        listOf("item_id"),
+                    ),
+                ),
+            ),
+            ToolParameterDescriptor(
+                "plans", "plans to rename or re-goal",
+                ToolParameterType.List(ToolParameterType.Object(listOf(str("plan_id", "plan id"), str("title", "new name"), str("goal", "new goal")), listOf("plan_id"))),
+            ),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val ST = com.xvan.unireader.local.schedule.ScheduleText
+            val items = args.optJSONArray("items")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+            val plans = args.optJSONArray("plans")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+            require(items.isNotEmpty() || plans.isNotEmpty()) { "give items or plans" }
+            require(items.size <= 300) { "at most 300 items per call" }
+            return db("Agent 改日程") { s ->
+                val allPlans = s.schedulePlans()
+                val now = com.xvan.unireader.local.store.nowIso()
+                // 先全部校验、拼好，再一次写（一项不对整批不动，同 Mac）
+                val changed = items.mapIndexed { i, o ->
+                    val id = o.optString("item_id").trim()
+                    require(id.isNotEmpty()) { "items[$i].item_id is required" }
+                    var m = resolveItem(s, id)
+                    if (o.has("title")) { val t = o.optString("title"); require(t.isNotBlank()) { "items[$i].title can't be empty" }; m = m.copy(title = t) }
+                    if (o.has("detail")) m = m.copy(detail = o.optString("detail"))
+                    if (o.has("day")) {
+                        val d = o.optString("day").trim()
+                        require(d.isEmpty() || com.xvan.unireader.local.schedule.ScheduleDay.isValid(d)) { "items[$i].day must be YYYY-MM-DD or empty" }
+                        m = m.copy(day = d)
+                    }
+                    if (o.has("start")) {
+                        val st = o.optString("start").trim()
+                        m = m.copy(startMin = if (st.isEmpty()) -1 else com.xvan.unireader.local.schedule.ScheduleTime.minutes(st)
+                            ?: throw IllegalArgumentException("items[$i].start must be HH:mm or empty"))
+                    }
+                    if (o.has("duration_minutes")) m = m.copy(durationMin = o.optInt("duration_minutes").coerceIn(0, 1440))
+                    if (o.has("done")) { val d = o.optBoolean("done"); if (d != m.isDone) m = m.copy(doneAt = if (d) now else "") }
+                    if (o.has("result")) m = m.copy(result = o.optString("result"))
+                    if (o.has("plan_id")) { val p = o.optString("plan_id").trim(); m = m.copy(planId = if (p.isEmpty()) "" else resolvePlan(allPlans, p).id) }
+                    m
+                }
+                val planChanges = plans.mapIndexed { i, o ->
+                    val id = o.optString("plan_id").trim()
+                    require(id.isNotEmpty()) { "plans[$i].plan_id is required" }
+                    val p = resolvePlan(allPlans, id)
+                    var n = p
+                    if (o.has("title")) { val t = ST.clean(o.optString("title"), ST.TITLE_MAX); require(t.isNotEmpty()) { "plans[$i].title can't be empty" }; n = n.copy(title = t) }
+                    if (o.has("goal")) n = n.copy(goal = ST.clean(o.optString("goal"), ST.DETAIL_MAX))
+                    p to n
+                }
+                // 写：同 Mac `updateScheduleItems`——规整、跟库里一样的不写、挪到别的日子的排到那天最后
+                val nextSeq = HashMap<String, Int>()
+                val out = ArrayList<com.xvan.unireader.local.store.LibScheduleItem>()
+                for (m0 in changed) {
+                    val old = s.scheduleItem(m0.id) ?: continue
+                    var m = m0.copy(
+                        title = ST.clean(m0.title, ST.TITLE_MAX).ifEmpty { old.title },
+                        detail = ST.clean(m0.detail, ST.DETAIL_MAX), result = ST.clean(m0.result, ST.DETAIL_MAX),
+                        createdAt = old.createdAt, updatedAt = old.updatedAt,
+                    )
+                    if (m == old) continue
+                    if (m.day != old.day && m.seq == old.seq) {
+                        val n = nextSeq[m.day] ?: s.nextScheduleSeq(m.day)
+                        m = m.copy(seq = n); nextSeq[m.day] = n + 1
+                    }
+                    out += m.copy(updatedAt = now)
+                }
+                var plansUpdated = 0
+                s.transaction {
+                    s.upsertScheduleItems(out)
+                    for ((p, n) in planChanges) if (n != p) { s.upsertSchedulePlan(n.copy(updatedAt = now)); plansUpdated++ }
+                }
+                "Changed ${out.size} item(s) (${changed.size - out.size} already so), $plansUpdated plan(s)."
+            }
+        }
+    }
+
+    private inner class DeleteSchedule : T(
+        "delete_schedule",
+        "Delete schedule items, or whole plans together with all their items (they go to UniReader's Trash and can be restored there). Prefer update_schedule_items to reschedule or rewrite; delete only what the user no longer wants, or a plan you are replacing at their request.",
+        opt = listOf(strArray("item_ids", "items to delete (full id or first 8 characters)"), strArray("plan_ids", "plans to delete with all their items")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            fun arr(k: String) = args.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            val itemArgs = arr("item_ids")
+            val planArgs = arr("plan_ids")
+            require(itemArgs.isNotEmpty() || planArgs.isNotEmpty()) { "give item_ids or plan_ids" }
+            val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+            // 先认出要删的（有一个对不上就报错、一样都不删），再取回收站条目名（要随系统语言），最后先归档后删
+            class Pick(val plans: List<com.xvan.unireader.local.store.LibSchedulePlan>, val items: List<com.xvan.unireader.local.store.LibScheduleItem>, val total: Int)
+            val pick = db("Agent 认日程") { s ->
+                val allPlans = s.schedulePlans()
+                val plans = planArgs.map { resolvePlan(allPlans, it) }.distinctBy { it.id }
+                val planSet = plans.map { it.id }.toSet()
+                val items = itemArgs.map { resolveItem(s, it) }.distinctBy { it.id }.filter { it.planId !in planSet }
+                Pick(plans, items, items.size + plans.sumOf { s.scheduleItems(it.id).size })
+            }
+            val title = when {
+                pick.plans.size == 1 && pick.items.isEmpty() -> pick.plans[0].title
+                pick.plans.isEmpty() && pick.items.size == 1 -> pick.items[0].title
+                pick.items.isEmpty() -> main { string(com.xvan.unireader.R.string.agent_trash_plans, pick.plans.size) }
+                else -> main { string(com.xvan.unireader.R.string.agent_trash_schedule_items, pick.items.size + pick.plans.size) }
+            }
+            db("Agent 删日程") { s -> com.xvan.unireader.local.Trash.deleteSchedule(s, ws, pick.plans.map { it.id }, pick.items.map { it.id }, title) }
+            return "Moved ${pick.total} item(s) and ${pick.plans.size} plan(s) to the Trash."
+        }
+    }
+
+    // ================= Markdown 笔记：打开 / 改名 / 删除（`../docs/ANDROID-AGENT-PLAN.md §5.10`，同 Mac `MCPTools+Markdown.swift`）=================
+
+    private suspend fun existingNote(ref: String): Pair<File, String> {
+        val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+        val rel = ref.trim().trimStart('/')
+        val f = noteFile(ws, rel)
+        require(f.isFile) { "No note \"$rel\"; call list_markdown_notes." }
+        return ws to rel
+    }
+
+    private fun brokenText(broken: List<Pair<String, String>>): String =
+        if (broken.isEmpty()) "No [[links]] in other notes broke."
+        else "These [[links]] in other notes no longer resolve (UniReader does not rewrite note text; fix them with edit_markdown only if the user asks):\n" +
+            broken.joinToString("\n") { "- ${it.first}: [[${it.second}]]" }
+
+    private inner class OpenMarkdown : T(
+        "open_markdown",
+        "Show an existing Markdown note in a tab (switches to it if a tab already shows it). Use it to bring the user to a note you are talking about.",
+        req = listOf(str("note_ref", "path relative to the Notes folder, from list_markdown_notes")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val (_, rel) = existingNote(args.optString("note_ref"))
+            main { openMarkdown(rel) }
+            return "Opened $rel."
+        }
+    }
+
+    private inner class RenameMarkdown : T(
+        "rename_markdown",
+        "Rename a Markdown note and/or move it to another folder inside the Notes folder. The title is the file name, so this renames the .md file; the text is not changed. A tab showing the note follows it, and unsaved typing is saved first. [[wiki links]] in other notes that use the old name break: UniReader never rewrites note text by itself, so the result lists the notes whose links broke — tell the user, and fix those links with edit_markdown only if the user asks. Moving to another folder keeps the name, so [[name]] links keep working. If a note with the new name already exists there, nothing is changed. Rename or move notes only when the user asks.",
+        req = listOf(str("note_ref", "the note to rename, from list_markdown_notes")),
+        opt = listOf(
+            str("title", "new title (file name without .md); default = keep the name"),
+            str("folder", "move into this folder (relative to the Notes folder; \"\" = the top); default = stay in its folder"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val (ws, rel) = existingNote(args.optString("note_ref"))
+            val title = args.optString("title", "").trim().ifEmpty { MdNotes.Item(rel).title }
+            val folder = if (args.has("folder") && !args.isNull("folder")) args.optString("folder") else null
+            require(args.optString("title", "").isNotBlank() || folder != null) { "give title and/or folder" }
+            val before = withContext(Dispatchers.IO) { MdNotes.backlinks(ws, rel) }
+            val newRel = withContext(Dispatchers.Main) {
+                withTimeout(30_000) { suspendCancellableCoroutine<String?> { c -> host.markdownRename(rel, title, folder) { r -> if (c.isActive) c.resume(r) } } }
+            } ?: throw IllegalStateException("could not rename $rel: a note with that name already exists there, or the name is not allowed. Nothing was changed.")
+            if (newRel == rel) return "Nothing to change: the note is already $rel."
+            val broken = withContext(Dispatchers.IO) {
+                val idx = MdNotes.Index(MdNotes.scan(ws))
+                before.filter { (from, target) -> idx.note(target) != newRel && from != newRel }
+            }
+            return "Renamed $rel → $newRel (note_ref $newRel). " + brokenText(broken)
+        }
+    }
+
+    private inner class DeleteMarkdown : T(
+        "delete_markdown",
+        "Delete a Markdown note: it moves to the Notes folder's .trash folder (the same place Obsidian uses), where the user can take it back. Unsaved typing is saved first, a tab showing it closes. [[wiki links]] to it in other notes break and are left unchanged; the result lists them. Delete notes only when the user explicitly asks.",
+        req = listOf(str("note_ref", "the note to delete, from list_markdown_notes")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val (ws, rel) = existingNote(args.optString("note_ref"))
+            val before = withContext(Dispatchers.IO) { MdNotes.backlinks(ws, rel) }
+            val ok = withContext(Dispatchers.Main) {
+                withTimeout(30_000) { suspendCancellableCoroutine<Boolean> { c -> host.markdownDelete(rel) { r -> if (c.isActive) c.resume(r) } } }
+            }
+            if (!ok) throw IllegalStateException("could not move $rel to the trash; nothing was deleted")
+            return "Moved $rel to Notes/.trash. " + brokenText(before)
+        }
+    }
+
+    // ================= 书：目录 / 改名改分组（`../docs/ANDROID-AGENT-PLAN.md §5.11`）=================
+
+    private inner class GetDocument : T(
+        "get_document",
+        "A PDF's page count, group, reading progress, whether it has cached OCR text, and its table of contents (outline) with 1-based pages — use the outline to find a chapter's pages before read_pages or goto. Opens the book in a tab if needed (the outline is read from the PDF).",
+        opt = listOf(
+            str("document", "document id (or title); default = the PDF in the current tab"),
+            bool("include_toc", "include the outline (default true)"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val doc = resolveDoc(args.optString("document", ""))
+            val ocrPages = db("Agent 数 OCR 页") { s ->
+                s.variants(doc.id).map { it.contentHash }.firstNotNullOfOrNull { h -> s.ocrProvider(h)?.let { p -> s.ocrStamp(h, p).substringBefore('|').toIntOrNull() } } ?: 0
+            }
+            val sb = StringBuilder("“${doc.title}” (document_id ${doc.id}): ${doc.pageCount} pages")
+            if (doc.group.isNotEmpty()) sb.append(", group ${doc.group}")
+            sb.append(", read up to page ${doc.readPage + 1}, OCR text on $ocrPages page(s).")
+            if (args.optBoolean("include_toc", true)) {
+                loaded(doc)
+                val toc = main { documentToc(doc.id) }.orEmpty()
+                if (toc.isEmpty()) sb.append("\nThe PDF has no outline.")
+                else {
+                    sb.append("\nOutline:")
+                    for (t in toc.take(500)) sb.append("\n").append("  ".repeat(t.depth)).append("- ${t.label} (p.${t.page + 1})")
+                    if (toc.size > 500) sb.append("\n(… ${toc.size - 500} more entries)")
+                }
+            }
+            return sb.toString()
+        }
+    }
+
+    private inner class UpdateDocument : T(
+        "update_document",
+        "Change how a PDF appears in the workspace library: its display title (the file on disk keeps its name), and/or its group (\"\" = no group; a new group name creates the group). Several documents can be moved to a group at once with document_ids. Do this only when the user asks.",
+        opt = listOf(
+            str("document", "document id (or title) to change; default = the PDF in the current tab"),
+            strArray("document_ids", "several documents (group change only)"),
+            str("title", "new display title (one document only)"),
+            str("group", "group to put the document(s) in; \"\" = no group"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val many = args.optJSONArray("document_ids")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            val title = if (args.has("title")) args.optString("title").trim() else null
+            val group = if (args.has("group") && !args.isNull("group")) args.optString("group").trim() else null
+            require(title != null || group != null) { "give title and/or group" }
+            require(title == null || title.isNotEmpty()) { "title must not be empty" }
+            require(title == null || many.size <= 1) { "title changes one document at a time" }
+            val docs = if (many.isNotEmpty()) many.map { resolveDoc(it) }.distinctBy { it.id } else listOf(resolveDoc(args.optString("document", "")))
+            db("Agent 改书") { s ->
+                s.transaction {
+                    for (d in docs) {
+                        if (title != null) s.renameDocument(d.id, title)
+                        if (group != null) s.setDocumentGroup(d.id, group)
+                    }
+                }
+            }
+            main { libraryChanged() }
+            val after = db("Agent 列文档") { it.allDocuments() }
+            val ids = docs.map { it.id }.toSet()
+            val groups = after.map { it.group }.filter { it.isNotEmpty() }.distinct().sorted()
+            return (listOf("Updated ${docs.size} document(s):") + after.filter { it.id in ids }.map { d ->
+                "- “${d.title}” · group ${d.group.ifEmpty { "(no group)" }} · ${d.id}"
+            } + "Groups now: ${groups.joinToString(", ").ifEmpty { "(none)" }}").joinToString("\n")
+        }
+    }
+
     // ================= 第三批：删除（`../docs/ANDROID-AGENT-PLAN.md §5.3`）=================
     //
     // 🔴 先归档进回收站、成了才删（红线 11），一次调用一条回收站条目；有一个 id 对不上就一条都不删（同 Mac）。
@@ -484,7 +1442,7 @@ class AgentToolset(private val host: AgentHost) {
                 }
             }
             db("Agent 删批注") { s -> com.xvan.unireader.local.Trash.deleteAnnotations(s, ws, doc.id, doc.title, picked.map { it.id }, title) }
-            main { annotationsDeleted(doc.id) }
+            main { annotationsChanged(doc.id) }
             return (listOf("Deleted ${picked.size} annotation(s) from \"${doc.title}\"; they are in the Trash as “$title”.") +
                 picked.map { "- p.${it.page + 1} ${it.kind} [${it.id.take(8)}] ${it.label.take(80)}" }).joinToString("\n")
         }
@@ -796,6 +1754,25 @@ class AgentToolset(private val host: AgentHost) {
 
         /** 一次最多删几条（同 Mac `MCPTools.maxDeleteIds`）。 */
         const val MAX_DELETE_IDS = 200
+
+        /** 新存一份上下文（同 Mac `WorkspaceManager.addAgentContext`）：标题规整，规整完是空的用 [fallbackTitle]。在库队列上调。 */
+        fun addContext(s: LibraryStore, title: String, summary: String, agent: String, fallbackTitle: String): com.xvan.unireader.local.store.LibAgentContext {
+            val now = com.xvan.unireader.local.store.nowIso()
+            val t = AgentContextText.cleanTitle(title).ifEmpty { fallbackTitle }
+            val c = com.xvan.unireader.local.store.LibAgentContext(UUID.randomUUID().toString().uppercase(), t, summary.trim(), agent, "", now, now)
+            s.upsertAgentContext(c)
+            return c
+        }
+
+        /** 改标题 / 摘要（同 Mac `updateAgentContext`）：没变就不写，免得 `updated_at` 白变、同步白传。在库队列上调。 */
+        fun updateContext(s: LibraryStore, c: com.xvan.unireader.local.store.LibAgentContext, title: String?, summary: String?): com.xvan.unireader.local.store.LibAgentContext {
+            val t = title?.let(AgentContextText::cleanTitle)?.ifEmpty { c.title } ?: c.title
+            val sm = summary?.trim() ?: c.summary
+            if (t == c.title && sm == c.summary) return c
+            val n = c.copy(title = t, summary = sm, updatedAt = com.xvan.unireader.local.store.nowIso())
+            s.upsertAgentContext(n)
+            return n
+        }
 
         /** 对话列表里一段对话的名字：第一句话压成一行，最多 40 字（同 Mac `AgentMemoryText.conversationTitle`）。 */
         fun conversationTitle(firstUserText: String): String {

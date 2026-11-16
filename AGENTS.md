@@ -110,10 +110,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `CREATE … IF NOT EXISTS` 补齐到 v26 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
   `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
-  `../docs/ACP-AGENT-PLAN.md §12`）本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
+  `../docs/ACP-AGENT-PLAN.md §12`）2026-11-16 起本端 Agent 也读写（存 / 带上，删除没做），随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
   `agentContexts` 条目并能恢复）；v25 `agent_memory` / `agent_turn`（Agent 记忆与对话记录，`../docs/ACP-AGENT-PLAN.md §21–22`）建表、`agent_memory` 2026-11-15 起本端 Agent 也读写，
   随同步（向量 #36 / #37）、回收站认得 `agentMemories`，2026-11-16 起本端 Agent `delete_memory` 也建这种条目；`agent_turn` 同日起本端 Agent 面板也写）；v26 `schedule_plan` / `schedule_item`（日程：计划 + 事项，`../docs/SCHEDULE-PLAN.md`）
-  本端本轮没有日程界面，同样只建表、随同步（向量 #38 / #39；`MirrorFp.needsMigrate` 认 `schedule_` 前缀）、回收站认得 Mac 建的 `schedule`
+  本端没有日程界面，2026-11-16 起 Agent 工具读写（`../docs/ANDROID-AGENT-PLAN.md §5.9`），随同步（向量 #38 / #39；`MirrorFp.needsMigrate` 认 `schedule_` 前缀）、回收站认得 Mac 建的 `schedule`
   条目（manifest 计数键 `schedulePlan` / `scheduleItem`）并能恢复）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
   🔴 **2026-09-26 用户撤销了「安卓不改表结构」的旧规定**：安卓可以像 Mac 一样迁移老库（`CREATE … IF NOT EXISTS`
@@ -374,6 +374,12 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `AgentEngine`（Koog 的 OpenAI 兼容客户端 + 自己的工具循环）、`AgentTools`（`AgentHost` 宿主接口 + 第一批工具，名字参数照 Mac MCP）、`AgentPanel`（阅读界面右侧一栏）。
   🔴 工具只经 `AgentHost`（`ReaderActivity.agentHost`）碰阅读界面，读写库经 `StoreQueue.read`；新工具别直接摸 Activity 字段。
   记忆读写 `LibraryStore.agentMemories` / `upsertAgentMemory`（SQL 照抄 Mac）；对话记录 `insertAgentTurn` / `agentTurns` / `recentAgentConversations`（面板一轮答完记一行）。
+  Agent 上下文 `agentContexts` / `upsertAgentContext`（工具三个 + 面板 ⋯ 菜单存 / 带上，文字规则 `AgentContextText` 照 Mac）。
+  全工作区搜索 `local/search/`：`SearchText` 逐条照抄 Mac `Sources/Search/SearchText.swift`（🔴 两份实现，`SearchTextTest` ↔ `../spike/search-test.swift`），
+  `WorkspaceSearch` 现场取内容、不建索引，PDF 的 OCR 块按 hash 缓存在进程里。
+  日程工具（`local/schedule/Schedule.kt` 纯规则 + `LibraryStore` 日程一节，SQL 照 Mac；删除走 `Trash.deleteSchedule`）。
+  习题工具（列题 / 读作答 / 批改 / 打开）：作答一页 `LibraryStore.exerciseAttemptPage`（SQL 照 Mac），批改 `judgeExerciseAttempt(by = "agent", feedback)`，
+  停在某道题 `ExerciseController.focus`。改批注 `update_annotations` 只动 payload 里要改的键。
   删除（`delete_annotations` / `delete_memory`）只经 `Trash.deleteAnnotations` / `deleteAgentMemories`：先归档、条数对上才删（红线 11）。插桩测试 `AgentEngineTest`（假 SSE 服务，不要 Key）+ `AgentToolsTest`（真工作区 + 假宿主）。
   写入：批注 / 高亮写进开着的那篇走 `LocalCanvasView.writeNotesExternally`（先进撤销栈，同界面新建）；`edit_markdown` 改的是编辑器里的字
   （`MdNoteController.liveText` / `applyExternalText`，用户没存的输入保留），规则 `MdEdit` 逐条照 Mac `MCPMarkdownText`（`MdEditTest`）。

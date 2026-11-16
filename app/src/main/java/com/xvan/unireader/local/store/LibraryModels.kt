@@ -172,6 +172,69 @@ data class LibAgentMemory(
     val updatedAt: String,
 )
 
+/** `schedule_plan` 表一行（v26，Mac `LibSchedulePlan`）：一份计划。时间是 ISO 8601 串。 */
+data class LibSchedulePlan(
+    val id: String,
+    val title: String,
+    val goal: String,
+    val agent: String,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
+/**
+ * `schedule_item` 表一行（v26，Mac `LibScheduleItem`）：日程里的一件事。`day` 空 = 没排日期；`startMin` -1 = 不定时；
+ * `doneAt` 空 = 没做完（库里就是空串，同 Mac）。
+ */
+data class LibScheduleItem(
+    val id: String,
+    val planId: String,
+    val title: String,
+    val detail: String,
+    val day: String,
+    val startMin: Int,
+    val durationMin: Int,
+    val doneAt: String,
+    val result: String,
+    val seq: Int,
+    val agent: String,
+    val createdAt: String,
+    val updatedAt: String,
+) {
+    val isDone: Boolean get() = doneAt.isNotEmpty()
+}
+
+/**
+ * `exercise_attempt` 表一行（Mac `LibExerciseAttempt`；Agent 读作答 / 批改用，`../docs/ANDROID-AGENT-PLAN.md §5.8`）。
+ * `correct` null = 还没判；`judgedBy` 空 = 程序判的，`self` = 用户自己判，`agent` = Agent 批改。`hasInk` = 带手写（本端不显示，只告诉 Agent）。
+ */
+data class LibExerciseAttempt(
+    val id: String,
+    val exerciseId: String,
+    val answer: String,
+    val correct: Boolean?,
+    val elapsedMs: Long,
+    val createdAt: String,
+    val source: String,
+    val hasInk: Boolean,
+    val judgedBy: String,
+    val feedback: String,
+)
+
+/**
+ * `agent_context` 表一行（v23，Mac `LibAgentContext`）：一段对话的交接摘要，换个 Agent 接着做（`../docs/ACP-AGENT-PLAN.md §12`）。
+ * `summary` 是 Markdown、不含标题行；`sessionId` 只对写它的那家 Agent 有意义（本端写空串）。
+ */
+data class LibAgentContext(
+    val id: String,
+    val title: String,
+    val summary: String,
+    val agent: String,
+    val sessionId: String,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
 /**
  * `agent_turn` 表一行（v25，Mac `LibAgentTurn`）：Agent 面板一轮正常答完记一行（用户那句话 + 回复正文，不含上下文块、
  * 工具输出、思考），只追加不改，随同步。`conversationId` = 一段对话共用。

@@ -156,6 +156,36 @@ object MdNotes {
     /** macOS 上文件名是 NFD、正文多半是 NFC——不归一化「é」这类名字永远查不中（同 Mac `NoteIndex.normalize`） */
     fun norm(s: String): String = Normalizer.normalize(s.trim(), Normalizer.Form.NFC)
 
+    /** 正文里每个 `[[…]]` / `![[…]]` 的目标（`|` 后面的别名去掉，原样，不收拾锚点——[Index.note] 会收拾）。 */
+    fun wikiTargets(text: String): List<String> {
+        val out = ArrayList<String>()
+        var i = text.indexOf("[[")
+        while (i >= 0) {
+            val j = text.indexOf("]]", i + 2)
+            if (j < 0) break
+            val inner = text.substring(i + 2, j)
+            if (!inner.contains('\n')) out += inner.substringBefore('|').trim()
+            i = text.indexOf("[[", j + 2)
+        }
+        return out
+    }
+
+    /**
+     * 别的笔记里指向 [rel] 的 `[[…]]`：（那篇的相对路径, 链接目标）。改名 / 删除前后各算一次，对不上的就是断了的
+     * （同 Mac `rename_markdown` / `delete_markdown` 报告断链；不改别人的正文，红线 9）。读文件，别在主线程调。
+     */
+    fun backlinks(ws: File, rel: String): List<Pair<String, String>> {
+        val s = scan(ws)
+        val idx = Index(s)
+        val out = ArrayList<Pair<String, String>>()
+        for (n in s.notes) {
+            if (n.relPath == rel) continue
+            val text = runCatching { file(ws, n.relPath).readText() }.getOrNull() ?: continue
+            for (t in wikiTargets(text)) if (idx.note(t) == rel) out += n.relPath to t
+        }
+        return out
+    }
+
     /** 链接目标收拾（规则在共用层 [MdDisplay.linkTarget]，模式2 阅读也用） */
     fun linkTarget(raw: String): String = MdDisplay.linkTarget(raw)
 

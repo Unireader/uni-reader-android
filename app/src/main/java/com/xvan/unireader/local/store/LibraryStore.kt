@@ -113,6 +113,7 @@ class LibraryStore(private val db: Db) : Closeable {
     fun trashArchiveExerciseAttempts(ids: List<String>, path: File) = TrashStore.archiveExerciseAttempts(db, ids, path)
     fun trashArchiveNotes(documentId: String, ids: List<String>, path: File) = TrashStore.archiveNotes(db, documentId, ids, path)
     fun trashArchiveAgentMemories(ids: List<String>, path: File) = TrashStore.archiveAgentMemories(db, ids, path)
+    fun trashArchiveSchedule(planIds: List<String>, itemIds: List<String>, path: File) = TrashStore.archiveSchedule(db, planIds, itemIds, path)
     fun trashMergeTarget(path: File): String? = TrashStore.mergeTarget(db, path)
     fun trashRestore(path: File, remapDocumentId: String?): Int = TrashStore.restore(db, path, remapDocumentId)
 
@@ -803,6 +804,13 @@ class LibraryStore(private val db: Db) : Closeable {
             arrayOf(contentHash),
         ) { it.getString(0) }.firstOrNull()
 
+    /** 一份 OCR 的「版本戳」：行数 + 最新一行的时间（全工作区搜索的缓存据此判断要不要重读，`WorkspaceSearch.pdfPart`）。 */
+    fun ocrStamp(contentHash: String, provider: String): String =
+        db.query(
+            "SELECT COUNT(*), MAX(created_at) FROM ocr_page WHERE content_hash=? AND provider=?",
+            arrayOf(contentHash, provider),
+        ) { "${it.getInt(0)}|${it.getString(1).orEmpty()}" }.firstOrNull().orEmpty()
+
     /**
      * 一份内容**全部**已缓存页的 OCR 行：页 → 原始行（未滤水印）。
      *
@@ -908,6 +916,143 @@ class LibraryStore(private val db: Db) : Closeable {
             ON CONFLICT(id) DO UPDATE SET content=excluded.content, agent=excluded.agent, updated_at=excluded.updated_at
             """.trimIndent(),
             arrayOf(m.id, m.content, m.agent, m.createdAt, m.updatedAt),
+        )
+    }
+
+    // ---------- 日程（schedule_plan / schedule_item，v26；`../docs/SCHEDULE-PLAN.md`、`../docs/ANDROID-AGENT-PLAN.md §5.9`）----------
+    //
+    // SQL 逐条照抄 Mac `LibraryStore.swift` 的日程一节（含 ORDER BY）。本端没有日程界面，只给 Agent 工具用。
+
+    private fun schedulePlan(c: android.database.Cursor) = LibSchedulePlan(
+        c.str("id"), c.str("title"), c.str("goal"), c.str("agent"), c.str("created_at"), c.str("updated_at"),
+    )
+
+    private fun scheduleItem(c: android.database.Cursor) = LibScheduleItem(
+        c.str("id"), c.str("plan_id"), c.str("title"), c.str("detail"), c.str("day"), c.int("start_min", -1),
+        c.int("duration_min"), c.str("done_at"), c.str("result"), c.int("seq"), c.str("agent"), c.str("created_at"), c.str("updated_at"),
+    )
+
+    private val scheduleOrder = "ORDER BY day, start_min, seq, created_at, id"
+
+    fun hasScheduleTables(): Boolean = hasTable("schedule_plan") && hasTable("schedule_item")
+
+    /** 全部计划，最近建的在前。 */
+    fun schedulePlans(): List<LibSchedulePlan> =
+        if (!hasScheduleTables()) emptyList() else db.query("SELECT * FROM schedule_plan ORDER BY created_at DESC, id") { schedulePlan(it) }
+
+    fun upsertSchedulePlan(p: LibSchedulePlan) {
+        db.exec(
+            """
+            INSERT INTO schedule_plan(id, title, goal, agent, created_at, updated_at) VALUES(?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title, goal=excluded.goal, agent=excluded.agent,
+              updated_at=excluded.updated_at
+            """.trimIndent(),
+            arrayOf(p.id, p.title, p.goal, p.agent, p.createdAt, p.updatedAt),
+        )
+    }
+
+    /** 每份计划的事项数与做完的数（计划 id → (共, 做完)；不属于哪份计划的记在空串下）。 */
+    fun schedulePlanCounts(): Map<String, Pair<Int, Int>> {
+        if (!hasScheduleTables()) return emptyMap()
+        return db.query(
+            "SELECT plan_id, COUNT(*) AS n, SUM(CASE WHEN done_at <> '' THEN 1 ELSE 0 END) AS d FROM schedule_item GROUP BY plan_id",
+        ) { it.str("plan_id") to (it.int("n") to it.int("d")) }.toMap()
+    }
+
+    fun scheduleItem(id: String): LibScheduleItem? =
+        if (!hasScheduleTables()) null else db.query("SELECT * FROM schedule_item WHERE id=?", arrayOf(id)) { scheduleItem(it) }.firstOrNull()
+
+    /** 排在 [from]…[to]（含两头）之间的事项；[planId] 非 null = 只要这份计划的。 */
+    fun scheduleItems(from: String, to: String, planId: String? = null): List<LibScheduleItem> {
+        if (!hasScheduleTables()) return emptyList()
+        var sql = "SELECT * FROM schedule_item WHERE day <> '' AND day >= ? AND day <= ?"
+        val args = arrayListOf<Any?>(from, to)
+        if (planId != null) { sql += " AND plan_id=?"; args.add(planId) }
+        return db.query("$sql $scheduleOrder", args.toTypedArray()) { scheduleItem(it) }
+    }
+
+    /** 一份计划的全部事项（没排日期的排最后）。 */
+    fun scheduleItems(planId: String): List<LibScheduleItem> =
+        if (!hasScheduleTables()) emptyList()
+        else db.query("SELECT * FROM schedule_item WHERE plan_id=? ORDER BY day = '', day, start_min, seq, created_at, id", arrayOf(planId)) { scheduleItem(it) }
+
+    /** id 以 [prefix] 开头的事项（认 8 位前缀用；不分大小写；同 Mac `scheduleItems(idPrefix:)`）。 */
+    fun scheduleItemsByPrefix(prefix: String): List<LibScheduleItem> =
+        if (!hasScheduleTables()) emptyList()
+        else db.query(
+            "SELECT * FROM schedule_item WHERE upper(id) LIKE upper(?) || '%' ESCAPE '\\' LIMIT 5",
+            arrayOf(prefix.replace("%", "\\%").replace("_", "\\_")),
+        ) { scheduleItem(it) }
+
+    /** 还没排日期的事项。 */
+    fun undatedScheduleItems(): List<LibScheduleItem> =
+        if (!hasScheduleTables()) emptyList() else db.query("SELECT * FROM schedule_item WHERE day = '' ORDER BY seq, created_at, id") { scheduleItem(it) }
+
+    /** 过期没做完的：排在 [day] 之前（不含）、还没打勾的。 */
+    fun overdueScheduleItems(day: String): List<LibScheduleItem> =
+        if (!hasScheduleTables()) emptyList()
+        else db.query("SELECT * FROM schedule_item WHERE day <> '' AND day < ? AND done_at = '' $scheduleOrder", arrayOf(day)) { scheduleItem(it) }
+
+    /** 某一天里下一件不定时事项的 `seq`（排在最后）。 */
+    fun nextScheduleSeq(day: String): Int =
+        (db.query("SELECT MAX(seq) FROM schedule_item WHERE day=?", arrayOf(day)) { if (it.isNull(0)) 0 else it.getInt(0) }.firstOrNull() ?: 0) + 1
+
+    /** 新建或整行覆盖（同 id，不动 created_at），一批一个事务。 */
+    fun upsertScheduleItems(items: List<LibScheduleItem>) {
+        if (items.isEmpty()) return
+        db.transaction {
+            for (m in items) db.exec(
+                """
+                INSERT INTO schedule_item(id, plan_id, title, detail, day, start_min, duration_min, done_at, result, seq,
+                  agent, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET plan_id=excluded.plan_id, title=excluded.title, detail=excluded.detail,
+                  day=excluded.day, start_min=excluded.start_min, duration_min=excluded.duration_min,
+                  done_at=excluded.done_at, result=excluded.result, seq=excluded.seq, agent=excluded.agent,
+                  updated_at=excluded.updated_at
+                """.trimIndent(),
+                arrayOf<Any?>(m.id, m.planId, m.title, m.detail, m.day, m.startMin.toLong(), m.durationMin.toLong(), m.doneAt,
+                    m.result, m.seq.toLong(), m.agent, m.createdAt, m.updatedAt),
+            )
+        }
+    }
+
+    /** 删几份计划（连同名下的事项）和几件事项。只许在归档之后调（`Trash.deleteSchedule`）。 */
+    fun deleteSchedule(planIds: List<String>, itemIds: List<String>) {
+        db.transaction {
+            if (planIds.isNotEmpty()) {
+                val marks = planIds.joinToString(",") { "?" }
+                db.exec("DELETE FROM schedule_item WHERE plan_id IN ($marks)", planIds.toTypedArray())
+                db.exec("DELETE FROM schedule_plan WHERE id IN ($marks)", planIds.toTypedArray())
+            }
+            if (itemIds.isNotEmpty()) db.exec("DELETE FROM schedule_item WHERE id IN (${itemIds.joinToString(",") { "?" }})", itemIds.toTypedArray())
+        }
+    }
+
+    // ---------- Agent 上下文（agent_context，v23；`../docs/ACP-AGENT-PLAN.md §12`、`../docs/ANDROID-AGENT-PLAN.md §5.5`）----------
+    //
+    // SQL 逐条照抄 Mac `LibraryStore.swift` 的同名一节。删除本端没做（Mac 能删，回收站本端认得）。
+
+    /** 全部上下文，最近改过的在前。老库没这张表 → 空。 */
+    fun agentContexts(): List<LibAgentContext> {
+        if (!hasTable("agent_context")) return emptyList()
+        return db.query("SELECT * FROM agent_context ORDER BY updated_at DESC, created_at DESC") {
+            LibAgentContext(
+                it.str("id"), it.str("title"), it.str("summary"), it.str("agent"), it.str("session_id"),
+                it.str("created_at"), it.str("updated_at"),
+            )
+        }
+    }
+
+    /** 新建或整行覆盖（同 id，不动 created_at）。`updated_at` 由调用方给（改标题 / 摘要都要换，同步按它取新）。 */
+    fun upsertAgentContext(c: LibAgentContext) {
+        db.exec(
+            """
+            INSERT INTO agent_context(id, title, summary, agent, session_id, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title, summary=excluded.summary, agent=excluded.agent,
+              session_id=excluded.session_id, updated_at=excluded.updated_at
+            """.trimIndent(),
+            arrayOf(c.id, c.title, c.summary, c.agent, c.sessionId, c.createdAt, c.updatedAt),
         )
     }
 
@@ -1098,16 +1243,58 @@ class LibraryStore(private val db: Db) : Closeable {
      * 判错的同一个事务把题放进错题本（判对不移出）。只用于填空 / 主观题——选择题程序自己判。
      * `by` 预留给 Agent 批改（本端没有 Agent，现在只有 'self'）。
      */
-    fun judgeExerciseAttempt(id: String, correct: Boolean, by: String = "self", at: String = nowIso()): String? {
+    fun judgeExerciseAttempt(id: String, correct: Boolean, by: String = "self", at: String = nowIso(), feedback: String? = null): String? {
         var exerciseId: String? = null
         db.transaction {
             val row = db.query("SELECT exercise_id FROM exercise_attempt WHERE id=?", arrayOf(id)) { it.getString(0) }
             val eid = row.firstOrNull() ?: return@transaction
             exerciseId = eid
-            db.exec("UPDATE exercise_attempt SET correct=?, judged_by=? WHERE id=?", arrayOf<Any?>(if (correct) 1L else 0L, by, id))
+            // 同 Mac：给了评语（含空串 = 清掉旧评语）就一起写
+            if (feedback != null) {
+                db.exec("UPDATE exercise_attempt SET correct=?, judged_by=?, feedback=? WHERE id=?", arrayOf<Any?>(if (correct) 1L else 0L, by, feedback, id))
+            } else {
+                db.exec("UPDATE exercise_attempt SET correct=?, judged_by=? WHERE id=?", arrayOf<Any?>(if (correct) 1L else 0L, by, id))
+            }
             if (!correct) db.exec("UPDATE exercise SET wrong=1, updated_at=? WHERE id=? AND wrong=0", arrayOf(at, eid))
         }
         return exerciseId
+    }
+
+    /**
+     * 作答一页（同 Mac `exerciseAttemptPage`，SQL 照抄）：[exerciseIds] 给了只看这几道，否则 [documentId] 一篇，都不给 = 整个工作区；
+     * [ungradedOnly] = 只要还没判的填空 / 主观题；[prefix] = 按 id 前缀找。最新的在前。返回（这一页, 总数）。
+     */
+    fun exerciseAttemptPage(
+        exerciseIds: List<String>? = null, documentId: String? = null, ungradedOnly: Boolean = false,
+        prefix: String? = null, offset: Int = 0, limit: Int = 50,
+    ): Pair<List<LibExerciseAttempt>, Int> {
+        if (!hasExerciseTables()) return emptyList<LibExerciseAttempt>() to 0
+        val conds = ArrayList<String>()
+        val args = ArrayList<Any?>()
+        if (exerciseIds != null) {
+            if (exerciseIds.isEmpty()) return emptyList<LibExerciseAttempt>() to 0
+            conds += "a.exercise_id IN (${exerciseIds.joinToString(",") { "?" }})"
+            args.addAll(exerciseIds)
+        } else if (documentId != null) {
+            conds += "e.document_id=?"
+            args += documentId
+        }
+        if (ungradedOnly) conds += "a.correct IS NULL AND e.kind IN (3,4)"
+        if (!prefix.isNullOrEmpty()) { conds += "UPPER(a.id) LIKE ?"; args += prefix.uppercase() + "%" }
+        val from = " FROM exercise_attempt a JOIN exercise e ON e.id = a.exercise_id" + if (conds.isEmpty()) "" else " WHERE " + conds.joinToString(" AND ")
+        val total = db.query("SELECT COUNT(*)$from", args.toTypedArray()) { it.getInt(0) }.firstOrNull() ?: 0
+        val rows = db.query("SELECT a.*$from ORDER BY a.created_at DESC LIMIT ${limit.coerceAtLeast(1)} OFFSET ${offset.coerceAtLeast(0)}", args.toTypedArray()) {
+            val ci = it.getColumnIndex("correct")
+            val ii = it.getColumnIndex("ink")
+            LibExerciseAttempt(
+                it.str("id"), it.str("exercise_id"), it.str("answer"),
+                if (ci < 0 || it.isNull(ci)) null else it.getInt(ci) != 0,
+                it.long("elapsed_ms"), it.str("created_at"), it.str("source"),
+                ii >= 0 && !it.isNull(ii) && it.getBlob(ii).isNotEmpty(),
+                it.str("judged_by"), it.str("feedback"),
+            )
+        }
+        return rows to total
     }
 
     /**

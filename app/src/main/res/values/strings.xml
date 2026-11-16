@@ -548,4 +548,20 @@
     <string name="agent_trash_annotations">Annotations</string>
     <string name="agent_trash_and_more">“%1$s” and %2$d more</string>
     <string name="agent_trash_memories">%d Agent memories</string>
+    <string name="agent_context_untitled">Context %1$s</string>
+    <string name="agent_menu">More</string>
+    <string name="agent_ctx_save">Save This Chat as a Context</string>
+    <string name="agent_ctx_attach">Attach to Your Next Message</string>
+    <string name="agent_ctx_none">No saved contexts</string>
+    <string name="agent_settings_item">Settings…</string>
+    <string name="agent_ctx_request">Please write a handoff summary of this chat so I can continue it with another agent.</string>
+    <string name="agent_ctx_saved">Saved as the context “%1$s”. In a new chat, attach it from the ⋯ menu to carry on.</string>
+    <string name="agent_ctx_no_summary">The agent wrote no summary, so no context was saved.</string>
+    <string name="agent_ctx_save_failed">Could not save the context.</string>
+    <string name="agent_ctx_not_saved">No context was saved.</string>
+    <string name="agent_ctx_pending">Context carried into your next message</string>
+    <string name="agent_ctx_carried">Carried over the context “%1$s”.</string>
+    <string name="agent_ctx_remove">Remove</string>
+    <string name="agent_trash_plans">%d plans</string>
+    <string name="agent_trash_schedule_items">%d schedule items</string>
 </resources>
