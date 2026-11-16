@@ -143,7 +143,29 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         job?.cancel()
         engine?.close(); engine = null
         engineKey = ""
+        conversationId = newConversationId()
         clearTranscript()
+    }
+
+    /** 这段对话的 id（`agent_turn.conversation_id`）：新对话 / 换引擎 / 换工作区换一个。 */
+    private var conversationId = newConversationId()
+
+    private fun newConversationId() = java.util.UUID.randomUUID().toString().uppercase()
+
+    /**
+     * 一轮正常答完记一行（同 Mac `AgentChat.recordTurn`：停止 / 出错的不记）。只记用户看得见的那句话和回复正文，
+     * 上下文块、工具输出、思考过程都不记。两边都空就不记。
+     */
+    private fun recordTurn(userText: String, reply: String) {
+        val u = userText.trim()
+        val r = reply.trim()
+        if (u.isEmpty() && r.isEmpty()) return
+        val q = host.storeQueue() ?: return
+        val now = com.xvan.unireader.local.store.nowIso()
+        val t = com.xvan.unireader.local.store.LibAgentTurn(
+            newConversationId(), conversationId, AgentToolset.AGENT_NAME, "", u, r, now, now,
+        )
+        q.submit("Agent 记一轮") { s -> s.insertAgentTurn(t) }   // 失败队列自己记日志
     }
 
     fun destroy() {
@@ -165,6 +187,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
             engine = AgentEngine(s, AgentToolset(host).tools, systemPrompt())
             engineKey = key
             fresh = true
+            conversationId = newConversationId()
         }
         val eng = engine ?: return
         input.setText("")
@@ -178,6 +201,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
             try {
                 val ctx = contextBlock(firstOfChat)
                 eng.send(text, ctx) { ev -> turn.on(ev) }
+                recordTurn(text, turn.reply())
             } catch (e: CancellationException) {
                 turn.note(a.getString(R.string.agent_stopped))
             } catch (e: Exception) {
@@ -198,6 +222,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         job?.cancel()
         engine?.reset(systemPrompt())
         fresh = true
+        conversationId = newConversationId()
         clearTranscript()
     }
 
@@ -206,6 +231,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         One workspace is one subject: its PDFs, the user's annotations (text notes, highlights, bookmarks), Markdown notes and memories.
         Use the tools to look things up instead of guessing; pages are 1-based. Call get_state first when you need to know what the user is looking at.
         When you learn something worth keeping for later conversations in this workspace (the user's goals, preferences, what they study and how far they got), save it with save_memory: one short fact per memory, in the user's language.
+        Earlier conversations in this workspace are saved too: to recall what was discussed, use list_conversations and read_conversation.
         Reply in the user's language. Keep answers concise; use Markdown, and $…$ for formulas.
     """.trimIndent()
 
@@ -275,6 +301,10 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
         private var thinkView: TextView? = null
         private val thinkBuf = StringBuilder()
         private val toolRows = HashMap<String, TextView>()
+        /** 这一轮的回复正文（几段之间空一行），记对话用 */
+        private val replyAll = StringBuilder()
+
+        fun reply(): String = replyAll.toString()
 
         fun on(ev: AgentEvent) {
             when (ev) {
@@ -283,6 +313,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
                     val tv = textView ?: newText().also { textView = it }
                     textBuf.append(ev.text)
                     tv.text = textBuf
+                    replyAll.append(ev.text)
                 }
                 is AgentEvent.ReasoningDelta -> {
                     val tv = thinkView ?: newThinking().also { thinkView = it }
@@ -291,6 +322,7 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
                 }
                 is AgentEvent.ToolStart -> {
                     endThinking(); endText()
+                    if (replyAll.isNotEmpty() && !replyAll.endsWith("\n\n")) replyAll.append("\n\n")
                     val row = newToolRow(ev.name, ev.args)
                     toolRows[ev.callId] = row
                 }

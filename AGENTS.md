@@ -112,7 +112,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
   `../docs/ACP-AGENT-PLAN.md §12`）本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
   `agentContexts` 条目并能恢复）；v25 `agent_memory` / `agent_turn`（Agent 记忆与对话记录，`../docs/ACP-AGENT-PLAN.md §21–22`）建表、`agent_memory` 2026-11-15 起本端 Agent 也读写，
-  随同步（向量 #36 / #37）、回收站认得 `agentMemories`）；v26 `schedule_plan` / `schedule_item`（日程：计划 + 事项，`../docs/SCHEDULE-PLAN.md`）
+  随同步（向量 #36 / #37）、回收站认得 `agentMemories`，2026-11-16 起本端 Agent `delete_memory` 也建这种条目；`agent_turn` 同日起本端 Agent 面板也写）；v26 `schedule_plan` / `schedule_item`（日程：计划 + 事项，`../docs/SCHEDULE-PLAN.md`）
   本端本轮没有日程界面，同样只建表、随同步（向量 #38 / #39；`MirrorFp.needsMigrate` 认 `schedule_` 前缀）、回收站认得 Mac 建的 `schedule`
   条目（manifest 计数键 `schedulePlan` / `scheduleItem`）并能恢复）+ 与 Mac 同序的 `ADD COLUMN` +
   写 `meta.schema_version`；库里版本比本端新时不往回写。只读打开不迁移。唯一没抄的是 Mac 私有缓存表 `page_geom`）。
@@ -373,7 +373,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - **安卓 Agent（模式1，2026-11-15，`../docs/ANDROID-AGENT-PLAN.md`）** 全在 `local/agent/`：`AgentConfig`（地址 / Key / 模型，本机、Key 经 Keystore 加密）、
   `AgentEngine`（Koog 的 OpenAI 兼容客户端 + 自己的工具循环）、`AgentTools`（`AgentHost` 宿主接口 + 第一批工具，名字参数照 Mac MCP）、`AgentPanel`（阅读界面右侧一栏）。
   🔴 工具只经 `AgentHost`（`ReaderActivity.agentHost`）碰阅读界面，读写库经 `StoreQueue.read`；新工具别直接摸 Activity 字段。
-  记忆读写 `LibraryStore.agentMemories` / `upsertAgentMemory`（SQL 照抄 Mac）。插桩测试 `AgentEngineTest`（假 SSE 服务，不要 Key）+ `AgentToolsTest`（真工作区 + 假宿主）。
+  记忆读写 `LibraryStore.agentMemories` / `upsertAgentMemory`（SQL 照抄 Mac）；对话记录 `insertAgentTurn` / `agentTurns` / `recentAgentConversations`（面板一轮答完记一行）。
+  删除（`delete_annotations` / `delete_memory`）只经 `Trash.deleteAnnotations` / `deleteAgentMemories`：先归档、条数对上才删（红线 11）。插桩测试 `AgentEngineTest`（假 SSE 服务，不要 Key）+ `AgentToolsTest`（真工作区 + 假宿主）。
   写入：批注 / 高亮写进开着的那篇走 `LocalCanvasView.writeNotesExternally`（先进撤销栈，同界面新建）；`edit_markdown` 改的是编辑器里的字
   （`MdNoteController.liveText` / `applyExternalText`，用户没存的输入保留），规则 `MdEdit` 逐条照 Mac `MCPMarkdownText`（`MdEditTest`）。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +

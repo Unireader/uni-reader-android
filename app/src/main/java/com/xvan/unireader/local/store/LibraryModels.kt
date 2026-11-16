@@ -172,6 +172,31 @@ data class LibAgentMemory(
     val updatedAt: String,
 )
 
+/**
+ * `agent_turn` 表一行（v25，Mac `LibAgentTurn`）：Agent 面板一轮正常答完记一行（用户那句话 + 回复正文，不含上下文块、
+ * 工具输出、思考），只追加不改，随同步。`conversationId` = 一段对话共用。
+ */
+data class LibAgentTurn(
+    val id: String,
+    val conversationId: String,
+    val agent: String,
+    val sessionId: String,
+    val userText: String,
+    val replyText: String,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
+/** 一段对话的概要（Mac `LibAgentConversation`）：第一句话、轮数、起止时间。 */
+data class LibAgentConversation(
+    val id: String,
+    val firstUserText: String,
+    val agent: String,
+    val turns: Int,
+    val startedAt: String,
+    val lastAt: String,
+)
+
 /** `image` 表一行（v13，Mac `LibImage`）：图片本体按内容寻址，`orphanedAt` 非空 = 没人引用了（待删除） */
 data class LibImage(
     val sha256: String,

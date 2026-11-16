@@ -66,6 +66,14 @@ interface AgentHost {
 
     /** 在标签里打开一篇 Markdown 笔记。 */
     fun openMarkdown(rel: String)
+
+    // ---- 删除（第三批，`../docs/ANDROID-AGENT-PLAN.md §5.3`）----
+
+    /** 这篇的批注在库里被删了（已归档进回收站）：开着的标签从库里重读批注 / 图片笔记、刷书签。 */
+    fun annotationsDeleted(documentId: String)
+
+    /** 界面文案（回收站条目名要随系统语言）。 */
+    fun string(id: Int, vararg args: Any): String
 }
 
 data class AgentView(
@@ -98,6 +106,10 @@ class AgentToolset(private val host: AgentHost) {
         ListAnnotations(), ListMarkdownNotes(), ReadMarkdown(), ListMemories(), SaveMemory(),
         // 第二批：写入（2026-11-15）
         AddNote(), AddHighlight(), AddBookmark(), CreateMarkdown(), EditMarkdown(),
+        // 第三批：删除，先归档进回收站（2026-11-16）
+        DeleteAnnotations(), DeleteMemory(),
+        // 对话记录（agent_turn，2026-11-16）
+        ListConversations(), ReadConversation(),
     )
 
     // ---------------- 小工具 ----------------
@@ -261,7 +273,7 @@ class AgentToolset(private val host: AgentHost) {
 
     private inner class ListAnnotations : T(
         "list_annotations",
-        "List the user's text notes (批注), highlights and bookmarks on a PDF, by page. Pages are 1-based.",
+        "List the user's text notes (批注), highlights, bookmarks and image notes on a PDF, by page, with their ids. Pages are 1-based.",
         opt = listOf(
             str("document", "document id (or title); default = the PDF in the current tab"),
             int("page", "only this page (1-based)"),
@@ -271,7 +283,7 @@ class AgentToolset(private val host: AgentHost) {
             val doc = resolveDoc(args.optString("document", ""))
             val only = if (args.has("page")) args.optInt("page") - 1 else null
             val rows = db("Agent 列批注") { s -> s.notes(doc.id) }
-                .filter { it.kind == NoteKind.TEXT || it.kind == NoteKind.HIGHLIGHT || it.kind == NoteKind.BOOKMARK }
+                .filter { it.kind in ANNOTATION_KINDS }
                 .filter { only == null || it.page == only }
                 .sortedWith(compareBy({ it.page }, { it.anchorY }))
             if (rows.isEmpty()) return "No annotations${if (only != null) " on page ${only + 1}" else ""} in \"${doc.title}\"."
@@ -285,6 +297,7 @@ class AgentToolset(private val host: AgentHost) {
                         "- [note ${n.id.take(8)}] $pg$quote: ${tp.text}"
                     }
                     NoteKind.HIGHLIGHT -> "- [highlight ${n.id.take(8)}] $pg: \"${o.optString("quote").take(300)}\""
+                    NoteKind.IMAGE -> "- [image_note ${n.id.take(8)}] $pg: ${o.optString("caption").ifEmpty { "(no caption)" }}"
                     else -> "- [bookmark ${n.id.take(8)}] $pg: ${o.optString("title")}"
                 }
             }
@@ -364,6 +377,133 @@ class AgentToolset(private val host: AgentHost) {
                 s.upsertAgentMemory(m)
                 if (old == null) "Saved the memory (id ${m.id})." else "Updated the memory (id ${m.id})."
             }
+        }
+    }
+
+    // ================= 对话记录（`../docs/ANDROID-AGENT-PLAN.md §5.4`，同 Mac `MCPTools+Memory.swift`）=================
+
+    private inner class ListConversations : T(
+        "list_conversations",
+        "List earlier conversations held in UniReader's Agent panel in this workspace (each turn — the user's message and the agent's reply, without tool output — is saved when it finishes), most recent first. Read one with read_conversation.",
+        opt = listOf(int("limit", "how many (default 20, max 100)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val limit = args.optInt("limit", 20).coerceIn(1, 100)
+            val list = db("Agent 列对话") { it.recentAgentConversations(limit) }
+            if (list.isEmpty()) return "No conversations are saved in this workspace."
+            return list.joinToString("\n") { c ->
+                "- ${c.lastAt} [${c.agent}] ${conversationTitle(c.firstUserText)} (${c.turns} turns, id ${c.id})"
+            }
+        }
+    }
+
+    private inner class ReadConversation : T(
+        "read_conversation",
+        "Read the turns of an earlier conversation in UniReader's Agent panel: what the user said and what the agent replied (tool output and thinking are not saved). Long conversations come in pages: pass offset = the number given after \"more: offset\" to go on.",
+        req = listOf(str("id", "conversation id from list_conversations")),
+        opt = listOf(int("offset", "first turn to return, 1-based (default 1)"), int("limit", "max turns (default 20, max 100)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val id = args.optString("id").trim()
+            require(id.isNotEmpty()) { "id is required" }
+            val offset = maxOf(1, args.optInt("offset", 1))
+            val limit = args.optInt("limit", 20).coerceIn(1, 100)
+            val all = db("Agent 读对话") { it.agentTurns(id) }
+            require(all.isNotEmpty()) { "no conversation with id $id; call list_conversations" }
+            val start = minOf(offset - 1, all.size)
+            val end = minOf(start + limit, all.size)
+            var text = (start until end).joinToString("\n\n") { i ->
+                val t = all[i]
+                "## Turn ${i + 1} — ${t.createdAt}\n**User:** ${t.userText}\n\n**${t.agent.ifEmpty { "Agent" }}:** ${t.replyText}"
+            }
+            if (end < all.size) text += "\n\n(more: offset ${end + 1})"
+            return text.ifEmpty { "No turns." }
+        }
+    }
+
+    // ================= 第三批：删除（`../docs/ANDROID-AGENT-PLAN.md §5.3`）=================
+    //
+    // 🔴 先归档进回收站、成了才删（红线 11），一次调用一条回收站条目；有一个 id 对不上就一条都不删（同 Mac）。
+
+    /** 完整 id，或至少 8 个字符的前缀（唯一才算）。 */
+    private fun <T> resolveIds(raw: List<String>, all: List<T>, id: (T) -> String, what: String): List<T> {
+        val picked = ArrayList<T>()
+        val missing = ArrayList<String>()
+        val ambiguous = ArrayList<String>()
+        for (r in raw) {
+            val key = r.trim().uppercase()
+            val hits = if (key.length >= 8) all.filter { id(it).uppercase().startsWith(key) } else emptyList()
+            when {
+                hits.isEmpty() -> missing += r
+                hits.size > 1 -> ambiguous += r
+                picked.none { id(it) == id(hits[0]) } -> picked += hits[0]
+            }
+        }
+        require(missing.isEmpty()) { "not found: ${missing.joinToString(", ")}. Take ids from $what. Nothing was deleted." }
+        require(ambiguous.isEmpty()) { "these id prefixes match more than one item: ${ambiguous.joinToString(", ")}; pass the full ids. Nothing was deleted." }
+        return picked
+    }
+
+    private fun idList(args: JSONObject): List<String> {
+        val a = args.optJSONArray("ids")
+        require(a != null && a.length() > 0) { "ids must be a non-empty array of strings" }
+        require(a.length() <= MAX_DELETE_IDS) { "at most $MAX_DELETE_IDS ids per call" }
+        return (0 until a.length()).map { a.optString(it) }
+    }
+
+    private fun strArray(name: String, desc: String) =
+        ToolParameterDescriptor(name, desc, ToolParameterType.List(ToolParameterType.String))
+
+    private inner class DeleteAnnotations : T(
+        "delete_annotations",
+        "Delete highlights, text notes, bookmarks or image notes from one document by id. Take the ids from list_annotations (the full id, or the 8-character prefix shown in its output). Everything deleted in one call goes to UniReader's Trash as one item the user can put back; if any id is not found, nothing is deleted. Handwriting, documents and Markdown notes cannot be deleted with this tool.",
+        req = listOf(strArray("ids", "ids to delete (at most $MAX_DELETE_IDS)")),
+        opt = listOf(str("document", "document id (or title); default = the PDF in the current tab")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val raw = idList(args)
+            val doc = resolveDoc(args.optString("document", ""))
+            val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+            class Item(val id: String, val kind: String, val page: Int, val label: String)
+            val all = db("Agent 列批注") { s -> s.notes(doc.id) }.filter { it.kind in ANNOTATION_KINDS }.map { n ->
+                val o = runCatching { JSONObject(String(n.payload, Charsets.UTF_8)) }.getOrDefault(JSONObject())
+                when (n.kind) {
+                    NoteKind.TEXT -> TextNotePayload(o).let { Item(n.id, "note", n.page, it.quote.ifBlank { it.text }) }
+                    NoteKind.HIGHLIGHT -> Item(n.id, "highlight", n.page, o.optString("quote"))
+                    NoteKind.IMAGE -> Item(n.id, "image_note", n.page, o.optString("caption"))
+                    else -> Item(n.id, "bookmark", n.page, o.optString("title"))
+                }
+            }
+            val picked = resolveIds(raw, all, { it.id }, "list_annotations (only highlights, text notes, bookmarks and image notes can be deleted)")
+            val head = picked[0].label.replace(Regex("\\s+"), " ").trim().take(24)
+            val title = main {
+                when {
+                    head.isEmpty() -> string(com.xvan.unireader.R.string.agent_trash_annotations)
+                    picked.size == 1 -> "“$head”"
+                    else -> string(com.xvan.unireader.R.string.agent_trash_and_more, head, picked.size - 1)
+                }
+            }
+            db("Agent 删批注") { s -> com.xvan.unireader.local.Trash.deleteAnnotations(s, ws, doc.id, doc.title, picked.map { it.id }, title) }
+            main { annotationsDeleted(doc.id) }
+            return (listOf("Deleted ${picked.size} annotation(s) from \"${doc.title}\"; they are in the Trash as “$title”.") +
+                picked.map { "- p.${it.page + 1} ${it.kind} [${it.id.take(8)}] ${it.label.take(80)}" }).joinToString("\n")
+        }
+    }
+
+    private inner class DeleteMemory : T(
+        "delete_memory",
+        "Delete memories that are wrong or no longer useful (they go to UniReader's Trash and can be restored there). Rewrite an outdated one with save_memory id instead of deleting and re-adding it.",
+        req = listOf(strArray("ids", "memories to delete: memory id (full, or its first 8 characters)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val raw = idList(args)
+            val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+            val all = db("Agent 读记忆") { it.agentMemories() }
+            val picked = resolveIds(raw, all, { it.id }, "list_memories")
+            val title = if (picked.size == 1) memoryTitle(picked[0].content)
+            else main { string(com.xvan.unireader.R.string.agent_trash_memories, picked.size) }
+            db("Agent 删记忆") { s -> com.xvan.unireader.local.Trash.deleteAgentMemories(s, ws, picked.map { it.id }, title) }
+            return "Moved ${picked.size} memory(ies) to the Trash."
         }
     }
 
@@ -650,5 +790,24 @@ class AgentToolset(private val host: AgentHost) {
             "Blue" to intArrayOf(120, 190, 255),
             "Pink" to intArrayOf(255, 150, 190),
         )
+
+        /** list_annotations / delete_annotations 认的四种批注（同 Mac：手写、AI 线程不算）。 */
+        val ANNOTATION_KINDS = setOf(NoteKind.TEXT, NoteKind.HIGHLIGHT, NoteKind.BOOKMARK, NoteKind.IMAGE)
+
+        /** 一次最多删几条（同 Mac `MCPTools.maxDeleteIds`）。 */
+        const val MAX_DELETE_IDS = 200
+
+        /** 对话列表里一段对话的名字：第一句话压成一行，最多 40 字（同 Mac `AgentMemoryText.conversationTitle`）。 */
+        fun conversationTitle(firstUserText: String): String {
+            val flat = firstUserText.split('\n', '\r').filter { it.isNotEmpty() }.joinToString(" ").trim()
+            if (flat.isEmpty()) return "Conversation"
+            return if (flat.length > 40) flat.take(40) + "…" else flat
+        }
+
+        /** 回收站条目里一条记忆的名字：第一行，最多 40 字（同 Mac `WorkspaceManager.memoryTitle`）。 */
+        fun memoryTitle(content: String): String {
+            val line = content.split('\n', limit = 2).first()
+            return if (line.length > 40) line.take(40) + "…" else line
+        }
     }
 }

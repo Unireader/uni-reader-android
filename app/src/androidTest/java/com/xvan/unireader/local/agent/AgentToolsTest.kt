@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.xvan.unireader.local.MdNotes
 import com.xvan.unireader.local.PdfSource
+import com.xvan.unireader.local.Trash
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.local.store.LibDocument
 import com.xvan.unireader.local.store.LibraryStore
@@ -36,6 +37,7 @@ class AgentToolsTest {
     private lateinit var tools: Map<String, AgentTool>
     private var bookmarkPings = 0
     private var treePings = 0
+    private var deletePings = 0
 
     private fun pdfFile(): File {
         fun stream(s: String) = "<< /Length ${s.length} >>\nstream\n$s\nendstream"
@@ -81,6 +83,8 @@ class AgentToolsTest {
             override fun markdownApply(rel: String, text: String) = false
             override fun markdownTreeChanged(then: () -> Unit) { treePings++; then() }
             override fun openMarkdown(rel: String) {}
+            override fun annotationsDeleted(documentId: String) { deletePings++ }
+            override fun string(id: Int, vararg args: Any): String = ctx.getString(id, *args)
         }
         tools = AgentToolset(host).tools.associateBy { it.descriptor.name }
     }
@@ -205,5 +209,79 @@ class AgentToolsTest {
         assertEquals("在复习第四章", all[0].content)
         assertEquals(AgentToolset.AGENT_NAME, all[0].agent)
         assertTrue(call("list_memories", """{"query":"第三章"}""").contains("No memory matches"))
+    }
+
+    @Test
+    fun deleteAnnotationsArchivesFirst() {
+        call("add_highlight", """{"page":1,"quote":"Hello World"}""")
+        call("add_bookmark", """{"page":2,"title":"第二页"}""")
+        call("add_note", """{"page":1,"quote":"Second line","text":"留着"}""")
+        val listed = call("list_annotations", "{}")
+        val hl = Regex("\\[highlight ([0-9A-F]{8})]").find(listed)!!.groupValues[1]
+        val bm = Regex("\\[bookmark ([0-9A-F]{8})]").find(listed)!!.groupValues[1]
+
+        // 有一个 id 对不上 → 一条都不删、回收站里什么都没有
+        val err = fails("delete_annotations", """{"ids":["$hl","DEADBEEF"]}""")
+        assertTrue(err, err.contains("DEADBEEF") && err.contains("Nothing was deleted"))
+        assertEquals(3, read { it.notes(doc.id) }.count { it.kind in AgentToolset.ANNOTATION_KINDS })
+        assertTrue(Trash.scan(dir).isEmpty())
+
+        val out = call("delete_annotations", """{"ids":["$hl","${bm.lowercase()}"]}""")
+        assertTrue(out, out.startsWith("Deleted 2 annotation(s)"))
+        val left = read { it.notes(doc.id) }.filter { it.kind in AgentToolset.ANNOTATION_KINDS }
+        assertEquals(listOf(NoteKind.TEXT), left.map { it.kind })
+        assertEquals(1, deletePings)
+        val e = Trash.scan(dir).single()
+        assertEquals(Trash.KIND_ANNOTATIONS, e.manifest.kind)
+        assertEquals(doc.id, e.manifest.documentId)
+        assertEquals(1, e.manifest.counts.highlight)
+        assertEquals(1, e.manifest.counts.bookmark)
+        assertEquals(ctx.getString(com.xvan.unireader.R.string.agent_trash_and_more, "Hello World", 1), e.manifest.title)
+
+        // 从回收站放回去：两条回来、条目没了
+        read { s -> Trash.restore(s, e) }
+        assertEquals(3, read { it.notes(doc.id) }.count { it.kind in AgentToolset.ANNOTATION_KINDS })
+        assertTrue(Trash.scan(dir).isEmpty())
+    }
+
+    @Test
+    fun deleteMemoryArchivesFirst() {
+        val a = Regex("id ([0-9A-F-]{36})").find(call("save_memory", """{"content":"第一条\n第二行"}"""))!!.groupValues[1]
+        call("save_memory", """{"content":"留着的"}""")
+        assertTrue(fails("delete_memory", """{"ids":["${a.take(8)}","0000000"]}""").contains("Nothing was deleted"))
+        assertEquals(2, read { it.agentMemories() }.size)
+
+        assertEquals("Moved 1 memory(ies) to the Trash.", call("delete_memory", """{"ids":["${a.take(8)}"]}"""))
+        assertEquals(listOf("留着的"), read { it.agentMemories() }.map { it.content })
+        val e = Trash.scan(dir).single()
+        assertEquals(Trash.KIND_AGENT_MEMORIES, e.manifest.kind)
+        assertEquals("第一条", e.manifest.title)
+        assertEquals(1, e.manifest.counts.agentMemory)
+
+        read { s -> Trash.restore(s, e) }
+        assertEquals(2, read { it.agentMemories() }.size)
+    }
+
+    @Test
+    fun conversations() {
+        assertEquals("No conversations are saved in this workspace.", call("list_conversations", "{}"))
+        read { s ->
+            fun turn(conv: String, i: Int, at: String) = com.xvan.unireader.local.store.LibAgentTurn(
+                "T$conv$i", conv, "unireader-android", "", "问题 $i\n第二行", "回答 $i", at, at,
+            )
+            for (i in 1..3) s.insertAgentTurn(turn("A", i, "2026-11-16T08:0$i:00Z"))
+            s.insertAgentTurn(turn("B", 1, "2026-11-16T09:00:00Z"))
+            s.insertAgentTurn(turn("A", 1, "2030-01-01T00:00:00Z"))   // 同 id 不覆盖（只追加）
+        }
+        val list = call("list_conversations", "{}").lines()
+        assertEquals(2, list.size)
+        assertTrue(list[0], list[0].contains("id B") && list[0].contains("1 turns"))
+        assertTrue(list[1], list[1].contains("问题 1 第二行") && list[1].contains("3 turns"))
+
+        val page1 = call("read_conversation", """{"id":"A","limit":2}""")
+        assertTrue(page1, page1.contains("## Turn 1") && page1.contains("**unireader-android:** 回答 2") && page1.endsWith("(more: offset 3)"))
+        val page2 = call("read_conversation", """{"id":"A","offset":3}""")
+        assertTrue(page2, page2.startsWith("## Turn 3") && !page2.contains("more:"))
+        assertTrue(fails("read_conversation", """{"id":"NOPE"}""").contains("list_conversations"))
     }
 }

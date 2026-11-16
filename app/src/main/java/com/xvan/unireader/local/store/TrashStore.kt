@@ -119,6 +119,21 @@ object TrashStore {
     }
 
     /**
+     * 一篇文档里指定 id 的几条批注（`note` 行：高亮 / 文字笔记 / 书签 / 图片笔记），同 Mac `TrashStore.archiveNotes`
+     * （Agent `delete_annotations`，`../docs/ANDROID-AGENT-PLAN.md §5.3`）。只搬 `note` 表，批注没有子表。
+     */
+    fun archiveNotes(db: Db, documentId: String, ids: List<String>, path: File): Archived {
+        val marks = ids.joinToString(",") { "?" }
+        return archive(db, path, listOf(Pick("note", "document_id=? AND id IN ($marks)", (listOf(documentId) + ids).toTypedArray())))
+    }
+
+    /** 几条 Agent 记忆（同 Mac `TrashStore.archiveAgentMemories`；Agent `delete_memory`）。 */
+    fun archiveAgentMemories(db: Db, ids: List<String>, path: File): Archived {
+        val marks = ids.joinToString(",") { "?" }
+        return archive(db, path, listOf(Pick("agent_memory", "id IN ($marks)", ids.toTypedArray())))
+    }
+
+    /**
      * 清除做题记录前的归档（同 Mac `TrashStore.archiveExerciseAttempts`，`../docs/EXERCISE-PLAN.md §31`）：那几道题本身 +
      * 它们在 App 里做的作答（不含 `source = mark` 书上的作答）。题目行一起存是为了恢复时外键有着落；条目种类仍是「习题」。
      */

@@ -320,6 +320,13 @@ class ReaderActivity : Activity() {
         override fun markdownTreeChanged(then: () -> Unit) = md.refresh { pushDrawerLibrary(); then() }
 
         override fun openMarkdown(rel: String) = openDoc(TabSet.mdKey(rel))
+
+        override fun annotationsDeleted(documentId: String) {
+            tabs.filter { it.docId == documentId }.forEach { t -> t.canvas?.let { it.reloadNotes(); it.reloadImageNotes() } }
+            pushDrawerBookmarks()
+        }
+
+        override fun string(id: Int, vararg args: Any): String = getString(id, *args)
     }
 
     /** 右侧 Agent 面板（`../docs/ANDROID-AGENT-PLAN.md §6`）：顶栏「agent」键开关，不盖遮罩 */

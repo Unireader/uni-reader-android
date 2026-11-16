@@ -545,4 +545,7 @@
     <string name="agent_chat_path">Request path (optional)</string>
     <string name="agent_chat_path_hint">Default: chat/completions</string>
     <string name="agent_settings_tip">Any OpenAI-compatible service works. These settings stay on this device and are not synced.</string>
+    <string name="agent_trash_annotations">Annotations</string>
+    <string name="agent_trash_and_more">“%1$s” and %2$d more</string>
+    <string name="agent_trash_memories">%d Agent memories</string>
 </resources>

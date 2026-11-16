@@ -111,6 +111,8 @@ class LibraryStore(private val db: Db) : Closeable {
     fun trashArchiveBoard(boardId: String, path: File) = TrashStore.archiveBoard(db, boardId, path)
     fun trashArchiveExercises(ids: List<String>, path: File) = TrashStore.archiveExercises(db, ids, path)
     fun trashArchiveExerciseAttempts(ids: List<String>, path: File) = TrashStore.archiveExerciseAttempts(db, ids, path)
+    fun trashArchiveNotes(documentId: String, ids: List<String>, path: File) = TrashStore.archiveNotes(db, documentId, ids, path)
+    fun trashArchiveAgentMemories(ids: List<String>, path: File) = TrashStore.archiveAgentMemories(db, ids, path)
     fun trashMergeTarget(path: File): String? = TrashStore.mergeTarget(db, path)
     fun trashRestore(path: File, remapDocumentId: String?): Int = TrashStore.restore(db, path, remapDocumentId)
 
@@ -437,6 +439,12 @@ class LibraryStore(private val db: Db) : Closeable {
         db.query("PRAGMA table_info($table)") { it.str("name") }.contains(col)
 
     fun deleteNote(id: String) = db.exec("DELETE FROM note WHERE id=?", arrayOf(id))
+
+    /** 删一篇文档里的几条 note（先归档的那几条，见 `Trash.deleteAnnotations`）。 */
+    fun deleteNotes(documentId: String, ids: List<String>) {
+        if (ids.isEmpty()) return
+        db.exec("DELETE FROM note WHERE document_id=? AND id IN (${ids.joinToString(",") { "?" }})", (listOf(documentId) + ids).toTypedArray())
+    }
 
     /** 擦除是「删若干 + 插若干」，必须一个事务——半途崩掉会留下切了一半的笔迹（§9.3） */
     fun <T> transaction(body: () -> T): T = db.transaction(body)
@@ -876,7 +884,7 @@ class LibraryStore(private val db: Db) : Closeable {
 
     // ---------- Agent 记忆（agent_memory，v25；`../docs/ACP-AGENT-PLAN.md §21`、`../docs/ANDROID-AGENT-PLAN.md §5`）----------
     //
-    // SQL 逐条照抄 Mac `LibraryStore.swift` 的同名一节。删除本端暂不做（要先归档进回收站，红线 11）。
+    // SQL 逐条照抄 Mac `LibraryStore.swift` 的同名一节。删除只经 `Trash.deleteAgentMemories`（先归档，红线 11）。
 
     /** 全部记忆，最近改过的在前。老库没这张表 → 空。 */
     fun agentMemories(): List<LibAgentMemory> {
@@ -884,6 +892,12 @@ class LibraryStore(private val db: Db) : Closeable {
         return db.query("SELECT * FROM agent_memory ORDER BY updated_at DESC, created_at DESC") {
             LibAgentMemory(it.str("id"), it.str("content"), it.str("agent"), it.str("created_at"), it.str("updated_at"))
         }
+    }
+
+    /** 删几条（同 Mac `deleteAgentMemories`）。只许在归档之后调。 */
+    fun deleteAgentMemories(ids: List<String>) {
+        if (ids.isEmpty() || !hasTable("agent_memory")) return
+        db.exec("DELETE FROM agent_memory WHERE id IN (${ids.joinToString(",") { "?" }})", ids.toTypedArray())
     }
 
     /** 新建或整行覆盖（同 id）。`updated_at` 由调用方给（离线镜像 / 服务器同步按它取新）。 */
@@ -895,6 +909,49 @@ class LibraryStore(private val db: Db) : Closeable {
             """.trimIndent(),
             arrayOf(m.id, m.content, m.agent, m.createdAt, m.updatedAt),
         )
+    }
+
+    // ---------- Agent 对话记录（agent_turn，v25；`../docs/ACP-AGENT-PLAN.md §22`、`../docs/ANDROID-AGENT-PLAN.md §5.4`）----------
+    //
+    // SQL 逐条照抄 Mac `LibraryStore.swift` 的同名一节。只追加；没有删除入口（要删得先归档，红线 11）。
+
+    /** 记一轮（只追加，同 id 不覆盖）。 */
+    fun insertAgentTurn(t: LibAgentTurn) {
+        db.exec(
+            """
+            INSERT OR IGNORE INTO agent_turn(id, conversation_id, agent, session_id, user_text, reply_text, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            """.trimIndent(),
+            arrayOf(t.id, t.conversationId, t.agent, t.sessionId, t.userText, t.replyText, t.createdAt, t.updatedAt),
+        )
+    }
+
+    /** 一段对话的各轮，按时间先后。 */
+    fun agentTurns(conversationId: String): List<LibAgentTurn> {
+        if (!hasTable("agent_turn")) return emptyList()
+        return db.query("SELECT * FROM agent_turn WHERE conversation_id=? ORDER BY created_at, id", arrayOf(conversationId)) {
+            LibAgentTurn(
+                it.str("id"), it.str("conversation_id"), it.str("agent"), it.str("session_id"),
+                it.str("user_text"), it.str("reply_text"), it.str("created_at"), it.str("updated_at"),
+            )
+        }
+    }
+
+    /** 最近的几段对话：每段的 id、第一句话、轮数、最后一轮的时间，最近的在前。 */
+    fun recentAgentConversations(limit: Int): List<LibAgentConversation> {
+        if (!hasTable("agent_turn")) return emptyList()
+        return db.query(
+            """
+            SELECT conversation_id, MIN(created_at) AS started, MAX(created_at) AS last, COUNT(*) AS turns,
+                   (SELECT user_text FROM agent_turn t2 WHERE t2.conversation_id = t1.conversation_id
+                    ORDER BY created_at, id LIMIT 1) AS first_text,
+                   (SELECT agent FROM agent_turn t3 WHERE t3.conversation_id = t1.conversation_id
+                    ORDER BY created_at DESC, id DESC LIMIT 1) AS agent
+            FROM agent_turn t1 GROUP BY conversation_id ORDER BY last DESC LIMIT ${limit.coerceAtLeast(1)}
+            """.trimIndent(),
+        ) {
+            LibAgentConversation(it.str("conversation_id"), it.str("first_text"), it.str("agent"), it.int("turns"), it.str("started"), it.str("last"))
+        }
     }
 
     // ---------- 习题（exercise / exercise_attempt，v20；`../docs/EXERCISE-PLAN.md §10.2`）----------

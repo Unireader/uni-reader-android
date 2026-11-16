@@ -38,7 +38,7 @@ object Trash {
     const val KIND_EXERCISES = "exercises"
     /** 几份 Agent 上下文（v23，Mac 删的；本端不建这种条目，只列出来、能恢复） */
     const val KIND_AGENT_CONTEXTS = "agentContexts"
-    /** 几条 Agent 记忆（v25，Mac 删的；本端不建这种条目，只列出来、能恢复） */
+    /** 几条 Agent 记忆（v25；本端 Agent `delete_memory` 也建，`../docs/ANDROID-AGENT-PLAN.md §5.3`） */
     const val KIND_AGENT_MEMORIES = "agentMemories"
     /** 一份日程计划连同它的事项（v26，Mac 删的；本端不建这种条目，只列出来、能恢复） */
     const val KIND_SCHEDULE = "schedule"
@@ -223,6 +223,32 @@ object Trash {
             Manifest(KIND_EXERCISES, Date(), title, documentTitle = documentTitle, counts = a.counts)
         }
         s.clearExerciseAttempts(ids)
+        return e
+    }
+
+    /**
+     * 删一篇文档里的几条批注（高亮 / 文字笔记 / 书签 / 图片笔记）：先归档，归档到的条数对得上才删行
+     * （同 Mac `Trash.archiveNotes` + MCP `delete_annotations`）。一次调用一条回收站条目。
+     */
+    fun deleteAnnotations(s: LibraryStore, ws: File, documentId: String, documentTitle: String, ids: List<String>, title: String): Entry {
+        val e = archive(ws, title) { snap ->
+            val a = s.trashArchiveNotes(documentId, ids, snap)
+            if (a.counts.total != ids.size) throw java.io.IOException("只归档到 ${a.counts.total} / ${ids.size} 条")
+            Manifest(KIND_ANNOTATIONS, Date(), title, documentId = documentId, documentTitle = documentTitle, counts = a.counts, images = a.images)
+        }
+        s.deleteNotes(documentId, ids)
+        s.reconcileImageOrphans(e.manifest.images.toSet())
+        return e
+    }
+
+    /** 删几条 Agent 记忆：先归档，条数对得上才删（同 Mac `WorkspaceManager.trashAgentMemories`）。 */
+    fun deleteAgentMemories(s: LibraryStore, ws: File, ids: List<String>, title: String): Entry {
+        val e = archive(ws, title) { snap ->
+            val a = s.trashArchiveAgentMemories(ids, snap)
+            if (a.counts.agentMemory != ids.size) throw java.io.IOException("只归档到 ${a.counts.agentMemory} / ${ids.size} 条记忆")
+            Manifest(KIND_AGENT_MEMORIES, Date(), title, counts = a.counts)
+        }
+        s.deleteAgentMemories(ids)
         return e
     }
 
