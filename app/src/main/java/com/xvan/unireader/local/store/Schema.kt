@@ -38,8 +38,9 @@ object Schema {
      * 同 v23，本端没有 Agent 面板，只建表、随离线镜像 / 服务器同步；回收站认得 Mac 建的 `agentMemories` 条目并能恢复。
      * v26：`schedule_plan`（日程计划）+ `schedule_item`（日程事项），`../docs/SCHEDULE-PLAN.md`；
      * 本端本轮没有日程界面，只建表、随离线镜像 / 服务器同步；回收站认得 Mac 建的 `schedule` 条目并能恢复。
+     * v27：`exercise` 加 `marks`（用户在题干 / 文章 / 选项上划的高亮，JSON 数组，`../docs/EXERCISE-PLAN.md §32`；本端模式1 读写）。
      */
-    const val VERSION = 26
+    const val VERSION = 27
 
     /**
      * v14 `page_align`（`../docs/SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并
@@ -145,7 +146,8 @@ object Schema {
           updated_at TEXT NOT NULL,
           chapter TEXT NOT NULL DEFAULT '',
           note TEXT NOT NULL DEFAULT '',
-          tags TEXT NOT NULL DEFAULT ''
+          tags TEXT NOT NULL DEFAULT '',
+          marks TEXT NOT NULL DEFAULT ''
         )
         """,
         "CREATE INDEX IF NOT EXISTS idx_exercise_doc ON exercise(document_id, page, seq)",
@@ -397,6 +399,8 @@ object Schema {
         Triple("exercise", "tags", "TEXT NOT NULL DEFAULT ''"),
         // v25 只新增 agent_memory、agent_turn 两张表（上面 DDL 的 CREATE … IF NOT EXISTS 已覆盖，无需 ADD COLUMN）
         // v26 只新增 schedule_plan、schedule_item 两张表（同上，无需 ADD COLUMN）
+        // v27：题目上的高亮（JSON 数组，`../docs/EXERCISE-PLAN.md §32`），与 Mac 同序
+        Triple("exercise", "marks", "TEXT NOT NULL DEFAULT ''"),
     )
 
     private fun columnsOf(db: Db, table: String): Set<String> =

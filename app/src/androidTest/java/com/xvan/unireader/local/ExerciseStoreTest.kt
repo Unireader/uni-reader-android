@@ -83,6 +83,23 @@ class ExerciseStoreTest {
     }
 
     @Test
+    fun 题目上的高亮() {
+        val ws = freshWs("marks")
+        seed(ws, listOf("E1"))
+        LibraryStore.open(ws).use { s ->
+            assertTrue(s.exercise("E1")!!.marks.isEmpty())
+            val list = listOf(com.xvan.unireader.local.exercise.ExMark("passage", "adapt", 0),
+                              com.xvan.unireader.local.exercise.ExMark("option:B", "容量", 1))
+            s.setExerciseMarks("E1", com.xvan.unireader.local.exercise.ExMark.encode(list), at = "2026-11-16T00:00:00.000Z")
+            val e = s.exercise("E1")!!
+            assertEquals(list, e.marks)
+            assertEquals("改了 updated_at（同步按它取新）", "2026-11-16T00:00:00.000Z", e.updatedAt)
+            s.setExerciseMarks("E1", "")
+            assertTrue(s.exercise("E1")!!.marks.isEmpty())
+        }
+    }
+
+    @Test
     fun 删题先归档再删_能恢复() {
         val ws = freshWs("delete")
         val docId = seed(ws, listOf("E1", "E2", "E3"))

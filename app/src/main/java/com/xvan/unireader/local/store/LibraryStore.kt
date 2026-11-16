@@ -1328,6 +1328,11 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /** 题目笔记（同 Mac `setExerciseNote`）：空串 = 删掉。同时改 `updated_at`（离线镜像 / 服务器按它取新）。 */
+    /** 题目上的高亮（v27，`../docs/EXERCISE-PLAN.md §32`）：整组替换，空串 = 没有；同时改 `updated_at`（同步按它取新）。 */
+    fun setExerciseMarks(id: String, marks: String, at: String = nowIso()) {
+        db.exec("UPDATE exercise SET marks=?, updated_at=? WHERE id=?", arrayOf(marks, at, id))
+    }
+
     fun setExerciseNote(id: String, note: String, at: String = nowIso()) {
         db.exec("UPDATE exercise SET note=?, updated_at=? WHERE id=?", arrayOf(note, at, id))
     }
@@ -1391,6 +1396,8 @@ class LibraryStore(private val db: Db) : Closeable {
             createdAt = c.str("created_at"), updatedAt = c.str("updated_at"),
             chapter = com.xvan.unireader.local.exercise.ExChapter.parse(c.str("chapter")),
             note = c.getColumnIndex("note").let { i -> if (i < 0 || c.isNull(i)) "" else c.getString(i) },   // 只读打开的老库没有这一列
+            marks = com.xvan.unireader.local.exercise.ExMark.decode(
+                c.getColumnIndex("marks").let { i -> if (i < 0 || c.isNull(i)) "" else c.getString(i) }),
         )
     }
 

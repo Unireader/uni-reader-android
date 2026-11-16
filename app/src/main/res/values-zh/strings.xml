@@ -222,6 +222,11 @@
     <string name="ex_wrong">错</string>
     <string name="ex_not_judged">暂时没法判</string>
     <string name="ex_meta_index">第 %1$d / %2$d 题</string>
+    <string name="ex_meta_blank">第 %1$s 空</string>
+    <string name="ex_reading">阅读理解</string>
+    <string name="ex_cloze">完形填空</string>
+    <string name="ex_highlight">高亮</string>
+    <string name="ex_remove_highlight">去掉高亮</string>
     <string name="ex_meta_number">题号 %1$s</string>
     <string name="ex_meta_page">第 %1$d 页</string>
     <string name="ex_multiple">多选</string>

@@ -106,8 +106,8 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
-  （`Schema.VERSION = 26`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
-  `CREATE … IF NOT EXISTS` 补齐到 v26 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
+  （`Schema.VERSION = 27`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  `CREATE … IF NOT EXISTS` 补齐到 v27 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
   `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，
   `../docs/ACP-AGENT-PLAN.md §12`）2026-11-16 起本端 Agent 也读写（存 / 带上，删除没做），随离线镜像 / 服务器同步（`MirrorFp` 向量 #34）、回收站认得 Mac 建的
@@ -319,6 +319,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - **模式2 显示高亮 / 选区批注底色（2026-11-15）**：Mac 的页图只画 PDF，这一层平板自己画：收 `marks`(0x64，`../docs/PROTOCOL.md §4.11`)
   → `PadActivity.onMarks` → `setTextFills`（共用的 `TextFill` / `PadOverlays.drawTextFill`），透明度口径同模式1 读库那段。
   批注带 `noteId`（框选挪动时底色跟着图钉走）；高亮不填 `highlightId`，模式2 点中高亮没有操作面板。
+- **阅读理解 / 完形填空 + 题目上的高亮（2026-11-16，模式1，`../docs/EXERCISE-PLAN.md §32`）**：文章在每道题的 payload（`ExPassage`，完形填空的空 `{{21}}`），
+  `ExerciseScreen.practiceSplit` 宽 ≥ 820dp 文章在左、否则在上；点文章里的 (21) 跳题（按点到的字认）。高亮 = v27 `exercise.marks`（`ExMark` ↔ Mac `ExerciseMark`，
+  按显示出来的文字 + 第几处记），判完后正文可长按选中、菜单多「高亮 / 去掉高亮」（`shared/exercise/ExMarks`），`ExHost.canMark` / `setMarks` 只有模式1；
+  模式2 由 Mac 把文章拼进题干发过来，没有高亮。MirrorFp 向量 #40（v27 `marks` 列，#30/#33/#35 随列规格变）。
 - **清除做题记录（2026-11-15，模式1，`../docs/EXERCISE-PLAN.md §31`）**：列表多选操作条 + 练习页 ⋯；`ExHost.canClearRecords` / `clearRecords`，
   `Trash.clearExerciseAttempts`（先归档再清，书上的作答留着，错题本重算），库层照抄 Mac。
 - **模式2 阅读 Markdown 笔记（2026-11-14，只读，`../docs/MARKDOWN-NOTES-PLAN.md §21`）**：Mac 标签是 Markdown 笔记时收 `mdNote`（0x63，`../docs/PROTOCOL.md §4.10`），

@@ -226,6 +226,11 @@
     <string name="ex_wrong">wrong</string>
     <string name="ex_not_judged">not judged</string>
     <string name="ex_meta_index">Question %1$d of %2$d</string>
+    <string name="ex_meta_blank">Blank %1$s</string>
+    <string name="ex_reading">Reading Comprehension</string>
+    <string name="ex_cloze">Cloze</string>
+    <string name="ex_highlight">Highlight</string>
+    <string name="ex_remove_highlight">Remove Highlight</string>
     <string name="ex_meta_number">No. %1$s</string>
     <string name="ex_meta_page">Page %1$d</string>
     <string name="ex_multiple">Multiple choice</string>

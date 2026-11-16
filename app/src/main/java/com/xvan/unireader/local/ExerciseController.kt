@@ -399,6 +399,16 @@ class ExerciseController(private val a: Activity) : ExHost {
         write("题目笔记 ${id.take(8)}") { it.setExerciseNote(id, t) }
     }
 
+    override val canMark: Boolean get() = true
+
+    /** 题目上的高亮（`../docs/EXERCISE-PLAN.md §32`）：整组替换。 */
+    override fun setMarks(id: String, marks: List<com.xvan.unireader.shared.exercise.ExMarkView>) {
+        val list = com.xvan.unireader.local.exercise.ExMark.clean(marks.map { com.xvan.unireader.local.exercise.ExMark(it.field, it.text, it.nth) })
+        if (deck?.items?.firstOrNull { it.id == id }?.marks == list) return
+        val enc = com.xvan.unireader.local.exercise.ExMark.encode(list)
+        write("题目高亮 ${id.take(8)}") { it.setExerciseMarks(id, enc) }
+    }
+
     override val canDelete: Boolean get() = true
 
     /** 删题：先归档进回收站，成了才删（红线 11）；归档失败一道都不删、提示一句。 */

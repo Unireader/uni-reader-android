@@ -5,6 +5,7 @@ import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.shared.exercise.ExCard
 import com.xvan.unireader.shared.exercise.ExDeckView
 import com.xvan.unireader.shared.exercise.ExJudge
+import com.xvan.unireader.shared.exercise.ExMarkView
 import com.xvan.unireader.shared.exercise.ExShown
 
 /**
@@ -248,7 +249,16 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
 
     /** 给界面的那一份（字段同线上 `exDeck`，`../docs/PROTOCOL.md §4.9`）。 */
     fun view(title: String): ExDeckView {
-        val cards = items.map(::card)
+        // 完形填空做过的空：同一篇文章里每空显示着的作答换成选的词（文章里接在空号后面）
+        val filled = HashMap<String, HashMap<String, String>>()
+        for (x in items) {
+            val k = x.passageKey ?: continue
+            val b = x.payload.blank ?: continue
+            val a = answer(x) ?: continue
+            val words = x.payload.options.filter { it.key in a.chosen }.map { it.text.split(Regex("\\s+")).filter(String::isNotEmpty).joinToString(" ") }
+            if (words.isNotEmpty()) filled.getOrPut(k) { HashMap() }[b] = words.joinToString(" / ")
+        }
+        val cards = items.map { card(it, filled[it.passageKey] ?: emptyMap()) }
         return ExDeckView(
             scope = scope.key, title = title, filter = filter.code, index = index,
             done = answers.size, right = answers.values.count { it.correct == true }, cards = cards,
@@ -257,7 +267,7 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
         )
     }
 
-    private fun card(e: Exercise): ExCard {
+    private fun card(e: Exercise, filled: Map<String, String>): ExCard {
         val st = stats[e.id]
         val a = answer(e)
         val shown = when {
@@ -295,6 +305,12 @@ class LocalExerciseDeck private constructor(val scope: ExScope) {
             feedback = a?.feedback ?: "",
             handwritten = a?.hasInk ?: false,
             note = e.note,
+            passageKey = e.passageKey ?: "",
+            passageCloze = e.payload.passage?.isCloze == true,
+            passageTitle = e.payload.passage?.title ?: "",
+            passageText = e.payload.passage?.displayText(filled) ?: "",
+            blank = e.payload.blank ?: "",
+            marks = e.marks.map { ExMarkView(it.field, it.text, it.nth) },
         )
     }
 }

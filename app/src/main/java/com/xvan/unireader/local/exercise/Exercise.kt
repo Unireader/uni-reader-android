@@ -41,6 +41,10 @@ data class ExPayload(
      * （`../docs/EXERCISE-PLAN.md §30`）。只在有 [region] 时才算数。
      */
     val skipPages: List<Int>? = null,
+    /** 阅读理解 / 完形填空的文章（同 Mac `ExercisePayload.passage`，`../docs/EXERCISE-PLAN.md §32`）；null = 普通题。 */
+    val passage: ExPassage? = null,
+    /** 完形填空：这道题填文章里的哪一空（只有完形填空有）。 */
+    val blank: String? = null,
 ) {
     companion object {
         /** 坏了 → null（同 Mac：调用方跳过这一行）。 */
@@ -64,7 +68,8 @@ data class ExPayload(
                     (row as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
                 },
                 nextRegions = cleanNext(o["next_regions"]),
-            ).let { p ->
+                passage = ExPassage.parse(o["passage"]),
+            ).let { p -> if (p.passage?.isCloze == true) p.copy(blank = o["blank"] as? String) else p }.let { p ->
                 if (p.region == null) p
                 else p.copy(skipPages = cleanSkip(o["skip_pages"], 1 + (p.nextRegions?.size ?: 0)))
             }
@@ -97,6 +102,139 @@ data class ExPayload(
                 out.add(box)
             }
             return out.ifEmpty { null }
+        }
+    }
+}
+
+/**
+ * 阅读理解 / 完形填空的文章（同 Mac `ExercisePassage`，`../docs/EXERCISE-PLAN.md §32`）：同一篇的几道题各带一份，
+ * 按 `(document_id, id)` 认同一篇。完形填空的空在正文里写成 `{{21}}`。
+ */
+data class ExPassage(val id: String, val type: String, val title: String?, val text: String) {
+    val isCloze: Boolean get() = type == "cloze"
+
+    /** 正文里出现的空号，按先后（同 Mac `blankKeys`）。 */
+    val blankKeys: List<String> get() = BLANK.findAll(text).map { it.groupValues[1] }.toList()
+
+    /**
+     * 显示用的正文（安卓版）：每个 `{{21}}` 换成加粗的空号 [blankLabel]（Mac 是可点的链接；这里点空号由界面按位置认），
+     * [filled] 里有的空号后面接上选的词。阅读理解原样。
+     */
+    fun displayText(filled: Map<String, String> = emptyMap()): String {
+        if (!isCloze) return text
+        return BLANK.replace(text) { m ->
+            val key = m.groupValues[1]
+            var label = blankLabel(key)
+            val w = filled[key]
+            if (!w.isNullOrEmpty()) label += " " + w.replace('[', '(').replace(']', ')').replace('\n', ' ')
+            "**$label**"
+        }
+    }
+
+    companion object {
+        /** 同 Mac `ExercisePassage.blankPattern`。 */
+        val BLANK = Regex("\\{\\{\\s*([^{}\\s]{1,8})\\s*\\}\\}")
+
+        /** 空号的样子 `(21)`（括号里是窄的不换行空格，同 Mac `blankLabel`：正文里不会撞上同样的字）。 */
+        fun blankLabel(key: String): String = "(\u202F$key\u202F)"
+
+        /** 坏了 / 缺键 → null（同 Mac：文章坏了当没有，题目照样读得出）。 */
+        fun parse(raw: Any?): ExPassage? {
+            val m = raw as? Map<*, *> ?: return null
+            val id = m["id"] as? String ?: return null
+            val type = m["type"] as? String ?: return null
+            val text = m["text"] as? String ?: return null
+            return ExPassage(id, if (type == "cloze") "cloze" else "reading", m["title"] as? String, text)
+        }
+    }
+}
+
+/**
+ * 用户在题目上划的一处高亮（v27 `exercise.marks`，同 Mac `ExerciseMark`，`../docs/EXERCISE-PLAN.md §32`）：
+ * 哪一块（`stem` / `passage` / `option:A`）、哪几个字、是这一块里第几处同样的字（0 起）。按**显示出来的文字**数，
+ * 两端各按自己排出来的字找（纯文字的题两端一样；带公式的那几处可能找不到，找不到就不显示）。
+ */
+data class ExMark(val field: String, val text: String, val nth: Int) {
+    companion object {
+        const val STEM = "stem"
+        const val PASSAGE = "passage"
+        fun option(key: String) = "option:$key"
+        const val MAX_COUNT = 200
+        const val MAX_LENGTH = 2000
+
+        fun decode(s: String): List<ExMark> {
+            if (s.isEmpty()) return emptyList()
+            val list = MiniJson.parse(s.toByteArray()) as? List<*> ?: return emptyList()
+            return clean(list.mapNotNull { x ->
+                val m = x as? Map<*, *> ?: return@mapNotNull null
+                ExMark(m["field"] as? String ?: return@mapNotNull null, m["text"] as? String ?: return@mapNotNull null,
+                       (m["nth"] as? Double)?.toInt() ?: return@mapNotNull null)
+            })
+        }
+
+        /** JSON（键按字母序、斜杠不转义，同 Mac 的 `JSONEncoder` 设置）；空 → 空串。 */
+        fun encode(marks: List<ExMark>): String {
+            val list = clean(marks)
+            if (list.isEmpty()) return ""
+            return list.joinToString(",", "[", "]") {
+                "{\"field\":${jsonStr(it.field)},\"nth\":${it.nth},\"text\":${jsonStr(it.text)}}"
+            }
+        }
+
+        /** 去空 / 太长 / 重复，留先写的；超过上限丢后面的（同 Mac `clean`）。 */
+        fun clean(marks: List<ExMark>): List<ExMark> {
+            val out = LinkedHashSet<ExMark>()
+            for (m in marks) {
+                if (m.field.isEmpty() || m.text.isEmpty() || m.text.length > MAX_LENGTH || m.nth < 0) continue
+                out.add(m)
+                if (out.size >= MAX_COUNT) break
+            }
+            return out.toList()
+        }
+
+        /** [text] 在 [plain] 里第 [nth] 处的位置（起点, 终点）；找不到 → null（同 Mac `locate`，可重叠地数）。 */
+        fun locate(text: String, nth: Int, plain: String): IntRange? {
+            if (text.isEmpty()) return null
+            var from = 0
+            var k = 0
+            while (from < plain.length) {
+                val i = plain.indexOf(text, from)
+                if (i < 0) return null
+                if (k == nth) return i until i + text.length
+                k++
+                from = i + 1
+            }
+            return null
+        }
+
+        /** [plain] 里 [start]..[end]（不含）那一段记成一处高亮（同 Mac `make`）。 */
+        fun make(field: String, start: Int, end: Int, plain: String): ExMark? {
+            if (start < 0 || end <= start || end > plain.length) return null
+            val text = plain.substring(start, end)
+            if (text.isBlank()) return null
+            var nth = 0
+            var from = 0
+            while (true) {
+                val i = plain.indexOf(text, from)
+                if (i < 0 || i >= start) break
+                nth++
+                from = i + 1
+            }
+            return ExMark(field, text, nth)
+        }
+
+        private fun jsonStr(s: String): String {
+            val b = StringBuilder("\"")
+            for (c in s) when {
+                c == '"' -> b.append("\\\"")
+                c == '\\' -> b.append("\\\\")
+                c == '\n' -> b.append("\\n")
+                c == '\r' -> b.append("\\r")
+                c == '\t' -> b.append("\\t")
+                c.code < 0x20 -> b.append(String.format("\\u%04x", c.code))
+                else -> b.append(c)
+            }
+            return b.append('"').toString()
         }
     }
 }
@@ -153,7 +291,12 @@ data class Exercise(
     val chapter: List<String>,
     /** 题目笔记（v22 `exercise.note`，Markdown + `$…$`；空 = 没写。用户状态，Agent 重导题目不碰）。 */
     val note: String = "",
+    /** 用户划的高亮（v27 `exercise.marks`，`../docs/EXERCISE-PLAN.md §32`）。 */
+    val marks: List<ExMark> = emptyList(),
 ) {
+    /** 同一篇文章的认法：文档 + 文章 id（同 Mac `passageKey`）；不属于文章 → null。 */
+    val passageKey: String? get() = payload.passage?.let { (documentId ?: "") + "|" + it.id }
+
     val multiple: Boolean get() = kind == KIND_MULTIPLE
     /** 选择题（单选 / 多选）。 */
     val isChoice: Boolean get() = kind == KIND_SINGLE || kind == KIND_MULTIPLE

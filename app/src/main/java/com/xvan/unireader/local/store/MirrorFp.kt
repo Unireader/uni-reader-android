@@ -165,6 +165,8 @@ object MirrorFp {
                 t("note"),
                 // v24 表尾：题目标签（JSON 字符串数组，同样改 updated_at；与 Mac 同序）
                 t("tags"),
+                // v27 表尾：题目上的高亮（JSON 数组，同样改 updated_at；与 Mac 同序，`../docs/EXERCISE-PLAN.md §32`）
+                t("marks"),
             ),
             lww = "updated_at",
         ),

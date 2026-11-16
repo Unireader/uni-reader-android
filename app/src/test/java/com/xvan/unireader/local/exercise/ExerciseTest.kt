@@ -668,4 +668,54 @@ class ExerciseTest {
         // 没给做题进度的树（调用方没调 withDone）一行都不显示
         assertTrue(ExGroupNode.build(sum, listOf(d to "进度"), { it.key }, "x").all { it.done == null })
     }
+
+    // ---------- 阅读理解 / 完形填空 + 高亮（`../docs/EXERCISE-PLAN.md §32`，↔ spike/exercise-test.swift 同名两段） ----------
+
+    @Test
+    fun passage() {
+        val raw = """{"stem":"","options":[{"key":"A","text":"ability"},{"key":"B","text":"capacity"}],"answer":["B"],""" +
+            """"passage":{"id":"p1","type":"cloze","title":"Section I","text":"We {{21}} the  {{ 22 }} here.\n\nAnd {{23}}."},"blank":"22"}"""
+        val p = ExPayload.parse(raw.toByteArray())!!
+        val ps = p.passage!!
+        assertTrue(ps.isCloze)
+        assertEquals("22", p.blank)
+        assertEquals(listOf("21", "22", "23"), ps.blankKeys)
+        val shown = ps.displayText(mapOf("22" to "capacity [x]"))
+        assertTrue(shown.contains("**(\u202F21\u202F)**"))
+        assertTrue(shown.contains("**(\u202F22\u202F) capacity (x)**"))
+        assertFalse(shown.contains("{{"))
+        // 阅读理解不认 blank、正文原样；文章坏了当没有、题目照样读得出
+        val r = ExPayload.parse("""{"stem":"x","passage":{"id":"a","type":"reading","text":"t"},"blank":"3"}""".toByteArray())!!
+        assertEquals(null, r.blank)
+        assertEquals("t", r.passage!!.displayText(mapOf("1" to "x")))
+        val bad = ExPayload.parse("""{"stem":"x","passage":"oops","blank":"3"}""".toByteArray())!!
+        assertNull(bad.passage)
+        assertNull(bad.blank)
+        // 同一篇文章按 文档 + 文章 id 认
+        val e = ex("e1", doc = "docP").copy(payload = p)
+        assertEquals("docP|p1", e.passageKey)
+        assertNull(ex("e2").passageKey)
+    }
+
+    @Test
+    fun marks() {
+        val plain = "the cat and the cat and the dog"
+        assertEquals(ExMark("passage", "cat", 1), ExMark.make("passage", 16, 19, plain))
+        assertEquals(16 until 19, ExMark.locate("cat", 1, plain))
+        assertNull(ExMark.locate("cat", 2, plain))
+        assertNull(ExMark.make("stem", 3, 4, plain))
+        assertNull(ExMark.make("stem", 30, 35, plain))
+        assertEquals(1, ExMark.make("stem", 1, 3, "aaaa")!!.nth)
+        assertEquals(1 until 3, ExMark.locate("aa", 1, "aaaa"))
+        val list = listOf(ExMark("stem", "x", 0), ExMark("stem", "x", 0), ExMark("", "y", 0), ExMark("option:A", "", 0))
+        assertEquals(listOf(ExMark("stem", "x", 0)), ExMark.clean(list))
+        assertEquals("", ExMark.encode(emptyList()))
+        assertTrue(ExMark.decode("").isEmpty() && ExMark.decode("garbage").isEmpty())
+        // 与 Mac 的 JSONEncoder（键排好序、斜杠不转义）逐字相同
+        val enc = ExMark.encode(listOf(ExMark("option:B", "容量", 0)))
+        assertEquals("[{\"field\":\"option:B\",\"nth\":0,\"text\":\"容量\"}]", enc)
+        assertEquals(listOf(ExMark("option:B", "容量", 0)), ExMark.decode(enc))
+        val tricky = listOf(ExMark("stem", "a\"b\\c\nd/e", 2))
+        assertEquals(tricky, ExMark.decode(ExMark.encode(tricky)))
+    }
 }

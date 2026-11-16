@@ -25,6 +25,15 @@ object ExJudge {
     fun of(b: Boolean?): Int = when (b) { null -> NONE; true -> RIGHT; false -> WRONG }
 }
 
+/** 用户在题目上划的一处高亮（同 Mac `ExerciseMark`：哪一块、哪几个字、第几处，`../docs/EXERCISE-PLAN.md §32`）。 */
+data class ExMarkView(val field: String, val text: String, val nth: Int) {
+    companion object {
+        const val STEM = "stem"
+        const val PASSAGE = "passage"
+        fun option(key: String) = "option:$key"
+    }
+}
+
 /** 一道题：内容 + 该显示的作答 + 统计。 */
 data class ExCard(
     val id: String,
@@ -83,10 +92,27 @@ data class ExCard(
     val handwritten: Boolean = false,
     /** 题目笔记（Markdown + `$…$`，空 = 没写；模式2 的 `exDeck` 不带它 = 恒空）。判完才显示，同解析。 */
     val note: String = "",
+    /**
+     * 阅读理解 / 完形填空（`../docs/EXERCISE-PLAN.md §32`，只有模式1 有）：同一篇文章的认法（空 = 不属于文章）、
+     * 是不是完形填空、标题、显示用的正文（Markdown；完形填空的空已换成 `(21)`，做过的空接上选的词）。
+     */
+    val passageKey: String = "",
+    val passageCloze: Boolean = false,
+    val passageTitle: String = "",
+    val passageText: String = "",
+    /** 完形填空：这道题填哪一空（空 = 不是完形填空）。 */
+    val blank: String = "",
+    /** 用户划的高亮（判完才显示）。 */
+    val marks: List<ExMarkView> = emptyList(),
 ) {
     val judged: Boolean get() = shown != ExShown.NONE
-    /** 列表里一行的题干：去掉换行、并掉连续空白。 */
-    val plainStem: String get() = stem.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+    /** 列表里一行的题干：去掉换行、并掉连续空白。完形填空没有题干：写「(21) 选项 / 选项」（同 Mac）。 */
+    val plainStem: String get() {
+        fun collapse(t: String) = t.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+        val s = collapse(stem)
+        if (s.isNotEmpty() || blank.isEmpty()) return s
+        return "($blank) " + options.joinToString(" / ") { collapse(it.second) }
+    }
     /** 填空题（本端可作答的那种，主观题不算）。 */
     val isFill: Boolean get() = kind == 3 && !macOnly
     /** 主观题（本端可打字作答的那种）：一个多行输入框，参考答案是一段 Markdown，一律自己判。 */
@@ -173,6 +199,10 @@ interface ExHost {
     val canClearRecords: Boolean get() = false
     /** 清除这几道题的做题记录（界面已经确认过）；null = 这一组的全部题（不管筛选）。只有 [canClearRecords] 为真时会调。 */
     fun clearRecords(ids: List<String>?) {}
+    /** 能不能在题目上划高亮（只有模式1：模式2 的线格式不带高亮，`../docs/EXERCISE-PLAN.md §32`）。 */
+    val canMark: Boolean get() = false
+    /** 存这道题的高亮（整组替换）。只有 [canMark] 为真时会调。 */
+    fun setMarks(id: String, marks: List<ExMarkView>) {}
     /** 能不能「设置章节…」（只有模式1）。 */
     val canSetChapter: Boolean get() = false
     /** 设置章节（长按列表多选之后）。只有 [canSetChapter] 为真时会调。 */

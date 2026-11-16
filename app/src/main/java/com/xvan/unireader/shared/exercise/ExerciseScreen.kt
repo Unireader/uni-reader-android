@@ -530,6 +530,160 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(navBar, LinearLayout.LayoutParams(-1, -2))
     }
 
+    // ---------- 阅读理解 / 完形填空的文章（`../docs/EXERCISE-PLAN.md §32`，同 Mac：宽时在左、窄时在上，自己滚动） ----------
+
+    private val passageTitle = TextView(a).apply {
+        textSize = 18f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(Ui.onSurface(a))
+    }
+    private val passageBlocks = blocks(17f)
+    /** 文章那一栏眼下显示的正文 / 哪一篇（正文变了才重排，换了一篇才滚回顶上）。 */
+    private var passageShownText = ""
+    private var passageShownKey = ""
+    private val passageScroll = ScrollView(a).apply {
+        isFillViewport = true
+        addView(
+            CenterColumn(a, dp(720)).apply {
+                addView(LinearLayout(a).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(20), dp(16), dp(20), dp(24))
+                    addView(passageTitle, LinearLayout.LayoutParams(-1, -2))
+                    addView(passageBlocks, lp(top = 10))
+                })
+            },
+            FrameLayout.LayoutParams(-1, -2),
+        )
+        visibility = View.GONE
+    }
+    private val passageLine = View(a).apply {
+        setBackgroundColor(Ui.outline(a))
+        visibility = View.GONE
+    }
+
+    /** 文章一栏 + 分隔线 + 练习页：总宽 ≥ 820dp 左右排（文章占一半），否则上下排（文章占 42%）。没有文章 = 练习页铺满。 */
+    private val practiceSplit = object : ViewGroup(a) {
+        private fun wide(w: Int) = w >= dp(SPLIT_MIN_DP)
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val w = MeasureSpec.getSize(widthMeasureSpec)
+            val h = MeasureSpec.getSize(heightMeasureSpec)
+            fun exact(v: View, vw: Int, vh: Int) =
+                v.measure(MeasureSpec.makeMeasureSpec(maxOf(0, vw), MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(maxOf(0, vh), MeasureSpec.EXACTLY))
+            if (passageScroll.visibility == View.GONE) {
+                exact(practicePane, w, h)
+            } else if (wide(w)) {
+                val pw = w / 2
+                exact(passageScroll, pw, h); exact(passageLine, 1, h); exact(practicePane, w - pw - 1, h)
+            } else {
+                val ph = (h * 0.42f).toInt()
+                exact(passageScroll, w, ph); exact(passageLine, w, 1); exact(practicePane, w, h - ph - 1)
+            }
+            setMeasuredDimension(w, h)
+        }
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            val w = r - l
+            if (passageScroll.visibility == View.GONE) {
+                practicePane.layout(0, 0, w, b - t)
+            } else if (wide(w)) {
+                val pw = passageScroll.measuredWidth
+                passageScroll.layout(0, 0, pw, b - t)
+                passageLine.layout(pw, 0, pw + 1, b - t)
+                practicePane.layout(pw + 1, 0, w, b - t)
+            } else {
+                val ph = passageScroll.measuredHeight
+                passageScroll.layout(0, 0, w, ph)
+                passageLine.layout(0, ph, w, ph + 1)
+                practicePane.layout(0, ph + 1, w, b - t)
+            }
+        }
+    }.apply {
+        addView(passageScroll)
+        addView(passageLine)
+        addView(practicePane)
+    }
+
+    /** 文章一栏：这道题带文章就显示；正文变了（换了一篇 / 完形填空做过的空接上了词）才重排。 */
+    private fun refreshPassage(c: ExCard) {
+        val on = c.passageKey.isNotEmpty() && c.passageText.isNotEmpty()
+        val vis = if (on) View.VISIBLE else View.GONE
+        if (passageScroll.visibility != vis) {
+            passageScroll.visibility = vis
+            passageLine.visibility = vis
+            practiceSplit.requestLayout()
+        }
+        if (!on) { passageShownKey = ""; passageShownText = ""; return }
+        passageTitle.text = c.passageTitle
+        passageTitle.visibility = if (c.passageTitle.isEmpty()) View.GONE else View.VISIBLE
+        if (c.passageText != passageShownText) {
+            passageShownText = c.passageText
+            bindBlocks(passageBlocks, c.passageText, 17f)
+            for (tv in ExMarks.textViews(passageBlocks)) attachBlankTap(tv)
+        }
+        if (c.passageKey != passageShownKey) {
+            passageShownKey = c.passageKey
+            passageScroll.post { passageScroll.scrollTo(0, 0) }
+        }
+    }
+
+    /** 完形填空：点文章里的空号 `(21)` = 跳到填那一空的题（同一篇文章里）。 */
+    private fun attachBlankTap(tv: TextView) {
+        val gd = GestureDetector(a, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                val off = tv.getOffsetForPosition(e.x, e.y)
+                val text = tv.text.toString()
+                for (m in BLANK_LABEL.findAll(text)) {
+                    if (off in m.range.first..m.range.last + 1) { goBlank(m.groupValues[1]); return true }
+                }
+                return false
+            }
+        })
+        tv.setOnTouchListener { _, ev ->
+            gd.onTouchEvent(ev)
+            // 不能选中时文字视图自己不接按下，接下来的抬起就收不到：这里接住（滚动照样由外面的 ScrollView 拦走）
+            !tv.isTextSelectable && ev.actionMasked == MotionEvent.ACTION_DOWN
+        }
+    }
+
+    private fun goBlank(key: String) {
+        val c = cur() ?: return
+        val i = deck.cards.indexOfFirst { it.passageKey == c.passageKey && it.blank == key }
+        if (i >= 0 && i != deck.index) go(i)
+    }
+
+    /** 高亮：判完才显示这道题自己的那些、才能选中文字加 / 去掉；完形填空的当前那一空一直标着（同 Mac `refreshHighlights`）。 */
+    private fun refreshMarks(c: ExCard) {
+        val markColor = HighlightPlugin.COLOR   // 同 `==高亮==` 那种荧光黄
+        val blankColor = (Ui.accent(a) and 0x00FFFFFF) or (0x48 shl 24)
+        fun hl(field: String) = if (!c.judged) emptyList() else
+            c.marks.filter { it.field == field }.map { ExMarks.Hl(it.text, it.nth, markColor) }
+        val canMark = c.judged && host.canMark
+        fun menu(field: String, box: LinearLayout): ((Int, Int) -> List<ExMarks.Item>)? = if (!canMark) null else { st, en ->
+            val plain = ExMarks.plain(box)
+            val mine = c.marks.filter { it.field == field }
+            val hits = mine.filter { m -> ExMarks.locate(m.text, m.nth, plain)?.let { r -> r.first < en && r.last + 1 > st } == true }
+            val out = ArrayList<ExMarks.Item>()
+            val m = ExMarks.make(field, st, en, plain)
+            if (m != null && m !in mine) out += ExMarks.Item(s(R.string.ex_highlight)) { host.setMarks(c.id, c.marks + m) }
+            if (hits.isNotEmpty()) out += ExMarks.Item(s(R.string.ex_remove_highlight)) { host.setMarks(c.id, c.marks - hits.toSet()) }
+            out
+        }
+        ExMarks.apply(stemView, hl(ExMarkView.STEM))
+        ExMarks.setSelectable(stemView, menu(ExMarkView.STEM, stemView))
+        if (passageScroll.visibility == View.VISIBLE) {
+            val ph = hl(ExMarkView.PASSAGE).toMutableList()
+            if (c.blank.isNotEmpty()) ph += ExMarks.Hl(blankLabel(c.blank), 0, blankColor)
+            ExMarks.apply(passageBlocks, ph)
+            ExMarks.setSelectable(passageBlocks, menu(ExMarkView.PASSAGE, passageBlocks))
+        }
+        for (i in 0 until optionsBox.childCount) {
+            val row = optionsBox.getChildAt(i) as OptionRow
+            val f = ExMarkView.option(row.key)
+            ExMarks.apply(row.body, hl(f))
+            ExMarks.setSelectable(row.body, menu(f, row.body))
+        }
+    }
+
     /** 开关 / 换题 / 进出列表页之后：摆好草稿纸那一块，告诉宿主眼前是哪道题（不显示 = null）。 */
     private fun applyScratch() {
         val has = onScratchCard != null
@@ -643,7 +797,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         addView(Ui.divider(a))
         addView(
             FrameLayout(a).apply {
-                addView(practicePane, FrameLayout.LayoutParams(-1, -1))
+                addView(practiceSplit, FrameLayout.LayoutParams(-1, -1))
                 addView(listPane, FrameLayout.LayoutParams(-1, -1))
                 addView(scratchSlot, FrameLayout.LayoutParams(-1, -1))
             },
@@ -825,6 +979,12 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             }
             builtFor = null
             shownKey = ""
+            if (passageScroll.visibility != View.GONE) {
+                passageScroll.visibility = View.GONE
+                passageLine.visibility = View.GONE
+                practiceSplit.requestLayout()
+            }
+            passageShownKey = ""
             return
         }
         column.visibility = View.VISIBLE
@@ -842,7 +1002,7 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         if (b == null || b.id != c.id || b.stem != c.stem || b.options != c.options || b.multiple != c.multiple ||
             b.explanation != c.explanation || b.note != c.note || b.feedback != c.feedback || b.fillCount != c.fillCount || b.fillAnswers != c.fillAnswers ||
             b.mineBlanks != c.mineBlanks || b.blankMatch != c.blankMatch || b.correct != c.correct ||
-            b.judged != c.judged || b.shown != c.shown) {
+            b.judged != c.judged || b.shown != c.shown || b.marks != c.marks) {
             bindBlocks(stemView, c.stem, 17f)
             bindBlocks(explanationView, c.explanation, 15f)
             bindBlocks(noteView, c.note, 15f)
@@ -851,9 +1011,12 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             buildFill(c)
         }
         builtFor = c
+        stemView.visibility = if (c.stem.isEmpty()) View.GONE else View.VISIBLE   // 完形填空的题一般没有题干
+        refreshPassage(c)
 
         val meta = arrayListOf(s(R.string.ex_meta_index, deck.index + 1, deck.cards.size))
-        if (c.number.isNotEmpty()) meta += s(R.string.ex_meta_number, c.number)
+        if (c.blank.isNotEmpty()) meta += s(R.string.ex_meta_blank, c.blank)
+        else if (c.number.isNotEmpty()) meta += s(R.string.ex_meta_number, c.number)
         if (c.page > 0) meta += s(R.string.ex_meta_page, c.page)
         meta += kindLabel(c)
         if (c.section.isNotEmpty()) meta += c.section
@@ -954,11 +1117,14 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         actionsRow.visibility = if (judged || c.wrong) View.VISIBLE else View.GONE
         setEnabled(prevBtn, deck.index > 0)
         setEnabled(nextBtn, deck.index < deck.cards.size - 1)
+        refreshMarks(c)
     }
 
     /** 结果那行：这一轮刚答的 / 上次作答 / 书上的作答，各说各的（同 Mac `resultText`）。 */
     /** 题型名（练习页那行与列表共用）。 */
-    private fun kindLabel(c: ExCard): String = when (c.kind) {
+    private fun kindLabel(c: ExCard): String = if (c.passageKey.isNotEmpty()) {
+        s(if (c.passageCloze) R.string.ex_cloze else R.string.ex_reading)
+    } else when (c.kind) {
         1 -> s(R.string.ex_multiple)
         3 -> s(R.string.ex_fill)
         4 -> s(R.string.ex_subjective)
@@ -1269,7 +1435,8 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         }
-        private val body = blocks(16f)
+        /** 选项正文（练习页给它挂高亮、判完后可选中）。 */
+        val body = blocks(16f)
         private val mark = ImageView(a)
         private val radius = if (multiple) 8 else Ui.PILL
         private var locked = false
@@ -1493,6 +1660,9 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
     /** 一段 Markdown + 公式 的正文（题干 / 解析 / 选项共用）：围栏代码块单独一个横滑不换行的视图，其余整段一个文字视图。 */
     private fun blocks(size: Float) = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
 
+    /** 完形填空空号的样子（同 `local/exercise/ExPassage.blankLabel` / Mac `ExercisePassage.blankLabel`）。 */
+    private fun blankLabel(key: String) = "(\u202F$key\u202F)"
+
     private fun bindBlocks(v: LinearLayout, md: String, size: Float) =
         MathText.bindBlocks(v, md, dp(8), { mathView(size) }, { codeBlockView(size, it) })
 
@@ -1644,6 +1814,10 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         const val KEY_CARD_COLLAPSED = "scratchCardCollapsed"
         /** 视图宽小于它（dp）= 手机 / 窄分屏，用紧凑排法。 */
         const val COMPACT_BELOW_DP = 600
+        /** 带文章的题：视图宽不小于它（dp）时文章在左、题目在右，否则文章在上（同 Mac `splitMinWidth`）。 */
+        const val SPLIT_MIN_DP = 820
+        /** 完形填空的空号 `(21)`（括号里是窄的不换行空格）。 */
+        val BLANK_LABEL = Regex("\\(\u202F(\\S{1,8}?)\u202F\\)")
         /** [ExDeckView.filter] 的「重做上次做错的」（线上 `exDeck.filter` = 4，`../docs/PROTOCOL.md §4.9`）。 */
         const val FILTER_LAST_WRONG = 4
         const val PREFS = "exercise"
