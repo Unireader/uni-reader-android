@@ -564,4 +564,30 @@
     <string name="agent_ctx_remove">移除</string>
     <string name="agent_trash_plans">%d 份计划</string>
     <string name="agent_trash_schedule_items">%d 件日程</string>
+
+    <!-- 语义搜索（../docs/SEMANTIC-SYNC-PLAN.md §4.4） -->
+    <string name="agent_search_settings_item">搜索设置…</string>
+    <string name="sem_title">搜索</string>
+    <string name="sem_enabled">同时按意思搜索</string>
+    <string name="sem_tip">换个说法也能找到意思相近的段落。只对服务器上的工作区有效，所需数据由 Mac 准备。</string>
+    <string name="sem_model_title">搜索模型</string>
+    <string name="sem_model_missing">未下载（%1$s）</string>
+    <string name="sem_model_ready">已就位（%1$s）</string>
+    <string name="sem_model_downloading">正在下载 %1$s / %2$s</string>
+    <string name="sem_model_verifying">正在检查文件…</string>
+    <string name="sem_model_failed">上次没成功：%1$s</string>
+    <string name="sem_model_bad_size">%1$s 不在或大小不对</string>
+    <string name="sem_model_bad_sum">文件校验不通过</string>
+    <string name="sem_model_source">下载来源</string>
+    <string name="sem_model_download">下载</string>
+    <string name="sem_model_check">检查文件</string>
+    <string name="sem_model_delete">删除</string>
+    <string name="sem_model_delete_title">删除搜索模型？</string>
+    <string name="sem_vectors_title">本工作区</string>
+    <string name="sem_vectors_no_ws">没有打开工作区。</string>
+    <string name="sem_vectors_local_ws">不在服务器上：只能按关键词搜索。</string>
+    <string name="sem_vectors_count">已同步 %1$d 段</string>
+    <string name="sem_vectors_pulling">正在同步…</string>
+    <string name="sem_vectors_unsupported">服务器还不支持，请升级服务器。</string>
+    <string name="sem_vectors_error">上次同步出错：%1$s</string>
 </resources>

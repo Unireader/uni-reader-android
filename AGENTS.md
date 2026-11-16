@@ -71,6 +71,11 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （127.0.0.1:18791）+ `adb reverse`，地址 / 配对码经插桩参数传进去；顺带跑 Mac ↔ 安卓互通（`spike/android-server-interop.swift`）。
   不经这个脚本跑时这个类自己跳过（没参数）。
 - 装包可以做，**手感/观感一律由用户在真机上测**，别自己截图自证；结论攒进 `../docs/ANDROID-STANDALONE-PLAN.md §11.1`。
+- **native 库只有一个 `app/src/main/jniLibs/arm64-v8a/libunireader_embed.so`（语义搜索算查询向量，llama.cpp，`../docs/SEMANTIC-SYNC-PLAN.md §8.2`）**：
+  预编译、**提交进仓库**，Gradle 不编 native（没有 `externalNativeBuild`，别加）。改了 `native/embed_jni.cpp` 或要换 llama.cpp 提交 →
+  在 Mac 上跑 `native/build-embed.sh`（钉提交号在脚本头，源码拉到主仓库 `build/llama-embed-src`；要 NDK 30.0.16248370 + Homebrew cmake / ninja），
+  再 `native/check/pad-check.sh`（平板经 USB 接着：app_process 调这个 .so，与 `/data/local/tmp/embed/llama-embedding` 比余弦，要 > 0.9999）。
+  JNI 符号绑在 `local/search/EmbedNative` 的类名与方法签名上（`exports.map` 只导出 `Java_…EmbedNative_*`），挪包 / 改名要一起重编。
 
 ## 结构要点
 
@@ -381,6 +386,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   Agent 上下文 `agentContexts` / `upsertAgentContext`（工具三个 + 面板 ⋯ 菜单存 / 带上，文字规则 `AgentContextText` 照 Mac）。
   全工作区搜索 `local/search/`：`SearchText` 逐条照抄 Mac `Sources/Search/SearchText.swift`（🔴 两份实现，`SearchTextTest` ↔ `../spike/search-test.swift`），
   `WorkspaceSearch` 现场取内容、不建索引，PDF 的 OCR 块按 hash 缓存在进程里。
+  **语义一路**（2026-11-16，`../docs/SEMANTIC-SYNC-PLAN.md §4 / §8.2`）：本端**不算块向量**，块向量是 Mac 算好经服务器同步来的，按块正文 SHA-256 认
+  （`SearchChunk.hashHex`）——🔴 所以 `SearchText` 切块与 Mac 差一个字就查不到（不会挂错，只是 `matched` 变少）。只算查询向量（`QueryEmbedder` + `EmbedNative`），
+  纯规则 `Semantic`（量化 / 排序 / 融合，`SemanticTest`）；缓存与拉取 `SemanticVectors`（`noBackupFilesDir/search-vec/`，派生数据），`ServerSync` 一轮结束后调；
+  模型文件 `EmbedModel`（外部私有目录 `models/`）；设置 `SemanticSearchSheet`（Agent 面板 ⋯「搜索设置…」）。只对服务器工作区。
   日程工具（`local/schedule/Schedule.kt` 纯规则 + `LibraryStore` 日程一节，SQL 照 Mac；删除走 `Trash.deleteSchedule`）。
   习题工具（列题 / 读作答 / 批改 / 打开）：作答一页 `LibraryStore.exerciseAttemptPage`（SQL 照 Mac），批改 `judgeExerciseAttempt(by = "agent", feedback)`，
   停在某道题 `ExerciseController.focus`。改批注 `update_annotations` 只动 payload 里要改的键。

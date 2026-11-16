@@ -1,0 +1,6 @@
+{
+  global:
+    Java_com_xvan_unireader_local_search_EmbedNative_*;
+  local:
+    *;
+};

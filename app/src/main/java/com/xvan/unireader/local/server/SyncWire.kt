@@ -176,6 +176,59 @@ object SyncWire {
         return PullResponse(head, more, rows)
     }
 
+    // ---------- 块向量（`../docs/PROTOCOL.md §9.7`，↔ `../Sources/Sync/SyncVecWire.swift`） ----------
+    //
+    // 按内容寻址：键 = (模型标识, SHA-256(块正文 UTF-8))，值 = Int8 × 维数。安卓只真正用到 [VecPage] 的解码
+    // （`SemanticVectors` 拉向量），其余三种也能编解码，是为了跨端向量（`SyncWireTest`）逐字节对得上。
+
+    const val VEC_HASH_SIZE = 32
+
+    /** [hash] 32 字节 SHA-256；[v] Int8 × 维数，原样字节 */
+    class VecEntry(val hash: ByteArray, val v: ByteArray) {
+        override fun equals(other: Any?) = other is VecEntry && hash.contentEquals(other.hash) && v.contentEquals(other.v)
+        override fun hashCode() = hash.contentHashCode() * 31 + v.contentHashCode()
+    }
+
+    data class VecHashes(val model: String, val hashes: List<ByteArray>)
+    data class VecMissing(val total: Long, val hashes: List<ByteArray>)
+    data class VecPut(val model: String, val dim: Int, val entries: List<VecEntry>)
+    data class VecPage(val epoch: String, val next: Long, val more: Boolean, val dim: Int, val entries: List<VecEntry>)
+
+    fun encode(m: VecHashes): ByteArray = Writer().apply { u8(VERSION); str(m.model); hashes(m.hashes) }.bytes()
+    fun encode(m: VecMissing): ByteArray = Writer().apply { u8(VERSION); u32(m.total); hashes(m.hashes) }.bytes()
+    fun encode(m: VecPut): ByteArray = Writer().apply { u8(VERSION); str(m.model); entries(m.entries, m.dim) }.bytes()
+    fun encode(m: VecPage): ByteArray = Writer().apply {
+        u8(VERSION); str(m.epoch); u64(m.next); u8(if (m.more) 1 else 0); entries(m.entries, m.dim)
+    }.bytes()
+
+    fun decodeVecHashes(data: ByteArray): VecHashes {
+        val r = Reader(data); r.expectVersion()
+        val m = VecHashes(r.str(), r.hashes())
+        r.expectEnd(); return m
+    }
+
+    fun decodeVecMissing(data: ByteArray): VecMissing {
+        val r = Reader(data); r.expectVersion()
+        val m = VecMissing(r.u32(), r.hashes())
+        r.expectEnd(); return m
+    }
+
+    fun decodeVecPut(data: ByteArray): VecPut {
+        val r = Reader(data); r.expectVersion()
+        val model = r.str()
+        val (dim, es) = r.entries()
+        r.expectEnd(); return VecPut(model, dim, es)
+    }
+
+    fun decodeVecPage(data: ByteArray): VecPage {
+        val r = Reader(data); r.expectVersion()
+        val epoch = r.str()
+        val next = r.u64()
+        val more = r.u8() == 1
+        val (dim, es) = r.entries()
+        r.expectEnd(); return VecPage(epoch, next, more, dim, es)
+    }
+
     // ---------- 读写器（全部小端） ----------
 
     private class Writer {
@@ -221,6 +274,19 @@ object SyncWire {
             for (r in rows) {
                 str(r.table); str(r.rowId); u64(r.rev); u8(if (r.deleted) 1 else 0)
                 if (!r.deleted) row(r.row ?: emptyMap())
+            }
+        }
+
+        fun hashes(hs: List<ByteArray>) {
+            u32(hs.size.toLong())
+            for (h in hs) { require(h.size == VEC_HASH_SIZE) { "哈希必须 32 字节" }; out.write(h) }
+        }
+
+        fun entries(es: List<VecEntry>, dim: Int) {
+            u16(dim); u32(es.size.toLong())
+            for (e in es) {
+                require(e.hash.size == VEC_HASH_SIZE && e.v.size == dim) { "哈希 32 字节、向量 = 维数" }
+                out.write(e.hash); out.write(e.v)
             }
         }
 
@@ -280,6 +346,21 @@ object SyncWire {
                 rows.add(PulledRow(table, rowId, rev, deleted, if (deleted) null else row()))
             }
             return rows
+        }
+
+        fun hashes(): List<ByteArray> {
+            val n = u32()
+            val out = ArrayList<ByteArray>(minOf(n, 100_000L).toInt())
+            for (i in 0 until n) out.add(take(VEC_HASH_SIZE))
+            return out
+        }
+
+        fun entries(): Pair<Int, List<VecEntry>> {
+            val dim = u16()
+            val n = u32()
+            val out = ArrayList<VecEntry>(minOf(n, 100_000L).toInt())
+            for (i in 0 until n) out.add(VecEntry(take(VEC_HASH_SIZE), take(dim)))
+            return dim to out
         }
 
         private fun len32(): Int {

@@ -13,7 +13,8 @@ import java.io.File
  * 挑候选（所有词都出现；一个都没有且不止一个词时退回「任一词」）→ 打分（[SearchText.score]）→ 同一页 / 同一段只留一块（[dedupe]）。
  *
  * 与 Mac 的差别：**不建持久索引**，每次现场取内容（库里的行 + `Notes/` 的文件）；PDF 的 OCR 文字按「内容 hash + OCR 版本」
- * 在进程里缓存（[pdfCache]），同一本书第二次搜不再解析几 MB 的 OCR JSON。没有语义搜索。
+ * 在进程里缓存（[pdfCache]），同一本书第二次搜不再解析几 MB 的 OCR JSON。语义那一路在 [Semantic]（块向量从服务器同步来，
+ * `../docs/SEMANTIC-SYNC-PLAN.md §4`），只对服务器工作区。
  */
 object WorkspaceSearch {
 
@@ -31,6 +32,8 @@ object WorkspaceSearch {
     ) {
         val norm: String by lazy { SearchText.normalize(body) }
         val titleNorm: String by lazy { SearchText.normalize(title) }
+        /** 正文的 SHA-256（十六进制），服务器同步来的块向量按它认（`Semantic.hash`）。PDF 的块随 [pdfCache] 一起缓存，算一次留着。 */
+        val hashHex: String by lazy { Semantic.hex(Semantic.hash(body)) }
     }
 
     class Hit(val chunk: SearchChunk, val score: Double)
@@ -61,19 +64,20 @@ object WorkspaceSearch {
         val seen = HashSet<String>()
         val out = ArrayList<Hit>()
         for (h in hits) {
-            val c = h.chunk
-            val key = when (c.kind) {
-                "pdf" -> "pdf|${c.owner}|${c.page ?: -1}"
-                "annotation" -> "ann|${c.sub}"
-                "exercise" -> "ex|${c.owner}"
-                "context" -> "ctx|${c.owner}"
-                else -> "${c.kind}|${c.owner}|${c.line ?: -1}"
-            }
-            if (!seen.add(key)) continue
+            if (!seen.add(dedupeKey(h.chunk))) continue
             out.add(h)
             if (out.size >= limit) break
         }
         return out
+    }
+
+    /** 「同一处」的键：PDF 同一页、批注同一条、习题 / 上下文同一份、其余同一段（去重与两路合并共用，同 Mac `dedupe` / `fuse`）。 */
+    fun dedupeKey(c: SearchChunk): String = when (c.kind) {
+        "pdf" -> "pdf|${c.owner}|${c.page ?: -1}"
+        "annotation" -> "ann|${c.sub}"
+        "exercise" -> "ex|${c.owner}"
+        "context" -> "ctx|${c.owner}"
+        else -> "${c.kind}|${c.owner}|${c.line ?: -1}"
     }
 
     // ---------------- 取内容（同 Mac `SearchSources`）----------------

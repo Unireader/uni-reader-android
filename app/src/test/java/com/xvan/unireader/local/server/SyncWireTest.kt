@@ -47,6 +47,11 @@ class SyncWireTest {
         "title" to t("中文 · note"),
         "updated_at" to MirrorFp.Value.Null,
     )
+    /** 32 个字节 start, start+1, …（同 Swift `vh`） */
+    private fun vh(start: Int) = ByteArray(32) { (start + it).toByte() }
+    private fun bytes(vararg v: Int) = ByteArray(v.size) { v[it].toByte() }
+    private val vecModel = "local|Qwen3-Embedding-0.6B@97b0c614"
+
     private val metaRow = mapOf("key" to t("workspace_name"), "value" to t("101学习区"))
 
     private val canonical: List<Pair<String, ByteArray>> by lazy {
@@ -105,6 +110,22 @@ class SyncWireTest {
                     ),
                 ),
             ),
+            // 2026-11-16 块向量（`../Sources/Sync/SyncVecWire.swift`，`../docs/PROTOCOL.md §9.7`）。维数 4；Int8 带上 ±127 与 0。
+            "vec_hashes" to SyncWire.encode(SyncWire.VecHashes(vecModel, listOf(vh(0), vh(32)))),
+            "vec_missing" to SyncWire.encode(SyncWire.VecMissing(7194, listOf(vh(32)))),
+            "vec_put" to SyncWire.encode(
+                SyncWire.VecPut(
+                    vecModel, 4,
+                    listOf(
+                        SyncWire.VecEntry(vh(0), bytes(0x7f, 0x81, 0x00, 0x05)),
+                        SyncWire.VecEntry(vh(32), bytes(0xff, 0x01, 0x40, 0xc0)),
+                    ),
+                ),
+            ),
+            "vec_page_empty" to SyncWire.encode(SyncWire.VecPage("e1", 0, false, 0, emptyList())),
+            "vec_page" to SyncWire.encode(
+                SyncWire.VecPage("9f2c", 0x1_0000_0002L, true, 4, listOf(SyncWire.VecEntry(vh(32), bytes(0xff, 0x01, 0x40, 0xc0)))),
+            ),
         )
     }
 
@@ -123,6 +144,10 @@ class SyncWireTest {
             val again = when {
                 name.startsWith("push_resp") -> SyncWire.encode(SyncWire.decodePushResponse(data))
                 name.startsWith("push") -> SyncWire.encode(SyncWire.decodePushRequest(data))
+                name == "vec_hashes" -> SyncWire.encode(SyncWire.decodeVecHashes(data))
+                name == "vec_missing" -> SyncWire.encode(SyncWire.decodeVecMissing(data))
+                name == "vec_put" -> SyncWire.encode(SyncWire.decodeVecPut(data))
+                name.startsWith("vec_page") -> SyncWire.encode(SyncWire.decodeVecPage(data))
                 else -> SyncWire.encode(SyncWire.decodePullResponse(data))
             }
             assertEquals(name, hex(data), hex(again))
@@ -140,6 +165,28 @@ class SyncWireTest {
         for (bad in listOf(good.copyOf(good.size - 1), good + byteArrayOf(0), good.copyOf().also { it[0] = 2 })) {
             try {
                 SyncWire.decodePullResponse(bad)
+                fail("应当解不出")
+            } catch (_: SyncWire.DecodeError) {
+            }
+        }
+    }
+
+    @Test
+    fun 向量页解出来的字段() {
+        val p = SyncWire.decodeVecPage(vectors().getValue("vec_page"))
+        assertEquals("9f2c", p.epoch)
+        assertEquals(0x1_0000_0002L, p.next)
+        assertTrue(p.more)
+        assertEquals(4, p.dim)
+        assertEquals(SyncWire.VecEntry(vh(32), bytes(0xff, 0x01, 0x40, 0xc0)), p.entries.single())
+        val m = SyncWire.decodeVecMissing(vectors().getValue("vec_missing"))
+        assertEquals(7194L, m.total)
+        // 截断解不出
+        val vp = vectors().getValue("vec_put")
+        val vhs = vectors().getValue("vec_hashes")
+        for (bad in listOf({ SyncWire.decodeVecPut(vp.copyOf(vp.size - 1)) }, { SyncWire.decodeVecHashes(vhs.copyOf(vhs.size - 1)) })) {
+            try {
+                bad()
                 fail("应当解不出")
             } catch (_: SyncWire.DecodeError) {
             }

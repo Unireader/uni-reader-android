@@ -272,6 +272,7 @@ class ReaderActivity : Activity() {
      * 工具只认这个接口，全部在主线程调。
      */
     private val agentHost = object : com.xvan.unireader.local.agent.AgentHost {
+        override val appContext: android.content.Context get() = applicationContext
         override val workspaceDir: File? get() = workspace
         override val workspaceName: String get() = this@ReaderActivity.workspaceName
         override fun storeQueue(): StoreQueue? = queue

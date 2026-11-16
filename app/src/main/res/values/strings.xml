@@ -569,4 +569,30 @@
     <string name="agent_ctx_remove">Remove</string>
     <string name="agent_trash_plans">%d plans</string>
     <string name="agent_trash_schedule_items">%d schedule items</string>
+
+    <!-- 语义搜索（../docs/SEMANTIC-SYNC-PLAN.md §4.4） -->
+    <string name="agent_search_settings_item">Search settings…</string>
+    <string name="sem_title">Search</string>
+    <string name="sem_enabled">Also search by meaning</string>
+    <string name="sem_tip">Finds passages that say the same thing in other words. Only for workspaces on a server; the Mac prepares the data.</string>
+    <string name="sem_model_title">Search model</string>
+    <string name="sem_model_missing">Not downloaded (%1$s)</string>
+    <string name="sem_model_ready">Ready (%1$s)</string>
+    <string name="sem_model_downloading">Downloading %1$s of %2$s</string>
+    <string name="sem_model_verifying">Checking the file…</string>
+    <string name="sem_model_failed">Last attempt failed: %1$s</string>
+    <string name="sem_model_bad_size">%1$s is missing or has the wrong size</string>
+    <string name="sem_model_bad_sum">the file does not match the expected checksum</string>
+    <string name="sem_model_source">Download from</string>
+    <string name="sem_model_download">Download</string>
+    <string name="sem_model_check">Check file</string>
+    <string name="sem_model_delete">Delete</string>
+    <string name="sem_model_delete_title">Delete the search model?</string>
+    <string name="sem_vectors_title">This workspace</string>
+    <string name="sem_vectors_no_ws">No workspace is open.</string>
+    <string name="sem_vectors_local_ws">Not on a server: keyword search only.</string>
+    <string name="sem_vectors_count">%1$d passages synced</string>
+    <string name="sem_vectors_pulling">syncing…</string>
+    <string name="sem_vectors_unsupported">The server does not support this yet; update the server.</string>
+    <string name="sem_vectors_error">Last sync failed: %1$s</string>
 </resources>

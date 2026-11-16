@@ -29,6 +29,10 @@ import kotlin.coroutines.resume
  */
 interface AgentHost {
     val workspaceDir: File?
+
+    /** 应用 Context：语义搜索读开关 / 模型 / 向量缓存（`../docs/SEMANTIC-SYNC-PLAN.md §4.2`）。null = 不走语义那一路（测试里的假宿主）。 */
+    val appContext: android.content.Context? get() = null
+
     val workspaceName: String
     fun storeQueue(): StoreQueue?
 
@@ -516,16 +520,17 @@ class AgentToolset(private val host: AgentHost) {
         }
     }
 
-    // ================= 全工作区搜索（`../docs/ANDROID-AGENT-PLAN.md §5.6`，同 Mac `MCPTools+Search.swift` 的关键词那路）=================
+    // ================= 全工作区搜索（`../docs/ANDROID-AGENT-PLAN.md §5.6`，同 Mac `MCPTools+Search.swift`；语义那路 `../docs/SEMANTIC-SYNC-PLAN.md §4.2`）=================
 
     private inner class Search : T(
         "search",
-        "Search everything in the workspace at once: the text of every PDF page (OCR text where the workspace has it; for books without OCR, only those open in a tab), Markdown notes, annotations (text notes, highlights, bookmarks, image-note captions), exercises, saved agent contexts, workspace memories and earlier Agent-panel conversations. Matching ignores spaces, line breaks, case and full-width/half-width differences, so a phrase broken across lines in a scanned book still matches. Several words = all must appear (if nothing matches, any of them); put a phrase in quotes to keep it together. Results are ranked, one per PDF page / note section, with ids to follow up: read_pages or search_text for PDF pages, read_markdown with start_line = line for notes, list_annotations, read_conversation (offset = turn), read_agent_context.",
+        "Search everything in the workspace at once: the text of every PDF page (OCR text where the workspace has it; for books without OCR, only those open in a tab), Markdown notes, annotations (text notes, highlights, bookmarks, image-note captions), exercises, saved agent contexts, workspace memories and earlier Agent-panel conversations. Matching ignores spaces, line breaks, case and full-width/half-width differences, so a phrase broken across lines in a scanned book still matches. Several words = all must appear (if nothing matches, any of them); put a phrase in quotes to keep it together. When semantic search is turned on in the search settings and the workspace is on a server, results that mean the same thing in other words are mixed in (mode hybrid). Results are ranked, one per PDF page / note section, with ids to follow up: read_pages or search_text for PDF pages, read_markdown with start_line = line for notes, list_annotations, read_conversation (offset = turn), read_agent_context.",
         req = listOf(str("query", "Words or phrases to find. Chinese works without spaces; separate several keywords with spaces.")),
         opt = listOf(
             strArray("kinds", "Only these kinds (default: all): ${com.xvan.unireader.local.search.WorkspaceSearch.KINDS.joinToString(", ")}"),
             strArray("document_ids", "Only these PDFs (their pages, annotations and exercises)"),
             str("note_folder", "Markdown notes: only notes under this folder (relative to the Notes folder)"),
+            enumOf("mode", "auto = hybrid when semantic search is on and ready, otherwise keyword", "auto", "keyword", "semantic", "hybrid"),
             int("limit", "Max results (default 20, max 100)"),
         ),
     ) {
@@ -537,6 +542,8 @@ class AgentToolset(private val host: AgentHost) {
                 ?: WS.KINDS.toSet()
             require(kinds.all { it in WS.KINDS }) { "kinds must be among ${WS.KINDS.joinToString(", ")}" }
             val limit = args.optInt("limit", 20).coerceIn(1, 100)
+            val modeArg = args.optString("mode", "auto").ifEmpty { "auto" }
+            require(modeArg in listOf("auto", "keyword", "semantic", "hybrid")) { "mode must be auto, keyword, semantic or hybrid" }
             val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
             val docsAll = db("Agent 列文档") { it.allDocuments() }
             val owners = args.optJSONArray("document_ids")?.let { a -> (0 until a.length()).map { resolveDoc(a.optString(it)).id }.toSet() }.orEmpty()
@@ -579,8 +586,15 @@ class AgentToolset(private val host: AgentHost) {
             if ("markdown" in kinds && owners.isEmpty()) {
                 chunks += withContext(Dispatchers.IO) { WS.markdownChunks(ws, args.optString("note_folder", "")) }
             }
-            val r = withContext(Dispatchers.Default) { WS.keyword(chunks, query, limit) }
-            val lines = r.hits.mapIndexed { i, h ->
+            val want = limit
+            val sem = semanticPart(ws, chunks, query, modeArg, want)
+            val r = withContext(Dispatchers.Default) { WS.keyword(chunks, query, if (sem.mode == "keyword") want else want * 3) }
+            val hits: List<com.xvan.unireader.local.search.WorkspaceSearch.Hit> = when {
+                sem.mode == "keyword" -> r.hits.take(want)
+                sem.mode == "semantic" && sem.hits.isNotEmpty() -> sem.hits.take(want)
+                else -> com.xvan.unireader.local.search.Semantic.fuse(r.hits, sem.hits, want, if (r.relaxed) 0.5 else 1.0)
+            }
+            val lines = hits.mapIndexed { i, h ->
                 val c = h.chunk
                 val head = when (c.kind) {
                     "pdf" -> "[PDF] “${c.title}” p.${(c.page ?: 0) + 1} (document_id ${c.owner})"
@@ -593,14 +607,80 @@ class AgentToolset(private val host: AgentHost) {
                 }
                 "${i + 1}. $head\n   ${com.xvan.unireader.local.search.SearchText.snippet(c.body, r.terms)}"
             }
-            var text = if (r.hits.isEmpty()) "No results for “$query”."
-            else "${r.hits.size} result(s) for “$query” (keyword${if (r.relaxed) ", any word" else ""}):\n" + lines.joinToString("\n")
+            var text = if (hits.isEmpty()) "No results for “$query”."
+            else "${hits.size} result(s) for “$query” (${sem.mode}${if (r.relaxed) ", any word" else ""}):\n" + lines.joinToString("\n")
+            if (sem.notices.isNotEmpty()) text += "\n" + sem.notices.joinToString("\n")
             if (skipped.isNotEmpty()) {
                 text += "\nNot searched (no OCR text on this device and not open in a tab): " + skipped.joinToString(", ") { "“$it”" } +
                     ". Open one with open_document, or use search_text on it, to search its own text layer."
             }
+            text += "\nsemantic: " + org.json.JSONObject()
+                .put("enabled", sem.enabled).put("vectors", sem.vectors).put("matched", sem.matched)
+                .put("error", sem.error ?: org.json.JSONObject.NULL)
             return text
         }
+    }
+
+    /** 语义那一路的结果与说明（`semantic{enabled, vectors, matched, error}` 同 Mac 的 `index.semantic`，多一个 matched）。 */
+    private class SemanticPart(
+        val mode: String,
+        val hits: List<com.xvan.unireader.local.search.WorkspaceSearch.Hit>,
+        val enabled: Boolean, val vectors: Int, val matched: Int, val error: String?,
+        val notices: List<String>,
+    )
+
+    /**
+     * 语义一路（`../docs/SEMANTIC-SYNC-PLAN.md §4.2`）：块向量是服务器同步来的（只有服务器工作区有），这里只算查询向量。
+     * `matched` = 本次切出的块里查到向量的块数（命中率低 = 两端切块不一致）。mode 的语义照 Mac：auto = 开着且有向量就混合，否则关键词。
+     */
+    private suspend fun semanticPart(
+        ws: File,
+        chunks: List<com.xvan.unireader.local.search.WorkspaceSearch.SearchChunk>,
+        query: String,
+        modeArg: String,
+        want: Int,
+    ): SemanticPart {
+        val SV = com.xvan.unireader.local.search.SemanticVectors
+        val ctx = host.appContext
+        val notices = ArrayList<String>()
+        val on = ctx != null && SV.enabled(ctx)
+        val installed = ctx != null && com.xvan.unireader.local.search.EmbedModel.isInstalled(ctx)
+        val wid = if (on) withContext(Dispatchers.IO) { com.xvan.unireader.local.server.ServerSyncIO.serverLink(ws)?.workspaceId } else null
+        val enabled = on && installed && wid != null
+        if (ctx == null || !enabled) {
+            // 同 Mac：auto 时安静地退回关键词，明说要 semantic / hybrid 才解释为什么没有
+            if (modeArg == "semantic" || modeArg == "hybrid") notices += when {
+                !on -> "Semantic search is off (Agent panel ⋯ › Search settings), so this was a keyword search."
+                !installed -> "Semantic search is on but the search model has not been downloaded (Agent panel ⋯ › Search settings), so this was a keyword search."
+                else -> "Semantic search only works for workspaces on a UniReader server (the passage vectors come from the Mac through the server), so this was a keyword search."
+            }
+            return SemanticPart("keyword", emptyList(), enabled, 0, 0, null, notices)
+        }
+        // 顺带看看服务器上有没有新向量（离上次拉超过 5 分钟才真拉，不等它）
+        com.xvan.unireader.local.server.ServerSync.pullVectors(ctx, ws, 5 * 60_000L)
+        val loaded = withContext(Dispatchers.IO) { SV.vectors(ctx, wid!!) }
+        val err = withContext(Dispatchers.IO) { SV.stats(ctx, wid!!).error }
+        val matched = withContext(Dispatchers.Default) { chunks.count { loaded.map.containsKey(it.hashHex) } }
+        val mode = if (modeArg == "auto") (if (loaded.map.isNotEmpty()) "hybrid" else "keyword") else modeArg
+        if (mode == "keyword") return SemanticPart(mode, emptyList(), true, loaded.map.size, matched, err, notices)
+        if (loaded.map.isEmpty()) notices += "No passage vectors have been synced from the server yet (the Mac computes them; they arrive after a sync), so only keyword results are shown."
+        else if (matched == 0) notices += "None of the searched passages has a vector yet, so only keyword results are shown."
+        var hits = emptyList<com.xvan.unireader.local.search.WorkspaceSearch.Hit>()
+        var error = err
+        if (matched > 0) {
+            try {
+                val qv = withContext(Dispatchers.IO) { com.xvan.unireader.local.search.QueryEmbedder.embedQuery(ctx, query) }
+                val q = com.xvan.unireader.local.search.Semantic.quantize(qv)
+                hits = withContext(Dispatchers.Default) {
+                    com.xvan.unireader.local.search.Semantic.rank(q, chunks, { loaded.map[it.hashHex] }, want * 3)
+                }
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                error = e.message ?: e.javaClass.simpleName
+                notices += "Semantic search failed ($error); keyword results only."
+            }
+        }
+        return SemanticPart(mode, hits, true, loaded.map.size, matched, error, notices)
     }
 
     // ================= 改批注（`../docs/ANDROID-AGENT-PLAN.md §5.7`，同 Mac `MCPFacade+Annotations.updateAnnotations`）=================

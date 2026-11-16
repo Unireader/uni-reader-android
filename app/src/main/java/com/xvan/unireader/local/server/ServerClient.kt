@@ -167,6 +167,16 @@ class ServerClient(val baseUrl: String, val token: String?, private val cancel: 
     fun pull(ws: String, since: Long, limit: Int = 5000): ByteArray =
         send(request("v1/workspaces/$ws/pull", "since" to since.toString(), "limit" to limit.toString()))
 
+    /**
+     * 增量拉块向量（`../docs/PROTOCOL.md §9.7`，`../docs/SEMANTIC-SYNC-PLAN.md §4.1`）：回 `VecPage` 字节。
+     * [epoch] 与服务器的不同时服务器从头给（响应里带新 epoch）。服务器程序太旧 → 404。
+     */
+    fun vectors(ws: String, model: String, since: Long, epoch: String, limit: Int = 2000): ByteArray =
+        send(request(
+            "v1/workspaces/$ws/vectors",
+            "model" to model, "since" to since.toString(), "epoch" to epoch, "limit" to limit.toString(),
+        ))
+
     /** 下载快照到 [dst]，返回快照对应的修订号 */
     fun downloadSnapshot(ws: String, dst: File): Long {
         val rev = download(request("v1/workspaces/$ws/snapshot"), dst)?.header("X-UniReader-Rev")?.toLongOrNull()

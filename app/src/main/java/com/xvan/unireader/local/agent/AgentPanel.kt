@@ -293,10 +293,12 @@ class AgentPanel(private val a: Activity, private val host: AgentHost) {
             }
         }
         m.menu.add(0, 3, 2, a.getString(R.string.agent_settings_item))
+        m.menu.add(0, 4, 3, a.getString(R.string.agent_search_settings_item))
         m.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> { saveContext(); true }
                 3 -> { showSettings(); true }
+                4 -> { com.xvan.unireader.local.search.SemanticSearchSheet(a, host.workspaceDir).show(); true }
                 else -> false
             }
         }

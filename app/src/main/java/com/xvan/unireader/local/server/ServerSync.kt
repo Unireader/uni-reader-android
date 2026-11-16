@@ -184,9 +184,23 @@ object ServerSync {
                 synchronized(busy) { if (busy[k] === r) busy.remove(k) }
                 r.done.countDown()
             }
-            if (ok) prefetch(ctx, dir, ep)
+            if (ok) {
+                com.xvan.unireader.local.search.SemanticVectors.pullAsync(ctx, ep.wid, ep.account.client())
+                prefetch(ctx, dir, ep)
+            }
         }, "unireader-sync").start()
         return r
+    }
+
+    /**
+     * 拉一次块向量（语义搜索，`../docs/SEMANTIC-SYNC-PLAN.md §4.1`），不等。不是服务器工作区 / 没令牌 = 什么都不做。
+     * 设置页打开开关、模型刚装好时 [minGapMs] = 0；搜索时顺带调（离上次够久才真拉）。任何线程都行。
+     */
+    fun pullVectors(ctx: Context, dir: File, minGapMs: Long) {
+        val app = ctx.applicationContext
+        Thread({
+            endpoint(app, dir)?.let { com.xvan.unireader.local.search.SemanticVectors.pullAsync(app, it.wid, it.account.client(), minGapMs) }
+        }, "unireader-vectors").start()
     }
 
     fun classify(e: Throwable): Status = when (e) {
@@ -521,6 +535,8 @@ object ServerSync {
                     if (a.books) Thread({ prefetch(s.ctx, s.dir, ep) }, "unireader-prefetch").start()
                 }
             }
+            // 块向量（语义搜索，`../docs/SEMANTIC-SYNC-PLAN.md §4.1`）：拉完行顺带看一眼（开关关着 / 模型没就位不拉）
+            com.xvan.unireader.local.search.SemanticVectors.pullAsync(s.ctx, ep.wid, ep.account.client())
             // 笔记文件：服务器那边的修订号变了（或这次会话还没过过一遍）→ 完整一轮
             if (ch.notes != s.noteHead || s.noteHead == 0L) pullNotes(s, client, ep)
             s.noteHead = ch.notes
