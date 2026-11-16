@@ -60,14 +60,28 @@ class AgentEngineTest {
         while (off < len) { val n = inp.read(body, off, len - off); if (n < 0) break; off += n }
         val bodyStr = String(body, Charsets.UTF_8)
         requests += head.toString() + bodyStr
-        val hasToolResult = JSONObject(bodyStr).getJSONArray("messages").let { m ->
-            (0 until m.length()).any { m.getJSONObject(it).optString("role") == "tool" }
+        val msgs = JSONObject(bodyStr).getJSONArray("messages")
+        val hasToolResult = (0 until msgs.length()).any { msgs.getJSONObject(it).optString("role") == "tool" }
+        val out = s.getOutputStream()
+        if (hasEmptyText(msgs)) {   // 同 Kimi：content 是空串或数组里有空文字块 → 400
+            out.write("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n".toByteArray())
+            out.write("{\"error\":{\"message\":\"text content is empty\",\"type\":\"invalid_request_error\"}}".toByteArray())
+            out.flush(); return
         }
         val events = if (!hasToolResult) toolCallChunks() else textChunks()
-        val out = s.getOutputStream()
         out.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n".toByteArray())
         for (e in events) { out.write("data: $e\n\n".toByteArray(Charsets.UTF_8)); out.flush() }
         out.write("data: [DONE]\n\n".toByteArray()); out.flush()
+    }
+
+    private fun hasEmptyText(msgs: org.json.JSONArray): Boolean = (0 until msgs.length()).any { i ->
+        when (val c = msgs.getJSONObject(i).opt("content")) {
+            is String -> c.isEmpty()
+            is org.json.JSONArray -> (0 until c.length()).any { j ->
+                c.getJSONObject(j).let { it.optString("type") == "text" && it.optString("text").isEmpty() }
+            }
+            else -> false
+        }
     }
 
     private fun chunk(delta: JSONObject, finish: String? = null): String = JSONObject()
@@ -103,7 +117,10 @@ class AgentEngineTest {
     }
 
     private fun textChunks(): List<String> = listOf(
-        chunk(JSONObject().put("role", "assistant").put("content", "do")),
+        // 同 Kimi：思考那几块也带着 "content": ""，与正文交替到达（Koog 会切出几段文字，其中有空串）
+        chunk(JSONObject().put("role", "assistant").put("content", "").put("reasoning_content", "answer ")),
+        chunk(JSONObject().put("content", "do")),
+        chunk(JSONObject().put("content", "").put("reasoning_content", "now")),
         chunk(JSONObject().put("content", "ne")),
         chunk(JSONObject(), "stop"),
     )
@@ -149,7 +166,7 @@ class AgentEngineTest {
         val text = events.filterIsInstance<AgentEvent.TextDelta>().joinToString("") { it.text }
         assertEquals("done", text)
         val thinking = events.filterIsInstance<AgentEvent.ReasoningDelta>().joinToString("") { it.text }
-        assertEquals("let me call echo", thinking)
+        assertEquals("let me call echoanswer now", thinking)
     }
 
     @Test
@@ -174,5 +191,6 @@ class AgentEngineTest {
         assertTrue(third.contains("pong:hi"))
         assertTrue(third.contains("done"))
         assertTrue(third.contains("second"))
+        assertEquals("第二句的请求没被假服务以空文字拒掉", 3, requests.size)
     }
 }

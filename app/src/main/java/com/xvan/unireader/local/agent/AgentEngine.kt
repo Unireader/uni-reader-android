@@ -122,12 +122,13 @@ class AgentEngine(
      */
     private fun toAssistant(frames: List<StreamFrame>): Message.Assistant {
         var end: StreamFrame.End? = null
-        val parts = frames.mapNotNull { f ->
+        val text = StringBuilder()
+        val others = frames.mapNotNull { f ->
             when (f) {
                 is StreamFrame.ReasoningComplete -> MessagePart.Reasoning(
                     id = f.id, content = f.content, summary = f.summary, encrypted = f.encrypted,
                 )
-                is StreamFrame.TextComplete -> MessagePart.Text(f.text)
+                is StreamFrame.TextComplete -> { text.append(f.text); null }
                 is StreamFrame.ToolCallComplete -> MessagePart.Tool.Call(
                     id = f.id, tool = f.name, args = f.content.ifBlank { "{}" },
                 )
@@ -135,6 +136,9 @@ class AgentEngine(
                 else -> null
             }
         }
+        // 正文并成一段、空的不要：几段文字 Koog 会发成 content 数组，其中有空串时
+        // Kimi 回 400「text content is empty」（2026-11-16 真机第二轮对话踩到）。
+        val parts = if (text.isBlank()) others else listOf(MessagePart.Text(text.toString())) + others
         return Message.Assistant(
             parts = parts,
             metaInfo = end?.metaInfo ?: ResponseMetaInfo.Empty,
