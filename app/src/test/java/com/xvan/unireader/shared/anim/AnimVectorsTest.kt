@@ -84,6 +84,16 @@ class AnimVectorsTest {
             val labels = sh.labels.keys.sorted().joinToString(";") { "$it=${sh.labels[it]}" }
             parts.add("sheet:$name=" + cells.joinToString(";") + "/" + rules + "/" + arrows + "/" + labels)
         }
+        for (name in s.bits.keys.sorted()) {
+            val b = s.bits[name]!!
+            parts.add("bits:$name=" + b.values.indices.joinToString(";") { "${b.values[it]}:${b.tones[it].raw}" } +
+                "/" + b.labels.keys.sorted().joinToString(";") { "$it=${b.labels[it]}" })
+        }
+        for (name in s.packets.keys.sorted()) {
+            val p = s.packets[name]!!
+            val groups = p.groups.joinToString(";") { "${p.index(it.from)?.toString() ?: "?"}..${p.index(it.to)?.toString() ?: "?"}:${it.label}" }
+            parts.add("packet:$name=" + p.segments.joinToString(";") { "${it.name}:${it.length}:${it.tone.raw}" } + "/" + groups)
+        }
         for (name in s.pointers.keys.sorted()) {
             val desc = when (val p = s.pointers[name]) {
                 null -> "null"
@@ -116,6 +126,16 @@ class AnimVectorsTest {
         return parts.joinToString("\n")
     }
 
+    /** 新几种声明的解析结果（同 Swift `decl`）：只为这几种写。 */
+    private fun decl(e: AnimElement): String? = when (val k = e.kind) {
+        is AnimElementKind.Tree -> if (k.dir != AnimDirection.DOWN) "tree dir=${k.dir.raw}" else null
+        is AnimElementKind.Graph -> if (k.layout == AnimGraphLayout.LAYERS)
+            "graph layers dir=${k.dir.raw} ranks=" + k.ranks.joinToString("|") { it.joinToString(",") } else null
+        is AnimElementKind.Bits -> "bits w=${k.width} f=" + k.fields.joinToString(",") { "${if (it.variable) "*" else ""}${it.name}:${it.bits}=${it.value}" }
+        is AnimElementKind.Packet -> "packet unit=${k.unit} segs=" + k.segments.joinToString(",") { "${it.name}:${it.length}" }
+        else -> null
+    }
+
     /** 把本端跑一遍的结果写成与向量文件同样的几行。 */
     private fun render(name: String, src: String): List<String> {
         val run = AnimEngine.run(src)
@@ -125,6 +145,9 @@ class AnimVectorsTest {
         out.add("exp ${esc(AnimKits.expand(src).text)}")
         out.add("title ${esc(run.script.title ?: "-")}")
         out.add("steps ${run.stepCount} scenes ${run.script.scenes.size}")
+        for ((i, scene) in run.script.scenes.withIndex()) {
+            for (e in scene.elements) decl(e)?.let { out.add("el $i ${e.name} ${esc(it)}") }
+        }
         for (e in run.errors) out.add("err ${e.line} ${esc(e.message)}")
         for ((i, len) in run.timelineLength.withIndex()) out.add("tl $i ${f3(len)}")
         for (i in run.states.indices) for (k in 0 until run.stepCount) out.add("st $i $k ${esc(digest(run.state(i, k)))}")

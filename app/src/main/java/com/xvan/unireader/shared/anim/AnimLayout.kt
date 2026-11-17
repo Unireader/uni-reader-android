@@ -1,10 +1,12 @@
 package com.xvan.unireader.shared.anim
 
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /*
  * 分步演示的布局：状态 + 画布宽 → 一帧里要画的物件（框、字、线、叉）。逐条照抄 Mac `Sources/Anim/AnimLayout.swift` +
@@ -196,7 +198,8 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
                 val count = maxOf(states.maxOf { it.cells[e.name]?.size ?: 0 }, 1)
                 nameH + cellSize(w, count, 36f) + 4 + band
             }
-            is AnimElementKind.LinkedList, is AnimElementKind.Tree, is AnimElementKind.Graph, is AnimElementKind.Grid, is AnimElementKind.Sheet ->
+            is AnimElementKind.LinkedList, is AnimElementKind.Tree, is AnimElementKind.Graph, is AnimElementKind.Grid, is AnimElementKind.Sheet,
+            is AnimElementKind.Bits, is AnimElementKind.Packet ->
                 structureHeight(e, w, states, nameH, pointed)
             is AnimElementKind.Pointer -> 0f
             is AnimElementKind.Stack -> {
@@ -287,10 +290,12 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
                 is AnimElementKind.Queue -> items += cellRow(id, element.name, state.cells[element.name] ?: emptyList(), body, 36f, false, elementTone, anchors)
                 is AnimElementKind.Stack -> items += stackItems(id, element.name, state.cells[element.name] ?: emptyList(), body, elementTone, anchors)
                 is AnimElementKind.LinkedList -> items += listItems(id, element.name, body, state, elementTone, anchors)
-                is AnimElementKind.Tree -> items += treeItems(id, element.name, body, state, elementTone, anchors)
+                is AnimElementKind.Tree -> items += treeItems(id, element, body, state, elementTone, anchors)
                 is AnimElementKind.Graph -> items += graphItems(id, element, body, state, elementTone, anchors)
                 is AnimElementKind.Grid -> items += gridItems(id, element.name, body, state, elementTone, anchors)
                 is AnimElementKind.Sheet -> items += sheetItems(id, element.name, body, state, elementTone)
+                is AnimElementKind.Bits -> items += bitsItems(id, element, body, state, elementTone)
+                is AnimElementKind.Packet -> items += packetItems(id, element, body, state, elementTone)
                 is AnimElementKind.Pointer -> {}
                 is AnimElementKind.Variable -> {
                     val v = state.vars[element.name] ?: AnimVar("", AnimTone.NORMAL)
@@ -482,8 +487,21 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         return when (val k = e.kind) {
             is AnimElementKind.LinkedList -> nameH + LIST_ARC + LIST_NODE_HEIGHT + LIST_ARC + band
             is AnimElementKind.Tree -> {
-                val depth = maxOf(states.maxOf { it.trees[e.name]?.depth ?: 0 }, 1)
-                nameH + (depth - 1) * TREE_LEVEL + GRAPH_NODE + 10
+                if (k.dir.horizontal) {
+                    val slots = maxOf(states.mapNotNull { it.trees[e.name] }.maxOfOrNull { treeSlots(it).count } ?: 1f, 1f)
+                    nameH + (if (pointed) 14f else 0f) + slots * treeSlotH(pointed) + 4
+                } else {
+                    val depth = maxOf(states.maxOf { it.trees[e.name]?.depth ?: 0 }, 1)
+                    nameH + (depth - 1) * TREE_LEVEL + GRAPH_NODE + 10
+                }
+            }
+            is AnimElementKind.Bits -> {
+                val g = bitsGeometry(e, w)
+                nameH + BITS_RULER + g.rows * BITS_ROW + 4
+            }
+            is AnimElementKind.Packet -> {
+                val levels = states.mapNotNull { it.packets[e.name] }.maxOfOrNull { packetGroupLevels(it).values.maxOrNull() ?: 0 } ?: 0
+                nameH + PACKET_BAR + PACKET_LEN + levels * PACKET_GROUP + 4
             }
             is AnimElementKind.Graph -> nameH + graphCanvasHeight(e, w)
             is AnimElementKind.Sheet -> {
@@ -535,42 +553,45 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         return items
     }
 
-    private fun treeItems(id: String, name: String, rect: ARect, state: AnimSceneState, tone: AnimTone,
+    private fun treeItems(id: String, e: AnimElement, rect: ARect, state: AnimSceneState, tone: AnimTone,
                           anchors: MutableMap<AnimPointerTarget, AnimAnchor>): List<AnimItem> {
+        val name = e.name
         val tree = state.trees[name] ?: return emptyList()
+        val dir = (e.kind as? AnimElementKind.Tree)?.dir ?: AnimDirection.DOWN
         val items = ArrayList<AnimItem>()
-        val slot = HashMap<Int, Float>()
-        val level = HashMap<Int, Int>()
-        var counter = 0f
-        fun place(nid: Int, depth: Int) {
-            val n = tree.nodes[nid] ?: return
-            level[nid] = depth
-            if (n.children.size <= 2) {
-                val l = n.children.firstOrNull()
-                if (l != null) place(l, depth + 1) else if (n.children.size == 2) counter += 0.5f
-                slot[nid] = counter
-                counter += 1
-                if (n.children.size == 2) { val r = n.children[1]; if (r != null) place(r, depth + 1) else counter += 0.5f }
-            } else {
-                val xs = ArrayList<Float>()
-                for (c in n.children) {
-                    if (c != null) { place(c, depth + 1); xs.add(slot[c]!!) } else counter += 1
-                }
-                slot[nid] = if (xs.isEmpty()) counter else (xs.min() + xs.max()) / 2
-                if (xs.isEmpty()) counter += 1
+        val ts = treeSlots(tree)
+        val slots = ts.count
+        val all = run.states.flatten().mapNotNull { it.trees[name] }
+        val depthMax = maxOf(all.maxOfOrNull { it.depth } ?: 1, 1)
+        val pointed = pointedElements(run.states.flatten()).contains(name)
+        // 左右各留 26 点：指针标签画在节点左边，最左的节点也放得下
+        val area = rect.inset(26f, 0f)
+        val d: Float
+        val center: (Int) -> APoint
+        if (dir.horizontal) {
+            val slotH = treeSlotH(pointed)
+            val slotsMax = maxOf(all.maxOfOrNull { treeSlots(it).count } ?: 1f, 1f)
+            d = minOf(GRAPH_NODE, slotH - 6)
+            val levelW = if (depthMax > 1) minOf(110f, (area.w - d) / (depthMax - 1)) else 0f
+            val top = rect.minY + (if (pointed) 14f else 0f) + (slotsMax - slots) * slotH / 2
+            center = { nid ->
+                val l = ts.level[nid]!!
+                val x = if (dir == AnimDirection.RIGHT) area.minX + d / 2 + l * levelW else area.maxX - d / 2 - l * levelW
+                APoint(x, top + (ts.slot[nid]!! + 0.5f) * slotH)
+            }
+        } else {
+            val slotW = minOf(52f, area.w / slots)
+            d = minOf(GRAPH_NODE, slotW - 4)
+            val left = area.minX + (area.w - slots * slotW) / 2
+            center = { nid ->
+                val l = if (dir == AnimDirection.DOWN) ts.level[nid]!! else depthMax - 1 - ts.level[nid]!!
+                APoint(left + (ts.slot[nid]!! + 0.5f) * slotW, rect.minY + d / 2 + 2 + l * TREE_LEVEL)
             }
         }
-        tree.root?.let { place(it, 0) }
-        val slots = maxOf(counter, 1f)
-        val area = rect.inset(26f, 0f)
-        val slotW = minOf(52f, area.w / slots)
-        val d = minOf(GRAPH_NODE, slotW - 4)
-        val left = area.minX + (area.w - slots * slotW) / 2
-        fun center(nid: Int) = APoint(left + (slot[nid]!! + 0.5f) * slotW, rect.minY + d / 2 + 2 + level[nid]!! * TREE_LEVEL)
         for ((nid, n) in tree.nodes) {
-            if (slot[nid] == null) continue
+            if (ts.slot[nid] == null) continue
             for (c in n.children.filterNotNull()) {
-                if (slot[c] == null) continue
+                if (ts.slot[c] == null) continue
                 val a = center(nid)
                 val b = center(c)
                 val len = maxOf(hypot(b.x - a.x, b.y - a.y), 1f)
@@ -582,14 +603,19 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
             }
         }
         for (nid in tree.nodes.keys.sorted()) {
-            if (slot[nid] == null) continue
+            if (ts.slot[nid] == null) continue
             val n = tree.nodes[nid]!!
             val c = center(nid)
             val r = ARect(c.x - d / 2, c.y - d / 2, d, d)
             val t = if (n.tone == AnimTone.NORMAL) tone else n.tone
             items.add(AnimItem("$id.n$nid", AnimShape.Box(r, d / 2, AnimRole.Fill(t), AnimRole.Stroke(t), 1.2f, false)))
             items.add(AnimItem("$id.v${n.valueID}", AnimShape.Text(n.value, r.inset(-6f, 0f), if (d < 26) AnimMetrics.SMALL else AnimMetrics.BODY, false, AnimRole.TextC(t), AnimAlign.CENTER, false)))
-            anchors[AnimPointerTarget.Node(name, nid)] = AnimAnchor(APoint(r.minX - 1, c.y), APoint(r.minX - 18, c.y), false)
+            anchors[AnimPointerTarget.Node(name, nid)] = if (dir.horizontal) {
+                // 横着长时左右两边都有边：指针标签放在节点上方
+                AnimAnchor(APoint(c.x, r.minY - 1), APoint(c.x, r.minY - 14), true)
+            } else {
+                AnimAnchor(APoint(r.minX - 1, c.y), APoint(r.minX - 18, c.y), false)
+            }
         }
         if (tree.root == null) {
             items.add(AnimItem("$id.empty", AnimShape.Box(ARect(rect.midX - d / 2, rect.minY + 2, d, d), d / 2, null, AnimRole.Grid, 1f, true)))
@@ -602,19 +628,27 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         return when (k.layout) {
             AnimGraphLayout.CIRCLE -> if (k.nodes.size <= 2) 90f else minOf(maxOf(w * 0.5f, 180f), 280f)
             AnimGraphLayout.LAYERS -> {
-                val widest = graphLevels(e).values.groupingBy { it }.eachCount().values.maxOrNull() ?: 1
-                widest * 64f + 30
+                val layers = graphLayers(e)
+                if (k.dir.horizontal) (layers.maxOfOrNull { it.size } ?: 1) * 64f + 30
+                else maxOf(layers.size - 1, 0) * GRAPH_LAYER_GAP + 70
             }
         }
     }
 
+    /** 节点框的半宽：名字放得进圆就是圆，放不下就拉成两头圆的长条（同 Swift `graphHalfWidth`）。 */
+    private fun graphHalfWidth(name: String): Float {
+        val r = GRAPH_NODE / 2
+        val w = measure(name, AnimMetrics.BODY, true).w
+        return if (w <= GRAPH_NODE - 4) r else ceil(w / 2) + 7
+    }
+
     private fun graphPositions(e: AnimElement, rect: ARect): Map<String, APoint> {
         val k = e.kind as? AnimElementKind.Graph ?: return emptyMap()
-        val nodes = if (k.layout == AnimGraphLayout.CIRCLE) circleOrder(k.nodes, k.edges) else k.nodes
         val r = GRAPH_NODE / 2
         val out = HashMap<String, APoint>()
         when (k.layout) {
             AnimGraphLayout.CIRCLE -> {
+                val nodes = circleOrder(k.nodes, k.edges)
                 val cx = rect.midX
                 val cy = rect.midY + 4
                 if (nodes.size == 1) return mapOf(nodes[0] to APoint(cx, cy))
@@ -627,16 +661,28 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
                 }
             }
             AnimGraphLayout.LAYERS -> {
-                val level = graphLevels(e)
-                val levels = (level.values.maxOrNull() ?: 0) + 1
-                val byLevel = LinkedHashMap<Int, MutableList<String>>()
-                for (n in nodes) byLevel.getOrPut(level[n] ?: 0) { ArrayList() }.add(n)
-                val colW = (rect.w - 2 * (r + 30)) / maxOf(levels - 1, 1)
-                for ((l, members) in byLevel) {
-                    for ((i, n) in members.withIndex()) {
-                        val x = if (levels == 1) rect.midX else rect.minX + r + 30 + l * colW
-                        val y = rect.minY + 24 + (rect.h - 30) * (i + 0.5f) / members.size
-                        out[n] = APoint(rnd(x), rnd(y))
+                val layers = graphLayers(e)
+                val levels = layers.size
+                if (k.dir.horizontal) {
+                    // 每层一列：right = 第一层在最左
+                    val side = (layers.flatten().maxOfOrNull { graphHalfWidth(it) } ?: r) + 30
+                    val colW = (rect.w - 2 * side) / maxOf(levels - 1, 1)
+                    for ((l, members) in layers.withIndex()) {
+                        for ((i, n) in members.withIndex()) {
+                            val lx = if (levels == 1) rect.midX else rect.minX + side + l * colW
+                            val x = if (k.dir == AnimDirection.RIGHT) lx else rect.maxX - (lx - rect.minX)
+                            val y = rect.minY + 24 + (rect.h - 30) * (i + 0.5f) / members.size
+                            out[n] = APoint(rnd(x), rnd(y))
+                        }
+                    }
+                } else {
+                    // 每层一行：down = 第一层在最上
+                    for ((l, members) in layers.withIndex()) {
+                        val row = if (k.dir == AnimDirection.DOWN) l else levels - 1 - l
+                        for ((i, n) in members.withIndex()) {
+                            val x = rect.minX + rect.w * (i + 0.5f) / members.size
+                            out[n] = APoint(rnd(x), rnd(rect.minY + 26 + row * GRAPH_LAYER_GAP))
+                        }
                     }
                 }
             }
@@ -649,6 +695,13 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         val g = state.graphs[e.name] ?: return emptyList()
         val pos = graphPositions(e, rect)
         val r = GRAPH_NODE / 2
+        val half = HashMap<String, Float>()
+        for (n in g.order) half[n] = graphHalfWidth(n)
+        // 分层排法里同一层、中间隔着别的节点的边：往外弯
+        val layerOf = HashMap<String, Pair<Int, Int>>()
+        if ((e.kind as? AnimElementKind.Graph)?.layout == AnimGraphLayout.LAYERS) {
+            for ((l, members) in graphLayers(e).withIndex()) for ((i, n) in members.withIndex()) layerOf[n] = l to i
+        }
         val items = ArrayList<AnimItem>()
         for ((k, edge) in g.edges.withIndex()) {
             val a = pos[edge.a] ?: continue
@@ -660,12 +713,36 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
             val bend = if (paired) 10f else 0f
             val nx = -uy * bend
             val ny = ux * bend
-            val p0 = APoint(a.x + ux * r + nx * 0.5f, a.y + uy * r + ny * 0.5f)
-            val p1 = APoint(b.x - ux * (r + 1) + nx * 0.5f, b.y - uy * (r + 1) + ny * 0.5f)
-            val mid = APoint((p0.x + p1.x) / 2 + nx, (p0.y + p1.y) / 2 + ny)
+            val ra = nodeExit(ux, uy, half[edge.a] ?: r, r)
+            val rb = nodeExit(ux, uy, half[edge.b] ?: r, r)
+            var p0 = APoint(a.x + ux * ra + nx * 0.5f, a.y + uy * ra + ny * 0.5f)
+            var p1 = APoint(b.x - ux * (rb + 1) + nx * 0.5f, b.y - uy * (rb + 1) + ny * 0.5f)
+            var mid = APoint((p0.x + p1.x) / 2 + nx, (p0.y + p1.y) / 2 + ny)
+            var apex: APoint? = null
+            val la = layerOf[edge.a]
+            val lb = layerOf[edge.b]
+            if (la != null && lb != null && la.first == lb.first && abs(la.second - lb.second) >= 2) {
+                // 曲线顶点离连线 = 控制点偏移的一半：要越过中间节点（半径 + 留白）
+                val lift = (if (la.second < lb.second) -1 else 1) * 2 * (r + 12 + 6 * (abs(la.second - lb.second) - 2))
+                val c = APoint((a.x + b.x) / 2 - uy * lift, (a.y + b.y) / 2 + ux * lift)
+                fun toward(from: APoint, hw: Float, extra: Float): APoint {
+                    val l = maxOf(hypot(c.x - from.x, c.y - from.y), 1f)
+                    val vx = (c.x - from.x) / l
+                    val vy = (c.y - from.y) / l
+                    val dd = nodeExit(vx, vy, hw, r) + extra
+                    return APoint(from.x + vx * dd, from.y + vy * dd)
+                }
+                p0 = toward(a, half[edge.a] ?: r, 0f)
+                p1 = toward(b, half[edge.b] ?: r, 1f)
+                mid = c
+                apex = APoint(0.25f * p0.x + 0.5f * c.x + 0.25f * p1.x, 0.25f * p0.y + 0.5f * c.y + 0.25f * p1.y)
+            }
+            val q0 = p0
+            val q1 = p1
+            val qm = mid
             val pts = (0 until 8).map { i ->
                 val t = i / 7f
-                APoint((1 - t) * (1 - t) * p0.x + 2 * (1 - t) * t * mid.x + t * t * p1.x, (1 - t) * (1 - t) * p0.y + 2 * (1 - t) * t * mid.y + t * t * p1.y)
+                APoint((1 - t) * (1 - t) * q0.x + 2 * (1 - t) * t * qm.x + t * t * q1.x, (1 - t) * (1 - t) * q0.y + 2 * (1 - t) * t * qm.y + t * t * q1.y)
             }
             val t = edge.tone
             items.add(AnimItem("$id.e$k", AnimShape.Line(pts, if (t == AnimTone.NORMAL) AnimRole.Grid else AnimRole.Stroke(t), if (t == AnimTone.NORMAL) 1.5f else 2.5f,
@@ -673,7 +750,7 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
             val w = edge.weight
             if (!w.isNullOrEmpty()) {
                 val size = measure(w, AnimMetrics.SMALL)
-                val c = APoint((a.x + b.x) / 2 + nx * 1.6f, (a.y + b.y) / 2 + ny * 1.6f)
+                val c = apex ?: APoint((a.x + b.x) / 2 + nx * 1.6f, (a.y + b.y) / 2 + ny * 1.6f)
                 items.add(AnimItem("$id.w$k", AnimShape.Text(w, ARect(c.x - size.w / 2 - 3, c.y - size.h / 2 - 1, size.w + 6, size.h + 2), AnimMetrics.SMALL, false,
                     if (t == AnimTone.NORMAL) AnimRole.Secondary else AnimRole.TextC(t), AnimAlign.CENTER, true)))
             }
@@ -681,7 +758,8 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         for (n in g.order) {
             val c = pos[n] ?: continue
             val node = g.nodes[n] ?: continue
-            val box = ARect(c.x - r, c.y - r, 2 * r, 2 * r)
+            val hw = half[n] ?: r
+            val box = ARect(c.x - hw, c.y - r, 2 * hw, 2 * r)
             val t = if (node.tone == AnimTone.NORMAL) tone else node.tone
             items.add(AnimItem("$id.n$n", AnimShape.Box(box, r, AnimRole.Fill(t), AnimRole.Stroke(t), 1.2f, false)))
             items.add(AnimItem("$id.t$n", AnimShape.Text(n, box.inset(-4f, 0f), AnimMetrics.BODY, true, AnimRole.TextC(t), AnimAlign.CENTER, false)))
@@ -737,8 +815,9 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         val all = run.states.flatten().mapNotNull { it.sheets[name] }
         val cols = maxOf(all.maxOfOrNull { it.colCount } ?: 1, 1)
         val labelW = all.flatMap { it.labels.values }.maxOfOrNull { measure(it, AnimMetrics.SMALL).w }?.let { it + 12 } ?: 0f
-        val cell = minOf(16f, maxOf(9f, floor((w - labelW) / cols)))
-        return cell to if (cell >= 14) AnimMetrics.BODY + 1 else AnimMetrics.SMALL
+        // 窄的时候格子可以缩到 6（IP 地址的二进制一行 35 列），字号跟着变小（同 Mac）
+        val cell = minOf(16f, maxOf(6f, floor((w - labelW) / cols)))
+        return cell to if (cell >= 14) AnimMetrics.BODY + 1 else if (cell >= 9) AnimMetrics.SMALL else AnimMetrics.SMALL - 2
     }
 
     private fun sheetItems(id: String, name: String, rect: ARect, state: AnimSceneState, tone: AnimTone): List<AnimItem> {
@@ -769,6 +848,163 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         val right = x0 + maxOf(sheet.colCount, run.states.flatten().mapNotNull { it.sheets[name]?.colCount }.maxOrNull() ?: 0) * cw + 10
         for ((r, text) in sheet.labels) {
             items.add(AnimItem("$id.l$r", AnimShape.Text(text, ARect(right, y0 + r * rh, maxOf(rect.maxX - right, 10f), rh), AnimMetrics.SMALL, false, AnimRole.Secondary, AnimAlign.LEFT, false)))
+        }
+        return items
+    }
+
+    // —— 首部格式图（同 Swift `bitsItems`）——
+
+    private class BitsGeometry(val bw: Float, val leftW: Float, val rows: Int, val width: Int)
+
+    private fun bitsGeometry(e: AnimElement, w: Float): BitsGeometry {
+        val k = e.kind as? AnimElementKind.Bits ?: return BitsGeometry(10f, 0f, 1, 32)
+        val total = k.fields.sumOf { it.bits }
+        val rows = maxOf((total + k.width - 1) / k.width, 1)
+        val leftW = if (k.width % 8 == 0) 24f else 0f
+        val labels = run.states.flatten().mapNotNull { it.bits[e.name] }.flatMap { it.labels.values }
+        val labelW = labels.maxOfOrNull { measure(it, AnimMetrics.SMALL).w + 10 }?.let { minOf(it, w * 0.4f) } ?: 0f
+        val bw = minOf(24f, maxOf(5f, floor((w - leftW - labelW) / k.width)))
+        return BitsGeometry(bw, leftW, rows, k.width)
+    }
+
+    /** 放得下的最大字号（都放不下就用最小的，折行）。 */
+    private fun fitSize(s: String, width: Float, sizes: List<Float>, bold: Boolean = false): Float {
+        for (size in sizes) if (measure(s, size, bold).w <= width) return size
+        return sizes.lastOrNull() ?: AnimMetrics.SMALL
+    }
+
+    /** 字段名：放得下就横排；1 位宽的控制位放不下时一个字母一行竖排。 */
+    private fun fieldName(name: String, width: Float, height: Float, sizes: List<Float>): Pair<String, Float> {
+        val size = fitSize(name, width, sizes)
+        if (measure(name, size).w <= width) return name to size
+        val chars = name.glyphs()
+        if (chars.size in 2..4 && chars.size * 10f <= height) return chars.joinToString("\n") to 8f
+        return name to size
+    }
+
+    private fun bitsItems(id: String, e: AnimElement, rect: ARect, state: AnimSceneState, tone: AnimTone): List<AnimItem> {
+        val k = e.kind as? AnimElementKind.Bits ?: return emptyList()
+        val b = state.bits[e.name] ?: return emptyList()
+        val width = k.width
+        val g = bitsGeometry(e, rect.w)
+        val bw = g.bw
+        val rh = BITS_ROW
+        val x0 = rect.minX + g.leftW
+        val y0 = rect.minY + BITS_RULER
+        val items = ArrayList<AnimItem>()
+        for (bit in 0 until width) {
+            val show = bit == 0 || bit == width - 1 || bw >= 20 || (bw >= 12 && bit % 4 == 0) || (if (bw * 8 >= 30) bit % 8 == 0 else bit % 16 == 0)
+            if (!show || !(bit == width - 1 || bit == 0 || (width - 1 - bit) * bw >= 16)) continue
+            items.add(AnimItem("$id.bit$bit", AnimShape.Text("$bit", ARect(x0 + bit * bw - 8, rect.minY, bw + 16, 12f), AnimMetrics.SMALL - 1, false, AnimRole.Secondary, AnimAlign.CENTER, false)))
+        }
+        if (g.leftW > 0) {
+            for (row in 0 until g.rows) {
+                items.add(AnimItem("$id.off$row", AnimShape.Text("${row * width / 8}", ARect(rect.minX, y0 + row * rh, g.leftW - 5, rh), AnimMetrics.SMALL - 1, false, AnimRole.Secondary, AnimAlign.RIGHT, false)))
+            }
+        }
+        val valued = HashSet<Int>()
+        for (st in run.states.flatten()) st.bits[e.name]?.values?.forEachIndexed { i, x -> if (x.isNotEmpty()) valued.add(i) }
+        var offset = 0
+        for ((i, f) in k.fields.withIndex()) {
+            val boxes = bitFieldBoxes(offset, f.bits, width)
+            offset += f.bits
+            val t = if (b.tones[i] == AnimTone.NORMAL) tone else b.tones[i]
+            var main = ARect(0f, 0f, 0f, 0f)
+            for ((n, box) in boxes.withIndex()) {
+                val r = ARect(x0 + box[1] * bw, y0 + box[0] * rh, box[2] * bw, box[3] * rh)
+                if (r.w * r.h > main.w * main.h) main = r
+                items.add(AnimItem("$id.f$i.$n", AnimShape.Box(r, 0f, AnimRole.Fill(t), if (t == AnimTone.NORMAL) AnimRole.Grid else AnimRole.Stroke(t),
+                    if (t == AnimTone.NORMAL) 1f else 1.5f, f.variable)))
+            }
+            val inner = main.w - 4
+            val value = b.values[i]
+            // 太窄（名字用最小字号也放不下）：有值时只显示值，没值时照旧竖排名字（同 Mac）
+            val narrow = measure(f.name, 8f).w > inner
+            if (narrow && value.isNotEmpty()) {
+                val size = fitSize(value, inner, listOf(AnimMetrics.BODY, AnimMetrics.SMALL, 9f, 8f), true)
+                items.add(AnimItem("$id.fv$i", AnimShape.Text(value, main.inset(2f, 0f), size, true, AnimRole.TextC(t), AnimAlign.CENTER, false)))
+            } else if (i !in valued || narrow) {
+                val (text, size) = fieldName(f.name, inner, main.h, listOf(AnimMetrics.BODY, AnimMetrics.SMALL, 9f, 8f))
+                items.add(AnimItem("$id.fn$i", AnimShape.Text(text, main.inset(2f, 0f), size, false, AnimRole.TextC(t), AnimAlign.CENTER, false)))
+            } else {
+                val nameSize = fitSize(f.name, inner, listOf(AnimMetrics.SMALL, 9f, 8f))
+                items.add(AnimItem("$id.fn$i", AnimShape.Text(f.name, ARect(main.minX + 2, main.midY - 15, inner, 14f), nameSize, false, AnimRole.TextC(t), AnimAlign.CENTER, false)))
+                if (value.isNotEmpty()) {
+                    val valueSize = fitSize(value, inner, listOf(AnimMetrics.BODY, AnimMetrics.SMALL, 9f, 8f), true)
+                    items.add(AnimItem("$id.fv$i", AnimShape.Text(value, ARect(main.minX + 2, main.midY - 1, inner, 15f), valueSize, true, AnimRole.TextC(t), AnimAlign.CENTER, false)))
+                }
+            }
+        }
+        val right = x0 + width * bw + 8
+        for ((row, text) in b.labels) {
+            if (row >= g.rows) continue
+            items.add(AnimItem("$id.l$row", AnimShape.Text(text, ARect(right, y0 + row * rh, maxOf(rect.maxX - right, 10f), rh), AnimMetrics.SMALL, false, AnimRole.Secondary, AnimAlign.LEFT, false)))
+        }
+        return items
+    }
+
+    // —— 分组（封装）图（同 Swift `packetItems`）——
+
+    /** 各段的宽：先给够名字，余下按长度的平方根分；比例尺按这个元素所有步里最长的那一帧定。 */
+    private fun packetWidths(name: String, segments: List<AnimSegment>, w: Float): List<Float> {
+        fun mins(segs: List<AnimSegment>) = segs.map { maxOf(measure(it.name, AnimMetrics.SMALL).w + 10, 28f) }
+        fun weight(seg: AnimSegment) = sqrt(leadingNumber(seg.length)).toFloat()
+        val all = run.states.flatten().mapNotNull { it.packets[name]?.segments }
+        var scale = Float.MAX_VALUE
+        for (segs in all) {
+            if (segs.isEmpty()) continue
+            val free = w - mins(segs).sum()
+            val total = segs.map { weight(it) }.sum()
+            if (total > 0) scale = minOf(scale, maxOf(free, 0f) / total)
+        }
+        val m = mins(segments)
+        val sumMin = m.sum()
+        if (sumMin >= w) return m.map { it * w / sumMin }
+        if (scale == Float.MAX_VALUE) {
+            val extra = (w - sumMin) / maxOf(segments.size, 1)
+            return m.map { it + extra }
+        }
+        return m.zip(segments).map { (mm, seg) -> mm + scale * weight(seg) }
+    }
+
+    private fun packetItems(id: String, e: AnimElement, rect: ARect, state: AnimSceneState, tone: AnimTone): List<AnimItem> {
+        val k = e.kind as? AnimElementKind.Packet ?: return emptyList()
+        val p = state.packets[e.name] ?: return emptyList()
+        val items = ArrayList<AnimItem>()
+        val widths = packetWidths(e.name, p.segments, rect.w)
+        val frames = HashMap<Int, ARect>()
+        var x = rect.minX
+        val barTop = rect.minY
+        for ((n, seg) in p.segments.withIndex()) {
+            val r = ARect(x, barTop, widths[n], PACKET_BAR)
+            frames[seg.id] = r
+            x += widths[n]
+            val t = if (seg.tone == AnimTone.NORMAL) tone else seg.tone
+            items.add(AnimItem("$id.s${seg.id}", AnimShape.Box(r, 2f, AnimRole.Fill(t), if (t == AnimTone.NORMAL) AnimRole.Grid else AnimRole.Stroke(t), if (t == AnimTone.NORMAL) 1f else 1.5f, false)))
+            val size = fitSize(seg.name, r.w - 4, listOf(AnimMetrics.BODY, AnimMetrics.SMALL, 9f, 8f))
+            items.add(AnimItem("$id.sn${seg.id}", AnimShape.Text(seg.name, r.inset(2f, 0f), size, false, AnimRole.TextC(t), AnimAlign.CENTER, false)))
+            if (seg.length.isNotEmpty()) {
+                val text = if (k.unit.isEmpty()) seg.length else seg.length + " " + k.unit
+                items.add(AnimItem("$id.sl${seg.id}", AnimShape.Text(text, ARect(r.minX - 6, r.maxY + 1, r.w + 12, PACKET_LEN - 1), AnimMetrics.SMALL - 1, false, AnimRole.Secondary, AnimAlign.CENTER, false)))
+            }
+        }
+        if (p.segments.isEmpty()) {
+            items.add(AnimItem("$id.empty", AnimShape.Box(ARect(rect.minX, barTop, 60f, PACKET_BAR), 2f, null, AnimRole.Grid, 1f, true)))
+        }
+        val levels = packetGroupLevels(p)
+        for (g in p.groups) {
+            val level = levels[g.id] ?: continue
+            val a = frames[g.from] ?: continue
+            val b = frames[g.to] ?: continue
+            val x0 = minOf(a.minX, b.minX) + 2
+            val x1 = maxOf(a.maxX, b.maxX) - 2
+            val y = barTop + PACKET_BAR + PACKET_LEN + (level - 1) * PACKET_GROUP + 2
+            items.add(AnimItem("$id.g${g.id}", AnimShape.Line(listOf(APoint(x0, y), APoint(x0, y + 5), APoint(x1, y + 5), APoint(x1, y)), AnimRole.Secondary, 1f, false, false, 1f)))
+            val size = measure(g.label, AnimMetrics.SMALL)
+            val lw = minOf(size.w + 8, rect.w)
+            // 标签可以比括号宽，但不出元素的左右边
+            val lx = minOf(maxOf((x0 + x1) / 2 - lw / 2, rect.minX), rect.maxX - lw)
+            items.add(AnimItem("$id.gl${g.id}", AnimShape.Text(g.label, ARect(lx, y + 5, lw, 14f), AnimMetrics.SMALL, false, AnimRole.Ink, AnimAlign.CENTER, true)))
         }
         return items
     }
@@ -821,6 +1057,107 @@ class AnimLayout(val run: AnimRun, val width: Float, private val m: AnimMeasure)
         const val TREE_LEVEL = 52f
         const val GRAPH_NODE = 30f
         const val SHEET_ROW = 22f
+        const val GRAPH_LAYER_GAP = 72f
+        const val BITS_ROW = 34f
+        const val BITS_RULER = 14f
+        const val PACKET_BAR = 30f
+        const val PACKET_LEN = 14f
+        const val PACKET_GROUP = 22f
+
+        class TreeSlots(val slot: HashMap<Int, Float>, val level: HashMap<Int, Int>, val count: Float)
+
+        /** 每个节点排在第几格、第几层（同 Swift `treeSlots`）。 */
+        fun treeSlots(tree: AnimTreeState): TreeSlots {
+            val slot = HashMap<Int, Float>()
+            val level = HashMap<Int, Int>()
+            var counter = 0f
+            fun place(nid: Int, depth: Int) {
+                val n = tree.nodes[nid] ?: return
+                level[nid] = depth
+                if (n.children.size <= 2) {
+                    val l = n.children.firstOrNull()
+                    if (l != null) place(l, depth + 1) else if (n.children.size == 2) counter += 0.5f
+                    slot[nid] = counter
+                    counter += 1
+                    if (n.children.size == 2) { val r = n.children[1]; if (r != null) place(r, depth + 1) else counter += 0.5f }
+                } else {
+                    val xs = ArrayList<Float>()
+                    for (c in n.children) {
+                        if (c != null) { place(c, depth + 1); xs.add(slot[c]!!) } else counter += 1
+                    }
+                    slot[nid] = if (xs.isEmpty()) counter else (xs.min() + xs.max()) / 2
+                    if (xs.isEmpty()) counter += 1
+                }
+            }
+            tree.root?.let { place(it, 0) }
+            return TreeSlots(slot, level, maxOf(counter, 1f))
+        }
+
+        fun treeSlotH(pointed: Boolean): Float = if (pointed) 50f else 40f
+
+        /** 分层排法的每一层：写了 `layers=` 就照它，否则广度优先、层里按声明顺序。 */
+        fun graphLayers(e: AnimElement): List<List<String>> {
+            val k = e.kind as? AnimElementKind.Graph ?: return emptyList()
+            if (k.ranks.isNotEmpty()) return k.ranks
+            val level = graphLevels(e)
+            val byLevel = List((level.values.maxOrNull() ?: 0) + 1) { ArrayList<String>() }
+            for (n in k.nodes) byLevel[level[n] ?: 0].add(n)
+            return byLevel.filter { it.isNotEmpty() }
+        }
+
+        /** 从框中心沿单位方向走多远到框边（长条 = 直边 + 两头半圆）。 */
+        fun nodeExit(ux: Float, uy: Float, hw: Float, hh: Float): Float {
+            val a = maxOf(hw - hh, 0f)
+            val ax = abs(ux)
+            val ay = abs(uy)
+            if (ay > 1e-6f) {
+                val t = hh / ay
+                if (t * ax <= a) return t
+            }
+            return a * ax + sqrt(maxOf(a * a * ax * ax - a * a + hh * hh, 0f))
+        }
+
+        /** 一个字段占的框：[行, 列, 列数, 行数]；跨整行的连成一个高框。 */
+        fun bitFieldBoxes(offset: Int, bits: Int, width: Int): List<IntArray> {
+            val out = ArrayList<IntArray>()
+            var o = offset
+            var n = bits
+            while (n > 0) {
+                val row = o / width
+                val col = o % width
+                if (col == 0 && n >= width) {
+                    val k = n / width
+                    out.add(intArrayOf(row, 0, width, k))
+                    o += k * width; n -= k * width
+                    continue
+                }
+                val take = minOf(n, width - col)
+                out.add(intArrayOf(row, col, take, 1))
+                o += take; n -= take
+            }
+            return out
+        }
+
+        /** 括号排第几层（同 Swift `packetGroupLevels`）。 */
+        fun packetGroupLevels(p: AnimPacketState): Map<Int, Int> {
+            val spans = ArrayList<IntArray>()   // id, lo, hi
+            for (g in p.groups) {
+                val a = p.index(g.from) ?: continue
+                val b = p.index(g.to) ?: continue
+                spans.add(intArrayOf(g.id, minOf(a, b), maxOf(a, b)))
+            }
+            spans.sortWith(compareBy<IntArray>({ it[2] - it[1] }, { it[0] }))
+            val level = HashMap<Int, Int>()
+            for ((k, s) in spans.withIndex()) {
+                var l = 1
+                for (o in spans.subList(0, k)) if (o[1] <= s[2] && o[2] >= s[1]) l = maxOf(l, level[o[0]]!! + 1)
+                level[s[0]] = l
+            }
+            return level
+        }
+
+        /** 长度开头的数字（`1480`、`20 B` → 20）；没有数字 = 0。 */
+        fun leadingNumber(s: String): Double = s.trimWs().takeWhile { it.isDigit() || it == '.' }.toDoubleOrNull() ?: 0.0
 
         fun cellSize(width: Float, count: Int, max: Float): Float {
             if (count <= 0) return max

@@ -148,6 +148,23 @@ class AnimSheetState(
         ArrayList(rules), ArrayList(arrows), HashMap(labels))
 }
 
+/** 首部格式图：字段来自声明，这里只记值、颜色、行尾注释（同 Swift `AnimBitsState`）。 */
+class AnimBitsState(val values: MutableList<String>, val tones: MutableList<AnimTone>, val labels: MutableMap<Int, String> = HashMap()) {
+    fun copy() = AnimBitsState(ArrayList(values), ArrayList(tones), HashMap(labels))
+}
+
+class AnimSegment(val id: Int, var name: String, var length: String, var tone: AnimTone) {
+    fun copy() = AnimSegment(id, name, length, tone)
+}
+
+/** 分组图下方的括号：按两端那一段的 id 记。 */
+data class AnimSegmentGroup(val id: Int, val from: Int, val to: Int, val label: String)
+
+class AnimPacketState(val segments: MutableList<AnimSegment>, val groups: MutableList<AnimSegmentGroup> = ArrayList()) {
+    fun index(id: Int): Int? = segments.indexOfFirst { it.id == id }.takeIf { it >= 0 }
+    fun copy() = AnimPacketState(segments.mapTo(ArrayList()) { it.copy() }, ArrayList(groups))
+}
+
 /** 指针指着什么。 */
 sealed class AnimPointerTarget {
     abstract val element: String
@@ -170,6 +187,8 @@ class AnimSceneState {
     val graphs = HashMap<String, AnimGraphState>()
     val grids = HashMap<String, AnimGridState>()
     val sheets = HashMap<String, AnimSheetState>()
+    val bits = HashMap<String, AnimBitsState>()
+    val packets = HashMap<String, AnimPacketState>()
     /** 指针 → 指着什么（值为 null = 不指向任何东西；没有这个键 = 没有这个指针）。 */
     val pointers = HashMap<String, AnimPointerTarget?>()
     val messages = ArrayList<AnimMessage>()
@@ -192,6 +211,8 @@ class AnimSceneState {
         graphs.forEach { (k, v) -> s.graphs[k] = v.copy() }
         grids.forEach { (k, v) -> s.grids[k] = v.copy() }
         sheets.forEach { (k, v) -> s.sheets[k] = v.copy() }
+        bits.forEach { (k, v) -> s.bits[k] = v.copy() }
+        packets.forEach { (k, v) -> s.packets[k] = v.copy() }
         s.pointers.putAll(pointers)
         messages.forEach { s.messages.add(it.copy()) }
         s.marks.addAll(marks)
@@ -258,7 +279,7 @@ object AnimEngine {
         for ((line, action) in scene.setup.firstOrNull()?.actions ?: emptyList()) {
             val handled = applyStructure(action, initial, kinds, newID) { errors.add(AnimDiagnostic(line, it)) }
             if (!handled) {
-                errors.add(AnimDiagnostic(line, "before the first step only sheet / list / tree / graph / grid actions are allowed; put this inside a step"))
+                errors.add(AnimDiagnostic(line, "before the first step only sheet / list / tree / graph / grid / bits / packet actions are allowed; put this inside a step"))
             }
         }
 
@@ -426,6 +447,7 @@ object AnimEngine {
                     is AnimAction.Rule -> fail(sheetMiss(action.target, kinds))
                     is AnimAction.Arrow -> fail(sheetMiss(action.target, kinds))
                     is AnimAction.Label -> fail(sheetMiss(action.target, kinds))
+                    is AnimAction.Group -> fail(if (kinds[action.target.name] == null) "no element “${action.target.name}”" else "${action.target.name} is not a packet")
                 }
             }
             val height = maxOf(extent, if (lanes.isEmpty()) 0.0 else GAP)
@@ -436,6 +458,7 @@ object AnimEngine {
             for (cells in state.cells.values) for (c in cells) if (c.tone == AnimTone.NEW) c.tone = AnimTone.NORMAL
             for (l in state.lists.values) for (n in l.nodes) if (n.tone == AnimTone.NEW) n.tone = AnimTone.NORMAL
             for (t in state.trees.values) for (n in t.nodes.values) if (n.tone == AnimTone.NEW) n.tone = AnimTone.NORMAL
+            for (p in state.packets.values) for (g in p.segments) if (g.tone == AnimTone.NEW) g.tone = AnimTone.NORMAL
         }
         // 最后一步里还挂着的 arrive=next：没有下一步了，就地到达
         for ((index, _) in pendingNext) {
@@ -520,6 +543,8 @@ object AnimEngine {
                     k.values.mapTo(ArrayList()) { r -> r.mapTo(ArrayList()) { AnimTone.NORMAL } }, k.rowLabels, k.colLabels)
             }
             is AnimElementKind.Sheet -> state.sheets[element.name] = AnimSheetState()
+            is AnimElementKind.Bits -> state.bits[element.name] = AnimBitsState(k.fields.mapTo(ArrayList()) { it.value }, k.fields.mapTo(ArrayList()) { AnimTone.NORMAL })
+            is AnimElementKind.Packet -> state.packets[element.name] = AnimPacketState(k.segments.mapTo(ArrayList()) { AnimSegment(newID(), it.name, it.length, AnimTone.NORMAL) })
             else -> {}
         }
     }
@@ -577,7 +602,7 @@ object AnimEngine {
                                newID: () -> Int, fail: (String) -> Unit): Boolean {
         fun isStructure(name: String) = when (kinds[name]) {
             is AnimElementKind.LinkedList, is AnimElementKind.Tree, is AnimElementKind.Graph, is AnimElementKind.Grid,
-            is AnimElementKind.Pointer, is AnimElementKind.Sheet -> true
+            is AnimElementKind.Pointer, is AnimElementKind.Sheet, is AnimElementKind.Bits, is AnimElementKind.Packet -> true
             else -> false
         }
         try {
@@ -600,6 +625,15 @@ object AnimEngine {
                 }
                 is AnimAction.InsertAt -> {
                     val name = action.name
+                    if (kinds[name] is AnimElementKind.Packet) {
+                        val p = state.packets[name] ?: return true
+                        val index = action.index
+                        if (index < 0 || index > p.segments.size) throw AnimParseError("$name has ${p.segments.size} part(s): insert index $index is out of range (0…${p.segments.size})")
+                        if (p.segments.size >= 16) throw AnimParseError("packet: at most 16 parts")
+                        val seg = AnimText.parseSegment(action.value)
+                        p.segments.add(index, AnimSegment(newID(), seg.name, seg.length, AnimTone.NEW))
+                        return true
+                    }
                     val list = state.lists[name]
                     if (kinds[name] !is AnimElementKind.LinkedList || list == null) throw AnimParseError("insert NAME INDEX VALUE is for lists; “$name” is not a list")
                     val index = action.index
@@ -650,6 +684,14 @@ object AnimEngine {
                             val gone = list.nodes.removeAt(i)
                             for (n in list.nodes) if (n.next == gone.id) n.next = gone.next
                             dropPointers(listOf(gone.id), name, state)
+                        }
+                        is AnimElementKind.Packet -> {
+                            val p = state.packets[name]
+                            val i = action.key.toIntOrNull()
+                            if (p == null || i == null) throw AnimParseError("remove PACKET INDEX: the index is a number")
+                            if (i < 0 || i >= p.segments.size) throw AnimParseError("$name has ${p.segments.size} part(s): $i is out of range")
+                            val gone = p.segments.removeAt(i)
+                            p.groups.removeAll { it.from == gone.id || it.to == gone.id }
                         }
                         is AnimElementKind.Tree -> {
                             val tree = state.trees[name]
@@ -728,10 +770,31 @@ object AnimEngine {
                 }
                 is AnimAction.Label -> {
                     val t = action.target
+                    val bk = kinds[t.name]
+                    if (bk is AnimElementKind.Bits) {
+                        val b = state.bits[t.name] ?: return true
+                        val rows = (bk.fields.sumOf { it.bits } + bk.width - 1) / bk.width
+                        val row = t.lower
+                        if (row == null || t.lower != t.upper || row < 0 || row >= rows) throw AnimParseError("label takes one row of ${t.name}, 0…${rows - 1}")
+                        b.labels[row] = action.text
+                        return true
+                    }
                     val sheet = sheetOf(t, state, kinds)
                     val row = t.lower
                     if (row == null || t.lower != t.upper || row < 0 || row >= 40) throw AnimParseError("label takes one row, like ${t.name}[3]")
                     sheet.labels[row] = action.text
+                }
+                is AnimAction.Group -> {
+                    val t = action.target
+                    val p = state.packets[t.name]
+                    if (kinds[t.name] !is AnimElementKind.Packet || p == null) throw AnimParseError("“${t.name}” is not a packet (declare: packet ${t.name} = …)")
+                    val lo = t.lower
+                    val hi = t.upper
+                    if (lo == null || hi == null || lo < 0 || hi >= p.segments.size) throw AnimParseError("${t.name} has ${p.segments.size} part(s): ${t.text} is out of range")
+                    val a = p.segments[lo].id
+                    val b = p.segments[hi].id
+                    p.groups.removeAll { it.from == a && it.to == b }
+                    p.groups.add(AnimSegmentGroup(newID(), a, b, action.text))
                 }
                 else -> return false
             }
@@ -790,6 +853,18 @@ object AnimEngine {
                 if (sh == null || r == null) throw AnimParseError("sheet cells look like ${t.name}[1,2] or ${t.name}[3,5..8]")
                 for (i in r.first) for (j in r.second) sh.cells[i]?.get(j)?.let { it.tone = tone(it.tone) }
             }
+            is AnimElementKind.Bits -> {
+                val b = state.bits[t.name] ?: return
+                for (i in bitFields(t, (kinds[t.name] as AnimElementKind.Bits).fields)) b.tones[i] = tone(b.tones[i])
+            }
+            is AnimElementKind.Packet -> {
+                val p = state.packets[t.name]
+                val lo = t.lower
+                val hi = t.upper
+                if (p == null || lo == null || hi == null) throw AnimParseError("${t.text}: packet parts are numbered, like ${t.name}[0] or ${t.name}[1..2]")
+                if (lo < 0 || hi >= p.segments.size) throw AnimParseError("${t.name} has ${p.segments.size} part(s): ${t.text} is out of range")
+                for (i in lo..hi) p.segments[i].tone = tone(p.segments[i].tone)
+            }
             is AnimElementKind.Grid -> {
                 val g = state.grids[t.name]
                 val r = t.gridRange
@@ -845,8 +920,32 @@ object AnimEngine {
                     sh.cells.getOrPut(r.first.first) { HashMap() }[r.second.first + k] = AnimSheetCell(ch)
                 }
             }
+            is AnimElementKind.Bits -> {
+                val b = state.bits[t.name] ?: return
+                for (i in bitFields(t, (kinds[t.name] as AnimElementKind.Bits).fields)) b.values[i] = value
+            }
+            is AnimElementKind.Packet -> {
+                val p = state.packets[t.name]
+                val lo = t.lower
+                val hi = t.upper
+                if (p == null || lo == null || hi == null || lo < 0 || hi >= p.segments.size) throw AnimParseError("${t.text} is not a part of ${t.name}")
+                val seg = AnimText.parseSegment(value)
+                for (i in lo..hi) { p.segments[i].name = seg.name; p.segments[i].length = seg.length }
+            }
             else -> throw AnimParseError("set: ${t.name} has no values")
         }
+    }
+
+    /** 首部字段的目标：字段名优先，否则第几个字段（同 Swift `bitFields`）。 */
+    fun bitFields(t: AnimTarget, fields: List<AnimBitField>): IntRange {
+        val key = t.key ?: return 0 until fields.size
+        val named = fields.indexOfFirst { it.name == key }
+        if (named >= 0) return named..named
+        val lo = t.lower
+        val hi = t.upper
+        if (lo == null || hi == null) throw AnimParseError("${t.name} has no field “$key”")
+        if (lo < 0 || hi >= fields.size) throw AnimParseError("${t.name} has ${fields.size} field(s): ${t.text} is out of range")
+        return lo..hi
     }
 
     private fun swapValues(a: AnimTarget, b: AnimTarget, state: AnimSceneState, kinds: Map<String, AnimElementKind>) {

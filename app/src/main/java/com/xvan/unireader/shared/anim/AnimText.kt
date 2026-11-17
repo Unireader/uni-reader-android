@@ -44,6 +44,23 @@ data class AnimGraphEdgeDecl(val a: String, val b: String, val directed: Boolean
 
 enum class AnimGraphLayout { CIRCLE, LAYERS }
 
+/** 树 / 分层图往哪边长（同 Swift `AnimDirection`）。 */
+enum class AnimDirection(val raw: String) {
+    DOWN("down"), UP("up"), RIGHT("right"), LEFT("left");
+
+    val horizontal: Boolean get() = this == RIGHT || this == LEFT
+
+    companion object {
+        fun of(s: String): AnimDirection? = entries.firstOrNull { it.raw == s }
+    }
+}
+
+/** 首部格式图（`bits`）的一个字段（同 Swift `AnimBitField`）。 */
+data class AnimBitField(val name: String, val bits: Int, val variable: Boolean, val value: String)
+
+/** 分组图（`packet`）的一段。 */
+data class AnimSegmentDecl(val name: String, val length: String)
+
 sealed class AnimElementKind {
     data class Lanes(val names: List<String>) : AnimElementKind()
     data class Seq(val lower: Int, val upper: Int, val window: Int, val modulo: Int?, val lane: String?) : AnimElementKind()
@@ -53,12 +70,18 @@ sealed class AnimElementKind {
     data class Variable(val value: String) : AnimElementKind()
     data class Text(val text: String) : AnimElementKind()
     data class LinkedList(val values: List<String>) : AnimElementKind()
-    data class Tree(val decl: AnimTreeDecl?) : AnimElementKind()
-    data class Graph(val nodes: List<String>, val edges: List<AnimGraphEdgeDecl>, val layout: AnimGraphLayout) : AnimElementKind()
+    data class Tree(val decl: AnimTreeDecl?, val dir: AnimDirection = AnimDirection.DOWN) : AnimElementKind()
+    /** `ranks` 非空 = 手动分层（`layers=[[…],[…]]`）。 */
+    data class Graph(val nodes: List<String>, val edges: List<AnimGraphEdgeDecl>, val layout: AnimGraphLayout,
+                     val dir: AnimDirection = AnimDirection.RIGHT, val ranks: List<List<String>> = emptyList()) : AnimElementKind()
     data class Pointer(val target: AnimTarget?) : AnimElementKind()
     data class Grid(val values: List<List<String>>, val rowLabels: List<String>, val colLabels: List<String>) : AnimElementKind()
     /** 竖式（草算纸）。 */
     data object Sheet : AnimElementKind()
+    /** 首部格式图：每行 `width` 位。 */
+    data class Bits(val fields: List<AnimBitField>, val width: Int) : AnimElementKind()
+    /** 分组（封装）图。 */
+    data class Packet(val segments: List<AnimSegmentDecl>, val unit: String) : AnimElementKind()
 }
 
 data class AnimElement(val name: String, val kind: AnimElementKind, val line: Int)
@@ -93,6 +116,8 @@ sealed class AnimAction {
     data class Rule(val target: AnimTarget, val above: Boolean) : AnimAction()
     data class Arrow(val target: AnimTarget) : AnimAction()
     data class Label(val target: AnimTarget, val text: String) : AnimAction()
+    /** 分组图：在 `P[i..j]` 下方画括号。 */
+    data class Group(val target: AnimTarget, val text: String) : AnimAction()
 }
 
 class AnimStepDecl(val caption: String, val line: Int) {
@@ -199,7 +224,7 @@ object AnimText {
             if (sc.steps.isEmpty()) {
                 // 声明区
                 try {
-                    if (keyword in listOf("write", "rule", "arrow", "label", "mark", "unmark")) {
+                    if (keyword in listOf("write", "rule", "arrow", "label", "mark", "unmark", "group")) {
                         val action = parseAction(keyword, rest)
                         if (sc.setup.isEmpty()) sc.setup.add(AnimStepDecl("", lineNo))
                         sc.setup[0].actions.add(lineNo to action)
@@ -328,31 +353,100 @@ object AnimText {
                 return AnimElement(name, AnimElementKind.LinkedList(values), line)
             }
             "tree" -> {
-                if (rest.isEmpty()) throw AnimParseError("usage: tree NAME = (root (left …) (right …))")
+                val usage = "usage: tree NAME [dir=down|up|right|left] = (root (left …) (right …))"
+                if (rest.isEmpty()) throw AnimParseError(usage)
                 val name = checkedName(rest[0])
+                val eq = rest.indexOf("=").let { if (it < 0) rest.size else it }
+                val opts = options(rest.subList(1, eq), setOf("dir"))
+                val dir = direction(opts["dir"], AnimDirection.DOWN)
                 var tree: AnimTreeDecl? = null
-                if (rest.size > 1) {
-                    if (rest[1] != "=") throw AnimParseError("usage: tree NAME = (root (left …) (right …))")
-                    tree = parseTree(rest.drop(2).joinToString(" "))
-                }
-                return AnimElement(name, AnimElementKind.Tree(tree), line)
+                if (eq < rest.size) tree = parseTree(rest.drop(eq + 1).joinToString(" "))
+                return AnimElement(name, AnimElementKind.Tree(tree, dir), line)
             }
             "graph" -> {
+                val usage = "usage: graph NAME [layout=circle|layers] [dir=right|left|down|up] [layers=[[A], [B, C]]] = A-B:4, B-C, A->C"
                 val eq = rest.indexOf("=")
-                if (rest.size < 3 || eq < 0) throw AnimParseError("usage: graph NAME [layout=circle|layers] = A-B:4, B-C, A->C")
+                if (rest.size < 3 || eq < 0) throw AnimParseError(usage)
                 val name = checkedName(rest[0])
-                val opts = options(rest.subList(1, eq), setOf("layout"))
-                var layout = AnimGraphLayout.CIRCLE
+                // layers=[[…], […]] 里可以有空格：先整段取出来，剩下的照常按 key=value 解析
+                var head = rest.subList(1, eq).joinToString(" ")
+                var ranks: List<List<String>> = emptyList()
+                val at = head.indexOf("layers=[")
+                if (at >= 0) {
+                    var depth = 0
+                    var end = head.length
+                    var i = at + 7
+                    while (i < head.length) {
+                        if (head[i] == '[') depth += 1
+                        if (head[i] == ']') { depth -= 1; if (depth == 0) { end = i + 1; break } }
+                        i += 1
+                    }
+                    if (depth != 0) throw AnimParseError("layers= looks like [[A], [B, C], [D]]")
+                    ranks = parseNestedList(head.substring(at + 7, end))
+                    head = head.removeRange(at, end)
+                }
+                val words = head.split(' ').filter { it.isNotEmpty() }
+                val opts = options(words, setOf("layout", "dir"))
+                var layout = if (ranks.isEmpty()) AnimGraphLayout.CIRCLE else AnimGraphLayout.LAYERS
                 opts["layout"]?.let { l ->
-                    layout = when (l.lowercase()) {
+                    val v = when (l.lowercase()) {
                         "circle" -> AnimGraphLayout.CIRCLE
                         "layers" -> AnimGraphLayout.LAYERS
                         else -> throw AnimParseError("layout= takes circle or layers")
                     }
+                    if (ranks.isNotEmpty() && v != AnimGraphLayout.LAYERS) throw AnimParseError("layers=[…] needs layout=layers")
+                    layout = v
                 }
-                val (nodes, edges) = parseGraph(rest.drop(eq + 1).joinToString(" "))
+                val dir = direction(opts["dir"], AnimDirection.RIGHT)
+                if (opts["dir"] != null && layout != AnimGraphLayout.LAYERS) throw AnimParseError("dir= only works with layout=layers")
+                val (parsedNodes, edges) = parseGraph(rest.drop(eq + 1).joinToString(" "))
+                val nodes = parsedNodes.toMutableList()
+                if (ranks.isNotEmpty()) {
+                    val seen = HashSet<String>()
+                    for (rank in ranks) {
+                        if (rank.isEmpty()) throw AnimParseError("layers=: a layer is empty")
+                        for (n in rank) {
+                            if (n.isEmpty() || n.any { it in "[]=\"#|:-> " }) throw AnimParseError("layers=: bad node name “$n”")
+                            if (!seen.add(n)) throw AnimParseError("layers=: $n is listed twice")
+                            if (n !in nodes) nodes.add(n)
+                        }
+                    }
+                    nodes.firstOrNull { it !in seen }?.let { throw AnimParseError("layers=: $it is not in any layer") }
+                }
                 if (nodes.size > 16) throw AnimParseError("graph: at most 16 nodes")
-                return AnimElement(name, AnimElementKind.Graph(nodes, edges, layout), line)
+                return AnimElement(name, AnimElementKind.Graph(nodes, edges, layout, dir, ranks), line)
+            }
+            "bits" -> {
+                val usage = "usage: bits NAME [width=32] = 版本:4, 首部长度:4, 总长度:16, 选项:*"
+                val eq = rest.indexOf("=")
+                if (rest.size < 3 || eq < 0) throw AnimParseError(usage)
+                val name = checkedName(rest[0])
+                val opts = options(rest.subList(1, eq), setOf("width"))
+                var width = 32
+                opts["width"]?.let { v ->
+                    val n = v.toIntOrNull()
+                    if (n == null || n !in 4..64) throw AnimParseError("width= takes 4…64 (bits per row)")
+                    width = n
+                }
+                val fields = parseBitFields(rest.drop(eq + 1).joinToString(" "), width)
+                return AnimElement(name, AnimElementKind.Bits(fields, width), line)
+            }
+            "packet" -> {
+                val usage = "usage: packet NAME [unit=B] = 首部:20, 数据:100   (or just: packet NAME)"
+                if (rest.isEmpty()) throw AnimParseError(usage)
+                val name = checkedName(rest[0])
+                val eq = rest.indexOf("=").let { if (it < 0) rest.size else it }
+                val opts = options(rest.subList(1, eq), setOf("unit"))
+                val segments = ArrayList<AnimSegmentDecl>()
+                if (eq < rest.size) {
+                    for (part in rest.drop(eq + 1).joinToString(" ").split(",")) {
+                        val t = part.trimWs()
+                        if (t.isEmpty()) continue
+                        segments.add(parseSegment(t))
+                    }
+                }
+                if (segments.size > 16) throw AnimParseError("packet: at most 16 parts")
+                return AnimElement(name, AnimElementKind.Packet(segments, opts["unit"] ?: ""), line)
             }
             "sheet" -> {
                 if (rest.size != 1) throw AnimParseError("usage: sheet NAME  (then write / rule / arrow / label)")
@@ -388,7 +482,7 @@ object AnimText {
                 if (labels.second.isNotEmpty() && labels.second.size != cols) throw AnimParseError("cols=[…] has ${labels.second.size} labels for $cols columns")
                 return AnimElement(name, AnimElementKind.Grid(values, labels.first, labels.second), line)
             }
-            else -> throw AnimParseError("unknown element “$keyword” (lanes, seq, array, stack, queue, var, text, list, tree, graph, pointer, grid, sheet, row; actions go after a `step` line)")
+            else -> throw AnimParseError("unknown element “$keyword” (lanes, seq, array, stack, queue, var, text, list, tree, graph, pointer, grid, sheet, bits, packet, row; actions go after a `step` line)")
         }
     }
 
@@ -465,6 +559,12 @@ object AnimText {
                 if (rest.size != 1) throw AnimParseError("usage: arrow S[row1..row2,col]")
                 return AnimAction.Arrow(parseTarget(rest[0]))
             }
+            "group" -> {
+                if (rest.size != 2) throw AnimParseError("usage: group P[1..3] \"IP datagram\"")
+                val t = parseTarget(rest[0])
+                if (t.key == null) throw AnimParseError("group takes a range of parts, like ${t.name}[1..3]")
+                return AnimAction.Group(t, rest[1])
+            }
             "push", "enqueue" -> {
                 if (rest.size < 2) throw AnimParseError("usage: $keyword NAME VALUE")
                 val value = rest.drop(1).joinToString(" ")
@@ -526,7 +626,7 @@ object AnimText {
                 }
                 return AnimAction.LaneEvent(rest[0], rest[1], kind, t)
             }
-            else -> throw AnimParseError("unknown action “$keyword” (mark, unmark, set, swap, push, pop, enqueue, dequeue, insert, remove, link, rotate, move, write, rule, arrow, label, say, send, slide, timer, deliver, discard, buffer, note)")
+            else -> throw AnimParseError("unknown action “$keyword” (mark, unmark, set, swap, push, pop, enqueue, dequeue, insert, remove, link, rotate, move, write, rule, arrow, label, group, say, send, slide, timer, deliver, discard, buffer, note)")
         }
     }
 
@@ -744,6 +844,55 @@ object AnimText {
         val inner = t.substring(1, t.length - 1).trimWs()
         if (inner.isEmpty()) return emptyList()
         return inner.split(",").map { it.trimWs().trim('"') }
+    }
+
+    private fun direction(s: String?, d: AnimDirection): AnimDirection {
+        if (s == null) return d
+        return AnimDirection.of(s.lowercase()) ?: throw AnimParseError("dir= takes down, up, right or left")
+    }
+
+    /** 首部字段：`名字:位数`、`名字:位数=值`、`名字:*`、`名字:*24`（同 Swift `parseBitFields`）。 */
+    fun parseBitFields(s: String, width: Int): List<AnimBitField> {
+        val fields = ArrayList<AnimBitField>()
+        var offset = 0
+        for (raw in s.split(",")) {
+            val item = raw.trimWs()
+            if (item.isEmpty()) continue
+            val colon = item.lastIndexOf(':')
+            if (colon <= 0) throw AnimParseError("bits: a field looks like 名字:4 (got “$item”)")
+            val name = item.substring(0, colon).trimWs()
+            var spec = item.substring(colon + 1).trimWs()
+            var value = ""
+            val eq = spec.indexOf('=')
+            if (eq >= 0) {
+                value = spec.substring(eq + 1).trimWs()
+                spec = spec.substring(0, eq).trimWs()
+            }
+            val variable = spec.startsWith("*")
+            if (variable) spec = spec.substring(1)
+            val n: Int = if (variable && spec.isEmpty()) {
+                width - offset % width
+            } else {
+                val v = spec.toIntOrNull()
+                if (v == null || v < 1) throw AnimParseError("bits: “$item”: the size is a number of bits (or * for variable length)")
+                v
+            }
+            fields.add(AnimBitField(name, n, variable, value))
+            offset += n
+        }
+        if (fields.isEmpty()) throw AnimParseError("bits has no fields")
+        if (fields.size > 40) throw AnimParseError("bits: at most 40 fields")
+        if ((offset + width - 1) / width > 20) throw AnimParseError("bits: at most 20 rows of $width bits")
+        return fields
+    }
+
+    /** 分组图的一段：`名字:长度` 或只有名字。 */
+    fun parseSegment(s: String): AnimSegmentDecl {
+        val t = s.trimWs().trim('"')
+        if (t.isEmpty()) throw AnimParseError("packet: empty part")
+        val colon = t.lastIndexOf(':')
+        if (colon > 0) return AnimSegmentDecl(t.substring(0, colon).trimWs(), t.substring(colon + 1).trimWs())
+        return AnimSegmentDecl(t, "")
     }
 
     private fun checkedName(s: String): String {
