@@ -200,6 +200,14 @@ class ServerClient(val baseUrl: String, val token: String?, private val cancel: 
     fun uploadImage(ws: String, sha: String, ext: String, file: File) =
         resumableUpload("v1/workspaces/$ws/image/$sha.$ext", emptyList(), file, null)
 
+    /** 网页文件（`Web/<sha256>`，`../docs/PROTOCOL.md §9.8`）。服务器太旧没有这个接口 → [Failure.isUnsupportedRoute]。 */
+    fun downloadWebFile(ws: String, sha: String, dst: File) {
+        download(request("v1/workspaces/$ws/web/$sha"), dst)
+    }
+
+    fun uploadWebFile(ws: String, sha: String, file: File) =
+        resumableUpload("v1/workspaces/$ws/web/$sha", emptyList(), file, null)
+
     // ---------- 上传本地工作区 ----------
 
     fun newUpload(): String =

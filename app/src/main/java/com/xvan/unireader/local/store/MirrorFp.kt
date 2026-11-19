@@ -219,6 +219,21 @@ object MirrorFp {
             ),
             lww = "updated_at",
         ),
+        // 网页（`../docs/WEB-DOC-PLAN.md §4`，↔ Mac 同序）：清单随行走、文件按哈希另补；`last_opened_at` 不进指纹
+        TableSpec(
+            "web_doc", "id",
+            listOf(
+                t("id"), t("title"), t("entry"), t("manifest"),
+                i("bytes"), t("group_name"), t("created_at"), t("updated_at"),
+            ),
+            lww = "updated_at",
+        ),
+        // 网页用 window.unireader 存的数据：一个键一行，按 updated_at 取新
+        TableSpec(
+            "web_kv", "id",
+            listOf(t("id"), t("web_id"), t("key"), t("value"), t("updated_at")),
+            lww = "updated_at",
+        ),
         TableSpec("meta", "key", listOf(t("key"), t("value"))),
     )
 
@@ -231,7 +246,7 @@ object MirrorFp {
      */
     fun needsMigrate(table: String): Boolean =
         table == "md_doc" || table.startsWith("board_") || table.startsWith("exercise") || table.startsWith("agent_") ||
-            table.startsWith("schedule_")
+            table.startsWith("schedule_") || table.startsWith("web_")
 
     /**
      * `meta` 表里**参与同步**的键（方案 §4）。`meta` 是个杂物袋：既有工作区级配置（该同步），

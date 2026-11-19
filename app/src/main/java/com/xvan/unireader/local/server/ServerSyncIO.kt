@@ -67,6 +67,7 @@ object ServerSyncIO {
                     checkCancelled = { client.checkCancelled() },
                 )
                 downloadMissingImages(db, folder, client, wid)
+                downloadMissingWebFiles(folder, webFileHashes(db), client, wid)
                 rep
             }
         }.also {
@@ -96,6 +97,8 @@ object ServerSyncIO {
     sealed class FileUp {
         data class Pdf(val hash: String, val file: File) : FileUp()
         data class Image(val sha: String, val ext: String, val file: File) : FileUp()
+        /** 网页清单里的文件（服务器已有的只问一下就跳过；服务器太旧没有接口就不传，行照常推） */
+        data class Web(val sha: String, val file: File) : FileUp()
     }
 
     /**
@@ -117,6 +120,13 @@ object ServerSyncIO {
                     val f = ImageAssets.file(folder, c.rowId, ext)
                     if (f.isFile) out.add(FileUp.Image(c.rowId, ext, f))
                 }
+                "web_doc" -> {
+                    val m = (c.row?.get("manifest") as? com.xvan.unireader.local.store.MirrorFp.Value.Text)?.v ?: continue
+                    for (sha in com.xvan.unireader.local.web.WebAssets.hashes(m).sorted()) {
+                        val f = com.xvan.unireader.local.web.WebAssets.file(folder, sha)
+                        if (f.isFile) out.add(FileUp.Web(sha, f))
+                    }
+                }
             }
         }
         return out
@@ -128,6 +138,11 @@ object ServerSyncIO {
             when (f) {
                 is FileUp.Pdf -> client.uploadPdf(wid, f.hash, f.file)
                 is FileUp.Image -> client.uploadImage(wid, f.sha, f.ext, f.file)
+                is FileUp.Web -> try {
+                    client.uploadWebFile(wid, f.sha, f.file)
+                } catch (e: ServerClient.Failure) {
+                    if (!e.isUnsupportedRoute) throw e
+                }
             }
         }
     }
@@ -158,6 +173,42 @@ object ServerSyncIO {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "图片 ${sha.take(8)} 取不到，跳过", e)
+            }
+        }
+    }
+
+    /** 库里各份网页清单里的文件哈希。 */
+    fun webFileHashes(db: Db): Set<String> {
+        val exists = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='web_doc'") { it.getString(0) }.isNotEmpty()
+        if (!exists) return emptySet()
+        val out = HashSet<String>()
+        db.query("SELECT manifest FROM web_doc") { it.getString(0) ?: "" }.forEach { out += com.xvan.unireader.local.web.WebAssets.hashes(it) }
+        return out
+    }
+
+    /**
+     * 网页清单里要、本机没有的文件：从服务器补下来，下完核对哈希再改名（文件名就是哈希，错的不能顶着这个名字）。
+     * 某一个取不到就跳过；服务器太旧没有这个接口就整个跳过。不碰库，可以在网络线程上调。
+     */
+    fun downloadMissingWebFiles(folder: File, hashes: Set<String>, client: ServerClient, wid: String) {
+        for (sha in hashes.sorted()) {
+            client.checkCancelled()
+            if (com.xvan.unireader.local.web.WebAssets.exists(folder, sha)) continue
+            val dir = com.xvan.unireader.local.web.WebAssets.folder(folder).apply { mkdirs() }
+            val tmp = File(dir, ".$sha.dl.part")
+            try {
+                tmp.delete()
+                client.downloadWebFile(wid, sha, tmp)
+                if (com.xvan.unireader.local.web.WebAssets.sha256Hex(tmp) == sha) tmp.renameTo(com.xvan.unireader.local.web.WebAssets.file(folder, sha)) else tmp.delete()
+            } catch (e: ServerClient.Cancelled) {
+                tmp.delete(); throw e
+            } catch (e: ServerClient.Failure) {
+                tmp.delete()
+                if (e.isUnsupportedRoute) return
+                Log.w(TAG, "网页文件 ${sha.take(8)} 取不到，跳过", e)
+            } catch (e: Exception) {
+                tmp.delete()
+                Log.w(TAG, "网页文件 ${sha.take(8)} 取不到，跳过", e)
             }
         }
     }
@@ -251,6 +302,7 @@ object ServerSyncIO {
                 Db.open(File(dst, Workspace.DB_REL)).use {
                     downloadMissingImages(it, dst, client, wid)
                     SyncClient.recordDownloadedImages(it, dst)   // 补下来的图片进基线，免得第一次同步又推一遍
+                    downloadMissingWebFiles(dst, webFileHashes(it), client, wid)
                 }
             }.onFailure { Log.w(TAG, "建缓存后补图片没补完（下次同步再补）", it) }
             return dst
@@ -367,6 +419,11 @@ object ServerSyncIO {
                 if (sha == null || ext == null) continue
                 val src = ImageAssets.file(folder, sha, ext)
                 if (src.isFile) files.add(UploadFile("${ImageAssets.FOLDER}/$sha.$ext", src, src.length()))
+            }
+            // 网页文件（`Web/<sha256>`，`../docs/WEB-DOC-PLAN.md §4`）
+            for (sha in webFileHashes(db).sorted()) {
+                val src = com.xvan.unireader.local.web.WebAssets.file(folder, sha)
+                if (src.isFile) files.add(UploadFile("${com.xvan.unireader.local.web.WebAssets.FOLDER}/$sha", src, src.length()))
             }
             // Notes/ 下的文件（跳过 `.` 开头的文件和目录，含 Obsidian 的 `.trash`，同 Mac `.skipsHiddenFiles`）
             val notes = File(folder, "Notes")

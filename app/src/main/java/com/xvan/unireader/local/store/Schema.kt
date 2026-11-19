@@ -274,6 +274,31 @@ object Schema {
         """,
         "CREATE INDEX IF NOT EXISTS idx_schedule_item_day ON schedule_item(day)",
         "CREATE INDEX IF NOT EXISTS idx_schedule_item_plan ON schedule_item(plan_id)",
+        // 网页（静态 HTML 课件，`../docs/WEB-DOC-PLAN.md §2`；加在 v28 上、不升版本号）：文件在 `Web/<sha256>`，
+        // manifest = 清单 JSON；web_kv = 页面用 window.unireader 存的键值（id = web_id + 0x1F + key）。🔴 与 Mac 逐字相同
+        """
+        CREATE TABLE IF NOT EXISTS web_doc (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT '',
+          entry TEXT NOT NULL DEFAULT 'index.html',
+          manifest TEXT NOT NULL DEFAULT '[]',
+          bytes INTEGER NOT NULL DEFAULT 0,
+          group_name TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_opened_at TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS web_kv (
+          id TEXT PRIMARY KEY,
+          web_id TEXT NOT NULL,
+          key TEXT NOT NULL,
+          value TEXT NOT NULL DEFAULT 'null',
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_web_kv_web ON web_kv(web_id)",
     )
 
     /**

@@ -96,6 +96,13 @@ class ReaderDrawer(private val a: Activity) {
     /** 画板那一行右侧的「更多」（改名 / 删除，由宿主弹） */
     var onBoardMore: (String) -> Unit = {}
 
+    // —— 网页（静态 HTML 课件，`../docs/WEB-DOC-PLAN.md §9`，模式1）：null = 不显示这一组 ——
+    private var webPages: List<LibItem>? = null
+    var onOpenWeb: (String) -> Unit = {}
+    var onImportWeb: () -> Unit = {}
+    /** 网页那一行右侧的「更多」（改名 / 首页 / 重新导入 / 删除，由宿主弹） */
+    var onWebMore: (String) -> Unit = {}
+
     // —— Markdown 笔记（`../docs/MARKDOWN-NOTES-PLAN.md`，模式1）：null = 不显示这一组 ——
     private var notes: List<NoteNode>? = null
     /** Mac 上引用的外部目录的名字（平板上打不开，只列出来说一声） */
@@ -237,6 +244,12 @@ class ReaderDrawer(private val a: Activity) {
     /** 画板笔记一组（null = 不显示这一组） */
     fun setBoards(list: List<LibItem>?) {
         boards = list
+        if (isOpen && tab == TAB_LIB) rebuild()
+    }
+
+    /** 网页一组（null = 不显示这一组） */
+    fun setWebPages(list: List<LibItem>?) {
+        webPages = list
         if (isOpen && tab == TAB_LIB) rebuild()
     }
 
@@ -628,6 +641,33 @@ class ReaderDrawer(private val a: Activity) {
         }
         buildBoards()
         buildNotes()
+        buildWebPages()
+    }
+
+    /** 网页一组：每份一行（点开 / 右侧「更多」）+ 末尾「导入网页文件夹…」 */
+    private fun buildWebPages() {
+        val list = webPages ?: return
+        bodyBox.addView(Ui.groupTitle(a, a.getString(R.string.web_group)))
+        for (w in list) {
+            val trailing = LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                openBadge(w.open)?.let { addView(it) }
+                addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.web_more), Ui.onVariant(a)) { onWebMore(w.id) })
+            }
+            bodyBox.addView(
+                libRow(w, trailing, R.drawable.ic_globe) {
+                    onOpenWeb(w.id)
+                    close()
+                },
+            )
+        }
+        bodyBox.addView(
+            PadPanels.iconRow(a, R.drawable.ic_plus, a.getString(R.string.web_import)) {
+                close()
+                onImportWeb()
+            },
+        )
     }
 
     /** 笔记一组：按目录层级缩进，目录点一下展开 / 收起；笔记点开、右侧「更多」；末尾「新建」 */

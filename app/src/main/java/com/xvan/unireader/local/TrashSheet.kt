@@ -46,6 +46,7 @@ class TrashSheet(
             Trash.KIND_AGENT_CONTEXTS -> R.string.trash_kind_agent_contexts
             Trash.KIND_AGENT_MEMORIES -> R.string.trash_kind_agent_memories
             Trash.KIND_SCHEDULE -> R.string.trash_kind_schedule
+            Trash.KIND_WEB_DOC -> R.string.trash_kind_web
             else -> R.string.trash_kind_document
         },
     )

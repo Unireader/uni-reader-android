@@ -84,6 +84,8 @@ class LibraryActivity : Activity() {
         val serverId: String? = null,
         /** 习题（`../docs/EXERCISE-PLAN.md`）：没有题 = 空，整组不显示（同 Mac 侧栏「有题才出现」） */
         val exercises: List<ExRow> = emptyList(),
+        /** 网页（`../docs/WEB-DOC-PLAN.md §9`）：标题 + id + 是否在标签页里；没有 = 整组不显示 */
+        val webPages: List<Triple<String, String, Boolean>> = emptyList(),
     )
 
     private lateinit var list: LinearLayout
@@ -253,6 +255,7 @@ class LibraryActivity : Activity() {
                 // 只扫目录不读正文（同 Mac 侧栏）；md_doc 对账留给阅读界面那条可写连接
                 notes = MdNotes.scan(ws).notes.map { it.relPath to (TabSet.mdKey(it.relPath) in opened) },
                 exercises = readExercises(store, docs, opened),
+                webPages = store.webDocs().map { Triple(it.id, it.title, TabSet.webKey(it.id) in opened) },
                 info = buildString {
                     append("${docs.size} 个文档")
                     if (opened.isNotEmpty()) append("　${opened.size} 个在标签页里")
@@ -335,6 +338,21 @@ class LibraryActivity : Activity() {
         renderBoards(ws, snap.boards)
         renderNotes(ws, snap.notes)
         renderExercises(ws, snap.exercises)
+        renderWebPages(ws, snap.webPages)
+    }
+
+    /** 「网页」一组：点一行 = 在阅读界面开这份网页。导入 / 改名 / 删除在阅读界面抽屉里（同画板以外的几组） */
+    private fun renderWebPages(ws: File, rows: List<Triple<String, String, Boolean>>) {
+        if (rows.isEmpty()) return
+        list.addView(Ui.groupTitle(this, getString(R.string.web_group), top = 24))
+        for ((i, r) in rows.withIndex()) {
+            if (i > 0) list.addView(Ui.divider(this))
+            val (id, title, opened) = r
+            val row = PadPanels.iconRow(this, R.drawable.ic_globe, if (opened) "$title　已在标签页里" else title) {
+                ReaderActivity.start(this, ws, TabSet.webKey(id))
+            }
+            list.addView(row)
+        }
     }
 
     /** 「习题」一组：点一行 = 在阅读界面的习题标签里打开这一组（公用的习题标签就地换组，见 `ReaderActivity`） */

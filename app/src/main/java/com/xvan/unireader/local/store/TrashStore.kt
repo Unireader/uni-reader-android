@@ -31,6 +31,8 @@ object TrashStore {
     val agentMemoryTables = listOf("agent_memory")
     /** 日程条目的表（v26，同 Mac `scheduleTables`，计划在前；本端不建这种条目，只认得、能恢复 Mac 建的） */
     val scheduleTables = listOf("schedule_plan", "schedule_item")
+    /** 网页条目的表（同 Mac `webDocTables`）：那一行 + 页面存的数据；文件留在 `Web/`，manifest `webFiles` 护住 */
+    val webDocTables = listOf("web_doc", "web_kv")
 
     /** 写进 manifest 的统计（Mac `TrashStore.Counts`，键名一致） */
     class Counts {
@@ -50,9 +52,10 @@ object TrashStore {
         var agentMemory = 0
         var schedulePlan = 0
         var scheduleItem = 0
+        var webDoc = 0
         val total: Int get() =
             ink + text + highlight + bookmark + image + aiThread + scratchInk + boardInk + boardImage + exercise +
-                agentContext + agentMemory + schedulePlan + scheduleItem
+                agentContext + agentMemory + schedulePlan + scheduleItem + webDoc
 
         fun toJson(): JSONObject = JSONObject()
             .put("ink", ink).put("text", text).put("highlight", highlight).put("bookmark", bookmark)
@@ -60,7 +63,7 @@ object TrashStore {
             .put("inkLayer", inkLayer).put("scratchPad", scratchPad)
             .put("boardInk", boardInk).put("boardImage", boardImage).put("exercise", exercise)
             .put("agentContext", agentContext).put("agentMemory", agentMemory)
-            .put("schedulePlan", schedulePlan).put("scheduleItem", scheduleItem)
+            .put("schedulePlan", schedulePlan).put("scheduleItem", scheduleItem).put("webDoc", webDoc)
 
         companion object {
             /** 老条目少键：缺了就是 0（同 Mac 的 decodeIfPresent） */
@@ -72,12 +75,17 @@ object TrashStore {
                 boardInk = o.optInt("boardInk"); boardImage = o.optInt("boardImage"); exercise = o.optInt("exercise")
                 agentContext = o.optInt("agentContext"); agentMemory = o.optInt("agentMemory")
                 schedulePlan = o.optInt("schedulePlan"); scheduleItem = o.optInt("scheduleItem")
+                webDoc = o.optInt("webDoc")
             }
         }
     }
 
     /** 归档的产物：写进 manifest 的那几样 */
-    class Archived(val counts: Counts, val images: List<String>, val contentHashes: List<String>, val pageCount: Int)
+    class Archived(
+        val counts: Counts, val images: List<String>, val contentHashes: List<String>, val pageCount: Int,
+        /** 网页清单里的文件（`Web/<sha256>`）：清理 `Web/` 时要护住 */
+        val webFiles: List<String> = emptyList(),
+    )
 
     // ---------- 归档 ----------
 
@@ -96,6 +104,12 @@ object TrashStore {
             Pick("exercise", "document_id=?", arrayOf(documentId)),
             Pick("exercise_attempt", "exercise_id IN (SELECT id FROM exercise WHERE document_id=?)", arrayOf(documentId)),
         ),
+    )
+
+    /** 一份网页 + 它存的数据（同 Mac `TrashStore.archiveWebDoc`） */
+    fun archiveWebDoc(db: Db, webId: String, path: File): Archived = archive(
+        db, path,
+        listOf(Pick("web_doc", "id=?", arrayOf(webId)), Pick("web_kv", "web_id=?", arrayOf(webId))),
     )
 
     fun archiveBoard(db: Db, boardId: String, path: File): Archived = archive(
@@ -247,7 +261,7 @@ object TrashStore {
     fun restore(db: Db, path: File, remapDocumentId: String?): Int = withSnapshot(path) { snap ->
         var written = 0
         db.transaction {
-            for (table in documentTables + boardTables + agentContextTables + agentMemoryTables + scheduleTables) {
+            for (table in documentTables + boardTables + agentContextTables + agentMemoryTables + scheduleTables + webDocTables) {
                 if (!hasTable(snap, table)) continue
                 if (remapDocumentId != null && table in setOf("document", "variant", "location")) continue
                 val conflict = if (table in setOf("document", "variant", "board_note", "exercise")) "OR IGNORE" else "OR REPLACE"
@@ -329,6 +343,13 @@ object TrashStore {
         counts.agentMemory = n("agent_memory")
         counts.schedulePlan = n("schedule_plan")
         counts.scheduleItem = n("schedule_item")
+        counts.webDoc = n("web_doc")
+        val webFiles = HashSet<String>()
+        if (hasTable(snap, "web_doc")) {
+            snap.rawQuery("SELECT manifest FROM web_doc", null).use { c ->
+                while (c.moveToNext()) webFiles += com.xvan.unireader.local.web.WebAssets.hashes(c.getString(0) ?: "")
+            }
+        }
         val hashes = if (!hasTable(snap, "variant")) emptyList() else
             snap.rawQuery("SELECT content_hash FROM variant", null).use { c ->
                 val out = ArrayList<String>()
@@ -337,6 +358,6 @@ object TrashStore {
             }
         val pages = if (!hasTable(snap, "document")) 0 else
             snap.rawQuery("SELECT page_count FROM document", null).use { if (it.moveToFirst()) it.getInt(0) else 0 }
-        return Archived(counts, images.sorted(), hashes.sorted(), pages)
+        return Archived(counts, images.sorted(), hashes.sorted(), pages, webFiles.sorted())
     }
 }

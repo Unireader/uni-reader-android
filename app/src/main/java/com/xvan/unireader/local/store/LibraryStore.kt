@@ -46,6 +46,9 @@ class LibraryStore(private val db: Db) : Closeable {
         const val EXERCISE_SCRATCH_GROUP = "exercise"
         const val TAG = "UniReader/Store"
 
+        /** 网页存的数据一行的 id（同 Mac `LibraryStore.webKVId`）：web_id + 0x1F + key */
+        fun webKVId(webId: String, key: String) = webId + "\u001F" + key
+
         /**
          * 本端认得的 schema 版本 = 本端**建库**时写的那个版本（[Schema.VERSION]，对齐 Mac）。
          * 从前这里写死 7，而 Mac 早已是 12，于是每开一个正常的库都要 warn 一次——噪音盖住了
@@ -109,6 +112,7 @@ class LibraryStore(private val db: Db) : Closeable {
 
     fun trashArchiveDocument(documentId: String, path: File) = TrashStore.archiveDocument(db, documentId, path)
     fun trashArchiveBoard(boardId: String, path: File) = TrashStore.archiveBoard(db, boardId, path)
+    fun trashArchiveWebDoc(webId: String, path: File) = TrashStore.archiveWebDoc(db, webId, path)
     fun trashArchiveExercises(ids: List<String>, path: File) = TrashStore.archiveExercises(db, ids, path)
     fun trashArchiveExerciseAttempts(ids: List<String>, path: File) = TrashStore.archiveExerciseAttempts(db, ids, path)
     fun trashArchiveNotes(documentId: String, ids: List<String>, path: File) = TrashStore.archiveNotes(db, documentId, ids, path)
@@ -1945,6 +1949,101 @@ class LibraryStore(private val db: Db) : Closeable {
         if (!hasTable("board_note")) return null
         return db.query("SELECT * FROM board_note WHERE id=?", arrayOf(id)) { board(it) }.firstOrNull()
     }
+
+    // ---------- 网页（web_doc / web_kv，`../docs/WEB-DOC-PLAN.md §2`，SQL 照抄 Mac） ----------
+
+    fun webDocs(): List<LibWebDoc> {
+        if (!hasTable("web_doc")) return emptyList()
+        return db.query("SELECT * FROM web_doc ORDER BY COALESCE(last_opened_at, created_at) DESC") { webDoc(it) }
+    }
+
+    fun webDoc(id: String): LibWebDoc? {
+        if (!hasTable("web_doc")) return null
+        return db.query("SELECT * FROM web_doc WHERE id=?", arrayOf(id)) { webDoc(it) }.firstOrNull()
+    }
+
+    fun upsertWebDoc(w: LibWebDoc) {
+        db.exec(
+            """
+            INSERT INTO web_doc(id,title,entry,manifest,bytes,group_name,created_at,updated_at,last_opened_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title, entry=excluded.entry, manifest=excluded.manifest,
+              bytes=excluded.bytes, group_name=excluded.group_name, updated_at=excluded.updated_at,
+              last_opened_at=excluded.last_opened_at
+            """.trimIndent(),
+            arrayOf(w.id, w.title, w.entry, w.manifest, w.bytes, w.groupName, w.createdAt, w.updatedAt, w.lastOpenedAt),
+        )
+    }
+
+    /** 只记「最近打开」（不动 updated_at，同画板）。 */
+    fun touchWebDocOpened(id: String, at: String = nowIso()) {
+        if (!hasTable("web_doc")) return
+        db.exec("UPDATE web_doc SET last_opened_at=? WHERE id=?", arrayOf(at, id))
+    }
+
+    /** 删一份网页连同它存的数据（一个事务）。归档进回收站由上层先做。 */
+    fun deleteWebDoc(id: String) {
+        if (!hasTable("web_doc")) return
+        db.transaction {
+            db.exec("DELETE FROM web_kv WHERE web_id=?", arrayOf(id))
+            db.exec("DELETE FROM web_doc WHERE id=?", arrayOf(id))
+        }
+    }
+
+    /** 全部网页清单里用到的文件哈希（清理 `Web/`、同步补文件用）。 */
+    fun webFileHashes(): Set<String> {
+        if (!hasTable("web_doc")) return emptySet()
+        val out = HashSet<String>()
+        db.query("SELECT manifest FROM web_doc") { it.str("manifest") }.forEach { out += com.xvan.unireader.local.web.WebAssets.hashes(it) }
+        return out
+    }
+
+    fun webKV(webId: String): List<Pair<String, String>> {
+        if (!hasTable("web_kv")) return emptyList()
+        return db.query("SELECT key, value FROM web_kv WHERE web_id=? ORDER BY key", arrayOf(webId)) { it.str("key") to it.str("value") }
+    }
+
+    fun webKVValue(webId: String, key: String): String? {
+        if (!hasTable("web_kv")) return null
+        return db.query("SELECT value FROM web_kv WHERE id=?", arrayOf(webKVId(webId, key))) { it.str("value") }.firstOrNull()
+    }
+
+    /** 写一个键（值是 JSON 文本）。值没变就不写（不改 updated_at，免得同步当成改动）。 */
+    fun setWebKV(webId: String, key: String, value: String, at: String = nowIso()) {
+        db.exec(
+            """
+            INSERT INTO web_kv(id,web_id,key,value,updated_at) VALUES(?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            WHERE web_kv.value <> excluded.value
+            """.trimIndent(),
+            arrayOf(webKVId(webId, key), webId, key, value, at),
+        )
+    }
+
+    fun removeWebKV(webId: String, key: String) {
+        if (!hasTable("web_kv")) return
+        db.exec("DELETE FROM web_kv WHERE id=?", arrayOf(webKVId(webId, key)))
+    }
+
+    fun clearWebKV(webId: String) {
+        if (!hasTable("web_kv")) return
+        db.exec("DELETE FROM web_kv WHERE web_id=?", arrayOf(webId))
+    }
+
+    /** 一份网页存了几个键、共多少字节（键 + 值的 UTF-8 字节，上限检查用）。 */
+    fun webKVUsage(webId: String): Pair<Int, Int> {
+        if (!hasTable("web_kv")) return 0 to 0
+        return db.query(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(CAST(value AS BLOB)) + LENGTH(CAST(key AS BLOB))),0) AS b FROM web_kv WHERE web_id=?",
+            arrayOf(webId),
+        ) { it.int("n") to it.int("b") }.firstOrNull() ?: (0 to 0)
+    }
+
+    private fun webDoc(c: android.database.Cursor) = LibWebDoc(
+        id = c.str("id"), title = c.str("title"), entry = c.str("entry").ifEmpty { "index.html" },
+        manifest = c.str("manifest").ifEmpty { "[]" }, bytes = c.long("bytes"), groupName = c.str("group_name"),
+        createdAt = c.str("created_at"), updatedAt = c.str("updated_at"), lastOpenedAt = c.strOrNull("last_opened_at"),
+    )
 
     /** 新建 / 改名 / 改纸样都走这一个 upsert（SQL 照抄 Mac `upsertBoard`） */
     fun upsertBoard(b: BoardNote) {

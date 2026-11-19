@@ -98,6 +98,18 @@ interface AgentHost {
 
     /** 在公用习题标签里开一组题（范围键同 Mac `ExerciseScope.key`），[exerciseId] 非空 = 停在那道题。 */
     fun openExercises(scopeKey: String, exerciseId: String?)
+
+    /** 网页（`../docs/WEB-DOC-PLAN.md §7.1`）：列表 / 清单变了，刷抽屉与开着的那份（清单变了会重新载入）。 */
+    fun webPagesChanged() {}
+
+    /** 在标签里打开一份网页（[path] = 某一页，null = 上次停的地方 / 首页）。 */
+    fun openWebPage(id: String, path: String?) {}
+
+    /** 关掉开着这份网页的标签（删除之前）。 */
+    fun closeWebPage(id: String) {}
+
+    /** 页面存的数据被 Agent 改了：开着的页面收到 `unireader:change`。 */
+    fun webDataChanged() {}
 }
 
 data class AgentView(
@@ -148,6 +160,9 @@ class AgentToolset(private val host: AgentHost) {
         OpenMarkdown(), RenameMarkdown(), DeleteMarkdown(),
         // 书：目录 / 改名改分组（2026-11-16）
         GetDocument(), UpdateDocument(),
+        // 网页（静态 HTML 课件，2026-11-19，同 Mac 批 9，`../docs/WEB-DOC-PLAN.md §7.1`）
+        ListWebPages(), ReadWebPage(), UpdateWebPage(), CreateWebPage(), OpenWebPage(),
+        ReadWebPageData(), WriteWebPageData(), DeleteWebPage(),
     )
 
     // ---------------- 小工具 ----------------
@@ -1548,6 +1563,302 @@ class AgentToolset(private val host: AgentHost) {
             else main { string(com.xvan.unireader.R.string.agent_trash_memories, picked.size) }
             db("Agent 删记忆") { s -> com.xvan.unireader.local.Trash.deleteAgentMemories(s, ws, picked.map { it.id }, title) }
             return "Moved ${picked.size} memory(ies) to the Trash."
+        }
+    }
+
+    // ================= 网页（`../docs/WEB-DOC-PLAN.md §7.1`，名字参数同 Mac `MCPTools+Web.swift`）=================
+
+    private val W = com.xvan.unireader.local.web.WebAssets
+
+    /** id 全串 / 前 8 位 / 准确的标题 → 那份网页。 */
+    private suspend fun resolveWeb(raw: String): com.xvan.unireader.local.store.LibWebDoc {
+        val key = raw.trim()
+        require(key.isNotEmpty()) { "web_id is required" }
+        val all = db("Agent 列网页") { it.webDocs() }
+        all.firstOrNull { it.id.equals(key, true) }?.let { return it }
+        if (key.length >= 8) all.filter { it.id.startsWith(key, true) }.singleOrNull()?.let { return it }
+        val byTitle = all.filter { it.title == key }
+        require(byTitle.size <= 1) { "Several web pages are titled \"$key\"; use the id (list_web_pages)." }
+        return byTitle.firstOrNull() ?: throw IllegalArgumentException("No web page matches \"$key\" (see list_web_pages).")
+    }
+
+    private suspend fun webFolder(): java.io.File = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+
+    private val webFileType = ToolParameterType.Object(
+        listOf(
+            str("path", "relative path inside the web page, e.g. index.html or css/style.css"),
+            str("content", "the whole text of the file (UTF-8)"),
+            str("source_path", "instead of content: copy this file on the tablet (absolute path), e.g. an image"),
+        ),
+        listOf("path"),
+    )
+
+    /** Agent 给的文件 → 字节（文字 = UTF-8；source_path = 读本机文件）。 */
+    private fun webFileBytes(arr: org.json.JSONArray?): Map<String, ByteArray> {
+        val out = LinkedHashMap<String, ByteArray>()
+        if (arr == null) return out
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: throw IllegalArgumentException("files[$i] must be an object")
+            val p = o.optString("path")
+            require(W.isSafeRelative(p)) { "files[$i]: bad path \"$p\" (relative, no .. or leading /)" }
+            val hasC = o.has("content") && !o.isNull("content")
+            val hasS = o.has("source_path") && !o.isNull("source_path")
+            require(hasC != hasS) { "files[$i] needs exactly one of content or source_path" }
+            out[p] = if (hasC) o.optString("content").toByteArray() else {
+                val f = java.io.File(o.optString("source_path"))
+                require(f.isFile) { "cannot read ${f.path}" }
+                require(f.length() <= 512L shl 20) { "${f.path} is larger than 512 MB" }
+                f.readBytes()
+            }
+        }
+        return out
+    }
+
+    private fun webSummary(w: com.xvan.unireader.local.store.LibWebDoc) =
+        "${w.title} (id ${w.id}, ${w.entries.size} files, start page ${w.entry})"
+
+    private inner class ListWebPages : T(
+        "list_web_pages",
+        "List the web pages (网页) in the workspace: static HTML lessons (a folder of HTML, images, CSS, JS) the user imported, most recently opened first. Read their files with read_web_page, change them with update_web_page.",
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val ws = webFolder()
+            val list = db("Agent 列网页") { it.webDocs() }
+            if (list.isEmpty()) return "No web pages in this workspace."
+            return list.joinToString("\n") { w ->
+                val missing = w.entries.map { it.h }.toSet().count { !W.exists(ws, it) }
+                "- " + webSummary(w) + if (missing > 0) ", $missing file(s) not downloaded yet" else ""
+            }
+        }
+    }
+
+    private inner class ReadWebPage : T(
+        "read_web_page",
+        "Without path: list the files of a web page (path, size, type). With path: return that text file's content exactly (HTML, CSS, JS, JSON, SVG, Markdown…; binary files such as images are refused). Use the exact text as old_text for update_web_page edits.",
+        req = listOf(str("web_id", "web page id (full, its first 8 characters, or the exact title)")),
+        opt = listOf(str("path", "file to read (relative path, as listed)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val w = resolveWeb(args.optString("web_id"))
+            val path = args.optString("path", "")
+            if (path.isEmpty()) {
+                return (listOf("${w.title} — start page ${w.entry}") +
+                    w.entries.sortedBy { it.p }.map { "- ${it.p} (${it.n} bytes, ${W.mimeType(it.p)})" }).joinToString("\n")
+            }
+            val e = w.entries.firstOrNull { it.p == path } ?: throw IllegalArgumentException("No file at $path in this web page.")
+            val f = W.file(webFolder(), e.h)
+            require(f.isFile) { "$path has not been downloaded to this device yet." }
+            require(f.length() <= 2L shl 20) { "$path is larger than 2 MB; it is not read as text." }
+            val bytes = f.readBytes()
+            val text = String(bytes, Charsets.UTF_8)
+            require(!bytes.contains(0) && !text.contains('\uFFFD')) { "$path is not a UTF-8 text file (${W.mimeType(path)})." }
+            return text
+        }
+    }
+
+    private inner class UpdateWebPage : T(
+        "update_web_page",
+        "Change files of an existing web page in one step: edits replace exact text inside a text file (old_text must occur exactly once — read the file first), files writes whole files (new paths are added, existing ones replaced; source_path copies a file on the tablet such as an image), delete removes files. Can also rename it (title) or change the start page. What the page stored with window.unireader is kept. An open tab reloads by itself; the change syncs to the user's other devices.",
+        req = listOf(str("web_id", "web page id (full, its first 8 characters, or the exact title)")),
+        opt = listOf(
+            ToolParameterDescriptor(
+                "edits", "exact text replacements, applied in order",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            str("path", "text file to edit"),
+                            str("old_text", "exact text to replace (must occur exactly once)"),
+                            str("new_text", "replacement (empty = delete old_text)"),
+                        ),
+                        listOf("path", "old_text", "new_text"),
+                    ),
+                ),
+            ),
+            ToolParameterDescriptor("files", "whole files to write", ToolParameterType.List(webFileType)),
+            strArray("delete", "files to remove (relative paths)"),
+            str("title", "new title"),
+            str("start_page", "new start page (a path of this web page)"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val w = resolveWeb(args.optString("web_id"))
+            val ws = webFolder()
+            val writes = HashMap(webFileBytes(args.optJSONArray("files")))
+            val texts = HashMap<String, String>()
+            val edits = args.optJSONArray("edits")
+            if (edits != null) for (i in 0 until edits.length()) {
+                val o = edits.optJSONObject(i) ?: throw IllegalArgumentException("edits[$i] must be an object")
+                val p = o.optString("path")
+                val old = o.optString("old_text")
+                require(old.isNotEmpty()) { "edits[$i].old_text is empty" }
+                val cur = texts[p] ?: (writes[p] ?: w.entries.firstOrNull { it.p == p }?.let { e ->
+                    W.file(ws, e.h).takeIf { it.isFile }?.readBytes()
+                })?.let { String(it, Charsets.UTF_8) } ?: throw IllegalArgumentException("edits[$i]: no file at $p (or not downloaded yet).")
+                val n = cur.split(old).size - 1
+                require(n == 1) { "edits[$i]: old_text occurs $n times in $p; it must occur exactly once (read_web_page shows the exact text)." }
+                texts[p] = cur.replace(old, o.optString("new_text"))
+            }
+            for ((p, t) in texts) writes[p] = t.toByteArray()
+            val deletes = args.optJSONArray("delete")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            val title = args.optString("title", "").trim()
+            val entryArg = args.optString("start_page", "")
+            require(writes.isNotEmpty() || deletes.isNotEmpty() || title.isNotEmpty() || entryArg.isNotEmpty()) {
+                "nothing to change: give edits, files, delete, title or start_page"
+            }
+            // 文件先落进 Web/（不碰库），再在库队列上换清单
+            val newEntries = writes.map { (p, data) -> com.xvan.unireader.local.web.WebAssets.Entry(p, W.write(data, ws), data.size.toLong()) }
+            val saved = db("Agent 改网页") { s ->
+                val cur = s.webDoc(w.id) ?: throw IllegalStateException("The web page was deleted meanwhile.")
+                val map = LinkedHashMap(cur.entries.associateBy { it.p })
+                for (p in deletes) require(map.remove(p) != null) { "No file at $p in this web page." }
+                for (e in newEntries) map[e.p] = e
+                require(map.isNotEmpty()) { "A web page needs at least one file." }
+                val entry = when {
+                    entryArg.isNotEmpty() -> { require(entryArg in map) { "The start page $entryArg is not a file of this web page." }; entryArg }
+                    cur.entry in map -> cur.entry
+                    else -> W.defaultEntry(map.values) ?: map.keys.sorted().first()
+                }
+                val out = cur.copy(
+                    title = title.ifEmpty { cur.title }, entry = entry, manifest = W.encode(map.values),
+                    bytes = map.values.sumOf { it.n }, updatedAt = com.xvan.unireader.local.store.Iso.now(),
+                )
+                s.upsertWebDoc(out)
+                out
+            }
+            main { webPagesChanged() }
+            return "Updated \"${saved.title}\": ${writes.size} file(s) written, ${deletes.size} removed. " + webSummary(saved)
+        }
+    }
+
+    private inner class CreateWebPage : T(
+        "create_web_page",
+        "Create a new web page (a static HTML lesson) in the workspace: either give its files (text content, or source_path to copy files on the tablet such as images), or folder = a folder on the tablet to import as it is (HTML, images, CSS, JS). Relative links between the files work as on a web server. In the page, window.unireader (get/set/remove/keys/getAll/clear, all returning Promises; values are JSON) stores data in the workspace that syncs across the user's devices — e.g. progress or answers; check `if (window.unireader)` before using it.",
+        opt = listOf(
+            str("title", "title (default: the start page's <title>, or the folder name)"),
+            ToolParameterDescriptor("files", "the files", ToolParameterType.List(webFileType)),
+            str("folder", "instead of files: absolute path of a folder on the tablet to import"),
+            str("start_page", "page opened first (default index.html)"),
+            bool("open", "also show it to the user"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val ws = webFolder()
+            val folder = args.optString("folder", "")
+            val entries: List<com.xvan.unireader.local.web.WebAssets.Entry> = if (folder.isNotEmpty()) {
+                kotlinx.coroutines.withContext(Dispatchers.IO) { W.importFolder(java.io.File(folder), ws) }
+            } else {
+                val files = webFileBytes(args.optJSONArray("files"))
+                require(files.isNotEmpty()) { "give files or folder" }
+                files.map { (p, d) -> com.xvan.unireader.local.web.WebAssets.Entry(p, W.write(d, ws), d.size.toLong()) }
+            }
+            val paths = entries.map { it.p }.toSet()
+            val entryArg = args.optString("start_page", "")
+            require(entryArg.isEmpty() || entryArg in paths) { "The start page $entryArg is not one of the files." }
+            val entry = entryArg.ifEmpty { W.defaultEntry(entries) ?: paths.sorted().first() }
+            var title = args.optString("title", "").trim()
+            if (title.isEmpty()) {
+                val html = entries.firstOrNull { it.p == entry }?.let { W.file(ws, it.h) }?.takeIf { it.isFile }
+                    ?.let { f -> String(f.readBytes().let { it.copyOf(minOf(it.size, 64 * 1024)) }, Charsets.UTF_8) }
+                title = html?.let { Regex("<title[^>]*>([\\s\\S]*?)</title>", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)?.trim() }
+                    ?.takeIf { it.isNotEmpty() } ?: if (folder.isNotEmpty()) java.io.File(folder).name else main { string(com.xvan.unireader.R.string.web_page) }
+            }
+            val now = com.xvan.unireader.local.store.Iso.now()
+            val w = com.xvan.unireader.local.store.LibWebDoc(
+                id = java.util.UUID.randomUUID().toString().uppercase(), title = title, entry = entry,
+                manifest = W.encode(entries), bytes = entries.sumOf { it.n }, createdAt = now, updatedAt = now, lastOpenedAt = now,
+            )
+            db("Agent 新建网页") { it.upsertWebDoc(w) }
+            main { webPagesChanged(); if (args.optBoolean("open", false)) openWebPage(w.id, null) }
+            return "Created the web page " + webSummary(w)
+        }
+    }
+
+    private inner class OpenWebPage : T(
+        "open_web_page",
+        "Show a web page to the user in a UniReader tab, optionally at one of its pages (path).",
+        req = listOf(str("web_id", "web page id (full, its first 8 characters, or the exact title)")),
+        opt = listOf(str("path", "page to show (relative path; default = where the user left it, or the start page)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val w = resolveWeb(args.optString("web_id"))
+            val path = args.optString("path", "").ifEmpty { null }
+            if (path != null) require(W.resolve(path, w.entries.associateBy { it.p }) != null) { "No page at $path in this web page." }
+            main { openWebPage(w.id, path) }
+            return "Showing \"${w.title}\"."
+        }
+    }
+
+    private inner class ReadWebPageData : T(
+        "read_web_page_data",
+        "Read the data a web page stored with window.unireader (its key/value store in the workspace, e.g. the user's progress or answers in a lesson). Values are JSON.",
+        req = listOf(str("web_id", "web page id (full, its first 8 characters, or the exact title)")),
+        opt = listOf(strArray("keys", "only these keys (default: all)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val w = resolveWeb(args.optString("web_id"))
+            val keys = args.optJSONArray("keys")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
+            val all = db("Agent 读网页数据") { it.webKV(w.id) }.filter { keys == null || it.first in keys }
+            if (all.isEmpty()) return "{}"
+            return all.joinToString(",\n  ", "{\n  ", "\n}") { (k, v) -> JSONObject.quote(k) + ": " + v }
+        }
+    }
+
+    private inner class WriteWebPageData : T(
+        "write_web_page_data",
+        "Set or remove keys in a web page's window.unireader store. An open page receives the event unireader:change. Only when the user asks (e.g. to reset progress).",
+        req = listOf(str("web_id", "web page id (full, its first 8 characters, or the exact title)")),
+        opt = listOf(
+            ToolParameterDescriptor(
+                "set", "keys to store",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(str("key", "key"), str("value", "the value as JSON text, e.g. {\"chapter\":3} or 42 or \"done\"")),
+                        listOf("key", "value"),
+                    ),
+                ),
+            ),
+            strArray("remove", "keys to remove"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val w = resolveWeb(args.optString("web_id"))
+            val set = args.optJSONArray("set")?.let { a ->
+                (0 until a.length()).map { i ->
+                    val o = a.optJSONObject(i) ?: throw IllegalArgumentException("set[$i] must be an object")
+                    o.optString("key") to o.optString("value")
+                }
+            }.orEmpty()
+            val remove = args.optJSONArray("remove")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            require(set.isNotEmpty() || remove.isNotEmpty()) { "give set or remove" }
+            db("Agent 写网页数据") { s ->
+                for ((k, v) in set) com.xvan.unireader.local.web.WebKV.handle(s, w.id, "set", k, v)
+                for (k in remove) com.xvan.unireader.local.web.WebKV.handle(s, w.id, "remove", k, null)
+            }
+            main { webDataChanged() }
+            return "Stored ${set.size} key(s), removed ${remove.size}."
+        }
+    }
+
+    private inner class DeleteWebPage : T(
+        "delete_web_page",
+        "Delete web pages from the workspace, together with what they stored with window.unireader. They go to UniReader's Trash and can be put back there. Only when the user asks.",
+        req = listOf(strArray("web_ids", "web pages to delete: id (full, its first 8 characters, or the exact title)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val a = args.optJSONArray("web_ids")
+            require(a != null && a.length() > 0) { "web_ids must be a non-empty array of strings" }
+            require(a.length() <= MAX_DELETE_IDS) { "at most $MAX_DELETE_IDS web pages per call" }
+            // 先全部认出来（有一个认不出就一个都不删），再逐个「归档 → 删除」（红线 11）
+            val picked = (0 until a.length()).map { resolveWeb(a.optString(it)) }.distinctBy { it.id }
+            val ws = webFolder()
+            val done = ArrayList<String>()
+            for (w in picked) {
+                main { closeWebPage(w.id) }
+                db("Agent 删网页") { s -> com.xvan.unireader.local.Trash.deleteWebDoc(s, ws, w.id, w.title) }
+                done += w.title
+            }
+            main { webPagesChanged() }
+            return "Moved ${done.size} web page(s) to the Trash: ${done.joinToString("、")}"
         }
     }
 

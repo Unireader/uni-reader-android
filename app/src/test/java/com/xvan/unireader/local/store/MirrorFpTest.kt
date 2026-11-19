@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 41 条**向量
+ * `MirrorFp` 跨端一致性测试：逐条比对 `../spike/mirror-fp-vectors.txt` 的**全部 43 条**向量
  * （由 Mac 侧 `spike/mirror-fp-test.swift` 生成）。
  *
  * 每条断言两件事：**编码字节**逐字节相等、**fp** 相等。只比 fp 不够——fp 对不上时，
@@ -189,6 +189,21 @@ class MirrorFpTest {
         "created_at" to "2026-11-13T10:00:00.000Z", "updated_at" to "2026-11-13T10:00:00.000Z",
     )
     // v26 日程事项（与 spike/mirror-fp-test.swift 的 schedule_item 那行逐字段一致）：定了时间、做完了、带一句结果和一个书页链接
+    // 网页（与 spike/mirror-fp-test.swift 的 web_doc / web_kv 两行逐字段一致，`../docs/WEB-DOC-PLAN.md`）
+    private val webDocRow: Map<String, Any?> = mapOf(
+        "id" to "78787878-7878-4787-8787-787878787878",
+        "title" to "TCP 三次握手动画", "entry" to "index.html",
+        "manifest" to "[{\"h\":\"${"a".repeat(64)}\",\"n\":1200,\"p\":\"index.html\"},{\"h\":\"${"b".repeat(64)}\",\"n\":34000,\"p\":\"img/图1.png\"}]",
+        "bytes" to 35200L, "group_name" to "",
+        "created_at" to "2026-11-19T02:00:00.000Z", "updated_at" to "2026-11-19T02:10:00.000Z",
+        "last_opened_at" to "2026-11-19T03:00:00.000Z",
+    )
+    private val webKvRow: Map<String, Any?> = mapOf(
+        "id" to "78787878-7878-4787-8787-787878787878\u001Fprogress",
+        "web_id" to "78787878-7878-4787-8787-787878787878", "key" to "progress",
+        "value" to "{\"chapter\":3,\"done\":[1,2]}",
+        "updated_at" to "2026-11-19T02:20:00.000Z",
+    )
     private val scheduleItemRow: Map<String, Any?> = mapOf(
         "id" to "34343434-3434-4343-8343-343434343434",
         "plan_id" to "12121212-1212-4121-8121-121212121212",
@@ -399,8 +414,25 @@ class MirrorFpTest {
                     "64223a226f7074696f6e3a42222c226e7468223a302c2274657874223a22e5aeb9e9878f2063" +
                     "61706163697479227d5d",
                 "140945e91d04152e"),
+            R(41, "web_doc", webDocRow,
+                    "0337383738373837382d373837382d343738372d383738372d3738373837383738373837381f" +
+                    "0354435020e4b889e6aca1e68fa1e6898be58aa8e794bb1f03696e6465782e68746d6c1f035b" +
+                    "7b2268223a226161616161616161616161616161616161616161616161616161616161616161" +
+                    "6161616161616161616161616161616161616161616161616161616161616161222c226e223a" +
+                    "313230302c2270223a22696e6465782e68746d6c227d2c7b2268223a22626262626262626262" +
+                    "6262626262626262626262626262626262626262626262626262626262626262626262626262" +
+                    "6262626262626262626262626262626262222c226e223a33343030302c2270223a22696d672f" +
+                    "e59bbe312e706e67227d5d1f0133353230301f031f03323032362d31312d31395430323a3030" +
+                    "3a30302e3030305a1f03323032362d31312d31395430323a31303a30302e3030305a",
+                "f23dbc6068e82ede"),
+            R(42, "web_kv", webKvRow,
+                    "0337383738373837382d373837382d343738372d383738372d3738373837383738373837381f" +
+                    "70726f67726573731f0337383738373837382d373837382d343738372d383738372d37383738" +
+                    "37383738373837381f0370726f67726573731f037b2263686170746572223a332c22646f6e65" +
+                    "223a5b312c325d7d1f03323032362d31312d31395430323a32303a30302e3030305a",
+                "00b2217daaab9396"),
         )
-        assertEquals(20, cases.size)
+        assertEquals(22, cases.size)
         for (c in cases) {
             val sp = MirrorFp.spec(c.table)!!
             val vs = sp.columns.map { MirrorFp.coerce(c.row[it.name], it.type) }
@@ -448,7 +480,7 @@ class MirrorFpTest {
             listOf(
                 "document", "variant", "note", "ink_layer", "scratch_pad", "md_doc",
                 "board_note", "board_page", "board_item", "exercise", "exercise_attempt", "agent_context",
-                "agent_memory", "agent_turn", "schedule_plan", "schedule_item", "meta",
+                "agent_memory", "agent_turn", "schedule_plan", "schedule_item", "web_doc", "web_kv", "meta",
             ),
             MirrorFp.specs.map { it.table },
         )
@@ -495,7 +527,12 @@ class MirrorFpTest {
         )
         assertEquals("updated_at", MirrorFp.spec("schedule_item")!!.lww)
         // v26 两张日程表与 v25 Agent 两张一样：只读打开过的老库里可能还没建，写之前要先迁移
-        for (t in listOf("agent_context", "agent_memory", "agent_turn", "schedule_plan", "schedule_item")) {
+        assertEquals(
+            listOf("id", "title", "entry", "manifest", "bytes", "group_name", "created_at", "updated_at"),
+            MirrorFp.spec("web_doc")!!.columns.map { it.name },
+        )
+        assertEquals(listOf("id", "web_id", "key", "value", "updated_at"), MirrorFp.spec("web_kv")!!.columns.map { it.name })
+        for (t in listOf("agent_context", "agent_memory", "agent_turn", "schedule_plan", "schedule_item", "web_doc", "web_kv")) {
             assertEquals(t, true, MirrorFp.needsMigrate(t))
         }
         assertEquals(

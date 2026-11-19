@@ -157,6 +157,8 @@ class ReaderActivity : Activity() {
         val isExercise: Boolean get() = TabSet.isExercise(docId)
         /** Markdown 笔记标签（`md:<相对路径>`）：没有 [canvas]/[pdf]，整页是 [MdNoteController.view] */
         val isMarkdown: Boolean get() = TabSet.isMarkdown(docId)
+        /** 网页标签（`web:<id>`）：没有 [canvas]/[pdf]，整页是 [WebPageController.view] */
+        val isWeb: Boolean get() = TabSet.isWeb(docId)
         val exerciseScope: ExScope? get() = ExScope.parse(TabSet.exerciseKeyOf(docId))
 
         var canvas: LocalCanvasView? = null
@@ -217,6 +219,8 @@ class ReaderActivity : Activity() {
         val boards: List<BoardNote>,
         /** 服务器工作区（`meta.srv_url`，`../docs/SERVER-MODE-PLAN.md`）：开着时定时推送、关掉后同步一轮 */
         val onServer: Boolean = false,
+        /** 网页列表（恢复 `web:` 标签要拿标题，见 [tabTitleOf]） */
+        val webs: List<com.xvan.unireader.local.store.LibWebDoc> = emptyList(),
     )
 
     /** 当前工作区是不是服务器工作区（[attachWorkspace] 定，[closeWorkspace] 清） */
@@ -255,6 +259,9 @@ class ReaderActivity : Activity() {
     /** 习题（`../docs/EXERCISE-PLAN.md §10.2`）：习题标签激活时铺满内容区的那一页 + 抽屉分组 + 库读写 */
     private lateinit var exercise: ExerciseController
     private lateinit var md: MdNoteController
+    /** 网页标签的整页（`../docs/WEB-DOC-PLAN.md §9`） */
+    private lateinit var webPage: com.xvan.unireader.local.web.WebPageController
+    private var libWebs = listOf<com.xvan.unireader.local.store.LibWebDoc>()
 
     /** 「到 PDF 原页」要跳的地方（文档 id、页、页内比例）：那篇还没装载完时先记着，几何就绪再跳 */
     private var pendingJump: Triple<String, Int, Float>? = null
@@ -282,6 +289,7 @@ class ReaderActivity : Activity() {
             val kind = when {
                 t.isBoard -> "board"
                 t.isMarkdown -> "markdown"
+                t.isWeb -> "web"
                 t.isExercise -> "exercise"
                 else -> "pdf"
             }
@@ -328,6 +336,22 @@ class ReaderActivity : Activity() {
         }
 
         override fun string(id: Int, vararg args: Any): String = getString(id, *args)
+
+        override fun webPagesChanged() = refreshWebPages { if (curTab()?.isWeb == true) webPage.refreshFromRemote() }
+
+        override fun openWebPage(id: String, path: String?) {
+            refreshWebPages {
+                openDoc(TabSet.webKey(id))
+                if (path != null) webPage.open(id, path)
+            }
+        }
+
+        override fun closeWebPage(id: String) {
+            val i = tabs.indexOfFirst { it.docId == TabSet.webKey(id) }
+            if (i >= 0) closeTab(i)
+        }
+
+        override fun webDataChanged() = webPage.dataChangedRemotely()
 
         override fun exercisesChanged() = exercise.reloadFromRemote()
 
@@ -788,6 +812,10 @@ class ReaderActivity : Activity() {
             onOpenBoard = { id -> openDoc(TabSet.boardKey(id)) }
             onAddBoard = { createBoard() }
             onBoardMore = { id -> showBoardMenu(id) }
+            // 网页（`../docs/WEB-DOC-PLAN.md §9`）：书库页「网页」一组
+            onOpenWeb = { id -> openDoc(TabSet.webKey(id)) }
+            onImportWeb = { importWebFolder() }
+            onWebMore = { id -> showWebMenu(id) }
             // 习题（`../docs/EXERCISE-PLAN.md §10.2`）：点一组 = 在公用习题标签里换；长按 = 「在新标签页中打开」（同 Mac 右键）
             onOpenExercises = { key -> openExercises(key, newTab = false) }
             onExercisesLongPress = { key -> showExerciseGroupMenu(key) }
@@ -800,6 +828,7 @@ class ReaderActivity : Activity() {
             onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
             onTreeChanged = { pushDrawerLibrary(); refreshMdTitles() }
         }
+        webPage = com.xvan.unireader.local.web.WebPageController(this)
         exercise = ExerciseController(this).apply {
             onGroups = { drawer.setExercises(it) }
             onOpenSource = { docId, page, frac -> openExerciseSource(docId, page, frac) }
@@ -876,6 +905,7 @@ class ReaderActivity : Activity() {
             // 习题标签的整页（同画板：chrome 之下，topMargin 由 applyChromeHeight 给）
             addView(exercise.screen.view, FrameLayout.LayoutParams(-1, -1))
             addView(md.view, FrameLayout.LayoutParams(-1, -1))   // Markdown 笔记标签的整页（同习题）
+            addView(webPage.view, FrameLayout.LayoutParams(-1, -1))   // 网页标签的整页（同 Markdown）
             addView(refWin.view, FrameLayout.LayoutParams(-1, -1))
             addView(chrome, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             addView(openingLabel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
@@ -941,6 +971,10 @@ class ReaderActivity : Activity() {
             it.topMargin = h.toInt()
             md.view.layoutParams = it
         }
+        (webPage.view.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = h.toInt()
+            webPage.view.layoutParams = it
+        }
         // 浮着的工具组：没挪过的贴 chrome 下方，挪过的不许钻进 chrome（Toolbox.minTop 现读 chromeHeight）
         bar.tools.relayout()
     }
@@ -968,6 +1002,7 @@ class ReaderActivity : Activity() {
                     WsOpened(
                         s, s.workspaceName(), s.allDocuments(), s.boards(),
                         onServer = !s.meta(SyncClient.META_SERVER_URL).isNullOrEmpty(),
+                        webs = s.webDocs(),
                     )
                 } catch (e: Throwable) {
                     // 只抛不关的话，这个库连接（带 WAL）就悬在后台了（同 §9.5 的 discard 理由）
@@ -997,11 +1032,14 @@ class ReaderActivity : Activity() {
         tabsBar.setWorkspace(workspaceName)
         libDocs = o.docs
         libBoards = o.boards
+        libWebs = o.webs
         board.bind(q, dir)
         exScratch.bind(q, dir)
         // 习题：书名先给一份（恢复习题标签时要拿范围名），抽屉的分组随后从库里读
         exercise.bind(q, dir)
         md.bind(q, dir)   // 扫 Notes/ + md_doc 对账，扫完刷抽屉
+        webPage.bind(q, dir)
+        refreshWebPages()
         exercise.setDocTitles(libTitles)
         exercise.refreshGroups()
         pushDrawerLibrary()
@@ -1088,6 +1126,11 @@ class ReaderActivity : Activity() {
                     s.deleteImage(im.sha256)
                 }
                 if (gone.isNotEmpty()) Log.i(TAG, "清掉待删除满 30 天的图片 ${gone.size} 张")
+                // 网页文件（`../docs/WEB-DOC-PLAN.md §6`）：库里的网页与回收站都不用、且一天前就在的删掉
+                val webGone = com.xvan.unireader.local.web.WebAssets.purge(
+                    dir, s.webFileHashes() + Trash.protectedWebFiles(dir), System.currentTimeMillis() - 86_400_000L,
+                )
+                if (webGone > 0) Log.i(TAG, "清掉没人用的网页文件 $webGone 个")
             }.onFailure { Log.w(TAG, "图片对账清理失败（下次打开再来）", it) }
         })
     }
@@ -1179,6 +1222,9 @@ class ReaderActivity : Activity() {
         exercise.bind(null, null)
         md.close()
         md.bind(null, null)
+        webPage.close()
+        webPage.bind(null, null)
+        libWebs = emptyList()
         pendingJump = null
         for (t in tabs) saveProgress(t)
         saveTabSet()
@@ -1424,6 +1470,9 @@ class ReaderActivity : Activity() {
         drawer.setBoards(
             libBoards.map { LibItem(it.id, board.displayName(it), opened.contains(TabSet.boardKey(it.id))) },
         )
+        drawer.setWebPages(
+            if (queue == null) null else libWebs.map { LibItem(it.id, it.title, opened.contains(TabSet.webKey(it.id))) },
+        )
         if (queue != null) {
             drawer.setNotes(
                 md.nodes(tabs.filter { it.isMarkdown }.map { TabSet.mdRelOf(it.docId) }.toSet()),
@@ -1515,6 +1564,7 @@ class ReaderActivity : Activity() {
             TabSet.isBoard(docId) -> getString(R.string.board_untitled)
             TabSet.isExercise(docId) -> getString(R.string.ex_title)
             TabSet.isMarkdown(docId) -> md.titleOf(TabSet.mdRelOf(docId))
+            TabSet.isWeb(docId) -> getString(R.string.web_page)
             else -> "文档"
         }
         tabs.add(Tab(docId, tabTitleOf(docId) ?: fallback))
@@ -1528,6 +1578,7 @@ class ReaderActivity : Activity() {
         TabSet.isMarkdown(docId) -> TabSet.mdRelOf(docId).let { rel ->
             if (md.scan == null || md.exists(rel)) md.titleOf(rel) else null
         }
+        TabSet.isWeb(docId) -> libWebs.firstOrNull { it.id == TabSet.webIdOf(docId) }?.title
         TabSet.isExercise(docId) -> {
             val sc = ExScope.parse(TabSet.exerciseKeyOf(docId))
             // 某本书（或它某一章）的习题：那本书不在了 → 这个标签也不留（同 Mac `closeExercisesIfGone`）
@@ -1707,6 +1758,193 @@ class ReaderActivity : Activity() {
             .content(android.widget.ScrollView(this).apply { addView(box) })
             .action(getString(R.string.act_cancel))
             .show()
+    }
+
+    // ---------- 网页（静态 HTML 课件，`../docs/WEB-DOC-PLAN.md §9`） ----------
+
+    /** 重读网页列表，刷新抽屉与标签标题；已经不在的网页标签收掉（别处删了） */
+    private fun refreshWebPages(then: (() -> Unit)? = null) {
+        val q = queue ?: return
+        q.submit("读网页列表", { s -> s.webDocs() }, { list ->
+            libWebs = list
+            var changed = false
+            for (i in tabs.indices.reversed()) {
+                val t = tabs[i]
+                if (!t.isWeb) continue
+                val w = list.firstOrNull { it.id == TabSet.webIdOf(t.docId) }
+                if (w == null) {
+                    if (i == active) continue   // 正在看的不硬关，页面上会说「已经不在了」
+                    dropTab(i)
+                    if (active > i) active--
+                    changed = true
+                } else if (t.title != w.title) {
+                    t.title = w.title
+                    changed = true
+                }
+            }
+            if (changed) { refreshTabsBar(); saveTabSet() }
+            pushDrawerLibrary()
+            then?.invoke()
+        })
+    }
+
+    private fun activateWeb(t: Tab) {
+        hideOpening()
+        webPage.open(TabSet.webIdOf(t.docId))
+        refreshHud()
+    }
+
+    /** 选一个文件夹导入成网页（目录浏览器 FOLDER 模式：点进课件文件夹，按右下「导入这个文件夹」） */
+    private fun importWebFolder(replacing: String? = null) {
+        val ws = workspace ?: return
+        FileBrowser(
+            a = this,
+            mode = FileBrowser.Mode.FOLDER,
+            title = getString(R.string.web_import_title),
+            tipText = getString(R.string.web_import_tip),
+            primary = getString(R.string.web_import_here) to { dir: File?, dlg ->
+                if (dir == null) {
+                    showAlert(getString(R.string.web_import_title), getString(R.string.web_import_pick))
+                } else {
+                    dlg.dismiss()
+                    runWebImport(ws, dir, replacing)
+                }
+            },
+            onPick = { },
+        ).show()
+    }
+
+    private fun runWebImport(ws: File, dir: File, replacing: String?) {
+        val q = queue ?: return
+        android.widget.Toast.makeText(this, getString(R.string.web_importing), android.widget.Toast.LENGTH_SHORT).show()
+        // 哈希 + 拷文件在后台线程（课件里可能有视频），写库再排进库队列
+        runInBackground(
+            what = "导入网页 ${dir.name}",
+            work = { com.xvan.unireader.local.web.WebAssets.importFolder(dir, ws) },
+            ok = { entries ->
+                q.submit("写网页行", { s ->
+                    val W = com.xvan.unireader.local.web.WebAssets
+                    val now = Iso.now()
+                    val old = replacing?.let { s.webDoc(it) }
+                    val paths = entries.map { it.p }.toSet()
+                    val entry = if (old != null && old.entry in paths) old.entry else W.defaultEntry(entries) ?: entries.first().p
+                    val w = old?.copy(manifest = W.encode(entries), entry = entry, bytes = entries.sumOf { it.n }, updatedAt = now)
+                        ?: com.xvan.unireader.local.store.LibWebDoc(
+                            id = java.util.UUID.randomUUID().toString().uppercase(),
+                            title = htmlTitle(File(dir, entry)) ?: dir.name,
+                            entry = entry, manifest = W.encode(entries), bytes = entries.sumOf { it.n },
+                            createdAt = now, updatedAt = now, lastOpenedAt = now,
+                        )
+                    s.upsertWebDoc(w)
+                    w.id
+                }, { id -> refreshWebPages { openDoc(TabSet.webKey(id)); if (replacing != null) webPage.refreshFromRemote() } })
+            },
+            fail = { e ->
+                val k = (e as? com.xvan.unireader.local.web.WebAssets.ImportError)?.kind
+                val msg = when (k) {
+                    com.xvan.unireader.local.web.WebAssets.ImportError.Kind.EMPTY -> getString(R.string.web_err_empty)
+                    com.xvan.unireader.local.web.WebAssets.ImportError.Kind.NO_HTML -> getString(R.string.web_err_no_html)
+                    com.xvan.unireader.local.web.WebAssets.ImportError.Kind.TOO_MANY_FILES,
+                    com.xvan.unireader.local.web.WebAssets.ImportError.Kind.TOO_LARGE -> getString(R.string.web_err_too_big)
+                    else -> e.message ?: e.javaClass.simpleName
+                }
+                showAlert(getString(R.string.web_import_failed), msg)
+            },
+        )
+    }
+
+    /** 入口页的 `<title>`（没有 = null，用文件夹名）。 */
+    private fun htmlTitle(f: File): String? = runCatching {
+        val head = f.inputStream().use { i -> String(i.readNBytesCompat(64 * 1024), Charsets.UTF_8) }
+        val m = Regex("<title[^>]*>([\\s\\S]*?)</title>", RegexOption.IGNORE_CASE).find(head) ?: return@runCatching null
+        m.groupValues[1].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
+            .split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ").take(120).ifEmpty { null }
+    }.getOrNull()
+
+    private fun java.io.InputStream.readNBytesCompat(n: Int): ByteArray {
+        val buf = ByteArray(n)
+        var off = 0
+        while (off < n) {
+            val r = read(buf, off, n - off)
+            if (r <= 0) break
+            off += r
+        }
+        return buf.copyOf(off)
+    }
+
+    /** 网页那一行的「更多」：改名 / 换首页 / 从文件夹重新导入 / 删除（进回收站） */
+    private fun showWebMenu(id: String) {
+        val w = libWebs.firstOrNull { it.id == id } ?: return
+        var dlg: AlertDialog? = null
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_text, getString(R.string.web_rename)) {
+                dlg?.dismiss()
+                val edit = PadPanels.inputBox(this, getString(R.string.web_name_hint)).apply {
+                    setText(w.title)
+                    setSelection(text.length)
+                }
+                Sheet(this).title(getString(R.string.web_rename)).content(edit)
+                    .action(getString(R.string.common_cancel))
+                    .action(getString(R.string.common_save), primary = true) {
+                        val t = edit.text.toString().trim()
+                        if (t.isNotEmpty() && t != w.title) {
+                            queue?.submit("网页改名", { s -> s.upsertWebDoc(w.copy(title = t, updatedAt = Iso.now())) }, { refreshWebPages() })
+                        }
+                    }
+                    .show()
+            },
+        )
+        val htmls = w.entries.map { it.p }.filter { com.xvan.unireader.local.web.WebAssets.isHtml(it) }.sorted()
+        if (htmls.size > 1) {
+            col.addView(
+                PadPanels.iconRow(this, R.drawable.ic_globe, getString(R.string.web_start_page)) {
+                    dlg?.dismiss()
+                    val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    var pick: AlertDialog? = null
+                    for (p in htmls.take(60)) {
+                        list.addView(PadPanels.iconRow(this, R.drawable.ic_doc, if (p == w.entry) "✓ $p" else p) {
+                            pick?.dismiss()
+                            if (p != w.entry) {
+                                queue?.submit("换网页首页", { s -> s.upsertWebDoc(w.copy(entry = p, updatedAt = Iso.now())) }, { refreshWebPages() })
+                            }
+                        })
+                    }
+                    pick = Sheet(this).title(getString(R.string.web_start_page)).content(android.widget.ScrollView(this).apply { addView(list) })
+                        .action(getString(R.string.common_cancel)).show()
+                },
+            )
+        }
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.web_reimport)) {
+                dlg?.dismiss()
+                importWebFolder(replacing = w.id)
+            },
+        )
+        col.addView(
+            PadPanels.iconRow(this, R.drawable.ic_delete, getString(R.string.web_delete), Ui.col(this, R.color.danger)) {
+                dlg?.dismiss()
+                Sheet(this)
+                    .title(getString(R.string.web_delete_confirm, w.title))
+                    .subtitle(getString(R.string.board_delete_msg))
+                    .action(getString(R.string.common_cancel))
+                    .action(getString(R.string.common_delete), primary = true) { deleteWebPage(w) }
+                    .show()
+            },
+        )
+        dlg = Sheet(this).title(w.title).content(col).action(getString(R.string.common_cancel)).show()
+    }
+
+    /** 删一份网页：先关开着它的标签，再归档进回收站、成了才删行（红线 11） */
+    private fun deleteWebPage(w: com.xvan.unireader.local.store.LibWebDoc) {
+        val ws = workspace ?: return
+        val q = queue ?: return
+        val i = tabs.indexOfFirst { it.docId == TabSet.webKey(w.id) }
+        if (i >= 0) closeTab(i)
+        q.submit("删网页", { s -> runCatching { Trash.deleteWebDoc(s, ws, w.id, w.title) }.exceptionOrNull() }, { e ->
+            if (e != null) showAlert(getString(R.string.web_delete), e.message ?: e.javaClass.simpleName)
+            refreshWebPages()
+        })
     }
 
     // ---------- 画板笔记（`../docs/BOARD-NOTE-PLAN.md §5`） ----------
@@ -1903,6 +2141,9 @@ class ReaderActivity : Activity() {
             if (curTab()?.isBoard == true) board.reloadFromRemote()   // 开着的画板整篇重读
         }
         if (tables.any { it.startsWith("exercise") }) exercise.reloadFromRemote()   // 开着的练习页就地刷新
+        // 网页：列表重读、开着的那份跟上（清单变了重载 / 文件下完收提示）；页面存的数据变了 → 页面收到 unireader:change
+        if ("web_doc" in tables) refreshWebPages { if (curTab()?.isWeb == true) webPage.refreshFromRemote() }
+        if ("web_kv" in tables) webPage.dataChangedRemotely()
         if (tables.any { it == "note" || it == "ink_layer" }) {
             for (t in tabs) t.canvas?.let { c -> c.reloadStrokes(); c.reloadNotes(); c.reloadImageNotes() }
         }
@@ -2014,7 +2255,7 @@ class ReaderActivity : Activity() {
         if (prev != null && prev !== t) deactivate(prev)
         active = i
         t.usedAt = SystemClock.uptimeMillis()
-        if (t.isBoard || t.isExercise || t.isMarkdown) {
+        if (t.isBoard || t.isExercise || t.isMarkdown || t.isWeb) {
             // 画板 / 习题 / Markdown 标签：没有 PDF、没有草稿纸，草稿纸绑空（入口列不出别篇的纸）
             scratch.bind(queue, "", emptyList())
             refreshTabsBar()
@@ -2025,6 +2266,7 @@ class ReaderActivity : Activity() {
             when {
                 t.isBoard -> { drawer.setExerciseCurrent(""); activateBoard(t) }
                 t.isMarkdown -> { drawer.setExerciseCurrent(""); activateMarkdown(t) }
+                t.isWeb -> { drawer.setExerciseCurrent(""); activateWeb(t) }
                 else -> activateExercise(t)
             }
             return
@@ -2061,6 +2303,7 @@ class ReaderActivity : Activity() {
             exercise.screen.view.visibility = View.GONE
         }
         if (t.isMarkdown) md.close()   // 先存再收（停手 0.8 秒那次还没到也立即写）
+        if (t.isWeb) webPage.close()
         saveProgress(t)
         scratch.close()   // 草稿纸属于「当前这篇」：切走即关（视口不落库，重开回中，三端契约）
         selectBar.hide()  // 划字浮条同理：它指着的是刚切走那一篇的选区
@@ -2361,6 +2604,7 @@ class ReaderActivity : Activity() {
             exercise.screen.view.visibility = View.GONE
         }
         if (i == active && t.isMarkdown) md.close()
+        if (i == active && t.isWeb) webPage.close()
         unload(t)
         tabs.removeAt(i)
         return t
@@ -2517,7 +2761,7 @@ class ReaderActivity : Activity() {
         // 只对 PDF 页面有意义的键：画板标签里收起来（翻页 / 草稿纸 / 锁缩放 / 画板模式）；
         // 撤销重做画板也有（BoardController 自己一条栈），只有习题 / Markdown 标签收起来
         val isBoard = curTab()?.isBoard == true
-        val isEx = curTab()?.isExercise == true || curTab()?.isMarkdown == true
+        val isEx = curTab()?.isExercise == true || curTab()?.isMarkdown == true || curTab()?.isWeb == true
         for (k in arrayOf("prev", "next", "scratch", "lock", "canvas")) bar.setVisible(k, !isBoard && !isEx)
         bar.setEnabled("jumpBack", curTab()?.jumps?.canGoBack == true)
         bar.setEnabled("jumpForward", curTab()?.jumps?.canGoForward == true)
@@ -3012,6 +3256,7 @@ class ReaderActivity : Activity() {
             exercise.screen.setScratchShown(false)
             return
         }
+        if (curTab()?.isWeb == true && webPage.goBack()) return   // 网页里能退就退
         if (cur()?.snipping == true) {   // 正在框一块存图片笔记：返回 = 不框了
             cur()?.cancelSnip()
             return

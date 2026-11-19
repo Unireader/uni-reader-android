@@ -165,6 +165,12 @@ object MirrorBuilder {
                     }
                 }
 
+                // ③.6 网页文件（`Web/`，`../docs/WEB-DOC-PLAN.md §4`）：按库里各份网页的清单拷（同 Mac）
+                for (sha in store.webFileHashes()) {
+                    val f = com.xvan.unireader.local.web.WebAssets.file(source, sha)
+                    if (f.isFile) com.xvan.unireader.local.web.WebAssets.copy(f, destination, sha)
+                }
+
                 // ④ 血缘 meta。**镜像必须换一个自己的 workspace_id**：拷出来的副本原样带着源库的 id，
                 // 不换的话「扫一圈盘按 workspace_id 找源」会把镜像自己也认成源。
                 progress?.invoke("正在写入基线…", 0.92f)

@@ -42,6 +42,8 @@ object Trash {
     const val KIND_AGENT_MEMORIES = "agentMemories"
     /** 一份日程计划连同它的事项（v26；本端 Agent `delete_schedule` 也建，`../docs/ANDROID-AGENT-PLAN.md §5.9`） */
     const val KIND_SCHEDULE = "schedule"
+    /** 一份网页连同它存的数据（`../docs/WEB-DOC-PLAN.md §6`） */
+    const val KIND_WEB_DOC = "webDoc"
 
     class Manifest(
         val kind: String,
@@ -54,6 +56,8 @@ object Trash {
         val counts: TrashStore.Counts = TrashStore.Counts(),
         val images: List<String> = emptyList(),
         val contentHashes: List<String> = emptyList(),
+        /** 网页清单里的文件：清理 `Web/` 时护住（Mac manifest 的可选键 `webFiles`） */
+        val webFiles: List<String> = emptyList(),
     )
 
     /** 扫出来的一条：目录名就是身份 */
@@ -75,6 +79,7 @@ object Trash {
             .put("documentId", m.documentId).put("documentTitle", m.documentTitle)
             .put("pageCount", m.pageCount).put("counts", m.counts.toJson())
             .put("images", JSONArray(m.images)).put("contentHashes", JSONArray(m.contentHashes))
+        if (m.webFiles.isNotEmpty()) o.put("webFiles", JSONArray(m.webFiles))
         if (m.layerId != null) o.put("layerId", m.layerId)
         return o.toString(2)
     }
@@ -93,6 +98,7 @@ object Trash {
             counts = TrashStore.Counts.of(o.optJSONObject("counts")),
             images = list("images"),
             contentHashes = list("contentHashes"),
+            webFiles = list("webFiles"),
         )
     }.getOrNull()
 
@@ -146,6 +152,20 @@ object Trash {
     fun expired(entries: List<Entry>, now: Date = Date()): List<Entry> {
         val cutoff = now.time - RETENTION_DAYS * 86_400_000L
         return entries.filter { it.manifest.deletedAt.time < cutoff }
+    }
+
+    /** 回收站里的网页还用着的文件（清理 `Web/` 时护住） */
+    fun protectedWebFiles(ws: File): Set<String> = scan(ws).flatMap { it.manifest.webFiles }.toSet()
+
+    /** 删一份网页：先归档（那一行 + 存的数据），成了才删行（红线 11）。文件留在 `Web/`，条目护着。 */
+    fun deleteWebDoc(s: LibraryStore, ws: File, id: String, title: String): Entry {
+        val e = archive(ws, title) { snap ->
+            val a = s.trashArchiveWebDoc(id, snap)
+            if (a.counts.webDoc != 1) throw java.io.IOException("没归档到这份网页")
+            Manifest(KIND_WEB_DOC, Date(), title, counts = a.counts, webFiles = a.webFiles)
+        }
+        s.deleteWebDoc(id)
+        return e
     }
 
     /** 回收站里还引用着的图（图片清理要让路，方案 §2.6） */

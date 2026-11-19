@@ -375,6 +375,7 @@
     <string name="trash_kind_agent_contexts">Agent Context</string>
     <string name="trash_kind_agent_memories">Agent Memory</string>
     <string name="trash_kind_schedule">Schedule</string>
+    <string name="trash_kind_web">Web Page</string>
     <string name="trash_items">%1$d items</string>
     <string name="trash_hint">Items are deleted automatically after 30 days.</string>
     <string name="doc_delete">Delete…</string>
@@ -607,4 +608,29 @@
     <string name="sem_vectors_pulling">syncing…</string>
     <string name="sem_vectors_unsupported">The server does not support this yet; update the server.</string>
     <string name="sem_vectors_error">Last sync failed: %1$s</string>
+    <!-- 网页（静态 HTML 课件，../docs/WEB-DOC-PLAN.md） -->
+    <string name="web_page">Web Page</string>
+    <string name="web_group">Web Pages</string>
+    <string name="web_more">More</string>
+    <string name="web_import">Import Web Page Folder…</string>
+    <string name="web_import_title">Import a web page</string>
+    <string name="web_import_tip">Open the folder of a web page (its HTML, images, styles and scripts), then tap the button.</string>
+    <string name="web_import_here">Import This Folder</string>
+    <string name="web_import_pick">Open a folder first.</string>
+    <string name="web_importing">Copying the web page into the workspace…</string>
+    <string name="web_import_failed">Could not import</string>
+    <string name="web_err_empty">The folder is empty.</string>
+    <string name="web_err_no_html">There is no HTML file in this folder.</string>
+    <string name="web_err_too_big">The folder is too large (over 20,000 files or 4 GB). Choose the folder of one web page.</string>
+    <string name="web_rename">Rename</string>
+    <string name="web_name_hint">Name</string>
+    <string name="web_start_page">Start Page</string>
+    <string name="web_reimport">Re-import from Folder…</string>
+    <string name="web_delete">Delete</string>
+    <string name="web_delete_confirm">Delete “%1$s”?</string>
+    <string name="web_back">Back</string>
+    <string name="web_forward">Forward</string>
+    <string name="web_reload">Reload</string>
+    <string name="web_gone">This web page is no longer in the workspace.</string>
+    <string name="web_missing">%1$d file(s) of this web page are not on this device yet. They are downloaded when the workspace syncs.</string>
 </resources>

@@ -546,6 +546,23 @@ object Palette {
  * 没有小数秒的字符串它**解析不出来**（`ISO.date()` 返回 nil → 行映射里静默回落成「现在」）。
  * 所以安卓写库时不能用 `Instant.toString()`——它在毫秒为 0 时会省掉小数部分。
  */
+/**
+ * 一份网页（静态 HTML 课件，`web_doc` 表，`../docs/WEB-DOC-PLAN.md §2`）。文件在 `Web/`，[manifest] 是清单 JSON（`WebAssets`）。
+ */
+data class LibWebDoc(
+    val id: String,
+    val title: String,
+    val entry: String,
+    val manifest: String,
+    val bytes: Long,
+    val groupName: String = "",
+    val createdAt: String,
+    val updatedAt: String,
+    val lastOpenedAt: String? = null,
+) {
+    val entries: List<com.xvan.unireader.local.web.WebAssets.Entry> get() = com.xvan.unireader.local.web.WebAssets.decode(manifest)
+}
+
 object Iso {
     private val fmt: DateTimeFormatter =
         DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)

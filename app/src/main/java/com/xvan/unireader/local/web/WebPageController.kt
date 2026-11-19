@@ -1,0 +1,396 @@
+package com.xvan.unireader.local.web
+
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import com.xvan.unireader.R
+import com.xvan.unireader.local.store.LibWebDoc
+import com.xvan.unireader.local.store.StoreQueue
+import com.xvan.unireader.shared.Ui
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+/**
+ * 网页标签的整页（模式1，`../docs/WEB-DOC-PLAN.md §9`，同 Mac `WebDocView`）：顶上一条（后退 / 前进 · 标题 · 重新载入）+ `WebView`。
+ *
+ * - 文件经 `shouldInterceptRequest` 从工作区 `Web/` 里读，**不联网、不开端口**：地址 `https://<网页 id 小写>.unireader-web.invalid/<路径>`，
+ *   每份网页的 id 当主机名 → 各份网页是不同的源（`localStorage` 互不串）；`.invalid` 保证真去解析也解析不到别处。支持 Range（视频）。
+ * - `window.unireader`（同 Mac `WebBridgeScript`）：html 响应里在 `<head>` 开头塞一段脚本，经 `addJavascriptInterface` 的 `__unireaderNative`
+ *   同步调到库队列（`WebKV`）。🔴 JS 接口对页面里**所有**框架可见：每次装载一个随机口令写进注入的脚本，不带口令的调用一律拒——
+ *   页面里嵌的外部网站拿不到口令，碰不到数据。
+ */
+class WebPageController(private val a: Activity) {
+
+    companion object {
+        const val TAG = "UniReader/Web"
+        const val HOST_SUFFIX = ".unireader-web.invalid"
+        private const val PREFS = "webPages"
+    }
+
+    val view = FrameLayout(a).apply {
+        setBackgroundColor(Ui.surface(a))
+        visibility = View.GONE
+    }
+
+    private val titleView = Ui.title(a, "", 18f).apply {
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+    }
+    private val backBtn = Ui.iconButton(a, R.drawable.ic_chevron_left, a.getString(R.string.web_back)) { web.goBack() }
+    private val fwdBtn = Ui.iconButton(a, R.drawable.ic_chevron_right, a.getString(R.string.web_forward)) { web.goForward() }
+    private val reloadBtn = Ui.textButton(a, a.getString(R.string.web_reload)) { web.reload() }
+    private val notice = Ui.body(a, "").apply {
+        gravity = Gravity.CENTER
+        visibility = View.GONE
+        val p = Ui.dp(a, 12)
+        setPadding(p, p / 2, p, p / 2)
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private val web = WebView(a).apply {
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.allowFileAccess = false
+        settings.allowContentAccess = false
+        settings.builtInZoomControls = true
+        settings.displayZoomControls = false
+        settings.useWideViewPort = true
+        settings.loadWithOverviewMode = true
+        webChromeClient = object : WebChromeClient() {
+            override fun onReceivedTitle(view: WebView?, title: String?) = updateTitle()
+        }
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    private var queue: StoreQueue? = null
+    private var ws: File? = null
+
+    /** 当前开着的那份（主线程读写）与它的文件表（拦截线程只读：整份换掉、不改里面）。 */
+    var current: LibWebDoc? = null
+        private set
+    @Volatile private var files: Map<String, WebAssets.Entry> = emptyMap()
+    @Volatile private var folder: File? = null
+    @Volatile private var hostId = ""
+    @Volatile private var token = ""
+
+    /** 改名 / 删除 / 重新导入之后宿主要刷新列表（抽屉、标签标题）。 */
+    var onChanged: () -> Unit = {}
+
+    init {
+        val bar = LinearLayout(a).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(Ui.dp(a, 8), Ui.dp(a, 4), Ui.dp(a, 12), Ui.dp(a, 4))
+            addView(backBtn)
+            addView(fwdBtn)
+            addView(titleView, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = Ui.dp(a, 8) })
+            addView(reloadBtn)
+        }
+        val column = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(bar, LinearLayout.LayoutParams(-1, -2))
+            addView(notice, LinearLayout.LayoutParams(-1, -2))
+            addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
+        }
+        view.addView(column, FrameLayout.LayoutParams(-1, -1))
+        web.addJavascriptInterface(Bridge(), "__unireaderNative")
+        web.webViewClient = Client()
+    }
+
+    fun bind(q: StoreQueue?, dir: File?) {
+        queue = q
+        ws = dir
+        if (q == null) close()
+    }
+
+    /** 打开一份网页（同一份再开 = 只刷新标题；清单变了重新载入）。 */
+    fun open(id: String, path: String? = null) {
+        val q = queue ?: return
+        view.visibility = View.VISIBLE
+        q.submit("读网页 $id", { s ->
+            val w = s.webDoc(id)
+            if (w != null && path == null) s.touchWebDocOpened(id)
+            w
+        }) { w ->
+            if (w == null) {
+                current = null
+                showNotice(a.getString(R.string.web_gone))
+                return@submit
+            }
+            val sameDoc = current?.id == w.id && current?.manifest == w.manifest && hostId.isNotEmpty()
+            current = w
+            updateTitle()
+            if (sameDoc && path == null) { refreshNotice(); return@submit }
+            load(w, path)
+        }
+    }
+
+    private fun load(w: LibWebDoc, path: String?) {
+        val dir = ws ?: return
+        folder = dir
+        files = w.entries.associateBy { it.p }
+        hostId = w.id.lowercase(Locale.ROOT)
+        token = UUID.randomUUID().toString()
+        refreshNotice()
+        val last = path ?: prefs().getString(w.id.uppercase(Locale.ROOT), null)?.takeIf { it in files }
+        web.loadUrl(urlOf(hostId, last ?: w.entry))
+    }
+
+    private fun refreshNotice() {
+        val dir = folder ?: return
+        val missing = files.values.map { it.h }.toSet().count { !WebAssets.exists(dir, it) }
+        if (missing == 0) notice.visibility = View.GONE else showNotice(a.getString(R.string.web_missing, missing))
+    }
+
+    private fun showNotice(s: String) {
+        notice.text = s
+        notice.visibility = View.VISIBLE
+    }
+
+    /** 同步拉到了新版（行变了 / 文件下完了）：清单变了重新载入，文件补齐了把提示收掉并重载。 */
+    fun refreshFromRemote() {
+        val w = current ?: return
+        val hadMissing = notice.visibility == View.VISIBLE
+        open(w.id)
+        if (hadMissing) main.postDelayed({ if (notice.visibility == View.GONE) web.reload() }, 300)
+    }
+
+    /** 别处改了页面存的数据：告诉页面（`unireader:change`）。 */
+    fun dataChangedRemotely() {
+        if (current != null) web.evaluateJavascript("try{window.dispatchEvent(new CustomEvent('unireader:change'))}catch(e){}", null)
+    }
+
+    fun close() {
+        current?.let { w -> web.url?.let { u -> pathOf(Uri.parse(u))?.let { prefs().edit().putString(w.id.uppercase(Locale.ROOT), it).apply() } } }
+        view.visibility = View.GONE
+    }
+
+    /** 宿主的返回键：网页里能退就退。 */
+    fun goBack(): Boolean {
+        if (view.visibility != View.VISIBLE || !web.canGoBack()) return false
+        web.goBack()
+        return true
+    }
+
+    private fun updateTitle() {
+        val name = current?.title ?: ""
+        val page = web.title ?: ""
+        titleView.text = if (page.isEmpty() || page == name || page.startsWith("https://")) name else "$name — $page"
+        backBtn.isEnabled = web.canGoBack()
+        fwdBtn.isEnabled = web.canGoForward()
+        backBtn.alpha = if (web.canGoBack()) 1f else 0.35f
+        fwdBtn.alpha = if (web.canGoForward()) 1f else 0.35f
+    }
+
+    private fun prefs() = a.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
+
+    private fun urlOf(host: String, path: String): String =
+        "https://$host$HOST_SUFFIX/" + path.split('/').joinToString("/") { Uri.encode(it) }
+
+    /** 本网页的地址 → 相对路径（不是本网页的 = null）。 */
+    private fun pathOf(u: Uri): String? {
+        val host = u.host ?: return null
+        if (host != hostId + HOST_SUFFIX) return null
+        return (u.path ?: "/").trimStart('/')
+    }
+
+    // ---------- 拦截：从 Web/ 读文件 ----------
+
+    private inner class Client : WebViewClient() {
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            val u = request.url
+            val host = u.host ?: return null
+            if (!host.endsWith(HOST_SUFFIX)) return null   // 外面的网站（CDN 之类）照常走网络
+            if (host != hostId + HOST_SUFFIX) return notFound("This page belongs to another web page.")
+            return serve((u.path ?: "/").trimStart('/'), request.requestHeaders?.entries?.firstOrNull {
+                it.key.equals("Range", ignoreCase = true)
+            }?.value)
+        }
+
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            val u = request.url
+            if (u.host?.endsWith(HOST_SUFFIX) == true) return false
+            val scheme = u.scheme?.lowercase() ?: return false
+            if (scheme == "about" || scheme == "data" || scheme == "blob" || scheme == "javascript") return false
+            // 主框架点到外面：交给系统浏览器；子框架照常
+            if (!request.isForMainFrame) return false
+            runCatching { a.startActivity(Intent(Intent.ACTION_VIEW, u)) }
+            return true
+        }
+
+        override fun onPageFinished(view: WebView, url: String?) {
+            updateTitle()
+            val w = current ?: return
+            url?.let { pathOf(Uri.parse(it)) }?.let { prefs().edit().putString(w.id.uppercase(Locale.ROOT), it).apply() }
+        }
+
+        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) = updateTitle()
+    }
+
+    private fun notFound(msg: String) = WebResourceResponse(
+        "text/plain", "utf-8", 404, "Not Found", mapOf("Cache-Control" to "no-cache"), ByteArrayInputStream(msg.toByteArray()),
+    )
+
+    /** 在拦截线程上跑（不碰界面、不碰库）。 */
+    private fun serve(rawPath: String, range: String?): WebResourceResponse {
+        val dir = folder ?: return notFound("No workspace")
+        val e = WebAssets.resolve(rawPath, files) ?: return notFound("Not found: $rawPath")
+        val f = WebAssets.file(dir, e.h)
+        if (!f.isFile) return notFound("This file has not been downloaded to this device yet: ${e.p}")
+        val mime = WebAssets.mimeType(e.p)
+        val enc = if (WebAssets.isText(mime)) "utf-8" else null
+        val size = f.length()
+        val headers = mutableMapOf("Accept-Ranges" to "bytes", "Cache-Control" to "no-cache")
+        val r = WebAssets.byteRange(range, size)
+        if (r != null) {
+            headers["Content-Range"] = "bytes ${r.first}-${r.last}/$size"
+            headers["Content-Length"] = (r.last - r.first + 1).toString()
+            return WebResourceResponse(mime, enc, 206, "Partial Content", headers, rangeStream(f, r))
+        }
+        if (WebAssets.isHtml(e.p)) {
+            val html = f.readBytes()
+            val out = WebBridge.inject(WebBridge.source(current?.id ?: hostId, current?.title ?: "", token), html)
+            headers["Content-Length"] = out.size.toString()
+            return WebResourceResponse(mime, "utf-8", 200, "OK", headers, ByteArrayInputStream(out))
+        }
+        headers["Content-Length"] = size.toString()
+        return WebResourceResponse(mime, enc, 200, "OK", headers, FileInputStream(f))
+    }
+
+    private fun rangeStream(f: File, r: LongRange): InputStream {
+        val input = FileInputStream(f)
+        input.skip(r.first)
+        var left = r.last - r.first + 1
+        return object : InputStream() {
+            override fun read(): Int {
+                if (left <= 0) return -1
+                val b = input.read()
+                if (b >= 0) left--
+                return b
+            }
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (left <= 0) return -1
+                val n = input.read(b, off, minOf(len.toLong(), left).toInt())
+                if (n > 0) left -= n
+                return n
+            }
+            override fun close() = input.close()
+        }
+    }
+
+    // ---------- window.unireader ----------
+
+    private inner class Bridge {
+        /** 页面经注入的脚本同步调过来（在 WebView 的 JS 桥线程上，不是主线程）：排进库队列、等它做完。 */
+        @JavascriptInterface
+        fun call(tok: String?, json: String?): String {
+            if (tok == null || tok != token) return err("unireader is only available to the web page itself")
+            val q = queue ?: return err("No workspace is open.")
+            val id = current?.id ?: return err("No web page is open.")
+            val o = runCatching { JSONObject(json ?: "") }.getOrNull() ?: return err("bad request")
+            val op = o.optString("op")
+            val key = if (o.has("key")) o.optString("key") else null
+            val value = if (o.has("value")) o.optString("value") else null
+            val latch = CountDownLatch(1)
+            var out: String = err("timed out")
+            q.submit("网页数据 $op") { s ->
+                out = try {
+                    JSONObject().put("v", WebKV.handle(s, id, op, key, value)).toString()
+                } catch (e: Exception) {
+                    err(e.message ?: "failed")
+                } finally {
+                    latch.countDown()
+                }
+            }
+            if (!latch.await(10, TimeUnit.SECONDS)) Log.w(TAG, "网页数据 $op 等库队列超时")
+            return out
+        }
+
+        private fun err(m: String) = JSONObject().put("e", m).toString()
+    }
+}
+
+/** 注入页面的 `window.unireader`（同 Mac `WebBridgeScript`，传输换成 `__unireaderNative.call(口令, JSON)`）。 */
+object WebBridge {
+    fun source(webId: String, title: String, token: String): String {
+        val info = JSONObject().put("id", webId).put("title", title).toString().replace("</", "<\\/")
+        val tok = JSONObject.quote(token)
+        return """
+        (function () {
+          if (window.unireader) return;
+          var call = function (m) {
+            return new Promise(function (resolve, reject) {
+              try {
+                var r = JSON.parse(window.__unireaderNative.call($tok, JSON.stringify(m)));
+                if (r.e !== undefined) reject(new Error(r.e)); else resolve(r.v);
+              } catch (e) { reject(e); }
+            });
+          };
+          function req(op, key, value) {
+            var m = { op: op };
+            if (key !== undefined) m.key = String(key);
+            if (value !== undefined) m.value = value;
+            return call(m).then(function (t) { return JSON.parse(t); });
+          }
+          var api = {
+            version: 1,
+            page: $info,
+            get: function (key, fallback) {
+              return req('get', key).then(function (v) { return (v === null && fallback !== undefined) ? fallback : v; });
+            },
+            set: function (key, value) {
+              if (value === undefined) return api.remove(key);
+              var s = JSON.stringify(value);
+              if (s === undefined) return Promise.reject(new Error('unireader.set: the value cannot be stored as JSON'));
+              return req('set', key, s).then(function () {});
+            },
+            remove: function (key) { return req('remove', key).then(function () {}); },
+            keys: function () { return req('keys'); },
+            getAll: function () { return req('getAll'); },
+            clear: function () { return req('clear').then(function () {}); }
+          };
+          Object.freeze(api);
+          Object.defineProperty(window, 'unireader', { value: api, enumerable: true });
+          try { window.dispatchEvent(new CustomEvent('unireader:ready')); } catch (e) {}
+        })();
+        """.trimIndent()
+    }
+
+    /** 塞进 `<head>` 开头（不分大小写），没有 head 就放最前面（同 Mac `WebBridgeScript.inject`）。 */
+    fun inject(script: String, html: ByteArray): ByteArray {
+        val tag = "<script>$script</script>".toByteArray()
+        val window = minOf(html.size, 64 * 1024)
+        val head = String(html, 0, window, Charsets.ISO_8859_1).lowercase(Locale.ROOT)   // 单字节解码：下标 = 字节下标
+        val at = head.indexOf("<head")
+        if (at >= 0) {
+            val gt = head.indexOf('>', at)
+            if (gt >= 0) {
+                return html.copyOfRange(0, gt + 1) + tag + html.copyOfRange(gt + 1, html.size)
+            }
+        }
+        return tag + html
+    }
+}

@@ -372,6 +372,18 @@ object MirrorApply {
      * [plan] 就是**干跑给用户看的那一份**，不在这里重算 —— 重算就意味着「用户看到的」和
      * 「实际做的」可能不是同一件事，而这一步会大批量改用户数据。
      */
+    /** [to] 这边网页清单里要、本机没有、[fromFolder] 有的文件拷过来（幂等；单个失败跳过，下次再补）。 */
+    fun fillWebFiles(fromFolder: File, to: LibraryStore, toFolder: File): Int {
+        var n = 0
+        for (sha in to.webFileHashes()) {
+            if (com.xvan.unireader.local.web.WebAssets.exists(toFolder, sha)) continue
+            val src = com.xvan.unireader.local.web.WebAssets.file(fromFolder, sha)
+            if (!src.isFile) continue
+            if (runCatching { com.xvan.unireader.local.web.WebAssets.copy(src, toFolder, sha) }.isSuccess) n++
+        }
+        return n
+    }
+
     fun apply(
         plan: MirrorDiff.Plan,
         mirrorFolder: File,
@@ -412,6 +424,10 @@ object MirrorApply {
         progress?.invoke("正在补齐识别结果…", 0.85f)
         r.ocrFilledToSource = fillOcr(mirrorStore, sourceStore, plan.ocrToSource)
         r.ocrFilledToMirror = fillOcr(sourceStore, mirrorStore, plan.ocrToMirror)
+
+        // ④.65 网页文件（`../docs/WEB-DOC-PLAN.md §4`，同 Mac `fillWebFiles`）：行刚合并完，各边按自己的清单向另一边要缺的
+        fillWebFiles(mirrorFolder, sourceStore, sourceFolder)
+        fillWebFiles(sourceFolder, mirrorStore, mirrorFolder)
 
         // ④.7 扫描页对齐参数（整行按 updated_at 取新，同样事务外、幂等；编号同 Mac，本端没有 ④.6 图片那步）
         r.alignToSource = fillAlign(mirrorStore, sourceStore, plan.alignToSource)

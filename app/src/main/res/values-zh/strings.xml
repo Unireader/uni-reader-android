@@ -370,6 +370,7 @@
     <string name="trash_kind_agent_contexts">Agent 上下文</string>
     <string name="trash_kind_agent_memories">Agent 记忆</string>
     <string name="trash_kind_schedule">日程</string>
+    <string name="trash_kind_web">网页</string>
     <string name="trash_items">%1$d 条</string>
     <string name="trash_hint">放进回收站的内容 30 天后自动清除。</string>
     <string name="doc_delete">删除…</string>
@@ -602,4 +603,29 @@
     <string name="sem_vectors_pulling">正在同步…</string>
     <string name="sem_vectors_unsupported">服务器还不支持，请升级服务器。</string>
     <string name="sem_vectors_error">上次同步出错：%1$s</string>
+    <!-- 网页（静态 HTML 课件，../docs/WEB-DOC-PLAN.md） -->
+    <string name="web_page">网页</string>
+    <string name="web_group">网页</string>
+    <string name="web_more">更多</string>
+    <string name="web_import">导入网页文件夹…</string>
+    <string name="web_import_title">导入网页</string>
+    <string name="web_import_tip">点进网页所在的文件夹（含 HTML、图片、样式和脚本），再按右下的按钮。</string>
+    <string name="web_import_here">导入这个文件夹</string>
+    <string name="web_import_pick">先点进一个文件夹。</string>
+    <string name="web_importing">正在把网页复制进工作区…</string>
+    <string name="web_import_failed">没能导入</string>
+    <string name="web_err_empty">文件夹是空的。</string>
+    <string name="web_err_no_html">这个文件夹里没有 HTML 文件。</string>
+    <string name="web_err_too_big">文件夹太大（超过 2 万个文件或 4 GB）。请选择单份网页所在的文件夹。</string>
+    <string name="web_rename">重命名</string>
+    <string name="web_name_hint">名称</string>
+    <string name="web_start_page">首页</string>
+    <string name="web_reimport">从文件夹重新导入…</string>
+    <string name="web_delete">删除</string>
+    <string name="web_delete_confirm">删除「%1$s」？</string>
+    <string name="web_back">后退</string>
+    <string name="web_forward">前进</string>
+    <string name="web_reload">重新载入</string>
+    <string name="web_gone">这份网页已经不在工作区里了。</string>
+    <string name="web_missing">这份网页有 %1$d 个文件还不在这台设备上，同步工作区时会下载。</string>
 </resources>

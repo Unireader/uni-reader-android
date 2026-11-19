@@ -400,6 +400,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   删除（`delete_annotations` / `delete_memory`）只经 `Trash.deleteAnnotations` / `deleteAgentMemories`：先归档、条数对上才删（红线 11）。插桩测试 `AgentEngineTest`（假 SSE 服务，不要 Key）+ `AgentToolsTest`（真工作区 + 假宿主）。
   写入：批注 / 高亮写进开着的那篇走 `LocalCanvasView.writeNotesExternally`（先进撤销栈，同界面新建）；`edit_markdown` 改的是编辑器里的字
   （`MdNoteController.liveText` / `applyExternalText`，用户没存的输入保留），规则 `MdEdit` 逐条照 Mac `MCPMarkdownText`（`MdEditTest`）。
+- **网页（静态 HTML 课件，2026-11-19，`../docs/WEB-DOC-PLAN.md §9`）** 全在 `local/web/`：`WebAssets`（文件层 `Web/<sha256>` + 清单，逐条照 Mac
+  `Sources/Store/WebAssets.swift`）、`WebKV`（`window.unireader` 的读写规则，照 Mac `WorkspaceManager.webKV`）、`WebPageController`（整页：`WebView` +
+  `shouldInterceptRequest` 从 `Web/` 读，地址 `https://<id>.unireader-web.invalid/…`，注入脚本 `WebBridge`）。标签 `web:<id>`；表 `web_doc` / `web_kv`。
+  🔴 `addJavascriptInterface` 对页面里所有框架可见：调用必须带注入脚本里的随机口令，别去掉这道检查。同步补文件在网络线程做（`ServerSync.pullWhileOpen`），别挪进库队列。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，

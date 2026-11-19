@@ -44,6 +44,12 @@ object TabSet {
     fun mdRelOf(docId: String): String = docId.removePrefix(MD_PREFIX)
     fun mdKey(rel: String): String = MD_PREFIX + rel
 
+    /** 网页标签：`web:<web_doc.id>`（`../docs/WEB-DOC-PLAN.md §9`；同 Mac 标签组的 `web:` 键） */
+    const val WEB_PREFIX = "web:"
+    fun isWeb(docId: String): Boolean = docId.startsWith(WEB_PREFIX)
+    fun webIdOf(docId: String): String = docId.removePrefix(WEB_PREFIX)
+    fun webKey(id: String): String = WEB_PREFIX + id
+
     const val EX_PREFIX = "ex:"
     const val EXS_PREFIX = "exs:"
 

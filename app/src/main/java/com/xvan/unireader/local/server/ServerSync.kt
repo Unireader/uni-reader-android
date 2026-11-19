@@ -524,6 +524,12 @@ object ServerSync {
                         Applied(before, after, rep.conflicts, rep.skipped, newImages, rows.any { it.table == "variant" && !it.deleted })
                     }
                 }
+                // 网页文件（`../docs/WEB-DOC-PLAN.md §4`）：在网络线程上补，别占着库队列（课件里可能有视频）
+                if (a != null && rows.any { it.table == "web_doc" && !it.deleted }) {
+                    val hashes = onQueue(s, "同步：读网页清单") { st -> st.webFileHashes() }
+                    if (hashes != null) runCatching { ServerSyncIO.downloadMissingWebFiles(s.dir, hashes, client, ep.wid) }
+                        .onFailure { Log.w(TAG, "补网页文件没补完（下次同步再补）", it) }
+                }
                 if (a != null) {
                     if (rows.isNotEmpty()) Log.i(TAG, "${s.dir.name}：开着时拉到 ${rows.size} 行（冲突 ${a.conflicts} 跳过 ${a.skipped}）${rows.map { it.table }.toSet().sorted()}")
                     main.post {
