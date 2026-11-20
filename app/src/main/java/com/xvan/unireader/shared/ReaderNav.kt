@@ -42,6 +42,8 @@ data class LibItem(
     val open: Boolean,
     /** 一级分组（空串 = 未分组）。模式2 的 `library` 广播不带它 = 恒空，抽屉照旧不分段。 */
     val group: String = "",
+    /** 行尾一句灰色小字（模式1：本机没有 PDF 的书写「未下载」）；空 = 不显示 */
+    val note: String = "",
 )
 
 /**
@@ -49,6 +51,12 @@ data class LibItem(
  * 否则「未分组」（标题空串，没有未分组的书就没有这一段）在前，其余分组按名字排。段内保持传进来的顺序。
  */
 object DocGroups {
+    /**
+     * 一个分组「收起了」记成的键（书库页与抽屉共用一份收起状态，模式1 存在 `LibFoldState`）。
+     * 未分组那一段、以及一个分组都没有时的整个文档列表都是 `doc:`。
+     */
+    fun foldKey(group: String) = "doc:$group"
+
     fun <T> sections(docs: List<T>, groupOf: (T) -> String): List<Pair<String?, List<T>>> {
         val names = docs.map(groupOf).filter { it.isNotEmpty() }.distinct().sorted()
         if (names.isEmpty()) return listOf(null to docs)

@@ -162,7 +162,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   阅读画布，整页是 `local/BoardController` 那块 `ScratchCanvas`（照 `ScratchController` 写，读写 `board_note` /
   `board_item`：笔迹 kind=1，payload 同草稿纸 kind=4 但**不写 padId**）。工具状态挂在一块不显示的
   `LocalCanvasView`（`ReaderActivity.boardTools`）上，顶栏模式 / 笔 / 尺子、笔设置面板（长按「切换笔」；左下角的笔 / 图层胶囊 2026-11-14 已去掉）、侧键都经 `toolCanvas()`。
-  入口：书库页一组、抽屉书库页一组（`ReaderDrawer.setBoards`，模式2 不设 = 不显示）、「+」、⋯、画板浮条最左键。
+  入口：抽屉「书库 → 画板」（`ReaderDrawer.setBoards`，模式2 不设 = 不显示）、「+」、⋯、画板浮条最左键（书库页 2026-11-20 已去掉）。
   🔴 **新 id 一律大写 UUID**（`newBoardId()`）：Mac 把这两张表的 id 解析成 `UUID` 再按 `uuidString`（大写）写回，
   小写 id 会让 Mac 那边 `ON CONFLICT(id)` 对不上、多出重复行。
   · 模式2：`boards`(0x52) / `boardImages`(0x55) 下行、`boardOpen`(0x53) / `boardAdd`(0x54) 上行；笔迹仍走草稿纸
@@ -240,7 +240,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   分页画板因此**不再走 `boardViewport`**（不复位、不回传），那条只剩无限画布在用。
 - **习题（v20，2026-10-11，`../docs/EXERCISE-PLAN.md §10`）**：两模式共用一份界面 `shared/exercise/ExerciseScreen`
   （顶栏 范围名 / 进度 / 全部重做 / 重做上次做错的 / 只看没做过 / 练习·列表；练习页一次一题、左右划翻题；列表页长按多选）+ 抽屉第三页「习题」
-  （`ReaderDrawer.setExercises`，有题才出现）；模式1 书库页（`LibraryActivity`）末尾也有一组「习题」（2026-10-30，有题才出现，
+  （`ReaderDrawer.setExercises`，有题才出现）；~~模式1 书库页（`LibraryActivity`）末尾也有一组「习题」~~（2026-11-20 书库页整个去掉，下面这段只留作记录；2026-10-30，有题才出现，
   只列第一级：全部 / 错题本 / 收藏 / 每本书，章节在抽屉里选；点一行带 `ex:<范围键>` 进阅读界面，同 `openExercises` 就地换公用习题标签）。界面只认中立数据 `ExDeckView` / `ExCard`，操作交给 `ExHost`：
   「哪一组题」都在抽屉里选（错题本、收藏都按书 → 章展开），顶栏的筛选是「重做上次做错的」「只看没做过」两个开关（至多开一个），
   `ExDeckView.noFilter` 为真（错题本那一支）时不显示——模式2 由 Mac 在 `exDeck` 尾部告诉，平板不去解析范围键。
@@ -289,7 +289,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   🔴 别再给习题另做写字区（用户 2026-11-14 否决过：笔架用不了、和草稿纸两套）。
 - **模式1 追平 Mac 第二轮（2026-11-10，`../docs/TODO.md` 差距清单 F2 / F3 / G1 / G2 / G3）**：
   · **文档分组**（`document.group_name`）：`LibDocument.group`；分段规则只在 `shared/DocGroups.sections`（同 Mac 侧栏：没有分组不分段，
-  有则「未分组」在前、其余按名字；`DocGroupsTest`），书库页与抽屉共用。书库页长按一本书「移动到分组…」（现有 / 新建），长按组名改名 / 解散。
+  有则「未分组」在前、其余按名字；`DocGroupsTest`），2026-11-20 起只剩抽屉用。抽屉「书库 → 文档」长按一本书「移动到分组…」（现有 / 新建），长按分组标题改名 / 解散（`WorkspaceActions`）。
   模式2 的 `library` 广播不带分组 → 抽屉照旧一整段。
   · **跳转历史**：规则只在 `shared/JumpHistory`（逐条照 Mac `JumpHistory.swift`，`JumpHistoryTest`），一个 PDF 标签一份（`Tab.jumps`，不落库）。
   🔴 模式1 里凡是「跳到别处」的入口都走 `ReaderActivity.jumpTo`（目录 / 书签 / 搜索）或自己 `record`（跳页、习题原页），别直接 `scrollToPageFrac`，
@@ -351,7 +351,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   🔴 `TextPaint(...).apply { }` 里别写裸 `density`——`TextPaint` 自己有个 `density` 字段（默认 1），会先认它，字小好几倍（11-14 踩过）。
 - **回收站 + 定时备份（2026-10-29，`../docs/BACKUP-PLAN.md`）**：`local/Trash`（目录名 / manifest 键 / 时间格式与 Mac 同，Mac 代码实测能恢复本端建的条目）
   + `local/store/TrashStore`（快照**单独开库**逐行复制，不用 ATTACH——本端主库 WAL 连接池里 ATTACH 只挂在一条连接上）+ `local/TrashSheet`。
-  🔴 先归档再删（红线 11）：删画板、删文档（书库页长按）都走 `Trash.delete*`，归档失败就什么都不删。
+  🔴 先归档再删（红线 11）：删画板、删文档（抽屉长按，`WorkspaceActions`）都走 `Trash.delete*`，归档失败就什么都不删。
   备份 `local/Backups`：`library-yyyyMMdd-HHmmss.sqlite`（本地时间）、稀释规则逐条照抄 Mac（`BackupsTest` ↔ `../spike/backup-retention-test.swift`）；
   还原 = 存还原点 → `closeWorkspace { … }` 等连接真关（`StoreQueue.close(then)`）→ 换库连 `-wal/-shm` → 重新打开。
 - **连接服务器（S3 第一轮，2026-10-29，`../docs/SERVER-MODE-PLAN.md §13.7`）** 全在 `local/server/`，照 Mac 的 S2 做：
@@ -368,7 +368,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
     `ReaderActivity.onRemoteRows`：按受影响的表刷新书库 / 画板 / 习题，开着的文档 `reloadStrokes` / `reloadNotes` / `reloadImageNotes`（库队列先进先出，读到的是应用之后的状态）。
     与推送互斥（`pushing` / `pulling`）；出错退避重试（5 秒起、最多 60 秒）；服务器程序太旧（`wait` 不带说明的 404 / 405，`Failure.isUnsupportedRoute`）→ 不再挂、退回只推。
   · **2026-11-10 收尾（`../docs/SERVER-MODE-PLAN.md §13.13`）**：开着的画板 / 练习页跟着拉到的行重读（`BoardController.reloadFromRemote` /
-    `ExerciseController.reloadFromRemote`）；删得太多先问（`SyncDeleteGuard` ↔ Mac `Sources/Sync/SyncDeleteGuard.swift`，状态 `NeedsConfirm`，书库页同步那一行点一下确认）；
+    `ExerciseController.reloadFromRemote`）；删得太多先问（`SyncDeleteGuard` ↔ Mac `Sources/Sync/SyncDeleteGuard.swift`，状态 `NeedsConfirm`，抽屉「书库 → 文档」表头下同步那一行点一下确认）；
     **笔记文件同步** `NoteSync`（↔ Mac `SyncNotes.swift` + `ServerNoteSync.swift` 的内建 `Notes/` 那一半，判定表 `NoteSync.decide` 逐行照抄、`NoteSyncTest`；
     基线 `UniReader/note-sync.json`；完整一轮接在 `ServerSyncIO.closedRound` 后面，开着时 `ServerSync.noteSaved` → 只推、`watch` 见笔记修订号变了 → 完整一轮，
     `MdNoteController.unsavedSyncPaths` 里那篇绕开）。🔴 红线 9 照旧：冲突时两份都留，别处删了的挪进 `Notes/.trash/`。引用目录镜像没做。
@@ -378,15 +378,15 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   · 没做：草稿纸内容不实时更新；冲突报告界面（Mac 有）。
 - **选区批注的图钉位置（2026-11-10）**：payload 可选键 `pin: [x, y]`（页内归一化的图钉中心，Mac 上拖图钉写的；`anchor` / `rects` 含义不变）。
   本端只读：`TextNotePayload.pin` → `TextNote.pin` → `PageCanvasView.noteViewPos`；框选挪 / 缩放选区批注时 `TextNotePayload.mapPin` 让它跟着走。模式2 线上没有。
-  · **后台下载 PDF（2026-11-04，`PdfDownloadService`）**：书库页 / 阅读界面点「从服务器下载」走**前台服务**（`dataSync` 类型 + 通知），退到后台 / 锁屏照下，
+  · **后台下载 PDF（2026-11-04，`PdfDownloadService`）**：阅读界面点「从服务器下载」走**前台服务**（`dataSync` 类型 + 通知），退到后台 / 锁屏照下，
     通知显进度、带「取消」（取消 = 全部停）；连着点几本排队下、同一篇重复点并成一份；下完各界面照常回调（界面已死就丢弃）。小 PDF 自动预取仍走普通线程、不经这里。
     文案 `srv_dl_*`（strings 两份）；33+ 通知抽屉显示要 POST_NOTIFICATIONS（点下载会先弹授权，不授予照下、只是通知抽屉里看不到）。
-  阅读界面关库之后、退出书库页时完整一轮。
+  阅读界面关库之后完整一轮（`closeWorkspace` → `ServerSync.workspaceClosed`）。
   🔴 **阅读界面开着它的时候不跑完整一轮**（另一条连接写用户数据，内存里的笔迹快照就对不上了）——`prepareToOpen` / `syncNow` 见到开着的会话只叫它推一次；
   还原备份关库时不同步（`closeWorkspace(syncAfter = false)`，要换库文件）。完整一轮之后后台下小 PDF（默认 ≤50MB，只写 `location`）。
   · 缓存放 `/storage/emulated/0/Documents/UniReader/Servers/<主机-端口>/<名字>.unrd`；入口：启动页「本机工作区」页「连接服务器…」+ 每台服务器一段
-  （2026-10-29 用户定放这一页）；书库页 ⋯「上传到服务器…」（原文件夹就地成为缓存）/「立即同步」/「变回本地工作区…」（只给不在缓存目录里的）；
-  没下载的书在书库页、阅读界面都能点「从服务器下载」。离线副本与服务器工作区互斥（副本不能上传、有借出不能上传、服务器工作区不再做副本）。
+  （2026-10-29 用户定放这一页）；抽屉「书库 → 文档」表头「工作区操作」：「上传到服务器…」（原文件夹就地成为缓存）/「立即同步」/「变回本地工作区…」（只给不在缓存目录里的；这两样做完关了再开工作区，`reopenWorkspace`）；
+  没下载的书在抽屉行尾标「未下载」，点开问要不要下载。离线副本与服务器工作区互斥（副本不能上传、有借出不能上传、服务器工作区不再做副本）。
 - **安卓 Agent（模式1，2026-11-15，`../docs/ANDROID-AGENT-PLAN.md`）** 全在 `local/agent/`：`AgentConfig`（地址 / Key / 模型，本机、Key 经 Keystore 加密）、
   `AgentEngine`（Koog 的 OpenAI 兼容客户端 + 自己的工具循环）、`AgentTools`（`AgentHost` 宿主接口 + 第一批工具，名字参数照 Mac MCP）、`AgentPanel`（阅读界面右侧一栏，或可拖动 / 改大小 / 收起的悬浮小窗，§9.1；位置按比例记在 prefs `agent`）。
   🔴 工具只经 `AgentHost`（`ReaderActivity.agentHost`）碰阅读界面，读写库经 `StoreQueue.read`；新工具别直接摸 Activity 字段。
@@ -408,6 +408,15 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `Sources/Store/WebAssets.swift`）、`WebKV`（`window.unireader` 的读写规则，照 Mac `WorkspaceManager.webKV`）、`WebPageController`（整页：`WebView` +
   `shouldInterceptRequest` 从 `Web/` 读，地址 `https://<id>.unireader-web.invalid/…`，注入脚本 `WebBridge`）。标签 `web:<id>`；表 `web_doc` / `web_kv`。
   🔴 `addJavascriptInterface` 对页面里所有框架可见：调用必须带注入脚本里的随机口令，别去掉这道检查。同步补文件在网络线程做（`ServerSync.pullWhileOpen`），别挪进库队列。
+- **手机小屏（2026-11-20，`../docs/ANDROID-STANDALONE-PLAN.md §17`）**：窄屏 = `Ui.isCompact`（`screenWidthDp < 600`），平板排法不动。
+  · **书库页（`LibraryActivity`）同日整个去掉**（用户：「打开就是工作区」）：启动页点工作区直接 `ReaderActivity.start(dir, "")`，没有标签 = 留在工作区、
+  打开抽屉书库（`showNoTabs`，关掉最后一个标签也是）；原书库页的操作在 `local/WorkspaceActions`（写库走阅读界面的队列），入口是抽屉「书库 → 文档」
+  表头（添加 PDF / 工作区操作 / 同步状态一行）与长按（书：改名 / 分组 / 删除；分组标题：改名 / 解散）。「+」选择框 = 文档 / 画板 / 网页 / 笔记（按目录折叠）/ 添加 PDF。
+  · 抽屉文档分组能收起（`Ui.foldHeader`；状态 `local/LibFoldState`，prefs `libFolds`，键 `DocGroups.foldKey`）。
+  · 下载弹层「取消下载」只停这一本（`PdfDownloadService.cancel`）、「后台下载」收起照下；回调 `(ok, hidden)`。
+  · 标签栏窄屏排法 `[📁⌄] │ [当前那篇] [N] +`（`DocTabsBar.compact`，按条宽 `onSizeChanged` 切），点开 `shared/TabOverview` 卡片总览；
+  宿主给 `TabInfo`（图标 + 小字）、`thumbOf`、`beforeOverview`（模式1 `captureThumb` 用 `PixelCopy` 截顶栏以下），返回键先 `tabsBar.closeOverview()`。
+  · 抽屉「书库」二级页签 `libSub`（文档 / 画板 / 笔记 / 网页，只列宿主设过的几类）；`pageKind` 的 `KIND_BOARD / NOTE / WEB` 让抽屉直接停对应那类。
 - UI 是**经典 View，零 Compose 依赖**：语义色板（深浅两套）+ `shared/Ui.kt` 设计系统 +
   `shared/TopBar.kt` 两模式共用顶栏 + `shared/Sheet.kt` 统一弹层。
 - **图标是生成物**：`res/drawable/ic_*.xml` 全部由 `tools/icons/gen.py` 一份几何源码生成，

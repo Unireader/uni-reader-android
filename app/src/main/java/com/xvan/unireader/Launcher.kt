@@ -23,7 +23,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.google.zxing.integration.android.IntentIntegrator
 import com.xvan.unireader.local.FileBrowser
-import com.xvan.unireader.local.LibraryActivity
+import com.xvan.unireader.local.ReaderActivity
 import com.xvan.unireader.local.StorageScan
 import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.local.server.ServerAccount
@@ -785,7 +785,8 @@ class Launcher : Activity() {
                 Workspace.remember(this, dir.absolutePath)
                 refreshRecents()
                 refreshScan()
-                LibraryActivity.start(this, dir)
+                // 打开就是工作区（2026-11-20 起没有书库页）：空工作区在阅读界面里直接摆出抽屉的书库
+                ReaderActivity.start(this, dir, "")
             },
             fail = {
                 dismissBusy()
@@ -930,7 +931,7 @@ class Launcher : Activity() {
     /**
      * 校验走后台（§9.5）：`Workspace.check` 那几个 `exists/isFile/canRead/length` 在 `/sdcard`
      * （FUSE）冷缓存下实测 2.1 秒，U 盘上更久。期间压一个不可取消的「正在打开…」——
-     * 不压的话界面看着没反应，用户会连点，连点就会开出两个 [LibraryActivity]。
+     * 不压的话界面看着没反应，用户会连点，连点就会开出两个阅读界面（[ReaderActivity]）。
      */
     private fun openWorkspace(dir: File) {
         if (busyDlg != null) return
@@ -941,7 +942,7 @@ class Launcher : Activity() {
             work = {
                 Workspace.check(dir).also { c ->
                     // 服务器工作区：打开前同步一轮（最多等 3 秒，连不上就照常开本机这份，`ServerSync.prepareToOpen`）
-                    if (c is Workspace.Check.OK && !c.readOnly) ServerSync.prepareToOpen(applicationContext, c.dir, 3_000L)
+                    if (c is Workspace.Check.OK && !c.readOnly) ServerSync.prepareToOpen(applicationContext, c.dir, 3_000L, cancelOnTimeout = false)
                 }
             },
             ok = { c ->
@@ -961,7 +962,8 @@ class Launcher : Activity() {
                         if (c.readOnly) {
                             Log.w(TAG, "库文件只读：${c.db.absolutePath}")
                         }
-                        LibraryActivity.start(this, c.dir)
+                        // 打开就是工作区（2026-11-20 用户：书库页去掉），恢复上次的标签页
+                        ReaderActivity.start(this, c.dir, "")
                     }
                 }
             },

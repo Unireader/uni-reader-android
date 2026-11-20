@@ -625,8 +625,10 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
             pageKind = {
                 when {
                     visibleExercises().isNotEmpty() -> ReaderDrawer.KIND_EXERCISE
-                    visDocs.isEmpty() || boardKind == WireCodec.BOARD_KIND_BOARD ||
-                        boardKind == WireCodec.BOARD_KIND_MARKDOWN -> ReaderDrawer.KIND_OTHER
+                    visDocs.isEmpty() -> ReaderDrawer.KIND_OTHER
+                    // 书库里直接停「画板」；Markdown 笔记模式2 的书库没有这一类，抽屉自己退回「文档」
+                    boardKind == WireCodec.BOARD_KIND_BOARD -> ReaderDrawer.KIND_BOARD
+                    boardKind == WireCodec.BOARD_KIND_MARKDOWN -> ReaderDrawer.KIND_NOTE
                     else -> ReaderDrawer.KIND_PDF
                 }
             }
@@ -805,6 +807,7 @@ class PadActivity : Activity(), MacClient.Callback, PadView.Listener {
     /** 返回键：抽屉开着先关抽屉（同系统抽屉惯例）；纸开着先关纸（发 scratchOpen(-1)，同模式1） */
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (tabsBar.closeOverview()) return   // 手机上的标签总览盖在最上面：先收它
         if (drawer.isOpen) { drawer.close(); return }
         // 画板会话里那张「纸」关不掉（§4.8）：返回键照常走
         if (exShown.isNotEmpty() && exScreen.scratchShown) { exScreen.setScratchShown(false); return }   // 题目草稿纸：收起来

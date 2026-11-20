@@ -228,6 +228,64 @@ object Ui {
         setPadding(0, dp(c, 24), 0, dp(c, 8))
     }
 
+    /**
+     * 能收起的分组标题（书库页、抽屉书库里的分组，用户 2026-11-20：手机上列表太长）：
+     * 箭头（展开朝下 / 收起朝右）+ 组名 + 行尾条数，**整行**点一下展开 / 收起。
+     * 自带 LayoutParams（上方留 [top] dp），直接 `addView` 即可。[count] 为 null 不显示条数。
+     */
+    fun foldHeader(
+        c: Context,
+        title: String,
+        count: Int?,
+        collapsed: Boolean,
+        top: Int = 12,
+        onToggle: () -> Unit,
+    ): LinearLayout = LinearLayout(c).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(c, TOUCH)
+        setPadding(dp(c, 2), 0, dp(c, 10), 0)
+        isClickable = true
+        isFocusable = true
+        background = rippleOver(c, null, RADIUS, onSurface(c))
+        contentDescription = title
+        addView(
+            ImageView(c).apply {
+                setImageResource(if (collapsed) R.drawable.ic_chevron_right else R.drawable.ic_chevron_down)
+                imageTintList = ColorStateList.valueOf(onVariant(c))
+            },
+            LinearLayout.LayoutParams(dp(c, 18), dp(c, 18)).apply { marginEnd = dp(c, 8) },
+        )
+        addView(
+            TextView(c).apply {
+                text = title
+                textSize = 14f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(onVariant(c))
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        if (count != null) {
+            addView(
+                TextView(c).apply {
+                    text = count.toString()
+                    textSize = 12f
+                    fontFeatureSettings = "tnum"
+                    setTextColor(onVariant(c))
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { marginStart = dp(c, 8) },
+            )
+        }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = dp(c, top) }
+        setOnClickListener { onToggle() }
+    }
+
+    /** 手机 / 窄分屏（< 600dp，同习题页 `setCompact` 的口径）：列表走紧凑排法 */
+    fun isCompact(c: Context): Boolean = c.resources.configuration.screenWidthDp in 1 until 600
+
     fun title(c: Context, s: String, size: Float = 22f): TextView = TextView(c).apply {
         text = s
         setTextSize(TypedValue.COMPLEX_UNIT_SP, size)

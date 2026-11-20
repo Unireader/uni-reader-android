@@ -455,28 +455,67 @@ object ServerUi {
 
     /**
      * 下一本书的 PDF（不管多大）：交给 [PdfDownloadService] 前台服务下——退到后台、锁屏都继续，
-     * 进度在通知里、可取消；这里照旧弹进度条，事件从服务回来。成功 / 失败都回调
-     * （失败已经提示过；发起请求的界面已经关了就不回调）。
+     * 进度在通知里、可取消。这里弹一个进度弹层，事件从服务回来；弹层上两个键（用户 2026-11-20：原先只能干等）：
+     * 「后台下载」= 收起弹层、照下（返回键、点弹层外面同义）；「取消下载」= 只停这一本（[PdfDownloadService.cancel]）。
+     *
+     * [onDone] 两个参数：下好没有、弹层是不是已经被收起了（收起了的，书库页下完不自动打开，只刷新列表 + 一句提示）。
+     * 失败已经提示过；发起请求的界面已经关了就不回调。
      */
-    fun downloadPdf(a: Activity, ws: File, documentId: String, title: String, onDone: (Boolean) -> Unit) {
+    fun downloadPdf(a: Activity, ws: File, documentId: String, title: String, onDone: (ok: Boolean, hidden: Boolean) -> Unit) {
         // 33+ 通知显示要这个权限；不给了下载照跑，只是通知抽屉里看不到
         if (Build.VERSION.SDK_INT >= 33) {
             a.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
-        val p = Progress(a, a.getString(R.string.srv_pdf_downloading, title))
+        var hidden = false
+        var finished = false
+        var cancelled = false
+        val text = Ui.title(a, a.getString(R.string.srv_pdf_downloading, title), 15f)
+        val bar = ProgressBar(a, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            max = 1000
+        }
+        val dlg = Sheet(a).content(
+            LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(text)
+                addView(bar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = Ui.dp(a, 12) })
+            },
+        )
+            .action(a.getString(R.string.srv_dl_cancel), dismiss = false) { d ->
+                cancelled = true
+                PdfDownloadService.cancel(ws, documentId)
+                d.dismiss()
+            }
+            .action(a.getString(R.string.srv_dl_hide), primary = true)
+            .show()
+        // 「后台下载」、返回键、点外面都走这里；下完 / 取消时代码自己关窗不算
+        dlg.setOnDismissListener {
+            if (finished || cancelled) return@setOnDismissListener
+            hidden = true
+            if (!a.isFinishing && !a.isDestroyed) Toast.makeText(a, R.string.srv_dl_hidden, Toast.LENGTH_SHORT).show()
+        }
         PdfDownloadService.enqueue(a, ws, documentId, title) { ev ->
             when (ev) {
-                is PdfDownloadService.Event.Progress ->
-                    p.set(a.getString(R.string.srv_pdf_downloading, title), ev.total.takeIf { it > 0 }?.let { ev.done.toDouble() / it })
+                is PdfDownloadService.Event.Progress -> {
+                    val f = ev.total.takeIf { it > 0 }?.let { ev.done.toDouble() / it }
+                    if (f == null) {
+                        bar.isIndeterminate = true
+                    } else {
+                        bar.isIndeterminate = false
+                        bar.progress = (f.coerceIn(0.0, 1.0) * 1000).toInt()
+                    }
+                }
                 is PdfDownloadService.Event.Done -> {
-                    p.dismiss()
+                    finished = true
+                    if (dlg.isShowing) runCatching { dlg.dismiss() }
                     if (a.isFinishing || a.isDestroyed) return@enqueue
                     if (ev.ok) {
-                        onDone(true)
+                        if (hidden) Toast.makeText(a, a.getString(R.string.srv_dl_done, title), Toast.LENGTH_SHORT).show()
+                        onDone(true, hidden)
                     } else {
-                        // error 为空 = 用户在通知上取消了，不用弹错
+                        // error 为空 = 用户取消了（弹层或通知上），不用弹错
                         if (ev.error != null) a.showAlert(a.getString(R.string.srv_pdf_failed), ev.error)
-                        onDone(false)
+                        onDone(false, hidden)
                     }
                 }
             }
@@ -484,9 +523,9 @@ object ServerUi {
     }
 
     /** 本机没有这本书的 PDF：问一句「从服务器下载」 */
-    fun offerPdfDownload(a: Activity, ws: File, documentId: String, title: String, onDone: (Boolean) -> Unit) {
+    fun offerPdfDownload(a: Activity, ws: File, documentId: String, title: String, onDone: (ok: Boolean, hidden: Boolean) -> Unit) {
         Sheet(a).title(a.getString(R.string.srv_pdf_missing_title, title))
-            .action(a.getString(R.string.act_cancel)) { onDone(false) }
+            .action(a.getString(R.string.act_cancel)) { onDone(false, false) }
             .action(a.getString(R.string.srv_pdf_download), primary = true) { downloadPdf(a, ws, documentId, title, onDone) }
             .cancelable(false)
             .show()

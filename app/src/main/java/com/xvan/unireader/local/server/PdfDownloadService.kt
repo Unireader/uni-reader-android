@@ -66,6 +66,8 @@ class PdfDownloadService : Service() {
         private var running: Job? = null
         private var worker: Thread? = null
         private var cancelCur: ServerClient.Cancel? = null
+        /** 正在下的那本被取消时是不是「全部停」（通知上的取消）；弹层上的「取消下载」只停这一本，排队的照下 */
+        private var cancelDropsQueue = true
         private var lastDone = 0L
         private var lastTotal = -1L
         private var lastTitle: String? = null
@@ -104,10 +106,30 @@ class PdfDownloadService : Service() {
             val dropped = synchronized(lock) {
                 val d = queue.toList()
                 queue.clear()
+                cancelDropsQueue = true
                 cancelCur?.cancel()
                 d
             }
             for (j in dropped) dispatch(j, Event.Done(false, null), done = true)
+        }
+
+        /**
+         * 只取消这一本（下载弹层上的「取消下载」，主线程调）：还在排队就摘掉，正在下就断开；
+         * 排在后面的照下。同一篇被几处请求着时一起取消（它们本来就是同一份下载）。
+         */
+        fun cancel(ws: File, documentId: String) {
+            val dropped = synchronized(lock) {
+                val r = running
+                if (r != null && r.ws == ws && r.documentId == documentId) {
+                    cancelDropsQueue = false
+                    cancelCur?.cancel()
+                }
+                val d = queue.filter { it.ws == ws && it.documentId == documentId }
+                queue.removeAll(d.toSet())
+                d
+            }
+            for (j in dropped) dispatch(j, Event.Done(false, null), done = true)
+            // 通知里「还有几本在排队」下一次进度回调时跟上（≤ PROGRESS_MIN_MS），队列空了 finish() 照常收通知
         }
 
         private fun kickLocked(app: Context) {
@@ -127,6 +149,7 @@ class PdfDownloadService : Service() {
                         } else {
                             val c = ServerClient.Cancel()
                             cancelCur = c
+                            cancelDropsQueue = true
                             running = j
                             lastDone = 0L
                             lastTotal = -1L
@@ -161,11 +184,13 @@ class PdfDownloadService : Service() {
                 running = null
                 cancelCur = null
                 lastTitle = job.title
-                if (cancelled) {
-                    // 用户取消 = 全部停：排队的也清掉，各自按取消回报
+                if (cancelled && cancelDropsQueue) {
+                    // 通知上的取消 = 全部停：排队的也清掉，各自按取消回报
                     val d = queue.toList()
                     queue.clear()
                     d
+                } else if (cancelled) {
+                    emptyList()   // 弹层上只取消这一本：排队的接着下
                 } else {
                     if (error == null) doneOk++ else doneBad++
                     emptyList()

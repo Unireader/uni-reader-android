@@ -76,6 +76,7 @@ import com.xvan.unireader.shared.setTextIfChanged
 import com.xvan.unireader.shared.showAlert
 import java.io.File
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 模式1 的阅读界面：本机 Pdfium 出图 + `LocalCanvasView`（与模式2 同一套几何/手势）。
@@ -119,17 +120,19 @@ class ReaderActivity : Activity() {
         const val MAX_LIVE = 3
 
         /**
-         * @param documentId 要打开/切到的那一篇。工作区与当前开着的不同 = 顺带切工作区。
+         * @param documentId 要打开/切到的那一篇；空串 = 只开工作区（恢复上次的标签页，一个都没有就摆出抽屉的书库）。
+         *   工作区与当前开着的不同 = 顺带切工作区。
+         *
+         * 2026-11-20 起启动页点工作区直接到这里（书库页去掉了，用户：「打开就是工作区」），返回键回启动页。
          */
         fun start(ctx: Context, workspaceDir: File, documentId: String) {
             ctx.startActivity(
                 Intent(ctx, ReaderActivity::class.java)
                     .putExtra(EXTRA_WORKSPACE, workspaceDir.absolutePath)
                     .putExtra(EXTRA_DOC_ID, documentId)
-                    // 已经开着就把这个实例调到前台走 [onNewIntent]（加一个标签页），别叠第二个实例——
+                    // 已经开着就把这个实例调到前台走 [onNewIntent]（加一个标签页 / 切工作区），别叠第二个实例——
                     // 标签页的画布、Pdfium 句柄、库队列全在实例里，叠一个等于同一个库开两份。
-                    // 用 REORDER_TO_FRONT 而不是 CLEAR_TOP：后者会把书库从栈里清掉，
-                    // 之后按返回键就直接回启动页了，而用户是从书库点进来的，该退回书库。
+                    // 用 REORDER_TO_FRONT 而不是 CLEAR_TOP：栈底的启动页要留着，返回键才回得去。
                     .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             )
         }
@@ -163,6 +166,8 @@ class ReaderActivity : Activity() {
 
         var canvas: LocalCanvasView? = null
         var pdf: PdfSource? = null
+        /** 标签总览（手机排法）卡片上的缩略图：离开这一篇 / 打开总览时截的（[captureThumb]），关标签就丢 */
+        var thumb: android.graphics.Bitmap? = null
         /** 打开的那个文件的内容哈希（扫描页增强按它记开关）。 */
         var contentHash = ""
 
@@ -262,6 +267,26 @@ class ReaderActivity : Activity() {
     /** 网页标签的整页（`../docs/WEB-DOC-PLAN.md §9`） */
     private lateinit var webPage: com.xvan.unireader.local.web.WebPageController
     private var libWebs = listOf<com.xvan.unireader.local.store.LibWebDoc>()
+
+    /**
+     * 工作区一级的操作（添加 PDF、书的改名 / 分组 / 删除、同步 / 上传 / 离线副本…）：2026-11-20 书库页去掉后搬来，
+     * 入口在抽屉「书库 → 文档」的表头与长按。写库走本界面这条 [queue]。
+     */
+    private val wsActions by lazy {
+        WorkspaceActions(this, object : WorkspaceActions.Host {
+            override val workspace: File? get() = this@ReaderActivity.workspace
+            override val queue: StoreQueue? get() = this@ReaderActivity.queue
+            override fun libraryChanged() = refreshDrawerLibrary()
+            override fun closeTabsOf(documentId: String) {
+                for (i in tabs.indices.reversed()) if (tabs[i].docId == documentId) closeTab(i)
+            }
+            override fun reopen() = reopenWorkspace()
+            override fun showTrash() = this@ReaderActivity.showTrash()
+        })
+    }
+
+    /** 服务器同步状态变了：抽屉表头那一行跟上（`onResume` / `onPause` 里挂 / 摘） */
+    private val syncListener: () -> Unit = { drawer.setLibStatus(wsActions.statusLine()) }
 
     /** 「到 PDF 原页」要跳的地方（文档 id、页、页内比例）：那篇还没装载完时先记着，几何就绪再跳 */
     private var pendingJump: Triple<String, Int, Float>? = null
@@ -623,7 +648,12 @@ class ReaderActivity : Activity() {
             // 「目录 / 书库」与模式2 同一颗键、同一个位置、同一份抽屉（shared/ReaderDrawer）。
             // 开之前先刷一次书库（模式2 的 `library` 是 Mac 主动广播的，模式1 得自己去库里读）
             icon("toc", R.drawable.ic_list, "目录 / 书库") {
-                if (!drawer.isOpen) { refreshDrawerLibrary(); exercise.refreshGroups() }
+                if (!drawer.isOpen) {
+                    refreshDrawerLibrary()
+                    exercise.refreshGroups()
+                    // 手机排法：开抽屉前先给当前这篇截缩略图（从抽屉切到别篇时屏幕上是抽屉，那时截不了）
+                    if (tabsBar.compact) captureThumb(curTab()) {}
+                }
                 drawer.toggle()
             }
             icon("prev", R.drawable.ic_chevron_left, "上一页", spillFirst = true) { cur()?.turn(prev = true) }
@@ -778,6 +808,12 @@ class ReaderActivity : Activity() {
             onSelect = { i -> if (i != active) activate(i) }
             onClose = { i -> closeTab(i) }
             onAdd = { showDocPicker() }
+            // 手机上的标签总览（浏览器那种卡片）：卡片缩略图 = 那一篇最后的样子；开总览前先截当前这篇、刷新页码
+            thumbOf = { i -> tabs.getOrNull(i)?.thumb }
+            beforeOverview = { done ->
+                refreshTabsBar()
+                captureThumb(curTab(), done)
+            }
         }
         // 左侧拉抽屉（目录 / 书库），与模式2 共用一份。目录来自本机 Pdfium 书签、书库来自工作区库，
         // 两样都在这里转成中立模型喂给它（shared/ 不认识 SQLite 也不认识线格式）。
@@ -786,7 +822,10 @@ class ReaderActivity : Activity() {
             pageKind = {
                 val t = curTab()
                 when {
-                    t == null || t.isBoard || t.isMarkdown -> ReaderDrawer.KIND_OTHER
+                    t == null -> ReaderDrawer.KIND_OTHER
+                    t.isBoard -> ReaderDrawer.KIND_BOARD
+                    t.isMarkdown -> ReaderDrawer.KIND_NOTE
+                    t.isWeb -> ReaderDrawer.KIND_WEB
                     t.isExercise -> ReaderDrawer.KIND_EXERCISE
                     else -> ReaderDrawer.KIND_PDF
                 }
@@ -823,6 +862,16 @@ class ReaderActivity : Activity() {
             onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
             onAddNote = { newMdNote() }
             onNoteMore = { rel -> showMdNoteMenu(rel) }
+            // 「书库 → 文档」表头与长按：原先书库页上的那些操作（2026-11-20 书库页去掉，`WorkspaceActions`）
+            onAddPdf = { wsActions.addPdf() }
+            onLibMore = { wsActions.showMore() }
+            onLibStatusClick = { wsActions.statusClicked() }
+            onDocLongPress = { id ->
+                libDocs.firstOrNull { it.id == id }?.let { d ->
+                    wsActions.showDocMenu(d, libDocs.map { it.group }.filter { it.isNotEmpty() }.distinct().sorted())
+                }
+            }
+            onGroupLongPress = { g -> wsActions.showGroupMenu(g) }
         }
         md = MdNoteController(this).apply {
             onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
@@ -1038,6 +1087,18 @@ class ReaderActivity : Activity() {
         // 习题：书名先给一份（恢复习题标签时要拿范围名），抽屉的分组随后从库里读
         exercise.bind(q, dir)
         md.bind(q, dir)   // 扫 Notes/ + md_doc 对账，扫完刷抽屉
+        // 笔记目录默认收起、记住展开了哪几个（与书库页共用一份，`MdFolderState`）
+        drawer.noteExpanded = MdFolderState.load(this, dir.absolutePath)
+        drawer.onNoteFoldChanged = { set -> MdFolderState.save(this, dir.absolutePath, set) }
+        // 文档分组的收起状态同理（与书库页共用，`LibFoldState`；每次开抽屉在 refreshDrawerLibrary 里重读）。
+        // 抽屉只管 `doc:` 开头的键，存回去时书库页的其它段（画板 / 笔记…）按 prefs 里现在的值原样留着
+        drawer.docCollapsed = LibFoldState.load(this, dir.absolutePath)
+        drawer.onDocFoldChanged = { set ->
+            val all = LibFoldState.load(this, dir.absolutePath)
+            all.removeAll { it.startsWith(LibFoldState.doc("")) }
+            all.addAll(set.filter { it.startsWith(LibFoldState.doc("")) })
+            LibFoldState.save(this, dir.absolutePath, all)
+        }
         webPage.bind(q, dir)
         refreshWebPages()
         exercise.setDocTitles(libTitles)
@@ -1099,15 +1160,36 @@ class ReaderActivity : Activity() {
             }
         }
         Log.i(TAG, "工作区《${o.name.ifEmpty { dir.name }}》${o.docs.size} 篇文档，恢复标签页 ${tabs.size} 个")
+        refreshDrawerLibrary()   // 工作区信息（同步状态、哪几本没下载）随后到
         if (tabs.isEmpty()) {
-            // 空标签页组（第一次开这个工作区，或存的几篇都被删了）：直接把文档列表摆出来，
-            // 别停在一块空白上让人猜下一步点哪儿
-            showOpening("这个工作区还没有打开的文档")
-            tabsBar.setTabs(emptyList(), -1)
-            showDocPicker()
+            showNoTabs()
             return
         }
         activate(want)
+    }
+
+    /**
+     * 一个标签都没有（第一次开这个工作区、存的几篇都被删了、或把最后一个关了）：留在工作区里、打开抽屉的书库，
+     * 别停在一块空白上让人猜下一步点哪儿（2026-11-20 书库页去掉后，这里就是原来的「书库页」）。
+     */
+    private fun showNoTabs() {
+        showOpening(getString(R.string.tabs_none_short))
+        refreshTabsBar()
+        refreshHud()
+        if (!drawer.isOpen) {
+            exercise.refreshGroups()
+            drawer.open(ReaderDrawer.TAB_LIB)
+        }
+    }
+
+    /**
+     * 工作区关了再开（上传到服务器 / 变回本地之后：「是不是服务器工作区」变了，同步会话要按新身份重建）。
+     * 标签页组照常记下、重开后恢复，停在原来那篇。
+     */
+    private fun reopenWorkspace() {
+        val dir = workspace ?: return
+        val doc = curTab()?.docId
+        closeWorkspace(syncAfter = false) { if (!isFinishing && workspace == null) openWorkspace(dir, doc) }
     }
 
     private fun purgeImages(q: StoreQueue, dir: File) {
@@ -1395,7 +1477,49 @@ class ReaderActivity : Activity() {
     }
 
     private fun refreshTabsBar() {
-        tabsBar.setTabs(tabs.map { it.title }, active)
+        tabsBar.setTabInfos(tabs.map(::tabInfo), active)
+    }
+
+    /** 标签的类型图标 + 一行小字（标签总览卡片上用；横排标签只显示标题） */
+    private fun tabInfo(t: Tab): DocTabsBar.TabInfo = when {
+        t.isBoard -> DocTabsBar.TabInfo(t.title, R.drawable.ic_scratch, getString(R.string.tab_kind_board))
+        t.isMarkdown -> DocTabsBar.TabInfo(t.title, R.drawable.ic_note, getString(R.string.tab_kind_note))
+        t.isWeb -> DocTabsBar.TabInfo(t.title, R.drawable.ic_globe, getString(R.string.tab_kind_web))
+        t.isExercise -> DocTabsBar.TabInfo(t.title, R.drawable.ic_exercise, getString(R.string.tab_kind_exercise))
+        else -> DocTabsBar.TabInfo(t.title, R.drawable.ic_doc, if (t.canvas != null) getString(R.string.tab_kind_pdf_page, t.curPage + 1) else "")
+    }
+
+    /**
+     * 截眼前这一篇（顶栏 + 标签栏以下）当它在标签总览里的缩略图。只在手机排法下用得上。
+     * 用 `PixelCopy` 取窗口里真正显示着的像素：PDF 页图、画板、网页一个办法，不用各自出图；
+     * 只截上面一截（卡片是竖的、上对齐），缩到卡片那么宽，一张一两 MB。截不了就算了，卡片显示类型图标。
+     */
+    private fun captureThumb(t: Tab?, done: () -> Unit) {
+        val root = window.decorView
+        val w = root.width
+        val top = chromeHeight()
+        val h = root.height - top
+        if (t == null || w <= 0 || h <= 0) {
+            done()
+            return
+        }
+        val srcH = min(h, (w * 1.3f).toInt())
+        val scale = min(1f, Ui.dp(this, 170).toFloat() / w)
+        val bmp = try {
+            android.graphics.Bitmap.createBitmap(max(1, (w * scale).toInt()), max(1, (srcH * scale).toInt()), android.graphics.Bitmap.Config.ARGB_8888)
+        } catch (e: OutOfMemoryError) {
+            done()
+            return
+        }
+        try {
+            android.view.PixelCopy.request(window, android.graphics.Rect(0, top, w, top + srcH), bmp, { rc ->
+                if (rc == android.view.PixelCopy.SUCCESS) t.thumb = bmp
+                done()
+            }, handler)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "截标签缩略图失败", e)
+            done()
+        }
     }
 
     // ---------- 抽屉（目录 / 书库），与模式2 共用 shared/ReaderDrawer ----------
@@ -1453,9 +1577,20 @@ class ReaderActivity : Activity() {
     /** 去库里读一次书库列表喂抽屉（异步；模式2 那边是 Mac 主动广播 `library`） */
     private fun refreshDrawerLibrary() {
         val q = queue ?: return
-        q.submit("读书库列表（抽屉）", { s -> s.allDocuments() }, { docs ->
+        val ws = workspace ?: return
+        workspace?.let { drawer.docCollapsed = LibFoldState.load(this, it.absolutePath) }
+        // 顺带读工作区信息（服务器 / 离线副本 / 哪几本本机没有 PDF），抽屉表头与「未下载」小字用
+        q.submit("读书库列表（抽屉）", { s ->
+            val docs = s.allDocuments()
+            docs to runCatching { wsActions.load(s, ws, docs) }.getOrNull()
+        }, { (docs, info) ->
             libDocs = docs
             libTitles = docs.associate { it.id to it.title }   // 抽屉里点开的那篇要拿得到标题
+            if (workspace == ws) wsActions.setInfo(info)
+            // 改过书名的：标签上的标题跟着换
+            var renamed = false
+            for (t in tabs) libTitles[t.docId]?.let { if (it != t.title) { t.title = it; renamed = true } }
+            if (renamed) refreshTabsBar()
             pushDrawerLibrary()
         })
     }
@@ -1463,10 +1598,21 @@ class ReaderActivity : Activity() {
     /** 用手上这份快照重推书库（`open` 标记随标签页增删变，不必再去库里读一遍） */
     private fun pushDrawerLibrary() {
         val opened = tabs.map { it.docId }.toSet()
+        val info = wsActions.info
+        val missing = info?.missing.orEmpty()
+        // 本机没有 PDF 的书：服务器工作区 = 还没下载（点开会问要不要下）；离线副本 = 当初没带；别的 = 文件找不到了
+        val notDl = getString(
+            when {
+                info?.serverUrl != null -> R.string.srv_pdf_not_downloaded_short
+                info?.isMirror == true -> R.string.lib_pdf_not_in_mirror
+                else -> R.string.lib_pdf_missing
+            },
+        )
         drawer.setLibrary(
             workspaceName,
-            libDocs.map { LibItem(it.id, it.title, opened.contains(it.id), it.group) },
+            libDocs.map { LibItem(it.id, it.title, opened.contains(it.id), it.group, if (it.id in missing) notDl else "") },
         )
+        drawer.setLibStatus(wsActions.statusLine())
         drawer.setBoards(
             libBoards.map { LibItem(it.id, board.displayName(it), opened.contains(TabSet.boardKey(it.id))) },
         )
@@ -2252,6 +2398,11 @@ class ReaderActivity : Activity() {
     private fun activate(i: Int) {
         val t = tabs.getOrNull(i) ?: return
         val prev = curTab()
+        // 手机排法：离开的那篇截一张缩略图给标签总览（PixelCopy 取的是这一帧还在屏幕上的样子）。
+        // 抽屉 / 总览盖着（或刚收起）时不截——截到的是它们；这两条路在打开前已经截过当前这篇
+        if (tabsBar.compact && prev != null && prev !== t && !drawer.onScreen() && !tabsBar.overviewOnScreen()) {
+            captureThumb(prev) {}
+        }
         if (prev != null && prev !== t) deactivate(prev)
         active = i
         t.usedAt = SystemClock.uptimeMillis()
@@ -2372,7 +2523,8 @@ class ReaderActivity : Activity() {
         val ws = workspace
         if (d.noPdf && onServer && d.doc != null && ws != null) {
             // 服务器工作区里还没下载的书（大 PDF 用到才下，方案 §4.1）：问一句，下完重新装这一篇
-            ServerUi.offerPdfDownload(this, ws, d.doc.id, d.doc.title) { ok ->
+            // 转到后台下的也一样：下完时还停在这个标签上就装上，切走了就等下次点它再装
+            ServerUi.offerPdfDownload(this, ws, d.doc.id, d.doc.title) { ok, _ ->
                 t.loading = false
                 if (!ok) failToOpen(t, d.reason ?: "打不开这个文档")
                 else if (workspace == ws && t in tabs && curTab() === t) loadTab(t)
@@ -2616,9 +2768,15 @@ class ReaderActivity : Activity() {
         val wasActive = i == active
         dropTab(i)
         if (tabs.isEmpty()) {
-            // 关掉最后一个 = 这个工作区不看了：退回书库（标签页组也随之清空，见 saveTabSet）
+            // 关掉最后一个：留在工作区里、摆出书库（2026-11-20 起没有书库页可退了；返回键才回启动页）
             saveTabSet()
-            finish()
+            active = -1
+            // 页面已在 dropTab 里收掉（画布卸载、画板 / 习题 / 笔记 / 网页 close）；草稿纸与目录跟着清空
+            scratch.bind(queue, "", emptyList())
+            pushDrawerToc()
+            title = workspaceName
+            showNoTabs()
+            pushDrawerLibrary()
             return
         }
         val next = when {
@@ -2664,8 +2822,9 @@ class ReaderActivity : Activity() {
      */
     private fun showDocPicker() {
         val q = queue ?: return
-        q.submit("读书库列表", { s -> s.allDocuments() to s.boards() }, { (docs, boards) ->
+        q.submit("读书库列表", { s -> Triple(s.allDocuments(), s.boards(), s.webDocs()) }, { (docs, boards, webs) ->
             libBoards = boards
+            libWebs = webs
             renderDocPicker(docs)
         })
     }
@@ -2676,7 +2835,7 @@ class ReaderActivity : Activity() {
         var dlg: AlertDialog? = null
         val sheet = Sheet(this).title("打开文档")
         if (docs.isEmpty()) {
-            sheet.subtitle("这个工作区还没有文档——回书库界面用右上角的「＋」加 PDF。")
+            sheet.subtitle("这个工作区还没有文档——用下面的「添加 PDF…」加进来。")
         }
         for (d in docs) {
             val opened = tabs.any { it.docId == d.id }
@@ -2728,9 +2887,93 @@ class ReaderActivity : Activity() {
                 createBoard()
             },
         )
+        // 网页一组（用户 2026-11-20：「+」里没有网页）：同画板，点开 = 在标签页里打开，末尾「导入网页文件夹…」（同抽屉）
+        list.addView(Ui.groupTitle(this, getString(R.string.web_group)))
+        for (w in libWebs) {
+            val opened = tabs.any { it.docId == TabSet.webKey(w.id) }
+            list.addView(
+                Ui.row(this) {
+                    dlg?.dismiss()
+                    openDoc(TabSet.webKey(w.id))
+                }.apply {
+                    addView(
+                        Ui.title(this@ReaderActivity, w.title, 15f).apply {
+                            if (opened) setTextColor(Ui.accent(this@ReaderActivity))
+                        },
+                    )
+                },
+            )
+        }
+        list.addView(
+            PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.web_import)) {
+                dlg?.dismiss()
+                importWebFolder()
+            },
+        )
+        // Markdown 笔记一组（用户 2026-11-20）：按目录折叠，展开了哪几个与抽屉 / 书库共用一份（`MdFolderState`）
+        if (queue != null) {
+            list.addView(Ui.groupTitle(this, getString(R.string.md_group)))
+            val notesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            list.addView(notesBox)
+            fillPickerNotes(notesBox) { dlg?.dismiss() }
+            list.addView(
+                PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.md_new)) {
+                    dlg?.dismiss()
+                    newMdNote()
+                },
+            )
+        }
+        // 添加 PDF（原先只在书库页右上角，2026-11-20 书库页去掉）
+        if (queue != null) {
+            list.addView(Ui.divider(this))
+            list.addView(
+                PadPanels.iconRow(this, R.drawable.ic_plus, getString(R.string.lib_add_pdf)) {
+                    dlg?.dismiss()
+                    wsActions.addPdf()
+                },
+            )
+        }
         sheet.content(list)
         sheet.action("取消")
         dlg = sheet.show()
+    }
+
+    /**
+     * 「+」里的笔记树：目录点一下展开 / 收起（只重画这一块），笔记点开 = 在标签页里打开。
+     * 展开状态就是抽屉那份（[ReaderDrawer.noteExpanded]），改了经 `onNoteFoldChanged` 存回去。
+     */
+    private fun fillPickerNotes(box: LinearLayout, dismiss: () -> Unit) {
+        box.removeAllViews()
+        val openNotes = tabs.filter { it.isMarkdown }.map { TabSet.mdRelOf(it.docId) }.toSet()
+        val nodes = md.nodes(openNotes)
+        if (nodes.isEmpty()) {
+            box.addView(Ui.body(this, getString(R.string.md_none)).apply { setPadding(dp(14), 0, 0, dp(6)) })
+            return
+        }
+        val expanded = drawer.noteExpanded
+        var hideBelow = Int.MAX_VALUE   // 收起的目录：比它深的行都跳过
+        for (n in nodes) {
+            if (n.depth > hideBelow) continue
+            hideBelow = Int.MAX_VALUE
+            val collapsed = n.isFolder && n.path !in expanded
+            if (collapsed) hideBelow = n.depth
+            val row = if (n.isFolder) {
+                PadPanels.iconRow(
+                    this, if (collapsed) R.drawable.ic_chevron_right else R.drawable.ic_chevron_down, n.title, Ui.onVariant(this),
+                ) {
+                    if (!expanded.remove(n.path)) expanded.add(n.path)
+                    drawer.onNoteFoldChanged(expanded.toSet())
+                    fillPickerNotes(box, dismiss)
+                }
+            } else {
+                PadPanels.iconRow(this, R.drawable.ic_note, n.title, if (n.open) Ui.accent(this) else Ui.onSurface(this)) {
+                    dismiss()
+                    openDoc(TabSet.mdKey(n.path))
+                }
+            }
+            row.setPadding(row.paddingLeft + dp(16) * n.depth, row.paddingTop, row.paddingRight, row.paddingBottom)
+            box.addView(row)
+        }
     }
 
     // ---------- HUD ----------
@@ -3184,6 +3427,7 @@ class ReaderActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        ServerSync.removeListener(syncListener)
         // 切后台立刻落盘：进程随时可能被杀。背景标签页的进度在切走时已经存过了，这里只管当前这篇
         curTab()?.let { saveProgress(it) }
         // 顶栏切的夜间、环形盘/切笔键换的笔——都在这一刻存下来（面板改的已经即时存过了）
@@ -3221,6 +3465,8 @@ class ReaderActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        ServerSync.addListener(syncListener)
+        syncListener()
         curTab()?.pdf?.setForeground(true)   // 退后台时让出去的额度，回来复原
         // 画板可能在书库页（另一条连接）被改名 / 删掉了：回来时跟着库走，删掉的那几个标签摘掉
         if (tabs.any { it.isBoard }) {
@@ -3239,6 +3485,7 @@ class ReaderActivity : Activity() {
 
     /** 返回键先关草稿纸（同 Mac 的 Esc），没开着才走正常返回 */
     override fun onBackPressed() {
+        if (tabsBar.closeOverview()) return   // 标签总览盖在最上面：先收它
         // 抽屉开着先关抽屉（同系统抽屉惯例，与模式2 逐条一致）
         if (drawer.isOpen) {
             drawer.close()

@@ -47,6 +47,19 @@ class ReaderDrawer(private val a: Activity) {
         const val KIND_EXERCISE = 1
         /** 画板 / Markdown 笔记 / 没有开着的标签：没有目录，默认停「书库」 */
         const val KIND_OTHER = 2
+        /** 画板 / Markdown 笔记 / 网页标签：同 [KIND_OTHER] 停「书库」，并且直接停在书库里对应的那一类 */
+        const val KIND_BOARD = 3
+        const val KIND_NOTE = 4
+        const val KIND_WEB = 5
+
+        /**
+         * 「书库」里的第二级（用户 2026-11-20：手机上书库一页从文档拉到网页太长）：文档 / 画板 / 笔记 / 网页各一页，
+         * 页签在顶上一排（只有一类时不显示）。模式2 只有文档与画板（笔记 / 网页没设 = 不出现）。
+         */
+        const val LIB_DOCS = 0
+        const val LIB_BOARDS = 1
+        const val LIB_NOTES = 2
+        const val LIB_WEB = 3
 
         private const val MAX_W = 340        // 面板最宽（dp）：平板上不让它占掉半屏
         private const val WIDTH_RATIO = 0.82f
@@ -55,6 +68,42 @@ class ReaderDrawer(private val a: Activity) {
     private var tab = TAB_TOC
     /** 在 PDF 标签上用户自己选过的那一页（只有 PDF 有目录，别的标签不改它） */
     private var pdfTab = TAB_TOC
+    /** 书库里停在哪一类（LIB_*）。画板 / 笔记 / 网页标签打开抽屉时换成对应那类，PDF 标签沿用上次 */
+    private var libSub = LIB_DOCS
+
+    /**
+     * 收起了的文档分组（[DocGroups.foldKey]）。模式1 宿主开工作区时换成记下的那份（与书库页共用），
+     * 改了经 [onDocFoldChanged] 存回去；模式2 不分组，用不上。
+     */
+    var docCollapsed: MutableSet<String> = HashSet()
+    var onDocFoldChanged: (Set<String>) -> Unit = {}
+
+    // —— 「书库 → 文档」的表头与长按（模式1，2026-11-20 书库页去掉后搬到这里；模式2 不设 = 不显示）——
+    /** 表头右边「添加 PDF」，列表末尾也有一行 */
+    var onAddPdf: (() -> Unit)? = null
+    /** 表头右边「更多」（立即同步 / 上传到服务器 / 离线副本 / 回收站…） */
+    var onLibMore: (() -> Unit)? = null
+    /** 表头下一行灰字（服务器工作区的同步状态、离线副本…）；null = 不显示 */
+    private var libStatus: String? = null
+    var onLibStatusClick: (() -> Unit)? = null
+    /** 长按一本书（改名 / 移到分组 / 删除）、长按分组标题（改名 / 解散） */
+    var onDocLongPress: ((String) -> Unit)? = null
+    var onGroupLongPress: ((String) -> Unit)? = null
+
+    /** 正显示着的状态那一行（同步中状态变得勤：就地换字，不整页重建） */
+    private var statusView: TextView? = null
+
+    fun setLibStatus(s: String?) {
+        if (libStatus == s) return
+        val hadLine = libStatus != null
+        libStatus = s
+        val v = statusView
+        if (v != null && v.isAttachedToWindow && s != null && hadLine) {
+            v.text = s
+        } else if (isOpen && tab == TAB_LIB && libSub == LIB_DOCS) {
+            rebuild()
+        }
+    }
 
     /** 宿主告诉抽屉当前标签是哪一类（KIND_*），[toggle] 打开时按它挑默认页 */
     var pageKind: () -> Int = { KIND_PDF }
@@ -107,7 +156,11 @@ class ReaderDrawer(private val a: Activity) {
     private var notes: List<NoteNode>? = null
     /** Mac 上引用的外部目录的名字（平板上打不开，只列出来说一声） */
     private var noteRefs: List<String> = emptyList()
-    private val noteCollapsed = HashSet<String>()
+    /**
+     * 展开了的笔记目录（默认全收起，用户 2026-11-19）。宿主开工作区时换成记下的那份，改了经 [onNoteFoldChanged] 存回去。
+     */
+    var noteExpanded: MutableSet<String> = HashSet()
+    var onNoteFoldChanged: (Set<String>) -> Unit = {}
     var onOpenNote: (String) -> Unit = {}
     var onAddNote: () -> Unit = {}
     /** 笔记那一行右侧的「更多」（改名…，由宿主弹） */
@@ -130,6 +183,18 @@ class ReaderDrawer(private val a: Activity) {
     private val libTab = tabButton("书库", R.drawable.ic_book) { switchTo(TAB_LIB) }
     private val exTab = tabButton(a.getString(R.string.ex_title), R.drawable.ic_exercise) { switchTo(TAB_EX) }.apply {
         visibility = View.GONE
+    }
+
+    /** 书库的第二级页签那一排（[LIB_DOCS] 等，横向放不下时可以滑） */
+    private val subRow = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(a.dp(10), 0, a.dp(10), a.dp(8))
+    }
+    private val subBar = android.widget.HorizontalScrollView(a).apply {
+        isHorizontalScrollBarEnabled = false
+        visibility = View.GONE
+        addView(subRow, FrameLayout.LayoutParams(-2, -2))
     }
 
     private val bodyBox = LinearLayout(a).apply {
@@ -159,6 +224,7 @@ class ReaderDrawer(private val a: Activity) {
             },
             LinearLayout.LayoutParams(-1, -2),
         )
+        addView(subBar, LinearLayout.LayoutParams(-1, -2))
         // ⚠️ 分隔线**不许再传一份 LayoutParams**：[Ui.divider] 自带 `(MATCH_PARENT, 1)`，
         // 而这里从前传的是 `(-1, -2)`——裸 View 的 `onMeasure` 走 `getDefaultSize`，
         // **wrap_content 会被当成「撑满 AT_MOST」**，于是这条 1px 的线在竖向 LinearLayout 里
@@ -185,13 +251,23 @@ class ReaderDrawer(private val a: Activity) {
     val isOpen: Boolean get() = view.visibility == View.VISIBLE
 
     fun toggle() {
-        if (isOpen) close() else open(defaultTab())
+        if (isOpen) {
+            close()
+            return
+        }
+        // 画板 / 笔记 / 网页标签：书库直接停在对应那一类（那一类没有就退回文档，见 [buildLib]）
+        when (pageKind()) {
+            KIND_BOARD -> libSub = LIB_BOARDS
+            KIND_NOTE -> libSub = LIB_NOTES
+            KIND_WEB -> libSub = LIB_WEB
+        }
+        open(defaultTab())
     }
 
-    /** PDF 标签沿用上次选的页；习题标签停「习题」；画板 / 笔记 / 没有标签停「书库」 */
+    /** PDF 标签沿用上次选的页；习题标签停「习题」；画板 / 笔记 / 网页 / 没有标签停「书库」 */
     private fun defaultTab(): Int = when (pageKind()) {
         KIND_EXERCISE -> if (exGroups.isNotEmpty()) TAB_EX else TAB_LIB
-        KIND_OTHER -> TAB_LIB
+        KIND_OTHER, KIND_BOARD, KIND_NOTE, KIND_WEB -> TAB_LIB
         else -> if (pdfTab == TAB_EX && exGroups.isEmpty()) TAB_LIB else pdfTab
     }
 
@@ -202,8 +278,16 @@ class ReaderDrawer(private val a: Activity) {
     }
 
     fun close() {
+        if (isOpen) closedAt = android.os.SystemClock.uptimeMillis()
         view.visibility = View.GONE
     }
+
+    /** 上次收起的时刻（宿主截屏用：收起后的头一两帧屏幕上还是抽屉） */
+    var closedAt = 0L
+        private set
+
+    /** 抽屉此刻（或刚收起、屏幕还没换下来时）盖在界面上 */
+    fun onScreen(): Boolean = isOpen || android.os.SystemClock.uptimeMillis() - closedAt < 400
 
     private fun switchTo(which: Int) {
         tab = which
@@ -373,6 +457,7 @@ class ReaderDrawer(private val a: Activity) {
         paintTab(tocTab, tab == TAB_TOC)
         paintTab(libTab, tab == TAB_LIB)
         paintTab(exTab, tab == TAB_EX)
+        rebuildSubBar()
         bodyBox.removeAllViews()
         when (tab) {
             TAB_TOC -> buildToc()
@@ -627,27 +712,176 @@ class ReaderDrawer(private val a: Activity) {
             .show()
     }
 
+    /** 书库里有哪几类（[LIB_DOCS] 恒有；其余宿主设过才有）+ 各自的条数 */
+    private fun libCats(): List<Triple<Int, String, Int>> = buildList {
+        add(Triple(LIB_DOCS, a.getString(R.string.lib_docs), lib.size))
+        boards?.let { add(Triple(LIB_BOARDS, a.getString(R.string.lib_sub_boards), it.size)) }
+        notes?.let { n -> add(Triple(LIB_NOTES, a.getString(R.string.lib_sub_notes), n.count { !it.isFolder })) }
+        webPages?.let { add(Triple(LIB_WEB, a.getString(R.string.web_group), it.size)) }
+    }
+
+    /** 书库第二级页签那一排：只在「书库」页、且不止一类时显示 */
+    private fun rebuildSubBar() {
+        val cats = libCats()
+        if (tab != TAB_LIB || cats.size < 2) {
+            subBar.visibility = View.GONE
+            return
+        }
+        if (cats.none { it.first == libSub }) libSub = LIB_DOCS
+        subBar.visibility = View.VISIBLE
+        subRow.removeAllViews()
+        for ((i, c) in cats.withIndex()) {
+            val (id, label, count) = c
+            val on = id == libSub
+            val fg = if (on) Ui.accent(a) else Ui.onSurface(a)
+            val bg = if (on) Ui.col(a, R.color.accent_container) else Ui.container(a)
+            subRow.addView(
+                TextView(a).apply {
+                    text = a.getString(R.string.lib_sub_label, label, count)
+                    textSize = 13f
+                    maxLines = 1
+                    gravity = Gravity.CENTER
+                    setTextColor(fg)
+                    setPadding(a.dp(12), 0, a.dp(12), 0)
+                    background = Ui.rippleOver(a, Ui.round(bg, Ui.PILL, a), Ui.PILL, fg)
+                    isClickable = true
+                    isSelected = on
+                    setOnClickListener {
+                        if (libSub != id) {
+                            libSub = id
+                            rebuild()
+                            scroll.scrollTo(0, 0)
+                        }
+                    }
+                },
+                LinearLayout.LayoutParams(-2, a.dp(32)).apply { if (i > 0) marginStart = a.dp(6) },
+            )
+        }
+    }
+
     private fun buildLib() {
-        if (wsName.isNotEmpty()) bodyBox.addView(Ui.groupTitle(a, wsName, top = 4))
+        if (libCats().none { it.first == libSub }) libSub = LIB_DOCS
+        when (libSub) {
+            LIB_BOARDS -> buildBoards()
+            LIB_NOTES -> buildNotes()
+            LIB_WEB -> buildWebPages()
+            else -> buildDocs()
+        }
+    }
+
+    /**
+     * 书库里的「文档」：有分组就分段（同 Mac 侧栏：未分组在前，其余按名字），每段标题点一下收起 / 展开
+     * （与书库页共用一份收起状态，[docCollapsed]）；一个分组都没有 = 照旧一整段、没有标题。
+     */
+    private fun buildDocs() {
+        statusView = null
+        buildDocsHeader()
         if (lib.isEmpty()) {
             bodyBox.addView(Ui.body(a, "工作区里还没有文档"))
         }
-        // 有分组就分段（同 Mac 侧栏：未分组在前，其余按名字）；一个分组都没有 = 照旧一整段
-        for ((group, docs) in DocGroups.sections(lib) { it.group }) {
+        for ((n, sec) in DocGroups.sections(lib) { it.group }.withIndex()) {
+            val (group, docs) = sec
             if (group != null) {
-                bodyBox.addView(Ui.groupTitle(a, group.ifEmpty { a.getString(com.xvan.unireader.R.string.doc_ungrouped) }, top = 10))
+                val key = DocGroups.foldKey(group)
+                val folded = key in docCollapsed
+                val name = group.ifEmpty { a.getString(R.string.doc_ungrouped) }
+                bodyBox.addView(
+                    Ui.foldHeader(a, name, docs.size, folded, top = if (n == 0) 0 else 6) {
+                        if (!docCollapsed.remove(key)) docCollapsed.add(key)
+                        onDocFoldChanged(docCollapsed.toSet())
+                        rebuild()
+                    }.apply {
+                        val lp = onGroupLongPress
+                        if (lp != null && group.isNotEmpty()) setOnLongClickListener { lp(group); true }
+                    },
+                )
+                if (folded) continue
             }
-            for (d in docs) bodyBox.addView(libRow(d, openBadge(d.open)))
+            for (d in docs) {
+                val trailing = LinearLayout(a).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    if (d.note.isNotEmpty()) {
+                        addView(TextView(a).apply {
+                            text = d.note
+                            textSize = 11f
+                            setTextColor(Ui.onVariant(a))
+                        })
+                    }
+                    openBadge(d.open)?.let {
+                        addView(it, LinearLayout.LayoutParams(-2, -2).apply { if (d.note.isNotEmpty()) marginStart = a.dp(6) })
+                    }
+                }
+                bodyBox.addView(
+                    libRow(d, trailing.takeIf { it.childCount > 0 }).apply {
+                        val lp = onDocLongPress
+                        if (lp != null) setOnLongClickListener { lp(d.id); true }
+                    },
+                )
+            }
         }
-        buildBoards()
-        buildNotes()
-        buildWebPages()
+        onAddPdf?.let { add ->
+            bodyBox.addView(
+                PadPanels.iconRow(a, R.drawable.ic_plus, a.getString(R.string.lib_add_pdf)) {
+                    close()
+                    add()
+                },
+            )
+        }
     }
 
-    /** 网页一组：每份一行（点开 / 右侧「更多」）+ 末尾「导入网页文件夹…」 */
+    /**
+     * 文档页的表头：工作区名 + 右边「添加 PDF」「更多」（宿主设了才有）+ 下一行状态（同步状态 / 离线副本，点一下 = 宿主处理）。
+     * 2026-11-20 书库页去掉后它就是原来书库页顶上那一块。
+     */
+    private fun buildDocsHeader() {
+        if (wsName.isEmpty() && onAddPdf == null && onLibMore == null) return
+        bodyBox.addView(
+            LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(a.dp(4), 0, 0, 0)
+                addView(
+                    TextView(a).apply {
+                        text = wsName
+                        textSize = 17f
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        setTextColor(Ui.onSurface(a))
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f),
+                )
+                onAddPdf?.let { add ->
+                    addView(Ui.iconButton(a, R.drawable.ic_plus, a.getString(R.string.lib_add_pdf), Ui.onSurface(a)) { close(); add() })
+                }
+                onLibMore?.let { more ->
+                    addView(Ui.iconButton(a, R.drawable.ic_more, a.getString(R.string.lib_more), Ui.onSurface(a)) { more() })
+                }
+            },
+            LinearLayout.LayoutParams(-1, -2),
+        )
+        val s = libStatus ?: return
+        bodyBox.addView(
+            TextView(a).apply {
+                text = s
+                textSize = 13f
+                setTextColor(Ui.onVariant(a))
+                setPadding(a.dp(4), 0, a.dp(4), a.dp(6))
+                onLibStatusClick?.let { click ->
+                    isClickable = true
+                    background = Ui.rippleOver(a, null, Ui.RADIUS, Ui.onSurface(a))
+                    setOnClickListener { click() }
+                }
+                statusView = this
+            },
+            LinearLayout.LayoutParams(-1, -2),
+        )
+    }
+
+    /** 网页一类：每份一行（点开 / 右侧「更多」）+ 末尾「导入网页文件夹…」 */
     private fun buildWebPages() {
         val list = webPages ?: return
-        bodyBox.addView(Ui.groupTitle(a, a.getString(R.string.web_group)))
+        if (list.isEmpty()) bodyBox.addView(Ui.body(a, a.getString(R.string.web_none_drawer)))
         for (w in list) {
             val trailing = LinearLayout(a).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -670,21 +904,21 @@ class ReaderDrawer(private val a: Activity) {
         )
     }
 
-    /** 笔记一组：按目录层级缩进，目录点一下展开 / 收起；笔记点开、右侧「更多」；末尾「新建」 */
+    /** 笔记一类：按目录层级缩进，目录点一下展开 / 收起；笔记点开、右侧「更多」；末尾「新建」 */
     private fun buildNotes() {
         val list = notes ?: return
-        bodyBox.addView(Ui.groupTitle(a, a.getString(R.string.md_group)))
         var hideBelow = Int.MAX_VALUE   // 收起的目录：比它深的行都跳过
         for (n in list) {
             if (n.depth > hideBelow) continue
             hideBelow = Int.MAX_VALUE
-            val collapsed = n.isFolder && n.path in noteCollapsed
+            val collapsed = n.isFolder && n.path !in noteExpanded
             if (collapsed) hideBelow = n.depth
             val row = if (n.isFolder) {
                 PadPanels.iconRow(
                     a, if (collapsed) R.drawable.ic_chevron_right else R.drawable.ic_chevron_down, n.title, Ui.onVariant(a),
                 ) {
-                    if (!noteCollapsed.remove(n.path)) noteCollapsed.add(n.path)
+                    if (!noteExpanded.remove(n.path)) noteExpanded.add(n.path)
+                    onNoteFoldChanged(noteExpanded.toSet())
                     rebuild()
                 }
             } else {
@@ -729,10 +963,9 @@ class ReaderDrawer(private val a: Activity) {
         }
     }
 
-    /** 画板笔记一组：每篇一行（点开 / 右侧「更多」改名删除）+ 末尾「新建」 */
+    /** 画板笔记一类：每篇一行（点开 / 右侧「更多」改名删除）+ 末尾「新建」 */
     private fun buildBoards() {
         val list = boards ?: return
-        bodyBox.addView(Ui.groupTitle(a, a.getString(R.string.board_group)))
         for (b in list) {
             val trailing = LinearLayout(a).apply {
                 orientation = LinearLayout.HORIZONTAL
