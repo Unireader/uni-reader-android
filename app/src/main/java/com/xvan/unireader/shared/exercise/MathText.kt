@@ -10,6 +10,7 @@ import android.text.Spanned
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.xvan.unireader.shared.MdDisplay
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
 import io.noties.markwon.MarkwonConfiguration
@@ -200,21 +201,82 @@ object MathText {
     /**
      * Mac 的写法 → Markwon 认的写法：
      * - 一行只有 `$$…$$`（块公式写在一行里）→ 拆成 `$$` / 内容 / `$$` 三行；
-     * - 行内单个 `$…$` → `$$…$$`（`\$` 是字面的美元符，不算）；找不到配对的 `$` 原样留着。
+     * - 行内单个 `$…$` → `$$…$$`（`\$` 是字面的美元符，不算）；找不到配对的 `$` 原样留着；
+     * - 引用里的块公式（`> $$…$$`，或 `> $$` ⏎ `> …` ⏎ `> $$`，`../docs/MARKDOWN-NOTES-PLAN.md §23`）→ 同样拆成三段，每行带着引用的 `>`，
+     *   公式留在引用里、按块排；
+     * - callout 的第一行（`> [!type] 标题`，这一层引用的第一行）→ 粗体标题（没写标题用类型名）。框和颜色只有笔记阅读态画
+     *   （`MdDisplay.Segment.Callout`），气泡 / 习题里就是一行粗体。
      */
     fun normalize(src: String): String {
-        val out = StringBuilder()
         val lines = src.split('\n')
-        for ((n, raw) in lines.withIndex()) {
-            if (n > 0) out.append('\n')
-            val t = raw.trim()
-            if (t.length > 4 && t.startsWith("$$") && t.endsWith("$$") && !t.substring(2, t.length - 2).contains("$$")) {
-                out.append("$$\n").append(t.substring(2, t.length - 2).trim()).append("\n$$")
+        val out = ArrayList<String>(lines.size + 8)
+        var prevLevel = 0
+        var i = 0
+        while (i < lines.size) {
+            val raw = lines[i]
+            val (qLen, level) = MdDisplay.quotePrefix(raw)
+            if (level > 0) {
+                val pfx = ">".repeat(level) + " "
+                val content = raw.substring(qLen)
+                val t = content.trim()
+                val opensLevel = level > prevLevel
+                prevLevel = level
+                if (opensLevel) {
+                    val h = MdDisplay.Callouts.header(content)
+                    if (h != null) {
+                        val shown = h.third.ifEmpty { MdDisplay.Callouts.defaultTitle(h.first) }
+                        out.add(pfx + "**" + inline(shown) + "**")
+                        i++
+                        continue
+                    }
+                }
+                if (t.startsWith("$$")) {
+                    val rest = t.substring(2)
+                    val close = rest.indexOf("$$")
+                    if (close >= 0) {
+                        val body = rest.substring(0, close).trim()
+                        if (body.isNotEmpty() && rest.substring(close + 2).isBlank()) {
+                            out.add(pfx + "$$"); out.add(pfx + body); out.add(pfx + "$$")
+                            i++
+                            continue
+                        }
+                    } else {
+                        // 多行：在这个引用后面的行里找下一个 `$$`（中途出了引用就不算）
+                        var closeLine = -1
+                        var j = i + 1
+                        while (j < lines.size) {
+                            val (l2, lv2) = MdDisplay.quotePrefix(lines[j])
+                            if (lv2 == 0) break
+                            if (lines[j].substring(l2).contains("$$")) { closeLine = j; break }
+                            j++
+                        }
+                        if (closeLine > 0) {
+                            out.add(pfx + "$$")
+                            if (rest.isNotBlank()) out.add(pfx + rest.trim())
+                            for (k in i + 1 until closeLine) out.add(pfx + lines[k].substring(MdDisplay.quotePrefix(lines[k]).first))
+                            val last = lines[closeLine].substring(MdDisplay.quotePrefix(lines[closeLine]).first)
+                            val before = last.substring(0, last.indexOf("$$")).trim()
+                            if (before.isNotEmpty()) out.add(pfx + before)
+                            out.add(pfx + "$$")
+                            i = closeLine + 1
+                            continue
+                        }
+                    }
+                }
+                out.add(inline(raw))
+                i++
                 continue
             }
-            out.append(inline(raw))
+            prevLevel = 0
+            val t = raw.trim()
+            if (t.length > 4 && t.startsWith("$$") && t.endsWith("$$") && !t.substring(2, t.length - 2).contains("$$")) {
+                out.add("$$"); out.add(t.substring(2, t.length - 2).trim()); out.add("$$")
+            } else {
+                out.add(inline(raw))
+            }
+            i++
         }
-        return out.toString()
+        return out.joinToString("\n")
     }
 
     private fun inline(line: String): String {

@@ -321,6 +321,10 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   `[别名](uniwiki:目标)`，单独一行的 `![[图]]` 画成图）；界面 `local/MdNoteController`（阅读 / 编辑两态，停手 0.8 秒 / 切走 / 退后台存）；
   标签 docId = `md:<相对路径>`（`TabSet.MD_PREFIX`）；`md_doc` 只当扫描缓存对账。🔴 **只写用户在编辑框里改的**（红线 9），文件已不在就不存；
   删除 = 挪进 `Notes/.trash/`（Obsidian 的回收站目录，两端扫描都跳过），不进 `Trash/`（Mac 不认那种条目）。
+- **笔记里的 callout + 引用里的块公式（2026-11-20，`../docs/MARKDOWN-NOTES-PLAN.md §23`，两模式）**：阅读态 `MdDisplay.Segment.Callout`（引用第一行 `[!type]`，类型表
+  `MdDisplay.Callouts` 照 Mac 引擎 `QuoteSyntax.swift`）由 `MdRender` 画成类型色淡底 + 竖条 + 粗体标题，`-` / `+` 点标题折叠（只是显示状态，不改正文）；
+  颜色只走资源 `R.color.callout_*`（`values-night` 蓝 / 紫亮一档）。`MathText.normalize` 把 `> $$…$$`（单行 / 多行）拆成带 `>` 的 `$$` 三段、callout 标题行改成粗体
+  （气泡 / 习题只到这一步，不画框）。测试 `MdCalloutTest`。
 - **模式2 显示高亮 / 选区批注底色（2026-11-15）**：Mac 的页图只画 PDF，这一层平板自己画：收 `marks`(0x64，`../docs/PROTOCOL.md §4.11`)
   → `PadActivity.onMarks` → `setTextFills`（共用的 `TextFill` / `PadOverlays.drawTextFill`），透明度口径同模式1 读库那段。
   批注带 `noteId`（框选挪动时底色跟着图钉走）；高亮不填 `highlightId`，模式2 点中高亮没有操作面板。

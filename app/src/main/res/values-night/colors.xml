@@ -34,4 +34,13 @@
     <color name="bar_outline">#33FFFFFF</color>
 
     <color name="anim_new">#FFF0883E</color>
+
+    <!-- callout 类型色：蓝 / 紫在深色下用 Obsidian 的亮一档，其余同浅色 -->
+    <color name="callout_blue">#FF027AFF</color>
+    <color name="callout_cyan">#FF00BFBC</color>
+    <color name="callout_green">#FF08B94E</color>
+    <color name="callout_orange">#FFEC7500</color>
+    <color name="callout_red">#FFE93147</color>
+    <color name="callout_purple">#FFA882FF</color>
+    <color name="callout_gray">#FF9E9E9E</color>
 </resources>

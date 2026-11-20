@@ -43,4 +43,13 @@
 
     <!-- 分步演示里「新出现」的状态色（Mac 用 systemOrange）：橙 -->
     <color name="anim_new">#FFC4620A</color>
+
+    <!-- Markdown 笔记的 callout（`> [!type]`）类型色：照 Obsidian 默认色板，同 Mac 引擎 QuoteSyntax.swift -->
+    <color name="callout_blue">#FF086DDD</color>
+    <color name="callout_cyan">#FF00BFBC</color>
+    <color name="callout_green">#FF08B94E</color>
+    <color name="callout_orange">#FFEC7500</color>
+    <color name="callout_red">#FFE93147</color>
+    <color name="callout_purple">#FF7852EE</color>
+    <color name="callout_gray">#FF9E9E9E</color>
 </resources>

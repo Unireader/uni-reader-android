@@ -44,6 +44,86 @@ object MdDisplay {
         class Image(val target: String) : Segment()
         /** ```anim 分步演示块：围栏之间的文字（`../docs/ANIM-BLOCK-PLAN.md`，画成能逐步播放的演示） */
         class Anim(val source: String) : Segment()
+        /**
+         * Obsidian callout（`> [!type] 标题` 开头的引用，`../docs/MARKDOWN-NOTES-PLAN.md §23`）：[type] 是规范名（未知类型按 note），
+         * [title] 是写了的标题（没写为空，显示 [Callouts.defaultTitle]），[fold] 是 `'-'`（默认折叠）/ `'+'`（默认展开）/ null（不能折叠），
+         * [body] 是去掉一层 `>` 之后的正文 Markdown（里面再嵌的引用 / callout 照常是引用）。
+         */
+        class Callout(val type: String, val typeText: String, val title: String, val fold: Char?, val body: String) : Segment()
+    }
+
+    /** callout 的类型表：名字 / 别名 / 颜色照 Obsidian（同 Mac 引擎 `QuoteSyntax.swift` 的 `CalloutType`）。颜色给名字，取色在界面层（`R.color.callout_*`）。 */
+    object Callouts {
+        /** 类型色的名字（`blue` / `cyan` / `green` / `orange` / `red` / `purple` / `gray`）。 */
+        private class Kind(val name: String, val color: String)
+
+        private val table: Map<String, Kind> = HashMap<String, Kind>().apply {
+            fun add(names: List<String>, color: String) {
+                val k = Kind(names[0], color)
+                for (n in names) put(n, k)
+            }
+            add(listOf("note"), "blue")
+            add(listOf("abstract", "summary", "tldr"), "cyan")
+            add(listOf("info"), "blue")
+            add(listOf("todo"), "blue")
+            add(listOf("tip", "hint", "important"), "cyan")
+            add(listOf("success", "check", "done"), "green")
+            add(listOf("question", "help", "faq"), "orange")
+            add(listOf("warning", "caution", "attention"), "orange")
+            add(listOf("failure", "fail", "missing"), "red")
+            add(listOf("danger", "error"), "red")
+            add(listOf("bug"), "red")
+            add(listOf("example"), "purple")
+            add(listOf("quote", "cite"), "gray")
+        }
+
+        private fun kind(type: String) = table[type.lowercase()] ?: table.getValue("note")
+
+        /** 规范名（`faq` → `question`）；不认识的按 note。 */
+        fun canonical(type: String): String = kind(type).name
+
+        /** 类型色的名字。 */
+        fun colorName(type: String): String = kind(type).color
+
+        /** 没写标题时显示的：写的类型名、首字母大写（同 Obsidian：`[!faq]` → `Faq`）。 */
+        fun defaultTitle(typeText: String): String =
+            if (typeText.isEmpty()) "" else typeText.substring(0, 1).uppercase() + typeText.substring(1).lowercase()
+
+        private val HEADER = Regex("^\\[!([A-Za-z0-9_-]+)]([+-]?)(?:[ \t]+(.*?))?[ \t]*$")
+
+        /** 引用内容（已去掉 `>`）是不是 callout 的第一行：返回（写的类型、折叠符、标题）。`[!note]x` 这种不算。 */
+        fun header(content: String): Triple<String, Char?, String>? {
+            val m = HEADER.find(content.trimStart()) ?: return null
+            val fold = m.groupValues[2].firstOrNull()
+            return Triple(m.groupValues[1], fold, m.groupValues[3].trim())
+        }
+    }
+
+    /** 引用行的 `>` 前缀长度（至多三个空格缩进，`>` 可重复、各带一个可选空格）与层数；不是引用行返回 (0, 0)。同 Mac 引擎 `QuoteSyntax.line`。 */
+    fun quotePrefix(line: String): Pair<Int, Int> {
+        var i = 0
+        var indent = 0
+        while (i < line.length && indent < 3 && (line[i] == ' ' || line[i] == '\t')) { i++; indent++ }
+        var level = 0
+        while (i < line.length && line[i] == '>') {
+            level++
+            i++
+            if (i < line.length && (line[i] == ' ' || line[i] == '\t')) i++
+        }
+        return if (level == 0) 0 to 0 else i to level
+    }
+
+    /** 去掉一层引用：至多三个空格缩进 + 一个 `>` + 一个可选空格。 */
+    private fun stripOneLevel(line: String): String {
+        var i = 0
+        var indent = 0
+        while (i < line.length && indent < 3 && (line[i] == ' ' || line[i] == '\t')) { i++; indent++ }
+        if (i < line.length && line[i] == '>') {
+            i++
+            if (i < line.length && (line[i] == ' ' || line[i] == '\t')) i++
+            return line.substring(i)
+        }
+        return line
     }
 
     fun encode(s: String): String = URLEncoder.encode(s, "UTF-8")
@@ -63,8 +143,25 @@ object MdDisplay {
         }
         var anim: StringBuilder? = null      // 正在收的 ```anim 块（没有关上就当普通文字）
         var animOpen = ""
+        // 正在收的 callout（到第一行不是引用的为止）；上一行是不是引用行（callout 只认引用的第一行）
+        var callout: Segment.Callout? = null
+        val calloutBody = StringBuilder()
+        var prevQuote = false
+        fun closeCallout() {
+            val c = callout ?: return
+            out.add(Segment.Callout(c.type, c.typeText, c.title, c.fold, calloutBody.toString().trimEnd('\n')))
+            callout = null
+            calloutBody.setLength(0)
+        }
         for (line in text.split('\n')) {
             val t = line.trim()
+            if (callout != null) {
+                if (quotePrefix(line).second > 0) {
+                    calloutBody.append(wikiLine(stripOneLevel(line))).append('\n')
+                    continue
+                }
+                closeCallout()
+            }
             val a = anim
             if (a != null) {
                 if (t.startsWith("```")) {
@@ -95,10 +192,23 @@ object MdDisplay {
             if (img != null) {
                 flush()
                 out.add(Segment.Image(linkTarget(img.groupValues[1])))
+                prevQuote = false
                 continue
             }
+            val (qLen, qLevel) = quotePrefix(line)
+            if (qLevel == 1 && !prevQuote) {
+                val h = Callouts.header(line.substring(qLen))
+                if (h != null) {
+                    flush()
+                    callout = Segment.Callout(Callouts.canonical(h.first), h.first, h.third, h.second, "")
+                    prevQuote = true
+                    continue
+                }
+            }
+            prevQuote = qLevel > 0
             buf.append(wikiLine(line)).append('\n')
         }
+        closeCallout()
         // 没有关上的 ```anim：原样当代码文字（同 Mac 引擎：没有关闭的围栏不算块）
         anim?.let { buf.append(animOpen).append('\n').append(it) }
         flush()
