@@ -89,7 +89,12 @@ object ServerSync {
     // ---------- 完整一轮（没有活连接的时候） ----------
 
     /** 一轮。[prev] = 它排在后面等着的上一轮（等完就清掉）：取消时连同在等的那几轮一起取消 */
-    private class Round(val cancel: ServerClient.Cancel, val done: CountDownLatch, @Volatile var prev: Round?)
+    private class Round(val cancel: ServerClient.Cancel, val done: CountDownLatch, @Volatile var prev: Round?) {
+        /** 这一轮之前的状态：打开前等太久、被取消时恢复它，不当成「连不上」（服务器是通的，只是这一轮没跑完）。 */
+        @Volatile var before: Status? = null
+        /** 打开前等太久、被这边主动取消的（不是网络断了）。 */
+        @Volatile var timedOut = false
+    }
 
     private val busy = HashMap<String, Round>()
     private val lastOk = ConcurrentHashMap<String, Long>()
@@ -101,9 +106,11 @@ object ServerSync {
         r.done.await()
     }
 
+    /** 这边主动取消（等太久 / 要开阅读界面了）：被取消的那几轮都不报「连不上」，见 [Round.timedOut]。 */
     private fun cancelChain(r: Round) {
         var x: Round? = r
         while (x != null) {
+            x.timedOut = true
             x.cancel.cancel()
             x = x.prev
         }
@@ -114,7 +121,14 @@ object ServerSync {
      * [skipIfRecentMs] > 0 时，这么久之内刚同步过就不再同步（启动页开过、紧接着进阅读界面，别连着两轮）。
      * 阅读界面正开着它：不跑完整一轮，只叫那边推一次。不是服务器工作区 = 什么都不做。
      */
-    fun prepareToOpen(ctx: Context, dir: File, timeoutMs: Long, skipIfRecentMs: Long = 0) {
+    fun prepareToOpen(
+        ctx: Context, dir: File, timeoutMs: Long, skipIfRecentMs: Long = 0,
+        /**
+         * 等满了还没完怎么办：true（阅读界面）= 取消（阅读界面开着时不许另一条连接跑完整一轮，交给它自己的同步接手）；
+         * false（启动页进书库页）= 不再等、让这一轮在后台跑完（书库页不和它抢写库），状态随后变成「已同步」。
+         */
+        cancelOnTimeout: Boolean = true,
+    ) {
         val k = key(dir)
         if (sessions.containsKey(k)) {
             main.post { pushNow(dir) }
@@ -131,6 +145,10 @@ object ServerSync {
         if (skipIfRecentMs > 0 && System.currentTimeMillis() - (lastOk[k] ?: 0L) < skipIfRecentMs) return
         val r = startRound(ctx.applicationContext, dir, ep)
         if (!r.done.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            if (!cancelOnTimeout) {
+                Log.i(TAG, "${dir.name}：打开前同步超过 ${timeoutMs}ms，先打开本机缓存，这一轮在后台接着跑")
+                return
+            }
             Log.i(TAG, "${dir.name}：打开前同步超过 ${timeoutMs}ms，取消、先用本机缓存")
             cancelChain(r)
             r.done.await()
@@ -161,6 +179,7 @@ object ServerSync {
     private fun startRound(ctx: Context, dir: File, ep: Endpoint): Round {
         val k = key(dir)
         val r = synchronized(busy) { Round(ServerClient.Cancel(), CountDownLatch(1), busy[k]).also { busy[k] = it } }
+        r.before = statuses[k]?.takeIf { it !is Status.Syncing }
         setStatus(k, Status.Syncing)
         Thread({
             var ok = false
@@ -178,8 +197,14 @@ object ServerSync {
                 Log.w(TAG, "${dir.name}：这一轮要删 ${e.excess.total} 行，超过阈值，等用户确认")
                 setStatus(k, Status.NeedsConfirm(e.excess))
             } catch (e: Throwable) {
-                Log.w(TAG, "${dir.name}：同步没完成", e)
-                setStatus(k, classify(e))
+                if (r.timedOut && e is ServerClient.Cancelled) {
+                    // 打开前等太久、这边主动取消的：服务器是通的，别报「连不上」；阅读界面的同步会接手
+                    Log.i(TAG, "${dir.name}：打开前那一轮没等完，已取消（交给打开后的同步）")
+                    setStatus(k, r.before)
+                } else {
+                    Log.w(TAG, "${dir.name}：同步没完成", e)
+                    setStatus(k, classify(e))
+                }
             } finally {
                 synchronized(busy) { if (busy[k] === r) busy.remove(k) }
                 r.done.countDown()
@@ -463,9 +488,49 @@ object ServerSync {
      * 挂着等服务器通知（长轮询，最多 25 秒一轮），有动静就拉。出错退避重试（5 秒起、最多 60 秒）；
      * 服务器程序太旧没有 `wait` 就不挂了（退回原来的只推）。**网络线程**，会话停了就退出。
      */
+    /**
+     * 开着时补拉一次旧版跳过的新表（网页，`SyncClient.catchUp`）：打开前那一轮最多等 3 秒，大工作区的补拉可能每次都超时、永远补不上，
+     * 所以开着时在网络线程上再做一次——拉在网络线程、只应用这几张表的行在库队列。失败不要紧，下次打开再来。
+     */
+    private fun catchUpWhileOpen(s: Session) {
+        try {
+            val want = onQueue(s, "同步：要补拉的表") { st -> st.withMirrorDb { SyncClient.pendingCatchUp(it) } }?.toSet()
+            if (want.isNullOrEmpty()) return
+            val ep = endpoint(s.ctx, s.dir) ?: return
+            val client = ep.account.client(s.cancel)
+            var since = 0L
+            val got = ArrayList<SyncWire.PulledRow>()
+            while (!s.stopped) {
+                val page = SyncWire.decodePullResponse(client.pull(ep.wid, since))
+                page.rows.filterTo(got) { it.table in want }
+                if (page.more && page.rows.isNotEmpty()) since = page.rows.last().rev else break
+            }
+            if (s.stopped) return
+            onQueue(s, "同步：应用补拉的行") { st ->
+                st.withMirrorDb { db ->
+                    val before = totalChanges(db)
+                    SyncClient.clearBase(db, want)   // 旧服务器忽略过的本机行，接下来的推送里重新推（同 `SyncClient.catchUp`）
+                    if (got.isNotEmpty()) SyncClient.applyPulled(db, s.dir, got)
+                    SyncClient.markCaughtUp(db, want)
+                    if (s.seenTc == before) s.seenTc = totalChanges(db)   // 同步自己写的，不算「本机改动」
+                }
+            } ?: return
+            if (got.isEmpty()) return
+            Log.i(TAG, "${s.dir.name}：补拉了 ${got.size} 行（${want.sorted().joinToString(",")}）")
+            if (got.any { it.table == "web_doc" && !it.deleted }) {
+                val hashes = onQueue(s, "同步：读网页清单") { st -> st.webFileHashes() }
+                if (hashes != null) runCatching { ServerSyncIO.downloadMissingWebFiles(s.dir, hashes, client, ep.wid) }
+            }
+            main.post { if (sessions[key(s.dir)] === s) s.onRemote(got) }
+        } catch (e: Throwable) {
+            Log.w(TAG, "${s.dir.name}：补拉新表没做完（下次打开再来）", e)
+        }
+    }
+
     private fun watch(s: Session) {
         val k = key(s.dir)
         var failures = 0
+        catchUpWhileOpen(s)
         while (!s.stopped) {
             try {
                 val ep = endpoint(s.ctx, s.dir)

@@ -74,6 +74,58 @@ object SyncClient {
         db.query("SELECT value FROM meta WHERE key=?", arrayOf(META_PULLED_REV)) { it.getString(0) }
             .firstOrNull()?.toLongOrNull() ?: 0L
 
+    // ---------- 补拉新认识的表（`../docs/WEB-DOC-PLAN.md §4.1`，同 Mac `SyncClient.catchUp`） ----------
+
+    /** 客户端私有：已经补拉过的表（逗号分隔），不同步。 */
+    const val META_CATCH_UP = "srv_catchup"
+
+    /**
+     * 这一版起才认识的表。🔴 旧版拉取时**跳过**不认识的表、修订号却照样往前记——升级之后只拉新改动，那些行永远拉不到
+     * （2026-11-19：Mac 推上去的网页，平板升级后看不到）。新加同步的表就往这里追加，与 Mac `SyncClient.catchUpTables` 一致。
+     */
+    val CATCH_UP_TABLES = listOf("web_doc", "web_kv")
+
+    fun pendingCatchUp(db: Db): List<String> {
+        val done = (db.query("SELECT value FROM meta WHERE key=?", arrayOf(META_CATCH_UP)) { it.getString(0) }.firstOrNull() ?: "")
+            .split(',').filter { it.isNotEmpty() }.toSet()
+        return CATCH_UP_TABLES.filter { it !in done }
+    }
+
+    /** 清掉这几张表的基线（补拉时用，见 [catchUp]）。没有基线表 = 什么都不做。 */
+    fun clearBase(db: Db, tables: Collection<String>) {
+        if (tables.isEmpty() || !com.xvan.unireader.local.mirror.MirrorStore.hasSyncBase(db)) return
+        db.exec("DELETE FROM sync_base WHERE tbl IN (${tables.joinToString(",") { "?" }})", tables.toTypedArray<Any?>())
+    }
+
+    fun markCaughtUp(db: Db, tables: Collection<String>) {
+        val done = (CATCH_UP_TABLES - pendingCatchUp(db).toSet()) + tables
+        db.exec(
+            "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            arrayOf<Any?>(META_CATCH_UP, CATCH_UP_TABLES.filter { it in done }.joinToString(",")),
+        )
+    }
+
+    /**
+     * 从修订号 0 起再拉一遍，只留没补过的那几张表的行（逐页过滤，不攒整份历史），应用，记上。返回拉到的行。
+     * 🔴 先清掉这几张表的基线（同 Mac）：旧版服务器忽略了推上去的行、客户端却记成「已推」，清了基线本机有、服务器没有的行
+     * 在同一轮推送里重新推（所以要在推之前调）；两边都有的按三方判定对上。只做一次。阻塞，在网络 / 库线程调。
+     */
+    fun catchUp(db: Db, folder: java.io.File, pull: (Long) -> SyncWire.PullResponse): List<SyncWire.PulledRow> {
+        val want = pendingCatchUp(db).toSet()
+        if (want.isEmpty()) return emptyList()
+        clearBase(db, want)
+        var since = 0L
+        val rows = ArrayList<SyncWire.PulledRow>()
+        while (true) {
+            val page = pull(since)
+            page.rows.filterTo(rows) { it.table in want }
+            if (page.more && page.rows.isNotEmpty()) since = page.rows.last().rev else break
+        }
+        if (rows.isNotEmpty()) applyPulled(db, folder, rows)
+        markCaughtUp(db, want)
+        return rows
+    }
+
     fun setPulledRev(db: Db, v: Long) {
         db.exec(
             "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",

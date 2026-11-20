@@ -56,6 +56,8 @@ object ServerSyncIO {
     ): SyncClient.RoundReport =
         LibraryStore.open(folder).use { store ->
             store.withMirrorDb { db ->
+                // 旧版时跳过的新表（网页）补一次：清基线 + 补拉，**在推之前**（`SyncClient.catchUp`）
+                SyncClient.catchUp(db, folder) { since -> SyncWire.decodePullResponse(client.pull(wid, since)) }
                 val rep = SyncClient.round(
                     db, folder,
                     beforePush = { changes ->
@@ -293,7 +295,10 @@ object ServerSyncIO {
             LibraryStore.open(tmp).use { store ->
                 store.setMeta(SyncClient.META_SERVER_URL, serverUrl)
                 if (serverId != null) store.setMeta(SyncClient.META_SERVER_ID, serverId)
-                store.withMirrorDb { SyncClient.resetBase(it, tmp, rev) }
+                store.withMirrorDb {
+                    SyncClient.resetBase(it, tmp, rev)
+                    SyncClient.markCaughtUp(it, SyncClient.CATCH_UP_TABLES)   // 快照里本来就带着这几张表的行
+                }
             }
             val dst = uniqueFolder(dir, safeName(name))
             require(tmp.renameTo(dst)) { "rename ${tmp.absolutePath}" }
