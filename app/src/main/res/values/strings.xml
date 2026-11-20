@@ -634,6 +634,7 @@
     <string name="web_back">Back</string>
     <string name="web_forward">Forward</string>
     <string name="web_reload">Reload</string>
+    <string name="web_home">Go to start page</string>
     <string name="web_gone">This web page is no longer in the workspace.</string>
     <string name="web_missing">%1$d file(s) of this web page are not on this device yet. They are downloaded when the workspace syncs.</string>
     <string name="web_none_here">No web pages yet. Import one from the library page in the side drawer of the reader, or import on the Mac and sync.</string>

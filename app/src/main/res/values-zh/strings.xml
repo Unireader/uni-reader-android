@@ -629,6 +629,7 @@
     <string name="web_back">后退</string>
     <string name="web_forward">前进</string>
     <string name="web_reload">重新载入</string>
+    <string name="web_home">回到首页</string>
     <string name="web_gone">这份网页已经不在工作区里了。</string>
     <string name="web_missing">这份网页有 %1$d 个文件还不在这台设备上，同步工作区时会下载。</string>
     <string name="web_none_here">还没有网页。在阅读界面左侧抽屉的书库页里导入，或者在 Mac 上导入后同步过来。</string>

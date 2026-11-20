@@ -33,7 +33,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * 网页标签的整页（模式1，`../docs/WEB-DOC-PLAN.md §9`，同 Mac `WebDocView`）：顶上一条（后退 / 前进 · 标题 · 重新载入）+ `WebView`。
+ * 网页标签的整页（模式1，`../docs/WEB-DOC-PLAN.md §9`，同 Mac `WebDocView`）：顶上一条（后退 / 前进 · 回到首页 · 标题 · 重新载入）+ `WebView`。
  *
  * - 文件经 `shouldInterceptRequest` 从工作区 `Web/` 里读，**不联网、不开端口**：地址 `https://<网页 id 小写>.unireader-web.invalid/<路径>`，
  *   每份网页的 id 当主机名 → 各份网页是不同的源（`localStorage` 互不串）；`.invalid` 保证真去解析也解析不到别处。支持 Range（视频）。
@@ -60,6 +60,9 @@ class WebPageController(private val a: Activity) {
     }
     private val backBtn = Ui.iconButton(a, R.drawable.ic_chevron_left, a.getString(R.string.web_back)) { web.goBack() }
     private val fwdBtn = Ui.iconButton(a, R.drawable.ic_chevron_right, a.getString(R.string.web_forward)) { web.goForward() }
+    /** 回到首页（同 Mac）：课件的子页面不一定有回首页的链接，重新打开又停在上次那一页（后退历史是空的），没有它就回不去。
+     *  走普通导航（进后退历史），返回键 / 后退还能回到刚才那页。 */
+    private val homeBtn = Ui.iconButton(a, R.drawable.ic_home, a.getString(R.string.web_home)) { goHome() }
     private val reloadBtn = Ui.textButton(a, a.getString(R.string.web_reload)) { web.reload() }
     private val notice = Ui.body(a, "").apply {
         gravity = Gravity.CENTER
@@ -106,6 +109,7 @@ class WebPageController(private val a: Activity) {
             setPadding(Ui.dp(a, 8), Ui.dp(a, 4), Ui.dp(a, 12), Ui.dp(a, 4))
             addView(backBtn)
             addView(fwdBtn)
+            addView(homeBtn)
             addView(titleView, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = Ui.dp(a, 8) })
             addView(reloadBtn)
         }
@@ -203,6 +207,22 @@ class WebPageController(private val a: Activity) {
         fwdBtn.isEnabled = web.canGoForward()
         backBtn.alpha = if (web.canGoBack()) 1f else 0.35f
         fwdBtn.alpha = if (web.canGoForward()) 1f else 0.35f
+        val canHome = !onStartPage()
+        homeBtn.isEnabled = canHome
+        homeBtn.alpha = if (canHome) 1f else 0.35f
+    }
+
+    private fun goHome() {
+        val w = current ?: return
+        if (hostId != w.id.lowercase(Locale.ROOT)) return   // 还没装上这一份
+        web.loadUrl(urlOf(hostId, w.entry))
+    }
+
+    /** 眼下是不是就在首页（同一个文件；页内 `#锚点` 不算离开；`/`、`chapter/` 这种目录地址按它的 index 认，同 Mac）。 */
+    private fun onStartPage(): Boolean {
+        val w = current ?: return false
+        val p = web.url?.let { pathOf(Uri.parse(it)) } ?: return false
+        return WebAssets.resolve(p, mapOf(w.entry to WebAssets.Entry(w.entry, "", 0))) != null
     }
 
     private fun prefs() = a.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
