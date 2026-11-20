@@ -1936,11 +1936,14 @@ class LibraryStore(private val db: Db) : Closeable {
     /** 两张表都在不在（只读连接上可能不在：补建只在可写打开时做，见 [open]） */
     fun hasBoardTables(): Boolean = hasTable("board_note") && hasTable("board_item")
 
-    /** 画板笔记列表（不含题目草稿纸：`group_name` = [EXERCISE_SCRATCH_GROUP]，同 Mac `LibraryStore.boards()`）。 */
+    /**
+     * 画板笔记列表（不含题目草稿纸：`group_name` = [EXERCISE_SCRATCH_GROUP]，同 Mac `LibraryStore.boards()`）。
+     * 按新建时间排、新的在前：打开 / 编辑都不挪位置（用户 2026-11-20 定，所有端一致）。
+     */
     fun boards(): List<BoardNote> {
         if (!hasTable("board_note")) return emptyList()
         return db.query(
-            "SELECT * FROM board_note WHERE group_name <> ? ORDER BY COALESCE(last_opened_at, created_at) DESC",
+            "SELECT * FROM board_note WHERE group_name <> ? ORDER BY created_at DESC, id",
             arrayOf(EXERCISE_SCRATCH_GROUP),
         ) { board(it) }
     }
