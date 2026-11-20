@@ -31,6 +31,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 网页标签的整页（模式1，`../docs/WEB-DOC-PLAN.md §9`，同 Mac `WebDocView`）：顶上一条（后退 / 前进 · 回到首页 · 标题 · 重新载入）+ `WebView`。
@@ -47,6 +48,8 @@ class WebPageController(private val a: Activity) {
         const val TAG = "UniReader/Web"
         const val HOST_SUFFIX = ".unireader-web.invalid"
         private const val PREFS = "webPages"
+        /** prefs 里「上次滚到哪」的键前缀（后接大写 id；值 = `WebBridge.sanitizeScroll` 的 JSON），同 Mac `web.scroll.<id>`。 */
+        private const val SCROLL_PREFIX = "scroll."
     }
 
     val view = FrameLayout(a).apply {
@@ -63,7 +66,7 @@ class WebPageController(private val a: Activity) {
     /** 回到首页（同 Mac）：课件的子页面不一定有回首页的链接，重新打开又停在上次那一页（后退历史是空的），没有它就回不去。
      *  走普通导航（进后退历史），返回键 / 后退还能回到刚才那页。 */
     private val homeBtn = Ui.iconButton(a, R.drawable.ic_home, a.getString(R.string.web_home)) { goHome() }
-    private val reloadBtn = Ui.textButton(a, a.getString(R.string.web_reload)) { web.reload() }
+    private val reloadBtn = Ui.textButton(a, a.getString(R.string.web_reload)) { reload() }
     private val notice = Ui.body(a, "").apply {
         gravity = Gravity.CENTER
         visibility = View.GONE
@@ -98,6 +101,16 @@ class WebPageController(private val a: Activity) {
     @Volatile private var folder: File? = null
     @Volatile private var hostId = ""
     @Volatile private var token = ""
+
+    /** 这次装载的口令 → 哪份网页 + 下一次页面来问时要不要滚回去（JS 桥线程上读；装载时整份换掉，口令和网页 id 不会错配）。 */
+    private class ScrollSlot(val token: String, val id: String) {
+        private val armed = AtomicBoolean(true)
+        /** 重新载入前置上（同 Mac：WebView 自己恢复时内容还没撑高会被截短，连着刷新一路往上跑；滚动容器里的位置不恢复）。 */
+        fun arm() = armed.set(true)
+        /** 页面加载好后来问；置上时只答一次（之后同一份里点来点去不再往回滚）。 */
+        fun take(): Boolean = armed.getAndSet(false)
+    }
+    @Volatile private var scrollSlot: ScrollSlot? = null
 
     /** 改名 / 删除 / 重新导入之后宿主要刷新列表（抽屉、标签标题）。 */
     var onChanged: () -> Unit = {}
@@ -158,6 +171,9 @@ class WebPageController(private val a: Activity) {
         files = w.entries.associateBy { it.p }
         hostId = w.id.lowercase(Locale.ROOT)
         token = UUID.randomUUID().toString()
+        // 连同上次滚到的位置（记的不是这一页时页面自己认出来不滚，同 Mac）
+        val idKey = w.id.uppercase(Locale.ROOT)
+        scrollSlot = ScrollSlot(token, idKey)
         refreshNotice()
         val last = path ?: prefs().getString(w.id.uppercase(Locale.ROOT), null)?.takeIf { it in files }
         web.loadUrl(urlOf(hostId, last ?: w.entry))
@@ -179,7 +195,13 @@ class WebPageController(private val a: Activity) {
         val w = current ?: return
         val hadMissing = notice.visibility == View.VISIBLE
         open(w.id)
-        if (hadMissing) main.postDelayed({ if (notice.visibility == View.GONE) web.reload() }, 300)
+        if (hadMissing) main.postDelayed({ if (notice.visibility == View.GONE) reload() }, 300)
+    }
+
+    /** 重新载入，并由脚本滚回刚才的位置。 */
+    private fun reload() {
+        scrollSlot?.arm()
+        web.reload()
     }
 
     /** 别处改了页面存的数据：告诉页面（`unireader:change`）。 */
@@ -292,7 +314,8 @@ class WebPageController(private val a: Activity) {
         }
         if (WebAssets.isHtml(e.p)) {
             val html = f.readBytes()
-            val out = WebBridge.inject(WebBridge.source(current?.id ?: hostId, current?.title ?: "", token), html)
+            val out = WebBridge.inject(WebBridge.source(current?.id ?: hostId, current?.title ?: "", token) + "\n" +
+                WebBridge.scrollSource(token), html)
             headers["Content-Length"] = out.size.toString()
             return WebResourceResponse(mime, "utf-8", 200, "OK", headers, ByteArrayInputStream(out))
         }
@@ -350,6 +373,24 @@ class WebPageController(private val a: Activity) {
         }
 
         private fun err(m: String) = JSONObject().put("e", m).toString()
+
+        /** 滚动位置脚本问「这次要不要滚回去」：口令对得上、打开 / 重新载入后第一次问才给；没有 = 空串。
+         *  到这时才读记忆：旧页面卸下时（`pagehide`）补报的最后那一下排在新页面的询问之前。 */
+        @JavascriptInterface
+        fun scrollTarget(tok: String?): String {
+            val s = scrollSlot ?: return ""
+            if (tok == null || tok != s.token || !s.take()) return ""
+            return prefs().getString(SCROLL_PREFIX + s.id, null) ?: ""
+        }
+
+        /** 滚动位置脚本停手报一次位置：清洗后记进本机 prefs（不同步）。 */
+        @JavascriptInterface
+        fun scrollSave(tok: String?, json: String?) {
+            val s = scrollSlot ?: return
+            if (tok == null || tok != s.token) return
+            val clean = WebBridge.sanitizeScroll(json) ?: return
+            prefs().edit().putString(SCROLL_PREFIX + s.id, clean).apply()
+        }
     }
 }
 
@@ -397,6 +438,105 @@ object WebBridge {
           try { window.dispatchEvent(new CustomEvent('unireader:ready')); } catch (e) {}
         })();
         """.trimIndent()
+    }
+
+    /**
+     * 记住滚动位置、重新打开时滚回去（同 Mac `WebBridgeScript.scrollSource`，**JS 逐字相同，只差两行传输**；行为说明在 Mac 那份，
+     * 测试 `../spike/web-scroll-test.swift`）。只在主框架跑；经 `__unireaderNative.scrollSave` / `scrollTarget` 带口令调过来。
+     */
+    fun scrollSource(token: String): String {
+        val tok = JSONObject.quote(token)
+        return """
+        (function () {
+          if (window.top !== window || window.__unireaderScroll) return;
+          try { Object.defineProperty(window, '__unireaderScroll', { value: true }); } catch (e) { return; }
+          var post = function (o) { window.__unireaderNative.scrollSave($tok, JSON.stringify(o)); },
+              ask = function () { var t = window.__unireaderNative.scrollTarget($tok); return t ? JSON.parse(t) : null; };
+          var busy = true, timer = 0, main = '';
+          var EV = ['wheel', 'touchstart', 'pointerdown', 'keydown'];
+          function sel(el) {
+            var parts = [];
+            while (el && el.nodeType === 1 && el !== document.body && el !== document.documentElement) {
+              if (el.id) {
+                parts.unshift('#' + (window.CSS && CSS.escape ? CSS.escape(el.id) : el.id));
+                return parts.join('>');
+              }
+              var i = 1, s = el;
+              while ((s = s.previousElementSibling)) i++;
+              parts.unshift(el.tagName.toLowerCase() + ':nth-child(' + i + ')');
+              el = el.parentElement;
+            }
+            parts.unshift('body');
+            return parts.join('>');
+          }
+          function find(s) { try { return s ? document.querySelector(s) : null; } catch (e) { return null; } }
+          function flush() {
+            timer = 0;
+            if (busy) return;
+            var o = { p: location.pathname, x: Math.round(window.scrollX), y: Math.round(window.scrollY) };
+            var el = find(main);
+            if (el) { o.s = main; o.sx = Math.round(el.scrollLeft); o.sy = Math.round(el.scrollTop); }
+            try { post(o); } catch (e) {}
+          }
+          document.addEventListener('scroll', function (e) {
+            if (busy) return;
+            var t = e.target;
+            if (t && t.nodeType === 1 && t.clientHeight >= window.innerHeight * 0.5) main = sel(t);
+            if (!timer) timer = setTimeout(flush, 300);
+          }, { capture: true, passive: true });
+          window.addEventListener('pagehide', function () { if (timer) { clearTimeout(timer); flush(); } });
+          function near(a, b) { return Math.abs(a - (b || 0)) < 2; }
+          function at(t) {
+            var ok = true;
+            if (!near(window.scrollX, t.x) || !near(window.scrollY, t.y)) { window.scrollTo(t.x || 0, t.y || 0); ok = false; }
+            if (t.s) {
+              var el = find(t.s);
+              if (!el) return false;
+              main = t.s;
+              if (!near(el.scrollLeft, t.sx) || !near(el.scrollTop, t.sy)) { el.scrollLeft = t.sx || 0; el.scrollTop = t.sy || 0; ok = false; }
+            }
+            return ok;
+          }
+          function done() {
+            busy = false;
+            EV.forEach(function (n) { window.removeEventListener(n, done, true); });
+          }
+          function restore(t) {
+            if (!t || typeof t !== 'object' || t.p !== location.pathname || !(t.x || t.y || t.sx || t.sy)) { done(); return; }
+            EV.forEach(function (n) { window.addEventListener(n, done, true); });
+            var end = Date.now() + 6000, calm = 0;
+            (function step() {
+              if (!busy) return;
+              if (at(t) && document.readyState === 'complete') calm++; else calm = 0;
+              if (calm >= 5 || Date.now() > end) { done(); return; }
+              setTimeout(step, 100);
+            })();
+          }
+          function start() {
+            var p;
+            try { p = Promise.resolve(ask()); } catch (e) { p = Promise.resolve(null); }
+            p.then(restore, done);
+          }
+          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+          else start();
+        })();
+        """.trimIndent()
+    }
+
+    /** 页面报上来的位置 → 能存的 JSON（只留认识的键、数字夹在合理范围；`p` 不对就不要），同 Mac `WebBridgeScript.sanitizeScroll`。 */
+    fun sanitizeScroll(json: String?): String? {
+        if (json == null) return null
+        val o = runCatching { JSONObject(json) }.getOrNull() ?: return null
+        val p = o.opt("p") as? String ?: return null
+        if (p.isEmpty() || p.toByteArray().size > 4096) return null
+        val out = JSONObject().put("p", p)
+        for (k in arrayOf("x", "y", "sx", "sy")) {
+            val n = (o.opt(k) as? Number)?.toDouble() ?: continue
+            if (n.isFinite()) out.put(k, Math.round(n).coerceIn(0L, 10_000_000L))
+        }
+        val s = o.opt("s") as? String
+        if (!s.isNullOrEmpty() && s.toByteArray().size <= 1024) out.put("s", s)
+        return out.toString()
     }
 
     /** 塞进 `<head>` 开头（不分大小写），没有 head 就放最前面（同 Mac `WebBridgeScript.inject`）。 */
