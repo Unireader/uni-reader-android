@@ -195,6 +195,61 @@ object SyncClient {
         return out
     }
 
+    /**
+     * 只看 [dirty] 里这几行的 [localChanges]（`表名 → row_id`，开着时 [SyncDirty] 记下的改过的行）。
+     * 对这几行，结果与整库扫描**逐行相同**：同一套指纹、同一张基线、同样的「通道表删除不推」「图片要拿得出来」，
+     * 顺序也一样（三方判定表按 [MirrorFp.specs]、行按 id；通道表在后）。不在 [dirty] 里的行一概不看。
+     * 只有安卓有（Mac 仍整库扫描），不是跨端契约。
+     */
+    fun localChanges(db: Db, folder: File, dirty: Map<String, Set<String>>): List<SyncWire.RowChange> {
+        val out = ArrayList<SyncWire.RowChange>()
+        for (spec in MirrorFp.specs) {
+            val ids = dirty[spec.table]?.sorted()
+            if (ids.isNullOrEmpty()) continue
+            val b = baseOf(db, spec.table, ids)
+            val rows = SyncRows.fetch(db, spec, ids)
+            for (id in ids) {
+                val row = rows[id]
+                if (row == null) {
+                    if (b[id] != null) out.add(SyncWire.RowChange(spec.table, id, SyncWire.Op.DELETE, b[id], null))
+                    continue
+                }
+                if (MirrorFp.fingerprint(row, spec) == b[id]) continue
+                out.add(SyncWire.RowChange(spec.table, id, SyncWire.Op.UPSERT, b[id], SyncWire.row(row)))
+            }
+        }
+        val cutoff = SyncRows.imageCutoff()
+        for (table in listOf(SyncRows.OCR, SyncRows.IMAGE, SyncRows.ALIGN)) {
+            val ids = dirty[table]?.sorted()
+            if (ids.isNullOrEmpty()) continue
+            val b = baseOf(db, table, ids)
+            for (id in ids) {
+                val row = SyncRows.fetch(db, table, id) ?: continue          // 通道表删除不传播
+                val fp = when (table) {
+                    SyncRows.ALIGN -> row["updated_at"] as? String ?: continue   // 同 `MirrorStore.alignStamps`
+                    SyncRows.IMAGE -> if (SyncRows.imageAvailable(folder, row, cutoff)) "" else continue
+                    else -> ""
+                }
+                if (b[id] == fp) continue
+                out.add(SyncWire.RowChange(table, id, SyncWire.Op.UPSERT, b[id], SyncWire.row(row)))
+            }
+        }
+        return out
+    }
+
+    /** 基线里这几行的指纹（不在基线里的不出现） */
+    private fun baseOf(db: Db, table: String, ids: List<String>): Map<String, String> {
+        val out = HashMap<String, String>()
+        for (chunk in ids.chunked(500)) {
+            val marks = chunk.joinToString(",") { "?" }
+            db.query(
+                "SELECT row_id, fp FROM sync_base WHERE tbl=? AND row_id IN ($marks)",
+                (listOf<Any?>(table) + chunk).toTypedArray(),
+            ) { it.getString(0) to it.getString(1) }.forEach { (id, fp) -> out[id] = fp }
+        }
+        return out
+    }
+
     // ---------- 推送结果 ----------
 
     /**
@@ -339,6 +394,27 @@ object SyncClient {
      * [checkCancelled] 在应用拉下来的行之前问一次：被取消就停在那里——推上去而基线没记的，下一轮再推一次、
      * 服务器答「一致」即补上；拉下来还没应用的，修订号没记，下一轮重拉。
      */
+    /**
+     * 只拉：从上次拉到的修订号起把服务器上的改动拉完、应用、记修订号，**不找本机改动、不推**（打开工作区之前那一轮，
+     * `ServerSyncIO.openRound`）。本机没推的改动由打开后的同步推（同开着时的拉取：三方判定照常，`applyPulled`）。
+     */
+    fun pullOnly(
+        db: Db,
+        folder: File,
+        pull: (Long) -> SyncWire.PullResponse,
+        checkCancelled: () -> Unit = {},
+        step: (String) -> Unit = {},
+    ): RoundReport {
+        db.exec(MirrorStore.SYNC_BASE_DDL.trimIndent())
+        val (rows, head) = fetchPulled(pulledRev(db), pull)
+        step("拉 ${rows.size} 行")
+        checkCancelled()
+        val rep = applyPulled(db, folder, rows)
+        setPulledRev(db, head)
+        step("应用")
+        return RoundReport(0, rows.size, null, rep)
+    }
+
     fun round(
         db: Db,
         folder: File,
@@ -347,14 +423,20 @@ object SyncClient {
         push: (SyncWire.PushRequest) -> SyncWire.PushResponse,
         pull: (Long) -> SyncWire.PullResponse,
         checkCancelled: () -> Unit = {},
+        /** 每做完一步报一声（分步计时用，`ServerSyncIO.closedRound`） */
+        step: (String) -> Unit = {},
     ): RoundReport {
         db.exec(MirrorStore.SYNC_BASE_DDL.trimIndent())
         val changes = localChanges(db, folder)
+        step("找改动 ${changes.size} 处")
         var pushResp: SyncWire.PushResponse? = null
         if (changes.isNotEmpty()) {
             beforePush(changes)
+            step("传文件")
             val resp = push(SyncWire.PushRequest(schemaVersion, changes))
+            step("推")
             applyPushResponse(db, folder, changes, resp)
+            step("记基线")
             pushResp = resp
         }
         var since = pulledRev(db)
@@ -369,9 +451,11 @@ object SyncClient {
                 break
             }
         }
+        step("拉 ${acc.size} 行")
         checkCancelled()
         val rep = applyPulled(db, folder, acc)
         setPulledRev(db, since)
+        step("应用")
         return RoundReport(changes.size, acc.size, pushResp, rep)
     }
 }

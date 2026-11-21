@@ -303,15 +303,42 @@ object MirrorFp {
         return ByteArray(8) { ((bits ushr (8 * it)) and 0xFF).toByte() }
     }
 
-    /** 一行的指纹：各列 [enc] 以 `0x1F` 相连 → SHA-256 → 前 16 个 hex 字符 */
+    /**
+     * 一行的指纹：各列 [enc] 以 `0x1F` 相连 → SHA-256 → 前 16 个 hex 字符。
+     *
+     * 整库扫描每行都要算一次（平板上两三万行），所以这里只讲快、输出逐字节不变（2026-11-21 实测这一步占整库扫描的七八成）：
+     * 摘要对象每条线程复用一个（`getInstance` 每次都查一遍提供方）；类型标签和内容直接喂给摘要、不先拼成一个数组（同 [enc]）；
+     * 十六进制查表拼（原先每行 8 次 `"%02x".format`，安卓上 `String.format` 极慢）。
+     */
     fun fingerprint(values: List<Value>): String {
-        val md = MessageDigest.getInstance("SHA-256")
+        val md = sha256.get()!!
+        md.reset()
         values.forEachIndexed { idx, v ->
             if (idx > 0) md.update(SEPARATOR)
-            md.update(enc(v))
+            feed(md, v)
         }
         val d = md.digest()
-        return buildString(16) { for (k in 0 until 8) append("%02x".format(d[k])) }
+        val out = CharArray(16)
+        for (k in 0 until 8) {
+            val b = d[k].toInt() and 0xFF
+            out[2 * k] = HEX[b ushr 4]
+            out[2 * k + 1] = HEX[b and 0x0F]
+        }
+        return String(out)
+    }
+
+    private val sha256 = ThreadLocal.withInitial { MessageDigest.getInstance("SHA-256") }
+    private val HEX = "0123456789abcdef".toCharArray()
+
+    /** 把 [enc] 的字节直接喂给摘要（逐字节同 [enc]，只是不拼数组） */
+    private fun feed(md: MessageDigest, v: Value) {
+        when (v) {
+            is Value.Null -> md.update(TAG_NULL)
+            is Value.Int64 -> { md.update(TAG_INT); md.update(v.v.toString().toByteArray(Charsets.UTF_8)) }
+            is Value.Real -> { md.update(TAG_REAL); md.update(le8(canonical(v.v))) }
+            is Value.Text -> { md.update(TAG_TEXT); md.update(v.v.toByteArray(Charsets.UTF_8)) }
+            is Value.Blob -> { md.update(TAG_BLOB); md.update(v.v) }
+        }
     }
 
     // ---------- 从查询结果取值 ----------

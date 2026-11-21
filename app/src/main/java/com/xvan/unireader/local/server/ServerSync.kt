@@ -134,6 +134,16 @@ object ServerSync {
             main.post { pushNow(dir) }
             return
         }
+        // 启动页那一轮等满 3 秒没完、留在后台接着跑的：阅读界面接着等它，不取消重来
+        // （原先取消再从头跑一轮，两轮各要 3 秒多，打开要七秒半，2026-11-21）
+        val running = synchronized(busy) { busy[k] }
+        if (running != null && cancelOnTimeout) {
+            if (running.done.await(timeoutMs, TimeUnit.MILLISECONDS)) return
+            Log.i(TAG, "${dir.name}：接着等启动页那一轮又过了 ${timeoutMs}ms，取消、先用本机缓存")
+            cancelChain(running)
+            running.done.await()
+            return
+        }
         stopRound(k)
         val link = ServerSyncIO.serverLink(dir) ?: return
         val ep = endpoint(ctx, dir)
@@ -143,7 +153,8 @@ object ServerSync {
             return
         }
         if (skipIfRecentMs > 0 && System.currentTimeMillis() - (lastOk[k] ?: 0L) < skipIfRecentMs) return
-        val r = startRound(ctx.applicationContext, dir, ep)
+        // 打开前只拉（2026-11-21 用户定）：本机没推的改动、笔记文件、补拉都在打开后做
+        val r = startRound(ctx.applicationContext, dir, ep, pullOnly = true)
         if (!r.done.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             if (!cancelOnTimeout) {
                 Log.i(TAG, "${dir.name}：打开前同步超过 ${timeoutMs}ms，先打开本机缓存，这一轮在后台接着跑")
@@ -175,8 +186,8 @@ object ServerSync {
         Thread({ endpoint(app, dir)?.let { startRound(app, dir, it) } }, "unireader-sync").start()
     }
 
-    /** 起一轮（前一轮还在跑就先等它完）。返回这一轮的句柄 */
-    private fun startRound(ctx: Context, dir: File, ep: Endpoint): Round {
+    /** 起一轮（前一轮还在跑就先等它完）。[pullOnly] = 打开前那一轮，只拉（[ServerSyncIO.openRound]）。返回这一轮的句柄 */
+    private fun startRound(ctx: Context, dir: File, ep: Endpoint, pullOnly: Boolean = false): Round {
         val k = key(dir)
         val r = synchronized(busy) { Round(ServerClient.Cancel(), CountDownLatch(1), busy[k]).also { busy[k] = it } }
         r.before = statuses[k]?.takeIf { it !is Status.Syncing }
@@ -187,8 +198,12 @@ object ServerSync {
                 r.prev?.done?.await()
                 r.prev = null
                 r.cancel.check()
-                val rep = ServerSyncIO.closedRound(dir, ep.account.client(r.cancel), ep.wid, allowedDeletes[k].orEmpty())
-                allowedDeletes.remove(k)
+                val rep = if (pullOnly) {
+                    ServerSyncIO.openRound(dir, ep.account.client(r.cancel), ep.wid)
+                } else {
+                    ServerSyncIO.closedRound(dir, ep.account.client(r.cancel), ep.wid, allowedDeletes[k].orEmpty())
+                        .also { allowedDeletes.remove(k) }
+                }
                 Log.i(TAG, "${dir.name}：同步完成 推 ${rep.pushed} 拉 ${rep.pulled} 冲突 ${rep.pull.conflicts} 跳过 ${rep.pull.skipped}")
                 lastOk[k] = System.currentTimeMillis()
                 setStatus(k, Status.Synced(System.currentTimeMillis()))
@@ -262,9 +277,19 @@ object ServerSync {
         @Volatile var pushing = false
         /** 拉别的设备的改动正在做（和推送互斥：两边同时改基线会互相踩） */
         @Volatile var pulling = false
-        /** 上次确认「没有要推的」时这条连接的 `total_changes()`；没变就不必再全量找改动。-1 = 要重找 */
-        var cleanAt = -1L
+        /** 上次确认「没有要推的」时这条连接的 `total_changes()`；没变就不必再全量找改动。-1 = 要重找（只用于整库扫描） */
+        @Volatile var cleanAt = -1L
         lateinit var tick: Runnable
+        /** 停手满 2 秒那一刻再看一次（不等下一秒的整点） */
+        val wake = Runnable { push(this@Session) }
+
+        // —— 只查改过的行（[SyncDirty]）——
+        /** 触发器挂上了：平时只查改过的行。false = 没挂上，每次整库扫描（原来的做法） */
+        @Volatile var tracking = false
+        /** 下一次要整库扫描一遍：会话开头、触发器丢了、整库扫描那一批没推成 */
+        @Volatile var needFull = true
+        /** 找改动时算出的「过多久再看」（毫秒，0 = 不用），回主线程后排上 [wake] */
+        @Volatile var wakeIn = 0L
 
         // 以下三个只在库队列线程上读写（`push` 里找改动那一步）
         /** 上次看到的 `total_changes()` 与那一刻：变了说明用户还在写，停手满 [QUIET_MS] 才推 */
@@ -334,7 +359,7 @@ object ServerSync {
         }
     }
 
-    /** 停手多久再推（用户定「改完停 2 秒推送」）、两次推送至少隔多久、兜底每隔多久推一次 */
+    /** 停手多久再推（用户定「改完停 2 秒推送」）、两次推送至少隔多久（只用于整库扫描）、兜底每隔多久推一次 */
     private const val QUIET_MS = 2_000L
     private const val MIN_PUSH_MS = 5_000L
     private const val HEARTBEAT_MS = 60_000L
@@ -343,7 +368,13 @@ object ServerSync {
         val tc: Long, val changes: List<SyncWire.RowChange>, val files: List<ServerSyncIO.FileUp>,
         /** 删得太多、还没确认：这一批先不推。 */
         val blocked: SyncDeleteGuard.Excess? = null,
-    )
+        /** 只查改过的行时从 [SyncDirty] 取走的行；没推成要放回去。null = 这一批是整库扫描出来的 */
+        val taken: Map<String, Set<String>>? = null,
+    ) {
+        // 计时（推完写一行日志）：找改动用了多久、最后一次用户写入的时刻（墙钟毫秒，0 = 不知道）
+        var findMs = 0L
+        var lastWriteAt = 0L
+    }
 
     private val sessions = ConcurrentHashMap<String, Session>()
 
@@ -365,6 +396,19 @@ object ServerSync {
         s.noteSkip = noteSkip
         s.onNotes = onNotes
         s.lastNotePush = System.currentTimeMillis()   // 开头那一遍由 watch 里的完整一轮做（noteHead = 0）
+        // 挂上「改过哪些行」的记录（排在第一次找改动之前；第一次照旧整库扫描，之后只查改过的行）
+        // （在库队列上就记下结果：下一个作业就是找改动，别等回主线程）
+        // 挂好之后：本机还没推的行（打开前只拉，不推）由后台另一条只读连接整库扫描找出来、放进改动记录，
+        // 照常由「只查改过的行」推上去——不占库队列，刚打开就写的笔迹不用排在扫描后面（[scanInBackground]）
+        queue.submit("同步：挂改动记录", { st ->
+            st.withMirrorDb { db ->
+                s.tracking = runCatching { SyncDirty.install(db) }
+                    .onFailure { Log.w(TAG, "${dir.name}：改动记录没挂上，开着时每次整库扫描", it) }
+                    .getOrDefault(false)
+                if (s.tracking) s.needFull = false
+                s.tracking
+            }
+        }) { ok -> if (ok) scanInBackground(s) }
         s.tick = Runnable {
             push(s)
             maybePushNotes(s)
@@ -373,6 +417,35 @@ object ServerSync {
         sessions[k] = s
         main.postDelayed(s.tick, 1_000L)
         Thread({ watch(s) }, "unireader-watch").start()
+    }
+
+    /**
+     * 会话开头在后台找本机还没推的行（另一条只读连接整库扫描，[ServerSyncIO.unpushedRows]），放进改动记录（时刻记 0，不推迟推送），
+     * 下一次找改动就推。覆盖得全：扫描开始前改动记录已经挂上，之后的写都记得到；之前的写都已落库、扫描看得见。
+     * 扫描出错 → 退回库队列上整库扫描一次（[Session.needFull]）。主线程调。
+     */
+    private fun scanInBackground(s: Session) {
+        Thread({
+            val t0 = android.os.SystemClock.uptimeMillis()
+            val keys = try {
+                ServerSyncIO.unpushedRows(s.dir)
+            } catch (e: Throwable) {
+                Log.w(TAG, "${s.dir.name}：后台整库扫描出错，改在库队列上扫", e)
+                null
+            }
+            if (s.stopped) return@Thread
+            if (keys == null) {
+                s.needFull = true
+                s.cleanAt = -1L
+                return@Thread
+            }
+            val n = keys.values.sumOf { it.size }
+            Log.i(TAG, "${s.dir.name}：后台整库扫描 ${android.os.SystemClock.uptimeMillis() - t0}ms，本机没推的 $n 行")
+            if (n == 0) return@Thread
+            s.queue.submit("同步：记下没推的行", { st ->
+                st.withMirrorDb { db -> runCatching { SyncDirty.putBack(db, keys) }.getOrDefault(false) }
+            }) { ok -> if (!ok) { s.needFull = true; s.cleanAt = -1L } }
+        }, "unireader-scan").start()
     }
 
     /** 阅读界面要关这个工作区了（主线程，在关库之前） */
@@ -384,6 +457,9 @@ object ServerSync {
         s.stopped = true
         s.cancel.cancel()       // 断开挂着的长轮询
         main.removeCallbacks(s.tick)
+        main.removeCallbacks(s.wake)
+        // 库可能还开着（变回本地工作区）：别让触发器一直记下去。库正要关的话这一步排在关库之前，无害
+        s.queue.submit("同步：拆改动记录") { st -> st.withMirrorDb { db -> SyncDirty.uninstall(db) } }
     }
 
     /** 马上推一次（退到后台时，不等停手）。没开着 = 什么都不做 */
@@ -392,7 +468,7 @@ object ServerSync {
     }
 
     /**
-     * 只推不拉：在库队列上找本地改动（库没被写过就跳过）→ 网络线程传文件、推送 → 回库队列逐行记基线（不开事务，
+     * 只推不拉：在库队列上找本地改动（[findChanges]）→ 网络线程传文件、推送 → 回库队列逐行记基线（不开事务，
      * 见 [SyncClient.recordPushed]）。推的时候阅读界面关了（关掉后那一轮会再推一次）、或变回了本地工作区：不记。
      */
     private fun push(s: Session, force: Boolean = false) {
@@ -401,25 +477,23 @@ object ServerSync {
         s.pushing = true
         s.queue.submit("同步：找本地改动", { store ->
             store.withMirrorDb { db ->
-                val now = System.currentTimeMillis()
-                val tc = totalChanges(db)
-                if (tc != s.seenTc) { s.seenTc = tc; s.dirtyAt = now }      // 用户还在写：重新计停手的时间
-                val quiet = now - s.dirtyAt >= QUIET_MS && now - s.lastPush >= MIN_PUSH_MS
-                if (tc == s.cleanAt || !MirrorStore.hasSyncBase(db)) {
+                // 出错也要回到主线程放开 pushing（作业抛出去的话回调不会来，之后就再也不推了）
+                try {
+                    findChanges(s, db, k, force)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "${s.dir.name}：找本地改动出错，下次整库扫描", e)
+                    s.needFull = true
+                    s.cleanAt = -1L
                     null
-                } else if (!force && !quiet && now - s.lastPush < HEARTBEAT_MS) {
-                    null        // 还没停手，等下一秒再看
-                } else {
-                    s.lastPush = now
-                    val ch = SyncClient.localChanges(db, s.dir)
-                    // 删得太多先问：这一批没确认过就整批先不推（同一次推送是一个事务，不拆开）
-                    val x = SyncDeleteGuard.excess(ch, ServerSyncIO.baseCounts(db), allowedDeletes[k].orEmpty())
-                    if (x != null) Prep(tc, ch, emptyList(), x) else Prep(tc, ch, ServerSyncIO.filesToUpload(ch, db, s.dir))
                 }
             }
         }) { prep ->
             if (prep == null || sessions[k] !== s) {
                 s.pushing = false
+                if (prep == null && s.wakeIn > 0 && !s.stopped) {
+                    main.removeCallbacks(s.wake)
+                    main.postDelayed(s.wake, s.wakeIn)
+                }
                 return@submit
             }
             if (prep.blocked != null) {
@@ -427,7 +501,7 @@ object ServerSync {
                     Log.w(TAG, "${s.dir.name}：这次推送要删 ${prep.blocked.total} 行，超过阈值，等用户确认")
                 }
                 setStatus(k, Status.NeedsConfirm(prep.blocked))
-                s.pushing = false
+                unpushed(s, prep)
                 return@submit
             }
             allowedDeletes.remove(k)
@@ -443,20 +517,110 @@ object ServerSync {
                     val ep = endpoint(s.ctx, s.dir)
                     if (ep == null) {
                         setStatus(k, Status.NoAccount)
-                        main.post { s.pushing = false }
+                        main.post { unpushed(s, prep) }
                     } else {
                         val client = ep.account.client()
+                        val t0 = android.os.SystemClock.uptimeMillis()
                         ServerSyncIO.uploadAll(prep.files, client, ep.wid)
                         val req = SyncWire.PushRequest(com.xvan.unireader.local.store.Schema.VERSION, prep.changes)
                         val resp = SyncWire.decodePushResponse(client.push(ep.wid, SyncWire.encode(req)))
+                        val since = if (prep.lastWriteAt > 0) "，最后一次写入到推完 ${System.currentTimeMillis() - prep.lastWriteAt}ms" else ""
+                        Log.i(
+                            TAG,
+                            "${s.dir.name}：开着时推了 ${prep.changes.size} 处（${if (prep.taken != null) "只查改过的行" else "整库扫描"}）：" +
+                                "找改动 ${prep.findMs}ms · 传文件+推 ${android.os.SystemClock.uptimeMillis() - t0}ms$since",
+                        )
                         main.post { record(s, prep, resp) }
                     }
                 } catch (e: Throwable) {
                     Log.w(TAG, "${s.dir.name}：推送没完成", e)
                     if (sessions[k] === s) setStatus(k, classify(e))
-                    main.post { s.pushing = false }
+                    main.post { unpushed(s, prep) }
                 }
             }, "unireader-push").start()
+        }
+    }
+
+    /**
+     * 找本机要推的改动（库队列线程）。null = 这次不推（没改动 / 还没停手 / 不是服务器工作区）。
+     *
+     * 平时只查 [SyncDirty] 记下的改过的行（几十毫秒）；会话开头、触发器丢了、或上一批整库扫描的没推成时整库扫描一遍
+     * （平板上大工作区要两三秒）。停手时间按触发器记下的**写入时刻**算，满 2 秒那一刻就查（[Session.wakeIn]），不等下一秒的整点。
+     */
+    private fun findChanges(s: Session, db: com.xvan.unireader.local.store.Db, k: String, force: Boolean): Prep? {
+        s.wakeIn = 0
+        if (!MirrorStore.hasSyncBase(db)) return null
+        val now = System.currentTimeMillis()
+        if (s.tracking && !s.needFull) {
+            val peek = SyncDirty.peek(db)
+            if (peek != null) {
+                if (peek.count == 0) return null
+                // 只查改过的行很便宜：不再要求两次推送隔 5 秒（那是整库扫描时为了少扫加的），停手满 2 秒就推
+                val due = peek.lastAt + QUIET_MS
+                if (!force && now < due && now - s.lastPush < HEARTBEAT_MS) {
+                    s.wakeIn = due - now
+                    return null
+                }
+                val taken = SyncDirty.take(db).orEmpty()
+                s.lastPush = now
+                val t0 = android.os.SystemClock.uptimeMillis()
+                return prepare(db, k, s, -1L, SyncClient.localChanges(db, s.dir, taken), taken).also {
+                    it.findMs = android.os.SystemClock.uptimeMillis() - t0
+                    it.lastWriteAt = peek.lastAt
+                }
+            }
+            // 触发器没了（库连接换过之类）：重新挂上，这一次整库扫描
+            Log.w(TAG, "${s.dir.name}：改动记录丢了，重新挂上、这次整库扫描")
+            s.tracking = runCatching { SyncDirty.install(db) }.getOrDefault(false)
+            s.needFull = true
+            s.cleanAt = -1L
+        }
+        // 整库扫描（原来的做法）：库被写过、停手满 2 秒（或每分钟兜底）才扫
+        val tc = totalChanges(db)
+        if (tc != s.seenTc) { s.seenTc = tc; s.dirtyAt = now }      // 用户还在写：重新计停手的时间
+        val quiet = now - s.dirtyAt >= QUIET_MS && now - s.lastPush >= MIN_PUSH_MS
+        if (tc == s.cleanAt) return null
+        if (!force && !quiet && now - s.lastPush < HEARTBEAT_MS) return null        // 还没停手，等下一秒再看
+        s.lastPush = now
+        if (s.tracking) {
+            SyncDirty.clear(db)         // 扫描覆盖到了；从这一刻起再写的照常记下
+            s.needFull = false
+        }
+        val t0 = android.os.SystemClock.uptimeMillis()
+        return prepare(db, k, s, totalChanges(db), SyncClient.localChanges(db, s.dir), null).also {
+            it.findMs = android.os.SystemClock.uptimeMillis() - t0
+        }
+    }
+
+    private fun prepare(
+        db: com.xvan.unireader.local.store.Db, k: String, s: Session, tc: Long,
+        ch: List<SyncWire.RowChange>, taken: Map<String, Set<String>>?,
+    ): Prep {
+        // 删得太多先问：这一批没确认过就整批先不推（同一次推送是一个事务，不拆开）
+        val x = SyncDeleteGuard.excess(ch, ServerSyncIO.baseCounts(db), allowedDeletes[k].orEmpty())
+        return if (x != null) Prep(tc, ch, emptyList(), x, taken)
+        else Prep(tc, ch, ServerSyncIO.filesToUpload(ch, db, s.dir), taken = taken)
+    }
+
+    /**
+     * 这一批没推成（主线程）：把这批的行放回改动记录，下次只查它们（加上之后又写的）。
+     * 只查改过的行取走的 → 原样放回；挂着触发器时整库扫描出来的 → 放回这批改动的行（扫描时已清空记录，
+     * 这批以外的行要么和基线一致、要么之后又写过已经记下了）；没挂触发器 → 下次再整库扫描一遍。
+     * 放回去之后才放开 [Session.pushing]，免得下一次找改动插到放回去之前、漏掉这几行。
+     */
+    private fun unpushed(s: Session, prep: Prep) {
+        val taken = prep.taken
+            ?: if (s.tracking && !s.needFull) prep.changes.groupBy({ it.table }, { it.rowId }).mapValues { it.value.toSet() } else null
+        if (taken == null || taken.isEmpty()) {
+            if (taken == null) { s.needFull = true; s.cleanAt = -1L }
+            s.pushing = false
+            return
+        }
+        s.queue.submit("同步：放回没推的行", { st ->
+            st.withMirrorDb { db -> runCatching { SyncDirty.putBack(db, taken) }.getOrDefault(false) }
+        }) { ok ->
+            if (!ok) { s.needFull = true; s.cleanAt = -1L }
+            s.pushing = false
         }
     }
 
@@ -508,9 +672,13 @@ object ServerSync {
             if (s.stopped) return
             onQueue(s, "同步：应用补拉的行") { st ->
                 st.withMirrorDb { db ->
+                    val t0 = System.currentTimeMillis()
                     val before = totalChanges(db)
-                    SyncClient.clearBase(db, want)   // 旧服务器忽略过的本机行，接下来的推送里重新推（同 `SyncClient.catchUp`）
+                    // 旧服务器忽略过的本机行，接下来的推送里重新推（同 `SyncClient.catchUp`）。
+                    // 清基线会经 sync_base 上的触发器把这些行记进改动记录，只查改过的行也推得到
+                    SyncClient.clearBase(db, want)
                     if (got.isNotEmpty()) SyncClient.applyPulled(db, s.dir, got)
+                    SyncDirty.settle(db, t0)
                     SyncClient.markCaughtUp(db, want)
                     if (s.seenTc == before) s.seenTc = totalChanges(db)   // 同步自己写的，不算「本机改动」
                 }
@@ -579,8 +747,10 @@ object ServerSync {
             if (rows.isNotEmpty() || head != since) {
                 val a = onQueue(s, "同步：应用拉到的改动") { st ->
                     st.withMirrorDb { db ->
+                        val t0 = System.currentTimeMillis()
                         val before = totalChanges(db)
                         val rep = SyncClient.applyPulled(db, s.dir, rows)
+                        SyncDirty.settle(db, t0)      // 拉下来写的行照样复查一遍，但不算「用户在写」、不推迟推送
                         SyncClient.setPulledRev(db, head)
                         val newImages = rows.any { it.table == "image" && !it.deleted }
                         if (newImages) runCatching { ServerSyncIO.downloadMissingImages(db, s.dir, client, ep.wid) }
@@ -627,8 +797,8 @@ object ServerSync {
         return out
     }
 
-    private fun totalChanges(db: com.xvan.unireader.local.store.Db): Long =
-        db.query("SELECT total_changes()") { it.getLong(0) }.first()
+    /** 🔴 必须走 [com.xvan.unireader.local.store.Db.totalChanges]（主连接上读）：直接 SELECT 会落到连接池的只读连接上，永远读到 0 */
+    private fun totalChanges(db: com.xvan.unireader.local.store.Db): Long = db.totalChanges()
 
     // ---------- 变回本地工作区 ----------
 

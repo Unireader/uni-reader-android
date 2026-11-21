@@ -48,16 +48,77 @@ object ServerSyncIO {
 
     // ---------- 一轮（临时连接） ----------
 
+    /**
+     * 打开工作区之前那一轮：**只拉**（拉 → 应用 → 补缺的图片 / 网页文件），不扫本机改动、不推、不同步笔记文件、不补拉。
+     * 那几样都在打开后做（`ServerSync.sessionStart`：后台整库扫描 → 推；`watch` 开头补拉、第一次拉取时同步笔记文件）。
+     * 原先打开前做完整一轮，大工作区要 2.5～3 秒、常常等满 3 秒被取消（2026-11-21）。🔴 只在阅读界面没开着它时调
+     */
+    fun openRound(folder: File, client: ServerClient, wid: String): SyncClient.RoundReport = timed(folder, "打开前只拉") { step ->
+        LibraryStore.open(folder).use { store ->
+            step("开库")
+            store.withMirrorDb { db ->
+                val rep = SyncClient.pullOnly(
+                    db, folder,
+                    pull = { since -> SyncWire.decodePullResponse(client.pull(wid, since)) },
+                    checkCancelled = { client.checkCancelled() },
+                    step = step,
+                )
+                downloadMissingImages(db, folder, client, wid)
+                step("补图片")
+                downloadMissingWebFiles(folder, webFileHashes(db), client, wid)
+                step("补网页")
+                rep
+            }
+        }
+    }
+
+    /**
+     * 本机还没推的行（`表名 → row_id`）：**另开一条只读连接**整库扫描（不占阅读界面的库队列，落笔不用排在它后面）。
+     * 打开后在后台线程调，结果交给 `SyncDirty.putBack`，由开着时的推送去推（`ServerSync.scanInBackground`）。
+     */
+    fun unpushedRows(folder: File): Map<String, Set<String>> =
+        Db.open(File(folder, Workspace.DB_REL), readOnly = true).use { db ->
+            if (!com.xvan.unireader.local.mirror.MirrorStore.hasSyncBase(db)) emptyMap()
+            else SyncClient.localChanges(db, folder).groupBy({ it.table }, { it.rowId }).mapValues { it.value.toSet() }
+        }
+
+    /** 分步计时：每做完一步 `step("名字")`，结束（含取消 / 出错）时写一行日志 */
+    private fun <T> timed(folder: File, what: String, body: ((String) -> Unit) -> T): T {
+        val t0 = android.os.SystemClock.uptimeMillis()
+        var last = t0
+        val steps = StringBuilder()
+        val step = { name: String ->
+            val now = android.os.SystemClock.uptimeMillis()
+            if (steps.isNotEmpty()) steps.append(" · ")
+            steps.append(name).append(' ').append(now - last).append("ms")
+            last = now
+        }
+        var finished = false
+        try {
+            return body(step).also { finished = true }
+        } finally {
+            Log.i(TAG, "${folder.name}：$what${if (finished) "" else "（没做完）"}共 ${android.os.SystemClock.uptimeMillis() - t0}ms：$steps")
+        }
+    }
+
     /** 完整一轮：推（先传新文件）→ 拉 → 应用 → 补缺的图片。🔴 只在阅读界面没开着它时调 */
     fun closedRound(
         folder: File, client: ServerClient, wid: String,
         /** 用户确认过的那批删除（`SyncDeleteGuard`）；这一轮的删除超了阈值又不在里面 → 抛 [SyncDeleteGuard.Blocked]，什么都不推不拉。 */
         allowedDeletes: Set<String> = emptySet(),
     ): SyncClient.RoundReport =
+        // 分步计时（2026-11-21：打开前那一轮常常等满 3 秒被取消，看不出慢在哪一步）。取消 / 出错也记下做到了哪一步
+        timed(folder, "完整一轮") { step -> closedRoundTimed(folder, client, wid, allowedDeletes, step) }
+
+    private fun closedRoundTimed(
+        folder: File, client: ServerClient, wid: String, allowedDeletes: Set<String>, step: (String) -> Unit,
+    ): SyncClient.RoundReport =
         LibraryStore.open(folder).use { store ->
+            step("开库")
             store.withMirrorDb { db ->
                 // 旧版时跳过的新表（网页）补一次：清基线 + 补拉，**在推之前**（`SyncClient.catchUp`）
                 SyncClient.catchUp(db, folder) { since -> SyncWire.decodePullResponse(client.pull(wid, since)) }
+                step("补拉")
                 val rep = SyncClient.round(
                     db, folder,
                     beforePush = { changes ->
@@ -67,14 +128,19 @@ object ServerSyncIO {
                     push = { req -> SyncWire.decodePushResponse(client.push(wid, SyncWire.encode(req))) },
                     pull = { since -> SyncWire.decodePullResponse(client.pull(wid, since)) },
                     checkCancelled = { client.checkCancelled() },
+                    step = step,
                 )
                 downloadMissingImages(db, folder, client, wid)
+                step("补图片")
                 downloadMissingWebFiles(folder, webFileHashes(db), client, wid)
+                step("补网页")
                 rep
             }
         }.also {
+            step("关库")
             // 笔记文件（`Notes/`）：库连接关了之后做（它不碰库）。完整一轮：推 + 拉 + 冲突副本
             val notes = NoteSync.sync(folder, client, wid, deviceName(), full = true)
+            step("笔记文件")
             logNotes(folder, notes, "closed")
         }
 

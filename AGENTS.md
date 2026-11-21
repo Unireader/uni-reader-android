@@ -359,10 +359,23 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   （↔ `../Sources/Sync/SyncClient.swift`，逐条照抄；冲突规则不另写，复用 `local/mirror/` 的 `MirrorDiff` / `MirrorApply`，基线沿用 `sync_base`）；
   `ServerClient`（OkHttp，阻塞，**一律不走代理**，`Cancel` 断开正在飞的请求）、`ServerAccounts`（连过的服务器，本机 prefs）、
   `ServerSyncIO`（一轮 / 建缓存 / 上传 / 下 PDF，纯 IO）、`ServerSync`（时机与状态）、`ServerUi`（几块界面）、`ServerDiscovery`（`_unireader-srv._tcp`）。
-  · 有 `meta.srv_url` = 服务器工作区。**时机**：打开前完整一轮（启动页 `openWorkspace` 与阅读界面开库前，最多等 3 秒，超时照常开本机这份；
-  启动页刚同步过 60 秒内阅读界面不再同步）；阅读界面开着时（`ServerSync.sessionStart`，**S4 起能收了**，`../docs/SERVER-MODE-PLAN.md §13.12`）：
-  · **推**：每秒在那条 `StoreQueue` 上看一眼 `total_changes()`，变了就重新计时，**停手满 2 秒**（至少隔 5 秒；每分钟兜底；`onPause` 不等停手马上推）才找改动推，
-    基线逐行写不开事务；同步自己写库（记基线 / 应用拉到的行）不算本机改动（`seenTc` 跟着挪）。
+  · 有 `meta.srv_url` = 服务器工作区。**时机**：打开前**只拉**（`ServerSyncIO.openRound`，2026-11-21 用户定：原先打开前完整一轮，整库扫描 + 笔记文件
+  要 2.5～3 秒、常常等满 3 秒被取消；现在只拉 → 应用 → 补图片 / 网页文件）。启动页 `openWorkspace` 与阅读界面开库前各最多等 3 秒，超时照常开本机这份；
+  启动页刚同步过 60 秒内阅读界面不再同步，启动页那一轮还在跑就接着等它。本机没推的改动打开后由**另一条只读连接**在后台整库扫描找出
+  （`ServerSyncIO.unpushedRows` → `SyncDirty.putBack`，不占库队列）再推；笔记文件、补拉也在打开后（`watch`）。关掉工作区那一轮仍是完整一轮。
+  每轮写一行分步计时日志（`UniReader/Server`「打开前只拉 / 完整一轮 共 …ms：开库 · 找改动 · 推 · 拉 · 应用 · … · 笔记文件」）；阅读界面开着时（`ServerSync.sessionStart`，**S4 起能收了**，`../docs/SERVER-MODE-PLAN.md §13.12`）：
+  · **推**：**停手满 2 秒**（至少隔 5 秒；每分钟兜底；`onPause` 不等停手马上推）才找改动推，基线逐行写不开事务。
+    **只查改过的行**（2026-11-21，`SyncDirty`）：会话开头在主连接上挂 TEMP 触发器，参与同步的表 + OCR / 图片 / 对齐 + `sync_base` 每写一行记进
+    `temp.sync_dirty`（行 id + 写入时刻）；找改动只对这几行算指纹（`SyncClient.localChanges(db, folder, dirty)`，结果与整库扫描逐字节相同，`SyncDirtyTest`），
+    停手按记下的写入时刻算、满 2 秒那一刻就查（`Session.wake`），不再要求两次推送隔 5 秒（`MIN_PUSH_MS` 只留给整库扫描）。
+    会话开头、触发器丢了时整库扫描一次；开库前那一轮刚完整做完（`freshRound`）就不扫。阅读界面开库前若启动页那一轮还在后台跑，**接着等它**、不取消重来
+    （原先两轮各 3 秒多，打开要七秒半）。整库扫描本身 2026-11-21 也提速了：`MirrorFp.fingerprint` 复用摘要对象、查表转十六进制
+    （原先每行 8 次 `String.format`，占了七八成），`MirrorStore.fingerprints` 只读指纹用得到的列——301 工作区 2.8 万行 3.1 秒 → 1.3 秒，指纹逐字不变；
+    没推成把这批行放回记录。拉取 / 补拉写的行 `SyncDirty.settle` 成「不算用户在写」。没挂上触发器 → 退回原来的 `total_changes()` + 整库扫描。
+    🔴 触发器体里只许「先删再插 / 不在才插」：外层语句带 `OR ABORT` 之类冲突策略时会顶掉触发器里的 `OR REPLACE`，一冲突连用户的写入一起失败。
+  · 🔴 **开着 WAL 的库，`total_changes()` / TEMP 表一律在事务里读**（`Db.totalChanges()`、`SyncDirty` 每个函数都自己开事务）：安卓给它配的是连接池，
+    写入走主连接，事务外的单条 SELECT 会落到池里的只读连接上——`total_changes()` 永远是 0、TEMP 表根本不存在。2026-11-21 服务器工作区开着时平板写的笔迹
+    **一笔都不推**（关掉工作区那一轮才推上去）就是这个；`SyncDirtyTest.主连接上读total_changes看得见写入` 在真机上量到「主连接 0→1，直接 SELECT 0→0」。
   · **收**：`watch` 线程挂着等服务器通知（`ServerClient.waitForChange`，长轮询 `GET wait`，`../docs/PROTOCOL.md §9.6`，最多 25 秒一轮）；有动静 →
     网络线程 `SyncClient.fetchPulled` 攒齐所有页 → 在**库队列**上 `applyPulled` + 记修订号（和用户自己的写入排一条队，内存快照对得上）→ 主线程回调
     `ReaderActivity.onRemoteRows`：按受影响的表刷新书库 / 画板 / 习题，开着的文档 `reloadStrokes` / `reloadNotes` / `reloadImageNotes`（库队列先进先出，读到的是应用之后的状态）。

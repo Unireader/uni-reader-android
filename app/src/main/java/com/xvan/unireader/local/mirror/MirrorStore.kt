@@ -167,7 +167,11 @@ object MirrorStore {
     fun fingerprints(db: Db, spec: MirrorFp.TableSpec): Map<String, String> {
         // 表不存在（v16 画板两张在老库里可能还没有）= 这张表没有行，别让 SELECT 炸掉整次建镜像 / 合并
         if (!hasTable(db, spec.table)) return emptyMap()
-        var rows = db.query("SELECT * FROM ${spec.table}") { readRow(it) }
+        // 只读指纹用得到的列（主键 + spec 列）：`note.points` 这类大字段不读（2026-11-21，平板整库扫描提速）。
+        // 老库少的列不点名（点名不存在的列会报错），读出来缺这一列 = NULL，与原先 `SELECT *` 逐字节同指纹
+        val have = db.query("PRAGMA table_info(${spec.table})") { it.getString(it.getColumnIndexOrThrow("name")) }.toSet()
+        val cols = (listOf(spec.key) + spec.columns.map { it.name }).distinct().filter { it in have }
+        var rows = db.query("SELECT ${cols.joinToString(",") { "\"$it\"" }} FROM ${spec.table}") { readRow(it) }
         if (spec.table == "meta") {
             rows = rows.filter { (it["key"] as? String) in MirrorFp.syncedMetaKeys }
         }

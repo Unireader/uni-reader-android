@@ -124,6 +124,21 @@ class Db private constructor(
     }
 
     /**
+     * 这个库从打开起一共改过多少行（`total_changes()`），**在写入用的主连接上读**。
+     *
+     * 开着 WAL 时安卓给库配的是连接池：写入走主连接，事务外的单条 SELECT 会被分到池里的只读连接上——
+     * 那条连接自己从不写，`total_changes()` 永远是 0，拿它判断「库被写过没有」就永远是「没写过」
+     * （2026-11-21：服务器工作区开着时平板写的笔迹一笔都不推，关掉工作区才推上去，就是这个）。
+     * 开事务会把这条线程钉在主连接上；空事务提交不写盘。要和写入在同一条线程上调（库队列），
+     * 否则拿写锁会和那边的写入互相等。
+     */
+    fun totalChanges(): Long {
+        val sql = "SELECT total_changes()"
+        if (readOnly) return query(sql) { it.getLong(0) }.first()   // 只读库不写，也开不了写事务
+        return transaction { query(sql) { it.getLong(0) }.first() }
+    }
+
+    /**
      * 把 `-wal` 合并回主库并截断。
      *
      * 打开时与关闭时各做一次（`ANDROID-STANDALONE-PLAN.md §9.2`）：工作区靠 U 盘/同步盘在

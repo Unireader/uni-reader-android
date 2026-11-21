@@ -19,7 +19,7 @@ import java.security.MessageDigest
 /**
  * 安卓客户端对着**真服务器**的端到端（`../docs/SERVER-MODE-PLAN.md` S3；Mac 那边是 `../spike/server-client-test.swift`）。
  * 平板扮演两台设备（A = 上传的原件，B = 从服务器建的缓存），走：配对 → 上传 → 建缓存 → 补图片 / 下 PDF →
- * 两边各改一处后完整同步 → 删除传播 → 开着时只推（记基线）→ 变回本地。
+ * 两边各改一处后完整同步 → 删除传播 → 开着时只推（记基线）→ 打开前只拉 → 变回本地。
  *
  * 服务器由 `../spike/android-server-e2e.sh` 起（Mac 上的临时服务器 + `adb reverse`），地址与配对码经插桩参数传进来；
  * 没传就跳过（日常 `connectedDebugAndroidTest` 不会因此变红）。全程在 `cacheDir` 里做。
@@ -147,6 +147,24 @@ class ServerSyncE2ETest {
         ServerSyncIO.closedRound(b, client, info.id)
         assertTrue("开着时加的" in titles(b, docId))
 
+        // ⑦b 打开前只拉（`ServerSyncIO.openRound`，2026-11-21）：A 本机加一条不推、B 推一条 →
+        // A 只拉：拿到 B 的、自己那条留在本机没推；后台扫描（另一条只读连接）找得出它；A 完整一轮之后 B 才有
+        val aOnly = LibraryStore.open(a).use { it.insertBookmark(docId, 0, 0.3f, "A 没推的")!! }
+        LibraryStore.open(b).use { it.insertBookmark(docId, 1, 0.3f, "B 推的") }
+        ServerSyncIO.closedRound(b, client, info.id)
+        val ra = ServerSyncIO.openRound(a, client, info.id)
+        assertEquals("只拉不推", 0, ra.pushed)
+        assertTrue("拉到了 B 推的", ra.pulled >= 1)
+        assertTrue("B 推的" in titles(a, docId))
+        assertTrue("A 没推的" in titles(a, docId))
+        ServerSyncIO.closedRound(b, client, info.id)
+        assertFalse("A 那条还没推上去", "A 没推的" in titles(b, docId))
+        assertEquals(setOf(aOnly), ServerSyncIO.unpushedRows(a)["note"])
+        ServerSyncIO.closedRound(a, client, info.id)
+        assertTrue(ServerSyncIO.unpushedRows(a).isEmpty())
+        ServerSyncIO.closedRound(b, client, info.id)
+        assertTrue("A 完整一轮之后 B 有了", "A 没推的" in titles(b, docId))
+
         // ⑧ 取消：取消开关一拉，正在飞的 / 之后的请求都抛 Cancelled
         val cancel = ServerClient.Cancel().apply { cancel() }
         assertTrue(runCatching { acc.client(cancel).workspaces() }.exceptionOrNull() is ServerClient.Cancelled)
@@ -155,7 +173,7 @@ class ServerSyncE2ETest {
         LibraryStore.open(a).use { s -> s.withMirrorDb { SyncClient.detach(it) } }
         assertNull(ServerSyncIO.serverLink(a))
         LibraryStore.open(a, readOnly = true).use { s -> s.withMirrorDb { assertFalse(MirrorStore.hasSyncBase(it)) } }
-        assertEquals(setOf("A 的书签", "B2", "开着时加的"), titles(a, docId))
+        assertEquals(setOf("A 的书签", "B2", "开着时加的", "A 没推的", "B 推的"), titles(a, docId))
         assertTrue(client.workspaces().any { it.id == info.id })
     }
 

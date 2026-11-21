@@ -109,9 +109,21 @@ object SyncRows {
         ALIGN to MirrorStore.alignStamps(db),
     )
 
+    /** 待删除早于这一刻的图片不算「拿得出来」（[imageKeys] / [imageAvailable] 共用） */
+    fun imageCutoff(now: Instant = Instant.now()): String = Iso.string(now.minus(IMAGE_PURGE_AFTER))
+
+    /** 单张图片是否算进 [imageKeys]（口径逐条相同：没到期、文件在）。[row] = `image` 表的一行。只安卓有（开着时只查改过的行用） */
+    fun imageAvailable(folder: File, row: Map<String, Any?>, cutoff: String): Boolean {
+        val sha = row["sha256"] as? String ?: return false
+        val ext = row["ext"] as? String ?: return false
+        val orphaned = row["orphaned_at"] as? String
+        if (orphaned != null && orphaned < cutoff) return false
+        return ImageAssets.file(folder, sha, ext).isFile
+    }
+
     fun imageKeys(db: Db, folder: File, now: Instant = Instant.now()): Set<String> {
         if (!MirrorStore.hasTable(db, IMAGE)) return emptySet()
-        val cutoff = Iso.string(now.minus(IMAGE_PURGE_AFTER))
+        val cutoff = imageCutoff(now)
         return db.query(
             "SELECT sha256, ext FROM image WHERE orphaned_at IS NULL OR orphaned_at >= ?",
             arrayOf(cutoff),
