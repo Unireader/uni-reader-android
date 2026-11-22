@@ -293,6 +293,8 @@ data class Exercise(
     val note: String = "",
     /** 用户划的高亮（v27 `exercise.marks`，`../docs/EXERCISE-PLAN.md §32`）。 */
     val marks: List<ExMark> = emptyList(),
+    /** 题目标签（v24 `exercise.tags`，同 Mac `Exercise.tags`；只读打开的老库没有这一列 = 空）。 */
+    val tags: List<String> = emptyList(),
 ) {
     /**
      * 同一篇文章的认法：文档 + 文章 id（同 Mac `passageKey`）；不属于文章 → null。

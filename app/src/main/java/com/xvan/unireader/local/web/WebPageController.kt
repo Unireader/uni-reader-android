@@ -417,7 +417,7 @@ object WebBridge {
             return call(m).then(function (t) { return JSON.parse(t); });
           }
           var api = {
-            version: 1,
+            version: 2,
             page: $info,
             get: function (key, fallback) {
               return req('get', key).then(function (v) { return (v === null && fallback !== undefined) ? fallback : v; });
@@ -431,7 +431,13 @@ object WebBridge {
             remove: function (key) { return req('remove', key).then(function () {}); },
             keys: function () { return req('keys'); },
             getAll: function () { return req('getAll'); },
-            clear: function () { return req('clear').then(function () {}); }
+            clear: function () { return req('clear').then(function () {}); },
+            query: function (name, args) { return req('query', name, args === undefined ? '{}' : JSON.stringify(args)); },
+            documents: function () { return api.query('documents'); },
+            exercises: function (opts) { return api.query('exercises', opts || {}); },
+            exercise: function (id) { return api.query('exercise', { id: id }); },
+            exerciseStats: function (opts) { return api.query('exerciseStats', opts || {}); },
+            attempts: function (opts) { return api.query('attempts', opts || {}); }
           };
           Object.freeze(api);
           Object.defineProperty(window, 'unireader', { value: api, enumerable: true });

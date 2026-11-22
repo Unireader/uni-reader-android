@@ -1210,6 +1210,14 @@ class LibraryStore(private val db: Db) : Closeable {
      * 每道做过的题的作答统计（同 Mac `exerciseAttemptStats`：一条 GROUP BY + 书上的作答 + 最近一次 + App 里练的最近一次）。
      * 没做过的题不在结果里。时间是 ISO 毫秒串，字典序 = 时间序。
      */
+    /** 每道题还没判的作答数（同 Mac `ExerciseAttemptStats.ungraded`：`SUM(correct IS NULL)`）。网页查询用。 */
+    fun exerciseUngradedCounts(): Map<String, Int> {
+        if (!hasExerciseTables()) return emptyMap()
+        return db.query("SELECT exercise_id, SUM(correct IS NULL) FROM exercise_attempt GROUP BY exercise_id") {
+            it.getString(0) to it.getInt(1)
+        }.toMap()
+    }
+
     fun exerciseAttemptStats(): Map<String, com.xvan.unireader.local.exercise.ExAttemptStats> {
         if (!hasExerciseTables()) return emptyMap()
         val out = HashMap<String, com.xvan.unireader.local.exercise.ExAttemptStats>()
@@ -1433,6 +1441,8 @@ class LibraryStore(private val db: Db) : Closeable {
             note = c.getColumnIndex("note").let { i -> if (i < 0 || c.isNull(i)) "" else c.getString(i) },   // 只读打开的老库没有这一列
             marks = com.xvan.unireader.local.exercise.ExMark.decode(
                 c.getColumnIndex("marks").let { i -> if (i < 0 || c.isNull(i)) "" else c.getString(i) }),
+            tags = com.xvan.unireader.local.exercise.ExChapter.parse(
+                c.getColumnIndex("tags").let { i -> if (i < 0 || c.isNull(i)) "" else c.getString(i) }),
         )
     }
 

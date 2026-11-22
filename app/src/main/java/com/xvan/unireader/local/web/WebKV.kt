@@ -45,6 +45,10 @@ object WebKV {
             "keys" -> JSONArray(s.webKV(webId).map { it.first }).toString()
             "getAll" -> s.webKV(webId).joinToString(",", "{", "}") { (k, v) -> JSONObject.quote(k) + ":" + v }
             "clear" -> { s.clearWebKV(webId); "true" }
+            "query" -> {   // 只读查询（习题库 / 做题状态），见 WebQuery.kt（Mac `WorkspaceManager+WebQuery.swift`）
+                if (key.isNullOrEmpty()) throw Error("A query name is required.")
+                WebQuery.run(s, key, value)
+            }
             else -> throw Error("Unknown operation: $op")
         }
     }
