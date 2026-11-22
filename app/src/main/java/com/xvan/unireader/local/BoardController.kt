@@ -237,7 +237,7 @@ class BoardController(
     fun open(b: BoardNote, pages: List<BoardPage>) {
         val q = queue ?: return
         val same = board?.id == b.id
-        if (!same) { undoStack.clear(); redoStack.clear() }   // 撤销栈属于「这一篇」
+        if (!same) { undoStack.clear(); redoStack.clear(); writesInFlight = 0; staleDeferred = false }   // 撤销栈属于「这一篇」
         board = b
         canvas.setPaper(b.bg, b.pattern)
         canvas.visibility = View.VISIBLE
@@ -274,6 +274,8 @@ class BoardController(
     fun close() {
         if (board == null) return
         flushViewportSave()
+        writesInFlight = 0
+        staleDeferred = false
         board = null
         canvas.visibility = View.GONE
         barView.visibility = View.GONE
@@ -323,7 +325,7 @@ class BoardController(
      * 这一篇的页、笔迹、图片整篇重读（排在同一条队列上，读到的是应用之后的状态）。页没变就不重排页（视口不动）。
      * 这一篇被别处删了 → 留着眼前这份，不替用户关。撤销栈清空（快照对不上库了）。
      */
-    fun reloadFromRemote() {
+    fun reloadFromRemote(fromRemote: Boolean = true) {
         val q = queue ?: return
         val b = board ?: return
         q.submit("别处改了画板，重读 ${b.id.take(8)}", { s ->
@@ -331,12 +333,15 @@ class BoardController(
             Triple(s.board(b.id), ps, readContents(s, b.id, ps))
         }, { (row, ps, c) ->
             if (board?.id != b.id || row == null) return@submit
+            if (staleNow("别处改了")) return@submit
             board = row
             canvas.setPaper(row.bg, row.pattern)
             if (ps.pages != pageSet.pages) applyPages(ps)
-            applyContents(c)
-            undoStack.clear()
-            redoStack.clear()
+            applyContents(c, "别处改了")
+            if (fromRemote) {   // 别处改了的快照对不上：撤销栈清空；本机写完补的那次重读不动栈
+                undoStack.clear()
+                redoStack.clear()
+            }
             updateBar()
         })
     }
@@ -366,10 +371,11 @@ class BoardController(
         return Contents(ps, strokes, pics, exts)
     }
 
-    private fun applyContents(c: Contents, keep: List<Stroke> = emptyList()) {
+    private fun applyContents(c: Contents, tag: String = "整篇重读") {
+        if (staleNow(tag)) return
         imageExts.clear()
         imageExts.putAll(c.exts)
-        canvas.setStrokes(c.strokes, keep)
+        applyStrokes(tag, c.strokes)
         canvas.setPics(c.pics)
         updateBar()
     }
@@ -766,24 +772,86 @@ class BoardController(
         val q = queue ?: return
         val b = board ?: return
         if (!pageSet.paged) return
-        q.submit("$what ${b.id.take(8)}", { s ->
+        submitWrite(q, "$what ${b.id.take(8)}", { s ->
             runCatching { s.transaction { op(s, b, s.boardPages(b.id)) } }
                 .onFailure { Log.e(TAG, "$what 写库失败", it) }
             val ps = BoardPageSet(s.boardPages(b.id))
             readContents(s, b.id, ps)
         }, { c ->
-            if (board?.id != b.id) return@submit
-            // 排队期间刚落下、还没回执的乐观笔迹先留着（它们落库后会按新布局重读一次，见 commitInk）
-            val keep = canvas.strokeList().filter { it.id in pendingInk && c.strokes.none { s -> s.id == it.id } }
+            if (board?.id != b.id) return@submitWrite
             applyPages(c.pages)
-            applyContents(c, keep)
+            applyContents(c, "页操作")
         })
     }
 
     // ---------- 写库（全部走 StoreQueue；回主线程先核对画板 id） ----------
 
+    // ---------- 写操作进行中：期间到达的库回读一律过期 ----------
+    //
+    // 擦除 / 框选 / 撤销 / 改图 / 页操作都是「先改画布、再排队写库」。队列先进先出，回调按同一顺序回到主线程：
+    // 一次库回读（同步拉到数据触发的整篇重读、写完补的重读）若在这类写操作提交之前就排上了，它的结果里没有这次写，
+    // 回调又先于写操作自己的回调到达——这时上屏会把已经擦掉的笔放回来、把挪过的笔放回原位（「擦掉又恢复」，2026-11-22 用户报）。
+    // 所以进行中的写操作 > 0 时到达的回读直接丢弃，等全部写完补一次最新的重读。落笔另有 [pendingInk] 保护，不算在内。
+
+    private var writesInFlight = 0
+    private var staleDeferred = false
+
+    /** 提交一次写操作；无论成败都会回到主线程收计数（失败 = 以库为准补一次重读） */
+    private fun <T> submitWrite(q: StoreQueue, what: String, work: (LibraryStore) -> T, then: (T) -> Unit) {
+        writesInFlight++
+        q.submit(what, { s -> runCatching { work(s) } }, { r ->
+            endWrite()
+            r.fold({ then(it) }, { Log.e(TAG, "$what 失败，重读以库为准", it); reloadFromRemote(false) })
+        })
+    }
+
+    private fun endWrite() {
+        if (writesInFlight > 0) writesInFlight--
+        if (writesInFlight == 0 && staleDeferred) {
+            staleDeferred = false
+            reloadFromRemote(false)
+        }
+    }
+
+    /** 此刻到达的库回读是否已过期（有写操作在途）；过期的记一笔，写完补重读 */
+    private fun staleNow(tag: String): Boolean {
+        if (writesInFlight == 0) return false
+        staleDeferred = true
+        Log.i(TAG, "库回读[$tag]到达时有 $writesInFlight 次写操作在途：丢弃，写完补一次重读")
+        return true
+    }
+
     /** 落了笔、还没等到写库回执的笔迹 id */
     private val pendingInk = HashSet<String>()
+
+    /** 排查「刚写的笔消失」：最近落笔的 id → 时刻；整表替换画布时查有没有被换掉（打点 UniReader/Board） */
+    private val recentInk = HashMap<String, Long>()
+
+    /**
+     * 🔴 库回读上屏的**唯一出口**（整篇重读 / 擦除 / 撤销 / 图片 / 页操作 / 别处改了，一律经这里）。
+     * 回读是在库队列上读的、主线程回调才上屏；读的那一刻还没写进库的本地笔（[pendingInk]）不在结果里，
+     * 整表替换会把它们从画布上顶掉，直到下一次重读才「恢复」（2026-11-22 用户报）。
+     * 队列先进先出、回调按同一顺序回到主线程，所以回读回调执行时 [pendingInk] 里的笔一定不在这次结果里：留下。
+     * 新增的回读路径不许绕过它直接 `canvas.setStrokes`。
+     */
+    private fun applyStrokes(tag: String, list: List<Stroke>) {
+        val have = HashSet<String>(list.size * 2)
+        for (st in list) have.add(st.id)
+        val keep = if (pendingInk.isEmpty()) emptyList()
+            else canvas.strokeList().filter { it.id in pendingInk && it.id !in have }
+        val now = android.os.SystemClock.uptimeMillis()
+        recentInk.entries.removeAll { now - it.value > 60_000 }
+        val kept = HashSet<String>().also { for (st in keep) it.add(st.id) }
+        val lost = canvas.strokeList().filter { recentInk.containsKey(it.id) && it.id !in have && it.id !in kept }
+        if (lost.isNotEmpty()) {
+            // 排查打点：刚写的笔被换掉了（正常情况只有用户自己擦掉 / 撤销的）
+            Log.w(TAG, "整表替换[$tag]换掉了刚写的 ${lost.size} 笔：" +
+                lost.joinToString { "${it.id.take(8)}(${now - (recentInk[it.id] ?: now)}ms前)" })
+        } else {
+            Log.i(TAG, "整表替换[$tag]：新表 ${list.size} 条，保留未落库 ${keep.size} 条")
+        }
+        canvas.setStrokes(list, keep)
+    }
 
     /**
      * 收笔：乐观落地，写失败才撤掉并重读真源纠偏（同 ScratchController.commitInk）。
@@ -798,6 +866,7 @@ class BoardController(
         val gen = layoutGen
         canvas.addCommitted(Stroke(0, pen, pts, id))
         pendingInk.add(id)
+        recentInk[id] = android.os.SystemClock.uptimeMillis()
         q.submit("画板落笔 点数=${pts.size}", { s ->
             runCatching { ensureRow(s, b); s.insertBoardStroke(b.id, pen, pts, id, ps) }
                 .onSuccess { Log.i(TAG, "画板落笔 点数=${pts.size} id=${id.take(8)}") }
@@ -824,7 +893,7 @@ class BoardController(
         val b = board ?: return
         val ps = pageSet
         val gen = layoutGen
-        q.submit("画板框选落库 ${changed.size} 条", { s ->
+        submitWrite(q, "画板框选落库 ${changed.size} 条", { s ->
             runCatching { s.updateBoardStrokes(changed, ps) }
                 .onFailure { Log.e(TAG, "画板框选写库失败，回退到库里的状态", it) }
                 .isSuccess
@@ -869,7 +938,7 @@ class BoardController(
         val back = BoardStep(ArrayList(canvas.strokeList()))
         (if (redo) undoStack else redoStack).addLast(back)
         val ps = pageSet
-        q.submit("画板${if (redo) "重做" else "撤销"}", { s ->
+        submitWrite(q, "画板${if (redo) "重做" else "撤销"}", { s ->
             runCatching { s.restoreBoardStrokes(b.id, target.strokes, ps) }
                 .onSuccess { Log.i(TAG, "画板${if (redo) "重做" else "撤销"}：删 ${it.deleted} 改 ${it.updated} 插回 ${it.inserted}") }
                 .onFailure { Log.e(TAG, "画板撤销写库失败，回退到库里的状态", it) }
@@ -891,7 +960,7 @@ class BoardController(
         val q = queue ?: return
         val b = board ?: return
         val ps = pageSet
-        q.submit("画板图片落库 ${after.size} 张", { s ->
+        submitWrite(q, "画板图片落库 ${after.size} 张", { s ->
             runCatching { s.transaction { for (p in after) s.updateBoardImageRect(p.id, p.x, p.y, p.w, p.h, ps) } }
                 .onFailure { Log.e(TAG, "画板图片写库失败，回退到库里的状态", it) }
             readContents(s, b.id, BoardPageSet(s.boardPages(b.id)))
@@ -921,7 +990,7 @@ class BoardController(
                     val h = p.height * sc
                     val ps = pageSet
                     pushUndo()
-                    queue?.submit("画板插图", { s ->
+                    submitWrite(queue ?: return@runOnUiThread, "画板插图", { s ->
                         ensureRow(s, b)
                         s.insertImageIfAbsent(
                             com.xvan.unireader.local.store.LibImage(p.sha256, p.ext, p.width, p.height, p.data.size.toLong(), com.xvan.unireader.local.store.Iso.now(), null),
@@ -963,7 +1032,7 @@ class BoardController(
         val b = board ?: return
         canvas.clearLasso()
         pushUndo()
-        q.submit("删画板图片", { s ->
+        submitWrite(q, "删画板图片", { s ->
             runCatching { s.deleteBoardImage(p.id) }.onFailure { Log.e(TAG, "删画板图片失败", it) }
             readContents(s, b.id, BoardPageSet(s.boardPages(b.id)))
         }, { c -> if (board?.id == b.id) applyContents(c) })
@@ -997,7 +1066,7 @@ class BoardController(
         val ps = pageSet
         // 必须在这里就 groupBy 定格：画布的 strokes 随后还会被回推整体换掉
         val local = snapshot.filter { it.id.isNotEmpty() }.groupBy { it.id }
-        q.submit("画板擦除落库", { s ->
+        submitWrite(q, "画板擦除落库", { s ->
             val d = runCatching { s.reconcileBoardStrokes(b.id, local, ps) }
                 .onSuccess {
                     if (it.changed) Log.i(TAG, "画板擦除落库：删 ${it.deleted} 条，改 ${it.updated} 条，插 ${it.inserted} 段")
@@ -1006,7 +1075,7 @@ class BoardController(
                 .getOrNull()
             if (d != null && !d.changed) null else s.boardStrokes(b.id, BoardPageSet(s.boardPages(b.id)))
         }, { list ->
-            if (list != null && board?.id == b.id) canvas.setStrokes(list)
+            if (list != null && board?.id == b.id && !staleNow("擦除落库")) applyStrokes("擦除落库", list)
         })
     }
 
@@ -1014,9 +1083,10 @@ class BoardController(
         val q = queue ?: return
         val b = board ?: return
         q.submit("重读画板笔迹", { s -> s.boardStrokes(b.id, BoardPageSet(s.boardPages(b.id))) }, { list ->
-            if (board?.id == b.id) canvas.setStrokes(list)
+            if (board?.id == b.id && !staleNow("重读笔迹")) applyStrokes("重读笔迹", list)
         })
     }
+
 
     /** 改纸样（不变则不写，免得白白 bump updated_at——同 Mac setPaper） */
     private fun setPaper(bg: String?, pattern: String?) {

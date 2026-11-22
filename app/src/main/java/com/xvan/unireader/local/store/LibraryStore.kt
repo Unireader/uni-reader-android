@@ -2342,8 +2342,14 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     /** 画板撤销栈要的：这篇画板此刻的图片行（整行） */
-    fun boardImageRows(boardId: String): List<BoardItem> =
-        boardItems(boardId).filter { it.kind == BoardItem.KIND_IMAGE }
+    /** 只查 kind=2 的行：笔迹动辄上万行，每次落笔前拍撤销快照时整篇读出来再过滤要 370ms（慢卷） */
+    fun boardImageRows(boardId: String): List<BoardItem> {
+        if (!hasTable("board_item")) return emptyList()
+        return db.query(
+            "SELECT * FROM board_item WHERE board_id=? AND kind=? ORDER BY created_at ASC",
+            arrayOf(boardId, BoardItem.KIND_IMAGE.toString()),
+        ) { boardItem(it) }
+    }
 
     /** 把画板的图片行恢复成 [rows] 那一份（同 [restoreUndoNoteRows]：删多的、补少的、变了的整行写回，再对账图片） */
     fun restoreBoardImageRows(boardId: String, rows: List<BoardItem>): Int {
