@@ -62,6 +62,8 @@ class ExerciseController(private val a: Activity) : ExHost {
 
     /** 抽屉「习题」一段（摊平的分组）变了。 */
     var onGroups: (List<ExGroup>) -> Unit = {}
+    /** 习题 / 作答有变（自己答题、判定、清除、同步拉到）：网页里的 `unireader:exercises` 事件接在这里。主线程。 */
+    var onDataChanged: () -> Unit = {}
     /** 到 PDF 原页：文档 id、页（0 起）、页内纵向比例。 */
     var onOpenSource: (String, Int, Float) -> Unit = { _, _, _ -> }
     /** 「看原题」/「设置章节」要开的那本书（只留最近一本，同参考窗的做法）。 */
@@ -99,6 +101,7 @@ class ExerciseController(private val a: Activity) : ExHost {
             docs = list
             doneSummary = done
             onGroups(groups())
+            onDataChanged()
             then?.invoke()
         })
     }
@@ -107,6 +110,7 @@ class ExerciseController(private val a: Activity) : ExHost {
     private fun refreshDone() {
         val q = queue ?: return
         q.submit("读习题做过几道", { s -> ExDoneSummary.of(s.exerciseDoneCounts()) }, { done ->
+            onDataChanged()   // 重复答已经做过的题「已做」不变，但作答次数变了
             if (done == doneSummary) return@submit
             doneSummary = done
             onGroups(groups())

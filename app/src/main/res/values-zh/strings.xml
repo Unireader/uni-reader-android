@@ -657,4 +657,5 @@
     <string name="ws_lent">借出 %1$d 份</string>
     <string name="lib_pdf_not_in_mirror">没有离线</string>
     <string name="lib_pdf_missing">找不到 PDF</string>
+    <string name="web_ex_missing">这道题不在当前工作区里。</string>
 </resources>

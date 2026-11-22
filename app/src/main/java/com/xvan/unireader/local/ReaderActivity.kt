@@ -877,9 +877,10 @@ class ReaderActivity : Activity() {
             onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
             onTreeChanged = { pushDrawerLibrary(); refreshMdTitles() }
         }
-        webPage = com.xvan.unireader.local.web.WebPageController(this)
+        webPage = com.xvan.unireader.local.web.WebPageController(this).apply { onOpenExercise = { openExerciseById(it) } }
         exercise = ExerciseController(this).apply {
             onGroups = { drawer.setExercises(it) }
+            onDataChanged = { webPage.exercisesChanged() }
             onOpenSource = { docId, page, frac -> openExerciseSource(docId, page, frac) }
             screen.view.visibility = View.GONE
         }
@@ -1768,6 +1769,20 @@ class ReaderActivity : Activity() {
      * ① 已经有标签开着这一组 → 切过去（`newTab` 且它是公用的 → 就地改成单独开的，不开一个重复的）；
      * ② 否则不要新标签 → 同一支的公用标签就地换成这一组；③ 都没有 → 新开（`newTab` = 单独开的）。
      */
+    /** 网页里点了 `unireader://open?ex=<id>`：找到这道题 → 开它所在的那一组、停在它上面（同 Agent `open_exercises` 只给 exercise_id）。 */
+    private fun openExerciseById(id: String) {
+        val q = queue ?: return
+        q.submit("网页打开习题 ${id.take(8)}", { s -> s.exercise(id) }, { e ->
+            if (e == null) {
+                Toast.makeText(this, getString(R.string.web_ex_missing), Toast.LENGTH_SHORT).show()
+                return@submit
+            }
+            val scope = e.documentId?.let { ExScope.Document(it) } ?: ExScope.Chapter(ExScope.LOOSE_ID, listOfNotNull(e.group))
+            exercise.focus(e.id)
+            openExercises(scope.key, newTab = false)
+        })
+    }
+
     private fun openExercises(key: String, newTab: Boolean) {
         val scope = ExScope.parse(key) ?: return
         val i = tabs.indexOfFirst { it.isExercise && TabSet.exerciseKeyOf(it.docId) == key }

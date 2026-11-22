@@ -52,6 +52,9 @@ class WebPageController(private val a: Activity) {
         private const val SCROLL_PREFIX = "scroll."
     }
 
+    /** 页面里点了 `unireader://open?ex=…`：宿主打开那道题（主线程）。 */
+    var onOpenExercise: (String) -> Unit = {}
+
     val view = FrameLayout(a).apply {
         setBackgroundColor(Ui.surface(a))
         visibility = View.GONE
@@ -209,6 +212,11 @@ class WebPageController(private val a: Activity) {
         if (current != null) web.evaluateJavascript("try{window.dispatchEvent(new CustomEvent('unireader:change'))}catch(e){}", null)
     }
 
+    /** 习题 / 作答有变：告诉页面（`unireader:exercises`，页面自己重查）。 */
+    fun exercisesChanged() {
+        if (current != null && view.visibility == View.VISIBLE) web.evaluateJavascript("try { window.dispatchEvent(new CustomEvent('unireader:exercises')); } catch (e) {}", null)
+    }
+
     fun close() {
         current?.let { w -> web.url?.let { u -> pathOf(Uri.parse(u))?.let { prefs().edit().putString(w.id.uppercase(Locale.ROOT), it).apply() } } }
         view.visibility = View.GONE
@@ -276,6 +284,11 @@ class WebPageController(private val a: Activity) {
             val u = request.url
             if (u.host?.endsWith(HOST_SUFFIX) == true) return false
             val scheme = u.scheme?.lowercase() ?: return false
+            // `unireader://open?ex=<习题 id>`：打开本工作区里那道题的练习页（只认 ex；别的参数本端不处理，同 Mac `DeepLinkRouter` 的 ex 一支）
+            if (scheme == "unireader") {
+                if (request.isForMainFrame) u.getQueryParameter("ex")?.takeIf { it.isNotEmpty() }?.let { onOpenExercise(it) }
+                return true
+            }
             if (scheme == "about" || scheme == "data" || scheme == "blob" || scheme == "javascript") return false
             // 主框架点到外面：交给系统浏览器；子框架照常
             if (!request.isForMainFrame) return false
@@ -432,6 +445,13 @@ object WebBridge {
             keys: function () { return req('keys'); },
             getAll: function () { return req('getAll'); },
             clear: function () { return req('clear').then(function () {}); },
+            // 习题 / 作答有变时调 fn（停手 [ms] 毫秒才调一次，默认 300）；返回取消函数。内嵌显示与安卓会推；本机浏览器那条路不推
+            watch: function (fn, ms) {
+              var t = 0, wait = ms === undefined ? 300 : ms;
+              function h() { clearTimeout(t); t = setTimeout(function () { try { fn(); } catch (e) { console.error(e); } }, wait); }
+              window.addEventListener('unireader:exercises', h);
+              return function () { clearTimeout(t); window.removeEventListener('unireader:exercises', h); };
+            },
             query: function (name, args) { return req('query', name, args === undefined ? '{}' : JSON.stringify(args)); },
             documents: function () { return api.query('documents'); },
             exercises: function (opts) { return api.query('exercises', opts || {}); },

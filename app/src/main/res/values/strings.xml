@@ -662,4 +662,5 @@
     <string name="ws_lent">%1$d copies lent out</string>
     <string name="lib_pdf_not_in_mirror">Not in offline copy</string>
     <string name="lib_pdf_missing">PDF not found</string>
+    <string name="web_ex_missing">This exercise is not in the workspace.</string>
 </resources>

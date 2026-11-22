@@ -22,6 +22,7 @@ object WebQuery {
             "documents" -> documents(s)
             "exercises" -> exercises(s, args)
             "exercise" -> exercise(s, args)
+            "exerciseStatus" -> status(s, args)
             "exerciseStats" -> stats(s, args)
             "attempts" -> attempts(s, args)
             else -> throw WebKV.Error("Unknown query: $name")
@@ -77,6 +78,7 @@ object WebQuery {
         })
         val inGroup = if (e.documentId == null) e.chapter.drop(1) else e.chapter
         o.put("chapter", JSONArray(inGroup)); o.put("tags", JSONArray(e.tags))
+        o.put("link", "unireader://open?ex=" + e.id)   // 安卓不知道工作区路径：只带 ex，页面里点了由本机当前工作区处理
         o.put("starred", e.starred); o.put("in_mistakes", e.wrong)
         o.put("attempts", st?.attempts ?: 0); o.put("correct", st?.correct ?: 0); o.put("wrong", st?.wrong ?: 0)
         o.put("ungraded", ungraded)
@@ -109,15 +111,11 @@ object WebQuery {
             .put("groups", groupNames(s))
     }
 
-    private fun exercises(s: LibraryStore, a: JSONObject): JSONObject {
-        val stats = s.exerciseAttemptStats()
-        val ungraded = s.exerciseUngradedCounts()
-        fun j(e: Exercise, full: Boolean = false) = exerciseJson(e, stats[e.id], ungraded[e.id] ?: 0, full)
-        strings(a, "ids")?.takeIf { it.isNotEmpty() }?.let { ids ->
-            val found = ids.take(MAX_LIMIT).mapNotNull { s.exercise(it) }
-            return JSONObject().put("total", found.size).put("offset", 0).put("groups", groupNames(s))
-                .put("exercises", JSONArray(found.map { j(it) }))
-        }
+    /** `exercises` / `exerciseStatus` 共用：按参数筛出题（不分页）。 */
+    private fun select(
+        s: LibraryStore, a: JSONObject, stats: Map<String, com.xvan.unireader.local.exercise.ExAttemptStats>,
+    ): List<Exercise> {
+        strings(a, "ids")?.takeIf { it.isNotEmpty() }?.let { ids -> return ids.take(MAX_LIMIT).mapNotNull { s.exercise(it) } }
         var chapter = strings(a, "chapter")?.map { it.trim() }?.filter { it.isNotEmpty() }
         var list: List<Exercise>
         if (a.has("group") && !a.isNull("group")) {
@@ -148,10 +146,33 @@ object WebQuery {
             "last_wrong" -> list = list.filter { stats[it.id]?.lastCorrect == false }
             else -> throw WebKV.Error("status must be any, new, practiced, last_correct or last_wrong.")
         }
-        val offset = int(a, "offset", 0, 0, Int.MAX_VALUE)
+        return list
+    }
+
+    private fun exercises(s: LibraryStore, a: JSONObject): JSONObject {
+        val stats = s.exerciseAttemptStats()
+        val ungraded = s.exerciseUngradedCounts()
+        val list = select(s, a, stats)
+        val offset = if (strings(a, "ids").isNullOrEmpty()) int(a, "offset", 0, 0, Int.MAX_VALUE) else 0
         val limit = int(a, "limit", DEFAULT_LIMIT, 1, MAX_LIMIT)
         return JSONObject().put("total", list.size).put("offset", offset).put("groups", groupNames(s))
-            .put("exercises", JSONArray(list.drop(offset).take(limit).map { j(it) }))
+            .put("exercises", JSONArray((if (offset == 0 && !strings(a, "ids").isNullOrEmpty()) list else list.drop(offset).take(limit))
+                .map { exerciseJson(it, stats[it.id], ungraded[it.id] ?: 0, false) }))
+    }
+
+    /** 轻量状态：每道题只带 id / 题号 / 章节 / 作答统计 / 错题本 / 收藏 / 链接，不带题干选项答案。不分页（同 Mac）。 */
+    private fun status(s: LibraryStore, a: JSONObject): JSONObject {
+        val stats = s.exerciseAttemptStats()
+        val ungraded = s.exerciseUngradedCounts()
+        val list = select(s, a, stats)
+        return JSONObject().put("total", list.size).put("exercises", JSONArray(list.map { e ->
+            val st = stats[e.id]
+            JSONObject().put("id", e.id).put("number", e.number)
+                .put("chapter", JSONArray(if (e.documentId == null) e.chapter.drop(1) else e.chapter))
+                .put("attempts", st?.attempts ?: 0).put("correct", st?.correct ?: 0).put("wrong", st?.wrong ?: 0)
+                .put("ungraded", ungraded[e.id] ?: 0).put("last_correct", st?.lastCorrect ?: JSONObject.NULL)
+                .put("in_mistakes", e.wrong).put("starred", e.starred).put("link", "unireader://open?ex=" + e.id)
+        }))
     }
 
     private fun exercise(s: LibraryStore, a: JSONObject): Any {
