@@ -112,6 +112,8 @@ class ReaderActivity : Activity() {
 
         /** 进度落库节流：滚动上报是 16ms 一次，直接写库等于一秒几十次事务 */
         const val SAVE_INTERVAL_MS = 2000L
+        /** 退出工作区：两次返回的最长间隔（ms） */
+        const val BACK_EXIT_MS = 2000L
 
         /** 标签页数量上限。再多就成了"栏上找不到那一篇"，且每篇都占一份库读写的份额 */
         const val MAX_TABS = 8
@@ -3523,8 +3525,18 @@ class ReaderActivity : Activity() {
             cur()?.cancelSnip()
             return
         }
+        // 退出工作区要连按两次（2 秒内），防误触：返回手势在平板侧边很容易蹭到
+        val now = SystemClock.uptimeMillis()
+        if (now - backArmedAt > BACK_EXIT_MS) {
+            backArmedAt = now
+            Toast.makeText(this, getString(R.string.back_again_to_exit), Toast.LENGTH_SHORT).show()
+            return
+        }
         super.onBackPressed()
     }
+
+    /** 上一次「再按一次退出」的时刻（uptime）；0 = 没按过 */
+    private var backArmedAt = 0L
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)

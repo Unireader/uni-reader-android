@@ -663,4 +663,5 @@
     <string name="lib_pdf_not_in_mirror">Not in offline copy</string>
     <string name="lib_pdf_missing">PDF not found</string>
     <string name="web_ex_missing">This exercise is not in the workspace.</string>
+    <string name="back_again_to_exit">Press back again to leave the workspace</string>
 </resources>
