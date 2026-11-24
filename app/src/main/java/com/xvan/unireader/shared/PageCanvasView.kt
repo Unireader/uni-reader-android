@@ -54,6 +54,8 @@ open class PageCanvasView @JvmOverloads constructor(
     protected open fun onInkBegin(page: Int, pen: Pen, pt: Pt3, line: Boolean) {}
     protected open fun onInkMove(pts: List<Pt3>) {}
     protected open fun onInkEnd() {}
+    /** 这一笔作废（笔轻点图钉）：子类丢掉为这一笔攒的点，随后的 onInkEnd 不落库 */
+    protected open fun onInkAbort() {}
     protected open fun onErase(page: Int, pts: List<Pt2>) {}
 
     /** 一次擦除拖动**动手之前**（模式1 的撤销栈在这里留快照；模式2 用不上） */
@@ -189,8 +191,8 @@ open class PageCanvasView @JvmOverloads constructor(
 
     /**
      * 单指**轻点**（全程没越过平移死区、也没变过双指捏合）。模式1 用它点草稿纸图钉。
-     * 只认手指、不认笔——平板上笔是用来写字的，让笔点图钉必然会在图钉上落笔时误触发
-     * （web `input.ts endTouch` 的同款决策）。
+     * 这里只管手指。笔点图钉另走 [penTapHit] / [onPenTap]（2026-11-24 起）：要求轻点（短、没动），
+     * 免得在图钉上落笔写字时误开。
      */
     /// 返回 true = 这一下被子类吃掉了（点开了草稿纸）；false 时基类接着判文字笔记（[tapNote]）。
     protected open fun onFingerTap(x: Float, y: Float): Boolean = false
@@ -208,6 +210,24 @@ open class PageCanvasView @JvmOverloads constructor(
 
     /** 手指落点（视口坐标）是否命中图钉热区。命中时子类记下是哪枚，后续由 onPinDrag* 回报 */
     protected open fun fingerPinHit(x: Float, y: Float): Boolean = false
+
+    // —— 笔轻点图钉（2026-11-24 用户要：笔也能点开草稿纸） ——
+    //
+    // 只认**轻点**：落在图钉热区、[PEN_TAP_MS] 内抬笔、全程没越过平移死区。写字时笔从图钉上划过
+    // （动了）或按住不放（长按呼出环形盘）都不算，所以不会在图钉附近写字时误开。
+    // 命中时这一下落的点作废（同环形盘提交：onInkCancel 再收笔）。橡皮模式 / 笔当橡皮用不认——
+    // 擦除在落笔那一刻就生效了，点一下会先擦掉图钉下面的笔迹。
+
+    /** 笔落点（视口坐标）是否在可轻点打开的东西上（模式1：草稿纸图钉）。只做判定、不触发 */
+    protected open fun penTapHit(x: Float, y: Float): Boolean = false
+
+    /** 笔轻点成立（视口坐标，落笔点）：返回 true = 吃掉（这一下的笔迹已作废） */
+    protected open fun onPenTap(x: Float, y: Float): Boolean = false
+
+    private var penTapArmed = false
+    private var penTapX = 0f
+    private var penTapY = 0f
+    private var penTapT = 0L
 
     /** 图钉拖动中（视口坐标）：子类做乐观移动（真源回推为权威，同乐观笔迹惯例） */
     protected open fun onPinDragMove(x: Float, y: Float) {}
@@ -238,6 +258,9 @@ open class PageCanvasView @JvmOverloads constructor(
         const val TAG = "UniReader/Canvas"
 
         const val ERASE_R_FALLBACK = 0.02f   // 橡皮归一化半径默认值（Mac eraser 消息到达前）
+
+        /** 笔轻点的时长上限（ms）：超过就当是在写 / 在按住（长按呼出盘要 1s，远在这之外） */
+        const val PEN_TAP_MS = 400L
 
         /** 乐观笔迹的本地 id 前缀（见 `pendingInk`）：日志里一眼认出「这条还没被真源确认」 */
         const val OPT_INK_PREFIX = "opt:"
@@ -2549,7 +2572,7 @@ open class PageCanvasView @JvmOverloads constructor(
             MotionEvent.ACTION_POINTER_UP -> {
                 val id = e.getPointerId(e.actionIndex)
                 if (id == zoneHeldId) zoneHeldId = -1
-                if (activePen && id == penId) { penNear.onPen(); endPen() }
+                if (activePen && id == penId) { penNear.onPen(); penUp(e) }
                 else if (id in touches && PenProximity.canceled(e)) rejectFingerGesture(Guard.REJECTED)
                 else endTouch(id)
             }
@@ -2557,7 +2580,7 @@ open class PageCanvasView @JvmOverloads constructor(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (activePen) {
                     penNear.onPen()
-                    endPen()
+                    if (e.actionMasked == MotionEvent.ACTION_UP) penUp(e) else endPen()
                     touches.clear(); touchOrder.clear(); pinch = null; panId = -1; panStarted = false
                 } else if (touches.isNotEmpty() && PenProximity.canceled(e)) {
                     rejectFingerGesture(Guard.REJECTED)
@@ -2867,6 +2890,8 @@ open class PageCanvasView @JvmOverloads constructor(
         activePen = true
         penId = e.getPointerId(idx)
         radialActive = false
+        penTapArmed = mode != MODE_ERASE && !isEraserSignal(e) && penTapHit(x, y)
+        if (penTapArmed) { penTapX = x; penTapY = y; penTapT = e.eventTime }
         // 上一笔的盘/环一律不带进这一笔：`endPen` 已经收过一次，但那之后仍可能有迟到的
         // `on=true` 落进来（见 overlayAllowed）。这里再收一次，代价为零。
         radial = null
@@ -3004,6 +3029,7 @@ open class PageCanvasView @JvmOverloads constructor(
         val y = if (historical) e.getHistoricalY(pi, h) else e.getY(pi)
         val p = if (historical) e.getHistoricalPressure(pi, h) else e.getPressure(pi)
         val now = if (historical) e.getHistoricalEventTime(h) else e.eventTime
+        if (penTapArmed && (hypot(x - penTapX, y - penTapY) >= deadPx || now - penTapT > PEN_TAP_MS)) penTapArmed = false
 
         if (penMode == MODE_LASSO) { handleLassoMove(x, y); return }
 
@@ -3084,7 +3110,20 @@ open class PageCanvasView @JvmOverloads constructor(
         }
     }
 
+    /** 抬笔：先判是不是轻点图钉（是 = 这一下的笔迹作废、交给子类打开），再照常收笔 */
+    private fun penUp(e: MotionEvent) {
+        val tap = penTapArmed && !radialActive && e.eventTime - penTapT <= PEN_TAP_MS
+        penTapArmed = false
+        if (!tap) { endPen(); return }
+        onInkAbort()
+        onInkCancel()   // radialActive = true：endPen 按「环形盘吃掉了这一下」收尾，不落墨 / 不甩动 / 撤选区
+        endPen()
+        val ok = onPenTap(penTapX, penTapY)
+        Log.i(TAG, "笔轻点 (${penTapX.toInt()},${penTapY.toInt()}) → ${if (ok) "已处理" else "没接住"}")
+    }
+
     protected fun endPen() {
+        penTapArmed = false
         when (penMode) {
             MODE_NOTE -> {
                 if (radialActive) clearCur()

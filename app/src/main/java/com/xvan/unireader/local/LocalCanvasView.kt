@@ -159,6 +159,11 @@ class LocalCanvasView @JvmOverloads constructor(
         last?.let { radialCtl.move(it.x, it.y) }   // 位移够大 = 用户在画，撤销长按候选
     }
 
+    override fun onInkAbort() {
+        pending.clear()
+        pendingPen = null
+    }
+
     override fun onInkEnd() {
         if (radialCtl.end()) {
             // 这一笔被长按吃掉了（呼出了盘）：它是一次选择，不是笔迹，一个字都不落库
@@ -884,6 +889,15 @@ class LocalCanvasView @JvmOverloads constructor(
 
     override fun onFingerTap(x: Float, y: Float): Boolean {
         if (tapImageNote(x, y)) return true
+        val pin = pinAt(x, y) ?: return false
+        onPinTap?.invoke(pin.padId)
+        return true
+    }
+
+    // 笔轻点图钉也开纸（判定在基类 penUp：短、没动、没呼出盘才算）
+    override fun penTapHit(x: Float, y: Float): Boolean = pinAt(x, y) != null
+
+    override fun onPenTap(x: Float, y: Float): Boolean {
         val pin = pinAt(x, y) ?: return false
         onPinTap?.invoke(pin.padId)
         return true
