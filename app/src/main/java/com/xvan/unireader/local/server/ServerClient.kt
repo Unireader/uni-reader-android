@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
  * 照 Mac `../Sources/ServerSync/ServerClient.swift` 写，接口一一对应。
  *
  * **全部是阻塞调用**，只在后台线程用。[cancel] 给了的话，每个请求都登记在它上面：取消时正在飞的请求立刻断开，
- * 之后的请求一律抛 [Cancelled]（打开工作区前要先停掉还在跑的那一轮，见 [ServerSync.prepareToOpen]）。
+ * 之后的请求一律抛 [Cancelled]（打开工作区前要先停掉还在跑的那一轮，见 [ServerSync.beforeOpen]）。
  */
 class ServerClient(val baseUrl: String, val token: String?, private val cancel: Cancel? = null) {
 

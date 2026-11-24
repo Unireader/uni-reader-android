@@ -85,7 +85,8 @@ class ToolLayout(val groups: MutableList<Group>, val known: MutableSet<String>) 
                     docked = true,
                 ),
                 Group(G_PAGE, "", mutableListOf("scratch", "lock", "canvas", "ref", "agent"), docked = true),
-                Group(G_STATUS, "", mutableListOf("fingerState", "latency", "pageLabel"), docked = true, pin = PIN_RIGHT),
+                // sync：服务器工作区的同步状态（模式1，2026-11-24；不是服务器工作区时不显示）
+                Group(G_STATUS, "", mutableListOf("fingerState", "sync", "latency", "pageLabel"), docked = true, pin = PIN_RIGHT),
                 Group(
                     G_PAD, "",
                     mutableListOf(

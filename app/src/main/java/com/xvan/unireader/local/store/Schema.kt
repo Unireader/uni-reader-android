@@ -42,8 +42,11 @@ object Schema {
      * v28：**不改表**。习题可以不关联 PDF（`exercise.document_id` 为空，`../docs/EXERCISE-PLAN.md §33`），删文档 / 解除关联时题目留下——
      * 合并写入要先把题从要删的文档上摘下来（`MirrorApply.write`），老版本没有这一步、会连题带作答级联删掉。
      * 升版本号只为让新旧版本不混着同步（服务器要求两边版本号相同）。
+     * v29：**不改表**。默认图层在库里的行 id = 所属文档 id（`LibraryStore.inkLayerRowId`，同 Mac `inkLayerRowID`）：
+     * `ink_layer.id` 是全库主键，老规则下每篇的默认图层都叫 `00…01`，只能有一篇占着那一行。老行由 App 打开工作区时改名
+     * （`normalizeDefaultInkLayers`）。老版本不认新规则，会把别篇的默认层行当成普通图层、再补建 `00…01`，所以升版本号不混着同步。
      */
-    const val VERSION = 28
+    const val VERSION = 29
 
     /**
      * v14 `page_align`（`../docs/SCAN-ALIGN-PLAN.md §3`，**只有 Mac 写**）。单独拎出来是因为离线镜像合并

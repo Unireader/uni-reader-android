@@ -5,7 +5,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import java.io.Closeable
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 
 /**
@@ -38,14 +37,24 @@ class StoreQueue(private val store: LibraryStore) : Closeable {
 
         /** 排队等待超过这个时长也打 warn：队列堵住和单次慢是两种病，得分得开 */
         const val WAIT_WARN_MS = 300L
+
+        /** 开库后这么久之内每条作业都记一行（打开速度的账：谁排在前面、各占多久） */
+        const val TRACE_OPEN_MS = 10_000L
     }
 
-    private val exec = Executors.newSingleThreadExecutor { r ->
+    private val traceUntil = SystemClock.uptimeMillis() + TRACE_OPEN_MS
+
+    /** 双端队列：[submitFirst] 插到队头（打开当前这篇的纯读），其余照旧排队尾 */
+    private val deque = java.util.concurrent.LinkedBlockingDeque<Runnable>()
+
+    private val exec = java.util.concurrent.ThreadPoolExecutor(
+        1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS, deque,
+    ) { r ->
         Thread(r, "unireader-store").apply {
             isDaemon = true
             priority = Thread.NORM_PRIORITY - 1   // 别和 pdf-render 抢 CPU
         }
-    }
+    }.apply { prestartCoreThread() }   // 线程先起好：插队头的作业直接进双端队列，由它取
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -65,14 +74,21 @@ class StoreQueue(private val store: LibraryStore) : Closeable {
     fun <T> submit(what: String, work: (LibraryStore) -> T, then: (T) -> Unit) =
         enqueue(what, work, then)
 
-    private fun <T> enqueue(what: String, work: (LibraryStore) -> T, then: ((T) -> Unit)?) {
+    /**
+     * 插到队头（2026-11-24，打开速度）：开工作区时队列里先攒着一串初始化（习题分组、抽屉书签、同步…），
+     * 打开当前这篇要排在它们后面约 0.3 秒。**只许纯读**——插到还没执行的写前面，写就不再是「先提交先落库」了。
+     */
+    fun <T> submitFirst(what: String, work: (LibraryStore) -> T, then: (T) -> Unit) =
+        enqueue(what, work, then, first = true)
+
+    private fun <T> enqueue(what: String, work: (LibraryStore) -> T, then: ((T) -> Unit)?, first: Boolean = false) {
         if (closed) {
             Log.i(TAG, "$what：队列已关，丢弃")
             return
         }
         val t0 = SystemClock.uptimeMillis()
         try {
-            exec.execute {
+            val job = Runnable {
                 val t1 = SystemClock.uptimeMillis()
                 val r = runCatching { work(store) }
                 val ran = SystemClock.uptimeMillis() - t1
@@ -83,12 +99,15 @@ class StoreQueue(private val store: LibraryStore) : Closeable {
                         // 在「写一笔卡一下」的现场是两个完全不同的结论
                         if (ran > SLOW_MS || waited > WAIT_WARN_MS) {
                             Log.w(TAG, "$what 等 ${waited}ms 跑 ${ran}ms（慢卷）")
+                        } else if (t0 < traceUntil) {
+                            Log.i(TAG, "[开库] $what 等 ${waited}ms 跑 ${ran}ms")
                         }
                         if (then != null) main.post { if (!closed) then(v) }
                     },
                     onFailure = { e -> Log.e(TAG, "$what 失败（等 ${waited}ms 跑 ${ran}ms）", e) },
                 )
             }
+            if (first && !exec.isShutdown) deque.offerFirst(job) else exec.execute(job)
         } catch (e: RejectedExecutionException) {
             Log.w(TAG, "$what：队列已停，丢弃", e)
         }

@@ -111,7 +111,7 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
 - `local/store/` = Mac 定的**跨平台 schema 契约**的 Kotlin 版（裸 `SQLiteDatabase`，不用 Room）；
   **写库一律经 `StoreQueue`**（单线程 executor 独占 `LibraryStore`），主线程只 submit 参数、拿快照刷界面。
   **建表 / 迁移语句只有 `local/store/Schema.kt` 一处**，逐字对应 Mac 的 `LibraryStore.migrate()`
-  （`Schema.VERSION = 28`——v28 不改表，只为新旧版本不混着同步，`../docs/EXERCISE-PLAN.md §33.2`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
+  （`Schema.VERSION = 29`——v28 / v29 都不改表，只为新旧版本不混着同步，`../docs/EXERCISE-PLAN.md §33.2`；v29 = 默认图层在库里的行 id 改成所属文档 id，读写图层只经 `LibraryStore.inkLayerRowId` 换算，`../docs/REQUIREMENTS.md §8`；新建库走 `createLibrary`，**可写**打开已有库时 `LibraryStore.open` 调 `Schema.migrate`：
   `CREATE … IF NOT EXISTS` 补齐到 v27 的全部表（含 v15 `md_doc`——2026-10-29 起本端也读写，见「Markdown 笔记」；v20 习题两张表
   `exercise` / `exercise_attempt` 2026-10-11 起本端也读写，见下面「习题」一条；v21 `exercise_attempt` 表尾三列
   `ink` / `judged_by` / `feedback`（`judged_by` 本端写 `'self'`，填空自己判定用）、v22 `exercise.note`（题目笔记）本端只建不用；v23 `agent_context`（Agent 上下文，

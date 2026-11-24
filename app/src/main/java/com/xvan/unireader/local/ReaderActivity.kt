@@ -290,7 +290,23 @@ class ReaderActivity : Activity() {
     /** 服务器同步状态变了：抽屉表头那一行跟上（`onResume` / `onPause` 里挂 / 摘） */
     private val syncListener: () -> Unit = {
         drawer.setLibStatus(wsActions.statusLine())
+        refreshSyncKey()
         wsActions.promptDeletesIfNeeded()   // 卡在「删得太多要确认」：直接弹确认框
+    }
+
+    /** 顶栏同步键：按当前状态换图标 / 颜色（打开时不等服务器，状态全靠它看，2026-11-24） */
+    private fun refreshSyncKey() {
+        val ws = workspace
+        val st = if (ws != null && onServer) ServerSync.status(ws) else null
+        val (icon, tint) = when (st) {
+            is ServerSync.Status.Synced, null -> R.drawable.ic_sync_ok to null
+            is ServerSync.Status.Syncing -> R.drawable.ic_sync_busy to null
+            is ServerSync.Status.Offline, is ServerSync.Status.NoAccount -> R.drawable.ic_sync_off to null
+            is ServerSync.Status.Failed, is ServerSync.Status.NeedsConfirm -> R.drawable.ic_warn to Ui.col(this, R.color.danger)
+        }
+        bar.setIcon("sync", icon)
+        bar.setTint("sync", tint)
+        bar.tools.refresh()
     }
 
     /** 「到 PDF 原页」要跳的地方（文档 id、页、页内比例）：那篇还没装载完时先记着，几何就绪再跳 */
@@ -804,6 +820,11 @@ class ReaderActivity : Activity() {
             icon("agent", R.drawable.ic_agent, getString(R.string.agent_toolbar), toggle = true) {
                 agent.toggle(); refreshHud()
             }
+            // 同步状态（服务器工作区才有）：图标跟着状态换，点一下说一句现在怎样，再照抽屉那一行办（要确认就弹确认框，否则立即同步）
+            icon("sync", R.drawable.ic_sync_ok, getString(R.string.tools_sync), available = { onServer }) {
+                wsActions.statusLine()?.let { Toast.makeText(this@ReaderActivity, it, Toast.LENGTH_SHORT).show() }
+                wsActions.statusClicked()
+            }
             icon("workspace", R.drawable.ic_folder, getString(R.string.tools_workspace)) { showWorkspaceSwitcher() }
             icon("trash", R.drawable.ic_delete, getString(R.string.trash_open)) { showTrash() }
             icon("backups", R.drawable.ic_copy, getString(R.string.backup_open)) { showBackups() }
@@ -1050,8 +1071,9 @@ class ReaderActivity : Activity() {
         runInBackground(
             what = "开工作区库 ${dir.name}",
             work = {
-                // 服务器工作区：开库前先同步一轮（最多 3 秒；刚在启动页同步过就跳过，`ServerSync.prepareToOpen`）
-                ServerSync.prepareToOpen(applicationContext, dir, 3_000L, skipIfRecentMs = 60_000L)
+                // 服务器工作区：不等服务器，直接开本机这份（2026-11-24 用户定）；拉取由开着时的同步做、状态在顶栏同步键上。
+                // 只等上一轮（关工作区后那一轮）写完库，最多 3 秒（`ServerSync.beforeOpen`）
+                ServerSync.beforeOpen(applicationContext, dir)
                 val s = LibraryStore.open(dir)
                 try {
                     WsOpened(
@@ -1075,6 +1097,7 @@ class ReaderActivity : Activity() {
         val q = StoreQueue(o.store)
         queue = q
         onServer = o.onServer
+        refreshSyncKey()   // 同步键只在服务器工作区出现
         // 开着时：本机改动停手 2 秒后推（退到后台马上推）；服务器有动静就拉，拉下来的让界面跟上（`onRemoteRows`）
         if (o.onServer) ServerSync.sessionStart(
             this, dir, q,
@@ -1110,6 +1133,8 @@ class ReaderActivity : Activity() {
         exercise.setDocTitles(libTitles)
         exercise.refreshGroups()
         pushDrawerLibrary()
+        // 老的默认图层行（v29 前全库共用一个 id，见 LibraryStore.inkLayerRowId）改成所属文档的 id，同步带给别的设备
+        q.submit("默认图层按文档区分") { s -> runCatching { s.normalizeDefaultInkLayers() }.onFailure { Log.w(TAG, "默认图层改名失败", it) } }
         // 笔迹整理（转二进制、摘 JSON 点，`../docs/BINARY-INK-PLAN.md §5`）：post 到本轮之后，排在开标签页的那几条读库后面
         window.decorView.post { compactInkPoints(q, LibraryStore.InkCompactCursor(0, ""), 0) }
         // 图片：开工作区时先对账再清掉待删除满 30 天的（同 Mac `WorkspaceManager.open`，`../docs/IMAGE-NOTE-PLAN.md §3`）
@@ -1327,6 +1352,7 @@ class ReaderActivity : Activity() {
         val wasOnServer = onServer
         if (wasOnServer && closing != null) ServerSync.sessionStop(closing)
         onServer = false
+        refreshSyncKey()
         queue = null
         workspace = null
         // 服务器工作区：连接真关了之后再完整同步一轮（关掉之前跑就是两条连接同时写，见 ServerSync 类注释）
@@ -2487,8 +2513,9 @@ class ReaderActivity : Activity() {
     }
 
     /**
-     * 第一跳：在库队列上把这一篇要的东西读齐（文档行、PDF 路径、图层、笔迹、注解）。
-     * 拿到路径后回主线程再开 Pdfium（第二跳，见 [onDocData]）。
+     * 打开一篇：库队列上先只「定位 PDF」（很快），拿到文件立刻在后台开 Pdfium（读整本页尺寸表，几百页不便宜），
+     * **同时**库队列接着读笔迹 / 批注 / 图层；两边都到了才 [attachTab]。
+     * 2026-11-24 起并行（原先读完库才开 PDF，两段串着，301 工作区那本 309 页要多等约 0.4 秒）。
      */
     private fun loadTab(t: Tab) {
         val q = queue ?: return
@@ -2496,86 +2523,149 @@ class ReaderActivity : Activity() {
         if (t.loading) return
         t.loading = true
         showOpening("正在打开《${t.title}》…")
-        q.submit(
-            "读文档 ${t.docId.take(8)}",
+        q.submitFirst(   // 纯读，插队头：别排在开工作区那一串初始化后面
+            "定位 PDF ${t.docId.take(8)}",
             { s ->
                 val doc = s.document(t.docId)
                 val opened = if (doc == null) null else Workspace.firstOpenablePdfWithHash(ws, s, t.docId)
-                val file = opened?.first
-                if (doc == null) {
-                    DocData(
+                when {
+                    doc == null -> DocData(
                         null, null, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
                         reason = "库里没有这个文档：${t.docId}",
                     )
-                } else if (file == null) {
-                    DocData(
+                    opened == null -> DocData(
                         doc, null, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
                         reason = "《${doc.title}》没有能打开的 PDF——需要在 Mac 上把文件拷进工作区",
                         noPdf = true,
                     )
-                } else {
-                    // 落库上下文 + 当前作画图层（老文档可能没有图层行，补一条默认层，同 Mac 的行为）
-                    s.ensureDefaultLayer(t.docId)
-                    s.updateLastOpened(t.docId)
-                    // 内容 hash 取**真正打开的那个文件**所属的版本（同 Mac `openTarget`）：文本层的行框与对齐参数
-                    // 都是「这个文件画出来的页面」上的坐标，一篇有多个版本时拿错一个就整页错位。
-                    // 从前划字取的是「第一个版本」，单版本的书（绝大多数）两种取法是同一个
-                    val hash = opened?.second.orEmpty().ifEmpty { s.variants(t.docId).firstOrNull()?.contentHash.orEmpty() }
-                    DocData(
-                        doc, file,
-                        s.inkLayers(t.docId), s.strokes(t.docId), s.textNotes(t.docId), s.textFills(t.docId),
-                        s.scratchPads(t.docId),   // v7 老库没有这张表 → 空列表，不炸（handoff §2.3①）
-                        contentHash = hash,
-                        // 扫描页对齐（只读 Mac 写的；老库没这张表 → null）。页数那道闸在 PdfSource 里补
-                        align = s.activePageAlign(hash),
-                        typeRgb = s.noteTypeColors(),
-                        typeIcons = s.noteTypeIcons(),
-                        reason = null,
-                    )
+                    else -> {
+                        // 内容 hash 取**真正打开的那个文件**所属的版本（同 Mac `openTarget`）：文本层的行框与对齐参数
+                        // 都是「这个文件画出来的页面」上的坐标，一篇有多个版本时拿错一个就整页错位。
+                        // 从前划字取的是「第一个版本」，单版本的书（绝大多数）两种取法是同一个
+                        val hash = opened.second.ifEmpty { s.variants(t.docId).firstOrNull()?.contentHash.orEmpty() }
+                        DocData(
+                            doc, opened.first, emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
+                            contentHash = hash,
+                            // 扫描页对齐（只读 Mac 写的；老库没这张表 → null）。页数那道闸在 PdfSource 里补
+                            align = s.activePageAlign(hash),
+                            reason = null,
+                        )
+                    }
                 }
             },
-            { d -> onDocData(t, d) },
+            { loc -> onPdfLocated(t, loc) },
         )
     }
 
-    /** 第二跳：开 Pdfium（读**全部**页尺寸表，几百页的文档不便宜，所以甩给 [Bg] 而不是压库队列） */
-    private fun onDocData(t: Tab, d: DocData) {
+    /** 第二跳（主线程）：PDF 定位好了 → 后台开 Pdfium 与库队列读内容同时进行 */
+    private fun onPdfLocated(t: Tab, loc: DocData) {
         val ws = workspace
-        if (d.noPdf && onServer && d.doc != null && ws != null) {
+        val q = queue
+        if (loc.noPdf && onServer && loc.doc != null && ws != null) {
             // 服务器工作区里还没下载的书（大 PDF 用到才下，方案 §4.1）：问一句，下完重新装这一篇
             // 转到后台下的也一样：下完时还停在这个标签上就装上，切走了就等下次点它再装
-            ServerUi.offerPdfDownload(this, ws, d.doc.id, d.doc.title) { ok, _ ->
+            ServerUi.offerPdfDownload(this, ws, loc.doc.id, loc.doc.title) { ok, _ ->
                 t.loading = false
-                if (!ok) failToOpen(t, d.reason ?: "打不开这个文档")
+                if (!ok) failToOpen(t, loc.reason ?: "打不开这个文档")
                 else if (workspace == ws && t in tabs && curTab() === t) loadTab(t)
             }
             return
         }
-        if (d.reason != null || d.doc == null || d.file == null) {
+        if (loc.reason != null || loc.doc == null || loc.file == null || q == null) {
             t.loading = false
-            failToOpen(t, d.reason ?: "打不开这个文档")
+            failToOpen(t, loc.reason ?: "打不开这个文档")
             return
         }
-        if (t.title != d.doc.title) {
-            t.title = d.doc.title
+        if (t.title != loc.doc.title) {
+            t.title = loc.doc.title
             refreshTabsBar()
         }
-        val file = d.file
+        val file = loc.file
+        // 两路汇合：都到了才装；任一路失败 = 打不开（另一路的产物收掉）
+        var data: DocData? = null
+        var src: PdfSource? = null
+        var failed = false
+        fun fail(msg: String) {
+            if (failed) return
+            failed = true
+            t.loading = false
+            src?.let { s -> Bg.submit("关闭 PDF ${t.docId.take(8)}") { s.close() } }
+            src = null
+            failToOpen(t, msg)
+        }
+        fun join() {
+            val d = data ?: return
+            val p = src ?: return
+            attachTab(t, d, p)
+        }
         runInBackground(
             what = "开 PDF ${file.name}",
             work = {
-                PdfSource(applicationContext, file, contentHash = d.contentHash, align = d.align).also {
+                PdfSource(applicationContext, file, contentHash = loc.contentHash, align = loc.align).also {
                     it.logPageSizes()   // §9.1 的比对凭据：与 tools/dump-page-sizes.swift 的输出逐行 diff
                 }
             },
-            ok = { src -> attachTab(t, d, src) },
-            fail = {
-                t.loading = false
-                failToOpen(t, it.message ?: it.javaClass.simpleName)
+            ok = { p ->
+                if (failed) Bg.submit("丢弃 PDF ${t.docId.take(8)}") { p.close() }
+                else { src = p; join() }
             },
-            discard = { src ->
+            fail = { fail(it.message ?: it.javaClass.simpleName) },
+            discard = { p ->
                 t.loading = false
-                Bg.submit("丢弃 PDF ${t.docId.take(8)}") { src.close() }
+                Bg.submit("丢弃 PDF ${t.docId.take(8)}") { p.close() }
+            },
+        )
+        // 两处写（补默认图层、记最近打开）照常排队尾；读内容是纯读，插队头
+        q.submit("记打开 ${t.docId.take(8)}") { s ->
+            // 老文档可能没有图层行，补一条默认层（同 Mac 的行为）
+            s.ensureDefaultLayer(t.docId)
+            s.updateLastOpened(t.docId)
+        }
+        q.submitFirst(
+            "读文档 ${t.docId.take(8)}",
+            { s ->
+                runCatching {
+                    val c0 = SystemClock.uptimeMillis()
+                    // 一层都没有：先按默认层显示（库里那一行由上面「记打开」补，排在后面）
+                    val layers = s.inkLayers(t.docId).ifEmpty {
+                        listOf(
+                            LibInkLayer(
+                                id = LibInkLayer.DEFAULT_ID, documentId = t.docId, name = "Layer 1",
+                                colorKey = com.xvan.unireader.local.store.Palette.rotatingKey(0), sortOrder = 0,
+                                visible = true, createdAt = "",
+                            ),
+                        )
+                    }
+                    val c1 = SystemClock.uptimeMillis()
+                    val strokes = s.strokes(t.docId)
+                    val c2 = SystemClock.uptimeMillis()
+                    val notes = s.textNotes(t.docId)
+                    val fills = s.textFills(t.docId)
+                    val c3 = SystemClock.uptimeMillis()
+                    val pads = s.scratchPads(t.docId)   // v7 老库没有这张表 → 空列表，不炸（handoff §2.3①）
+                    val rgb = s.noteTypeColors()
+                    val icons = s.noteTypeIcons()
+                    val c4 = SystemClock.uptimeMillis()
+                    Log.i(TAG, "读文档 ${t.docId.take(8)} 分段：图层 ${c1 - c0}ms · 笔迹 ${strokes.size} 条 ${c2 - c1}ms · " +
+                        "注解 / 铺色 ${c3 - c2}ms · 草稿纸 / 笔记类型 ${c4 - c3}ms")
+                    DocData(
+                        loc.doc, file, layers, strokes, notes, fills, pads,
+                        contentHash = loc.contentHash,
+                        align = loc.align,
+                        typeRgb = rgb,
+                        typeIcons = icons,
+                        reason = null,
+                    )
+                }
+            },
+            { r ->
+                r.fold(
+                    onSuccess = { d -> if (!failed) { data = d; join() } },
+                    onFailure = { e ->
+                        Log.e(TAG, "读文档 ${t.docId.take(8)} 失败", e)
+                        fail(e.message ?: e.javaClass.simpleName)
+                    },
+                )
             },
         )
     }

@@ -29,7 +29,6 @@ import com.xvan.unireader.local.Workspace
 import com.xvan.unireader.local.server.ServerAccount
 import com.xvan.unireader.local.server.ServerAccounts
 import com.xvan.unireader.local.server.ServerClient
-import com.xvan.unireader.local.server.ServerSync
 import com.xvan.unireader.local.server.ServerSyncIO
 import com.xvan.unireader.local.server.ServerUi
 import com.xvan.unireader.pad.KnownMacs
@@ -940,10 +939,8 @@ class Launcher : Activity() {
         runInBackground(
             what = "校验工作区 ${dir.name}",
             work = {
-                Workspace.check(dir).also { c ->
-                    // 服务器工作区：打开前同步一轮（最多等 3 秒，连不上就照常开本机这份，`ServerSync.prepareToOpen`）
-                    if (c is Workspace.Check.OK && !c.readOnly) ServerSync.prepareToOpen(applicationContext, c.dir, 3_000L, cancelOnTimeout = false)
-                }
+                // 服务器工作区打开前不再同步（2026-11-24 用户定：打开不等服务器，同步状态显示在顶栏）
+                Workspace.check(dir)
             },
             ok = { c ->
                 dismissBusy()

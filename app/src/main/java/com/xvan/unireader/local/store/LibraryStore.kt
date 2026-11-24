@@ -56,6 +56,14 @@ class LibraryStore(private val db: Db) : Closeable {
          */
         const val SCHEMA_VERSION = Schema.VERSION
 
+        /** 笔迹解析并行：少于这么多条就不拆（拆的开销比省下的多） */
+        private const val PARSE_PARALLEL_MIN = 200
+        /** 另开几条解析线程（加上调用线程自己，共 +1 段） */
+        private val PARSE_THREADS = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 3)
+        private val parsePool = java.util.concurrent.Executors.newFixedThreadPool(PARSE_THREADS) { r ->
+            Thread(r, "unireader-inkparse").apply { isDaemon = true }
+        }
+
         /** 打开工作区里的库。`readOnly` 用于「库文件不可写」的场景（U 盘只读挂载等）。 */
         fun open(workspaceDir: File, readOnly: Boolean = false): LibraryStore {
             val store = LibraryStore(Db.open(File(workspaceDir, Workspace.DB_REL), readOnly))
@@ -822,6 +830,13 @@ class LibraryStore(private val db: Db) : Closeable {
      * 逐页读攒不出样本；而一本书的 OCR JSON 是几 MB 级、解析一次就够，之后划字零 I/O
      * （同 Mac `allOCRPayloads` 的理由）。**在 StoreQueue 线程上调用。**
      */
+    /** 同 [ocrRuns] 但只取原始 payload 字节（解析留给调用方在别的线程做，别占库队列）。**在 StoreQueue 线程上调用。** */
+    fun ocrPayloads(contentHash: String, provider: String): List<Pair<Int, ByteArray>> =
+        db.query(
+            "SELECT page,payload FROM ocr_page WHERE content_hash=? AND provider=?",
+            arrayOf(contentHash, provider),
+        ) { it.getInt(0) to it.getBlob(1) }
+
     fun ocrRuns(contentHash: String, provider: String): Map<Int, List<TextRun>> {
         val out = HashMap<Int, List<TextRun>>()
         db.query(
@@ -1612,17 +1627,44 @@ class LibraryStore(private val db: Db) : Closeable {
      * 笔迹拖没（这类问题不打点就只能看到「笔迹少了几笔」）。
      */
     fun strokes(documentId: String): List<Stroke> {
-        val out = ArrayList<Stroke>()
-        var bad = 0
-        for (n in notes(documentId)) {
-            if (n.kind != NoteKind.INK) continue
-            val r = InkPayload.readStroke(n.payload, n.id, n.page, n.points, n.pointsValid)
-            if (r == null) { bad++; continue }
-            out.add(r.first)
+        // 2026-11-24 提速（打开一篇时这一步是大头，1416 条约 0.5 秒）：
+        // ① 只取笔迹行、只取要用的列（原先经 notes() 把整篇所有批注连 payload / 点集整行读出来再筛）；
+        // ② 解析（字符串 → 摘点 → JSON → 二进制点）是纯 CPU 活、每条互不相干 → 分几段并行，结果按原顺序放回。
+        val t0 = android.os.SystemClock.uptimeMillis()
+        val raws = db.query(
+            "SELECT id,page,payload,points,points_at,updated_at FROM note WHERE document_id=? AND kind=? " +
+                "ORDER BY page ASC, created_at ASC",
+            arrayOf(documentId, NoteKind.INK),
+        ) { c -> RawInk(c.str("id"), c.int("page"), c.blob("payload"), c.blobOrNull("points"), pointsValid(c)) }
+        val t1 = android.os.SystemClock.uptimeMillis()
+        val parsed = arrayOfNulls<Stroke>(raws.size)
+        fun parseRange(from: Int, to: Int) {
+            for (i in from until to) {
+                val r = raws[i]
+                parsed[i] = InkPayload.readStroke(r.payload, r.id, r.page, r.points, r.pointsValid)?.first
+            }
         }
+        val parts = if (raws.size < PARSE_PARALLEL_MIN) 1 else PARSE_THREADS + 1
+        if (parts == 1) {
+            parseRange(0, raws.size)
+        } else {
+            val step = (raws.size + parts - 1) / parts
+            // 前几段交给解析线程，最后一段本线程自己做
+            val futures = (0 until parts - 1).map { k ->
+                parsePool.submit { parseRange(k * step, minOf(raws.size, (k + 1) * step)) }
+            }
+            parseRange((parts - 1) * step, raws.size)
+            futures.forEach { it.get() }
+        }
+        val out = ArrayList<Stroke>(raws.size)
+        var bad = 0
+        for (st in parsed) if (st == null) bad++ else out.add(st)
         if (bad > 0) Log.w(TAG, "$documentId：$bad 条笔迹 payload 坏掉已跳过")
+        Log.i(TAG, "读笔迹 ${documentId.take(8)} ${raws.size} 条：查询 ${t1 - t0}ms · 解析 ${android.os.SystemClock.uptimeMillis() - t1}ms（$parts 段）")
         return out
     }
+
+    private class RawInk(val id: String, val page: Int, val payload: ByteArray, val points: ByteArray?, val pointsValid: Boolean)
 
     /** 落一笔新笔迹（一笔一次 INSERT，别每帧写——同 Mac 的增量落库） */
     fun insertStroke(
@@ -2602,10 +2644,37 @@ class LibraryStore(private val db: Db) : Closeable {
 
     // ---------- ink_layer ----------
 
+    /**
+     * 🔴 **默认图层在库里的行 id = 所属文档 id**（v29，2026-11-24，同 Mac `LibraryStore.inkLayerRowID`）。
+     * `ink_layer.id` 是全库主键，而默认图层在每篇里都叫 [LibInkLayer.DEFAULT_ID]：老规则下只有一篇占着那一行，
+     * 别篇「补建默认层」其实是改掉那篇的名字 / 颜色 / 可见性，自己仍然没有图层行，每次打开都再补一次（还每次多推一处）。
+     * 模型与笔迹照旧用 `00…01`，换算只在这一层：读 = 行 id 等于文档 id → `00…01`，写反过来。
+     */
+    fun inkLayerRowId(layerId: String, documentId: String): String =
+        if (layerId.equals(LibInkLayer.DEFAULT_ID, ignoreCase = true)) documentId else layerId
+
     fun inkLayers(documentId: String): List<LibInkLayer> = db.query(
         "SELECT * FROM ink_layer WHERE document_id=? ORDER BY sort_order ASC",
         arrayOf(documentId),
     ) { inkLayer(it) }
+
+    /**
+     * 把 v29 之前的老默认图层行（id 是固定的 `00…01`）改成所属文档的 id（同 Mac `normalizeDefaultInkLayers`）。
+     * 打开工作区时在库队列上调；改动照常同步出去。主键所限这样的行至多一条。返回改了几行。
+     */
+    fun normalizeDefaultInkLayers(): Int {
+        val doc = db.query(
+            "SELECT document_id FROM ink_layer WHERE id=? COLLATE NOCASE",
+            arrayOf(LibInkLayer.DEFAULT_ID),
+        ) { it.str("document_id") }.firstOrNull() ?: return 0
+        transaction {
+            val taken = db.query("SELECT 1 FROM ink_layer WHERE id=? COLLATE NOCASE", arrayOf(doc)) { 1 }.isNotEmpty()
+            if (taken) db.exec("DELETE FROM ink_layer WHERE id=? COLLATE NOCASE", arrayOf(LibInkLayer.DEFAULT_ID))
+            else db.exec("UPDATE ink_layer SET id=? WHERE id=? COLLATE NOCASE", arrayOf(doc, LibInkLayer.DEFAULT_ID))
+        }
+        Log.i(TAG, "老的默认图层行改成按文档区分（$doc）")
+        return 1
+    }
 
     /** 图层表 → 中立模型（供面板与线格式共用同一形状）。转换本身见 [toUiLayers] */
     fun layersForUi(documentId: String): List<Layer> = inkLayers(documentId).toUiLayers()
@@ -2618,7 +2687,10 @@ class LibraryStore(private val db: Db) : Closeable {
             ON CONFLICT(id) DO UPDATE SET name=excluded.name, color_key=excluded.color_key,
               sort_order=excluded.sort_order, visible=excluded.visible
             """.trimIndent(),
-            arrayOf(l.id, l.documentId, l.name, l.colorKey, l.sortOrder, if (l.visible) 1 else 0, l.createdAt),
+            arrayOf(
+                inkLayerRowId(l.id, l.documentId), l.documentId, l.name, l.colorKey, l.sortOrder,
+                if (l.visible) 1 else 0, l.createdAt,
+            ),
         )
     }
 
@@ -2649,8 +2721,8 @@ class LibraryStore(private val db: Db) : Closeable {
      */
     fun ensureDefaultLayer(documentId: String) {
         val has = db.query(
-            "SELECT id FROM ink_layer WHERE id=? AND document_id=?",
-            arrayOf(LibInkLayer.DEFAULT_ID, documentId),
+            "SELECT id FROM ink_layer WHERE id=? COLLATE NOCASE AND document_id=?",
+            arrayOf(inkLayerRowId(LibInkLayer.DEFAULT_ID, documentId), documentId),
         ) { it.str("id") }.isNotEmpty()
         if (has) return
         if (inkLayers(documentId).isNotEmpty()) return   // 已有别的图层：不插队占位
@@ -2700,7 +2772,9 @@ class LibraryStore(private val db: Db) : Closeable {
     }
 
     private fun inkLayer(c: android.database.Cursor) = LibInkLayer(
-        id = c.str("id"), documentId = c.str("document_id"), name = c.str("name"),
+        // 默认图层的行 id = 文档 id（v29，见 [inkLayerRowId]）→ 模型里还原成 00…01
+        id = c.str("id").let { if (it.equals(c.str("document_id"), ignoreCase = true)) LibInkLayer.DEFAULT_ID else it },
+        documentId = c.str("document_id"), name = c.str("name"),
         colorKey = c.str("color_key"), sortOrder = c.int("sort_order"),
         visible = c.bool("visible", true), createdAt = c.str("created_at"),
     )

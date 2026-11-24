@@ -716,20 +716,36 @@ class LocalCanvasView @JvmOverloads constructor(
     fun loadTextLayer(contentHash: String) {
         val q = store ?: return
         if (contentHash.isEmpty()) { setTextRuns(emptyMap()); return }
+        // 库队列上只取原始字节；JSON 解析 + 水印统计（一本几 MB，301 工作区那本 1.7 秒）挪到后台线程，
+        // 否则这段时间库队列被占住，刚打开就写的笔迹要排在它后面才落库（2026-11-24）
         q.submit(
-            "装载 OCR 文本层",
-            { s ->
-                val provider = s.ocrProvider(contentHash)
-                if (provider == null) {
-                    emptyMap()
-                } else {
-                    val raw = s.ocrRuns(contentHash, provider)
-                    val profile = OcrWatermark.buildProfile(raw)
-                    raw.mapValues { (_, runs) -> OcrWatermark.visible(runs, profile) }
-                        .filterValues { it.isNotEmpty() }
+            "读 OCR 文本层",
+            { s -> s.ocrProvider(contentHash)?.let { s.ocrPayloads(contentHash, it) }.orEmpty() },
+            { payloads ->
+                if (payloads.isEmpty()) { setTextRuns(emptyMap()); return@submit }
+                val t0 = android.os.SystemClock.uptimeMillis()
+                com.xvan.unireader.shared.Bg.pool.execute {
+                    val r = runCatching {
+                        val raw = HashMap<Int, List<com.xvan.unireader.shared.TextRun>>()
+                        for ((page, payload) in payloads) {
+                            val runs = com.xvan.unireader.local.store.OcrPagePayload.parse(payload)
+                            if (runs.isNotEmpty()) raw[page] = runs
+                        }
+                        val profile = OcrWatermark.buildProfile(raw)
+                        raw.mapValues { (_, runs) -> OcrWatermark.visible(runs, profile) }.filterValues { it.isNotEmpty() }
+                    }
+                    val ms = android.os.SystemClock.uptimeMillis() - t0
+                    post {
+                        r.fold(
+                            onSuccess = { m ->
+                                Log.i(TAG, "OCR 文本层解析 ${payloads.size} 页 用了 ${ms}ms")
+                                if (documentId.isNotEmpty() && store === q) setTextRuns(m)
+                            },
+                            onFailure = { e -> Log.e(TAG, "OCR 文本层解析失败", e) },
+                        )
+                    }
                 }
             },
-            { setTextRuns(it) },
         )
     }
 

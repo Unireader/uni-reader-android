@@ -18,8 +18,8 @@ import java.util.concurrent.TimeUnit
  *
  * | 时机 | 做什么 | 用哪条连接 |
  * |---|---|---|
- * | 打开前（[prepareToOpen]：启动页 / 阅读界面开库前） | 完整一轮：推 + 拉 + 补图片，限时，超时就取消、照常开本机缓存 | 临时连接 |
- * | 开着时（每 60 秒 / 退到后台，[sessionStart]） | **只推不拉**：不往开着的文档里写（那是 S4 的事） | 阅读界面那条 [StoreQueue]，基线不开事务 |
+ * | 打开前（[beforeOpen]） | **不同步**（2026-11-24 起，打开不等服务器）；只等上一轮写完库，最多 3 秒 | — |
+ * | 开着时（[sessionStart]） | 停手 2 秒推；[watch] 首轮立刻问服务器、之后长轮询，有改动就拉（库队列上应用） | 阅读界面那条 [StoreQueue] |
  * | 关掉后（[workspaceClosed]：阅读界面关库之后） | 完整一轮 | 临时连接 |
  *
  * 🔴 同一工作区一次只跑一轮（[busy]）；**阅读界面开着它的时候不跑完整一轮**（完整一轮会用另一条连接写用户数据，
@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
  * 推上去而基线没记的下一轮再推（服务器答「一致」），拉下来还没应用的修订号没记、下一轮重拉。
  * 小 PDF 在每次完整一轮之后后台下载（[prefetch]，只写 location，与开着的阅读界面不冲突）。
  *
- * 线程：[prepareToOpen] 只在后台线程调（会等）；session 那几个只在主线程调。状态变化在主线程通知 [addListener] 的人。
+ * 线程：[beforeOpen] 只在后台线程调（会等）；session 那几个只在主线程调。状态变化在主线程通知 [addListener] 的人。
  */
 object ServerSync {
 
@@ -117,53 +117,22 @@ object ServerSync {
     }
 
     /**
-     * 打开服务器工作区之前（**后台线程**）：取消还在跑的上一轮，再同步一轮，最多等 [timeoutMs]。
-     * [skipIfRecentMs] > 0 时，这么久之内刚同步过就不再同步（启动页开过、紧接着进阅读界面，别连着两轮）。
-     * 阅读界面正开着它：不跑完整一轮，只叫那边推一次。不是服务器工作区 = 什么都不做。
+     * 打开服务器工作区之前（**后台线程**，2026-11-24 起替代原来的「打开前只拉、最多等 3 秒」）：**不等服务器**，直接开本机这份；
+     * 拉取由开着时的同步做（[watch] 首轮立刻问一次，有改动就拉、界面跟着刷新），状态显示在顶栏的同步键上。
+     * 只有一件事要等：上一轮（多半是关工作区后那一轮）还在跑——它用另一条连接写库，开着阅读界面时不许，
+     * 最多等 [timeoutMs]，超时取消（它没做完的由开着时的同步接手）。没有令牌 → 状态记成 [Status.NoAccount]。
      */
-    fun prepareToOpen(
-        ctx: Context, dir: File, timeoutMs: Long, skipIfRecentMs: Long = 0,
-        /**
-         * 等满了还没完怎么办：true（阅读界面）= 取消（阅读界面开着时不许另一条连接跑完整一轮，交给它自己的同步接手）；
-         * false（启动页进书库页）= 不再等、让这一轮在后台跑完（书库页不和它抢写库），状态随后变成「已同步」。
-         */
-        cancelOnTimeout: Boolean = true,
-    ) {
+    fun beforeOpen(ctx: Context, dir: File, timeoutMs: Long = 3_000L) {
         val k = key(dir)
-        if (sessions.containsKey(k)) {
-            main.post { pushNow(dir) }
-            return
-        }
-        // 启动页那一轮等满 3 秒没完、留在后台接着跑的：阅读界面接着等它，不取消重来
-        // （原先取消再从头跑一轮，两轮各要 3 秒多，打开要七秒半，2026-11-21）
+        if (sessions.containsKey(k)) return
+        ServerSyncIO.serverLink(dir) ?: return
         val running = synchronized(busy) { busy[k] }
-        if (running != null && cancelOnTimeout) {
-            if (running.done.await(timeoutMs, TimeUnit.MILLISECONDS)) return
-            Log.i(TAG, "${dir.name}：接着等启动页那一轮又过了 ${timeoutMs}ms，取消、先用本机缓存")
+        if (running != null && !running.done.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            Log.i(TAG, "${dir.name}：上一轮同步 ${timeoutMs}ms 还没完，取消、先开本机这份")
             cancelChain(running)
             running.done.await()
-            return
         }
-        stopRound(k)
-        val link = ServerSyncIO.serverLink(dir) ?: return
-        val ep = endpoint(ctx, dir)
-        if (ep == null) {
-            Log.i(TAG, "${dir.name}：本机没有 ${link.url} 的令牌，直接开本机缓存")
-            setStatus(k, Status.NoAccount)
-            return
-        }
-        if (skipIfRecentMs > 0 && System.currentTimeMillis() - (lastOk[k] ?: 0L) < skipIfRecentMs) return
-        // 打开前只拉（2026-11-21 用户定）：本机没推的改动、笔记文件、补拉都在打开后做
-        val r = startRound(ctx.applicationContext, dir, ep, pullOnly = true)
-        if (!r.done.await(timeoutMs, TimeUnit.MILLISECONDS)) {
-            if (!cancelOnTimeout) {
-                Log.i(TAG, "${dir.name}：打开前同步超过 ${timeoutMs}ms，先打开本机缓存，这一轮在后台接着跑")
-                return
-            }
-            Log.i(TAG, "${dir.name}：打开前同步超过 ${timeoutMs}ms，取消、先用本机缓存")
-            cancelChain(r)
-            r.done.await()
-        }
+        if (endpoint(ctx, dir) == null) setStatus(k, Status.NoAccount)
     }
 
     /** 手动「立即同步」：开着就只推，没开着就完整一轮（不等） */
@@ -393,6 +362,8 @@ object ServerSync {
         val k = key(dir)
         sessions.remove(k)?.let { stopSession(it) }
         val s = Session(ctx.applicationContext, dir, queue, onRemote)
+        // 打开时不等服务器（2026-11-24）：先显示「同步中」，watch 首轮问过服务器再变「已同步」/「连不上」
+        if (statuses[k] !is Status.NeedsConfirm) setStatus(k, Status.Syncing)
         s.noteSkip = noteSkip
         s.onNotes = onNotes
         s.lastNotePush = System.currentTimeMillis()   // 开头那一遍由 watch 里的完整一轮做（noteHead = 0）
@@ -408,7 +379,11 @@ object ServerSync {
                 if (s.tracking) s.needFull = false
                 s.tracking
             }
-        }) { ok -> if (ok) scanInBackground(s) }
+        }) { ok ->
+            // 推迟 3 秒再扫（2026-11-24）：整库扫描 3～4 秒，和打开第一篇（读笔迹 / 开 PDF）同时跑会抢 CPU 与磁盘。
+            // 推迟不漏：改动记录已经挂上，这几秒里的写照常记得到；扫描看的是之前已落库的
+            if (ok) main.postDelayed({ if (!s.stopped) scanInBackground(s) }, SCAN_DELAY_MS)
+        }
         s.tick = Runnable {
             push(s)
             maybePushNotes(s)
@@ -424,8 +399,11 @@ object ServerSync {
      * 下一次找改动就推。覆盖得全：扫描开始前改动记录已经挂上，之后的写都记得到；之前的写都已落库、扫描看得见。
      * 扫描出错 → 退回库队列上整库扫描一次（[Session.needFull]）。主线程调。
      */
+    private const val SCAN_DELAY_MS = 3_000L
+
     private fun scanInBackground(s: Session) {
         Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             val t0 = android.os.SystemClock.uptimeMillis()
             val keys = try {
                 ServerSyncIO.unpushedRows(s.dir)
@@ -698,16 +676,26 @@ object ServerSync {
     private fun watch(s: Session) {
         val k = key(s.dir)
         var failures = 0
+        // 首轮不挂：0 秒超时立刻问服务器（打开时不再等服务器，第一次拉取就在这里，2026-11-24）
+        var first = true
         catchUpWhileOpen(s)
         while (!s.stopped) {
             try {
                 val ep = endpoint(s.ctx, s.dir)
-                if (ep == null) { Thread.sleep(10_000); continue }
+                if (ep == null) {
+                    if (sessions[k] === s) setStatus(k, Status.NoAccount)
+                    Thread.sleep(10_000); continue
+                }
                 val client = ep.account.client(s.cancel)
                 val rows = onQueue(s, "同步：读已拉修订号") { st -> st.withMirrorDb { SyncClient.pulledRev(it) } } ?: continue
                 val notes = s.noteHead
-                val ch = client.waitForChange(ep.wid, rows, notes)
+                val ch = client.waitForChange(ep.wid, rows, notes, timeoutSec = if (first) 0 else 25)
+                first = false
                 failures = 0
+                // 服务器那边没有新东西：连上了、本机是最新的（推送卡在「要确认」之类的状态不覆盖）
+                if (!ch.changed && sessions[k] === s && statuses[k].let { it == null || it is Status.Syncing || it is Status.Offline || it is Status.Failed || it is Status.NoAccount }) {
+                    setStatus(k, Status.Synced(System.currentTimeMillis()))
+                }
                 if (!ch.changed || s.stopped) continue
                 pullWhileOpen(s, client, ep, ch)
                 // 拉完修订号没往前走（服务器数据被还原过之类）：别空转
