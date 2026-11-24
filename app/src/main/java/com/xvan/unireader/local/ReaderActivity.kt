@@ -288,7 +288,10 @@ class ReaderActivity : Activity() {
     }
 
     /** 服务器同步状态变了：抽屉表头那一行跟上（`onResume` / `onPause` 里挂 / 摘） */
-    private val syncListener: () -> Unit = { drawer.setLibStatus(wsActions.statusLine()) }
+    private val syncListener: () -> Unit = {
+        drawer.setLibStatus(wsActions.statusLine())
+        wsActions.promptDeletesIfNeeded()   // 卡在「删得太多要确认」：直接弹确认框
+    }
 
     /** 「到 PDF 原页」要跳的地方（文档 id、页、页内比例）：那篇还没装载完时先记着，几何就绪再跳 */
     private var pendingJump: Triple<String, Int, Float>? = null

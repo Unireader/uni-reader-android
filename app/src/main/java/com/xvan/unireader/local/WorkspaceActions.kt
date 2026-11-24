@@ -321,8 +321,26 @@ class WorkspaceActions(private val a: Activity, private val host: Host) {
 
     // ---------- 同步：删得太多先问 ----------
 
+    /** 自动弹过的那一批（删除行的键）：同一批只主动弹一次，点了「稍后」不再追着弹；换了一批才再弹 */
+    private var promptedDeletes: Set<String>? = null
+    private var deleteDialog: android.app.AlertDialog? = null
+
+    /**
+     * 同步状态变了时调（宿主的同步监听里）：卡在「删得太多要确认」就直接弹确认框，
+     * 不再只在抽屉表头那一行显示（2026-11-24 用户嫌不明显——同步一直卡着都没发现）。
+     */
+    fun promptDeletesIfNeeded() {
+        val ws = host.workspace ?: return
+        val x = (ServerSync.status(ws) as? ServerSync.Status.NeedsConfirm)?.excess ?: return
+        if (x.keys == promptedDeletes || deleteDialog?.isShowing == true) return
+        if (a.isFinishing || a.isDestroyed) return
+        promptedDeletes = x.keys
+        confirmServerDeletes(ws, x)
+    }
+
     /** 说清这次要从服务器删多少、各是什么，确认了才同步（`ServerSync.confirmDeletes`） */
     private fun confirmServerDeletes(ws: File, x: SyncDeleteGuard.Excess) {
+        if (deleteDialog?.isShowing == true) return
         fun name(table: String) = a.getString(
             when (table) {
                 "document", "variant", "location" -> R.string.srv_del_book
@@ -335,7 +353,8 @@ class WorkspaceActions(private val a: Activity, private val host: Host) {
             },
         )
         val lines = x.byTable.groupBy({ name(it.first) }, { it.second }).map { (n, c) -> "$n × ${c.sum()}" }
-        Sheet(a).title(a.getString(R.string.srv_del_title, x.total))
+        promptedDeletes = x.keys
+        deleteDialog = Sheet(a).title(a.getString(R.string.srv_del_title, x.total))
             .subtitle(a.getString(R.string.srv_del_msg) + "\n\n" + lines.joinToString("\n"))
             .action(a.getString(R.string.srv_del_later))
             .action(a.getString(R.string.srv_del_confirm), primary = true) { ServerSync.confirmDeletes(a, ws) }
