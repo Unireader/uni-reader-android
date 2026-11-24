@@ -693,6 +693,14 @@ class ExerciseScreen(private val a: Activity, private val host: ExHost) {
         if (listMode || !has) scratchOn = false
         val show = scratchOn && c != null
         scratchSlot.visibility = if (show) View.VISIBLE else View.GONE
+        // 草稿纸盖着时把下面的练习区藏掉（INVISIBLE 不改布局）：填空 / 主观题的输入框在纸下面也是「可手写」的候选，
+        // 系统的手写笔输入（API 34 HandwritingInitiator）只按输入框的屏幕范围找、不看谁盖在上面，笔一落在纸上就把下面的输入框激活了
+        practiceSplit.visibility = if (show) View.INVISIBLE else View.VISIBLE
+        if (show) {
+            practiceSplit.clearFocus()
+            (a.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+                ?.hideSoftInputFromWindow(scratchSlot.windowToken, 0)
+        }
         if (show) bindCard(c!!)
         val id = if (show) c!!.id else null
         val title = if (c == null) "" else s(R.string.ex_scratch_title, c.number.ifEmpty { (deck.index + 1).toString() })
