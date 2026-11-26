@@ -148,6 +148,12 @@ object NoteKind {
      * payload = `{image, caption, display, source, card?}`；PDF 节选的 anchor = 框出来的那块，导入的 = 点锚。
      */
     const val IMAGE = 6
+
+    /** 自建目录的一项（`../docs/TOC-REVIEW-PLAN.md`）：page / anchor_y = 起点，payload `{title, level, seq}`。不改表、不升版本 */
+    const val TOC_ENTRY = 7
+
+    /** 回顾点（同上）：page / anchor_y = 位置，payload `{tag, remark, period, reviews, last}` */
+    const val REVIEW = 8
 }
 
 /**
@@ -576,5 +582,42 @@ object Iso {
         if (s.isNullOrEmpty()) null else Instant.parse(s)
     } catch (e: DateTimeParseException) {
         null
+    }
+}
+
+
+/** 自建目录一项（note kind=7，↔ Mac `CustomTOCItem`）。[level] 0 = 第一级，最多 [MAX_LEVEL]。 */
+data class LibTocEntry(
+    val id: String,
+    val page: Int,
+    val frac: Float,
+    val level: Int,
+    val title: String,
+    val seq: Int,
+    val createdAt: String,
+) {
+    companion object {
+        const val MAX_LEVEL = 5
+        /** 排序口径同 Mac `CustomTOCItem.before`：页 → 页内位置 → seq → 建立时刻 */
+        val ORDER: Comparator<LibTocEntry> = compareBy({ it.page }, { it.frac }, { it.seq }, { it.createdAt })
+    }
+}
+
+/** 回顾点（note kind=8，↔ Mac `ReviewMark`）。[period] ≥ 1；[reviews] 看过几次；[last] 最后一次看完（ISO，空 = 没有）。 */
+data class LibReview(
+    val id: String,
+    val documentId: String,
+    val page: Int,
+    val frac: Float,
+    val tag: String,
+    val remark: String,
+    val period: Int,
+    val reviews: Int,
+    val last: String,
+    val createdAt: String,
+) {
+    companion object {
+        /** 同 Mac `ReviewMark.before`：期号 → 页 → 页内位置 → 建立时刻 */
+        val ORDER: Comparator<LibReview> = compareBy({ it.period }, { it.page }, { it.frac }, { it.createdAt })
     }
 }

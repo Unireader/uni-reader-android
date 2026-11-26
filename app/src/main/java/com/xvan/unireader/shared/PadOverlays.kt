@@ -290,6 +290,36 @@ class PadOverlays(private val density: Float) {
         c.drawPath(path, p)
     }
 
+    /** 回顾点：淡紫圆底 + 深色循环箭头（与 Mac `ReaderMarkColors.reviewMarker` 同色），扁平、无渐变 */
+    fun drawReviewDot(c: Canvas, x: Float, y: Float, d: Float) {
+        val r = d / 2f
+        p.style = Paint.Style.FILL
+        p.color = Color.argb(255, 199, 179, 250)
+        c.drawCircle(x, y, r, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = dp(0.5f)
+        p.color = Color.argb(38, 0, 0, 0)
+        c.drawCircle(x, y, r, p)
+        // 循环箭头：一段 270° 的弧 + 末端一个小三角
+        val a = r * 0.48f
+        p.strokeWidth = dp(1.4f)
+        p.strokeCap = Paint.Cap.ROUND
+        p.color = Color.argb(191, 0, 0, 0)
+        c.drawArc(x - a, y - a, x + a, y + a, -60f, 270f, false, p)
+        p.strokeCap = Paint.Cap.BUTT
+        val ang = Math.toRadians(-60.0)
+        val ex = x + a * Math.cos(ang).toFloat()
+        val ey = y + a * Math.sin(ang).toFloat()
+        val t = dp(2.4f)
+        path.reset()
+        path.moveTo(ex - t, ey - t * 0.2f)
+        path.lineTo(ex + t * 0.6f, ey - t)
+        path.lineTo(ex + t * 0.4f, ey + t * 0.8f)
+        path.close()
+        p.style = Paint.Style.FILL
+        c.drawPath(path, p)
+    }
+
     // ---------- 框选（自由路径 / 光晕 / 高亮框 / 缩放手柄） ----------
 
     private val dash = DashPathEffect(floatArrayOf(dp(5f), dp(4f)), 0f)

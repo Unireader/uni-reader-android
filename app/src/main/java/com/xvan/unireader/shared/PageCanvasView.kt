@@ -189,6 +189,58 @@ open class PageCanvasView @JvmOverloads constructor(
 
     private val tmpRibbon = FloatArray(2)
 
+    // —— 回顾点（`../docs/TOC-REVIEW-PLAN.md §3`）：贴页左缘一枚淡紫小圆点，同一处几枚往下错开；只认手指（同缎带） ——
+
+    /** 页面上的一枚回顾点 */
+    class ReviewMark(val id: String, val page: Int, val frac: Float)
+
+    private var reviewMarks = listOf<ReviewMark>()
+
+    /** 手指点了页面上某个回顾点（宿主弹「看完后推 / 编辑 / 删除」） */
+    var onReviewTap: (ReviewMark) -> Unit = {}
+
+    fun setReviewMarks(list: List<ReviewMark>) {
+        reviewMarks = list
+        invalidate()
+    }
+
+    private val reviewD get() = dp(16f)
+
+    /** 第 k 枚回顾点的圆心（同一页同一处的往下错开一格）。页号越界返回 false。 */
+    private fun reviewAt(k: Int, out: FloatArray): Boolean {
+        val m = reviewMarks[k]
+        if (m.page < 0 || m.page >= pageCount) return false
+        var slot = 0
+        for (j in 0 until k) {
+            val o = reviewMarks[j]
+            if (o.page == m.page && abs(o.frac - m.frac) < 0.005f) slot++
+        }
+        val h = dispH[m.page]
+        val half = reviewD / 2f + dp(2f)
+        val y = m.frac * h + slot * (reviewD + dp(2f))
+        out[0] = viewX(m.page, 0f) + reviewD / 2f + dp(4f)
+        out[1] = barH + offY[m.page] + y.coerceIn(half, (h - half).coerceAtLeast(half)) - scrollY
+        return true
+    }
+
+    private fun drawReviewMarks(canvas: Canvas) {
+        if (reviewMarks.isEmpty()) return
+        for (k in reviewMarks.indices) {
+            if (!reviewAt(k, tmpRibbon)) continue
+            if (tmpRibbon[1] < barH - reviewD || tmpRibbon[1] > height + reviewD) continue
+            overlays.drawReviewDot(canvas, tmpRibbon[0], tmpRibbon[1], reviewD)
+        }
+    }
+
+    private fun reviewHit(x: Float, y: Float): ReviewMark? {
+        val r = reviewD / 2f + dp(6f)
+        for (k in reviewMarks.indices) {
+            if (!reviewAt(k, tmpRibbon)) continue
+            if (abs(x - tmpRibbon[0]) <= r && abs(y - tmpRibbon[1]) <= r) return reviewMarks[k]
+        }
+        return null
+    }
+
     /**
      * 单指**轻点**（全程没越过平移死区、也没变过双指捏合）。模式1 用它点草稿纸图钉。
      * 这里只管手指。笔点图钉另走 [penTapHit] / [onPenTap]（2026-11-24 起）：要求轻点（短、没动），
@@ -1501,6 +1553,7 @@ open class PageCanvasView @JvmOverloads constructor(
         drawNoteMarkers(canvas, noteSel)
         drawNoteBubbles(canvas, noteSel)   // 气泡压在标记之上
         drawBookmarkRibbons(canvas)
+        drawReviewMarks(canvas)
 
         // 橡皮尺寸圆环（擦除模式 + 开关开 + 有笔尖位置）
         val ringAt = eraserRingAt
@@ -2613,6 +2666,7 @@ open class PageCanvasView @JvmOverloads constructor(
                         // 都没命中且在选字模式下才当划字的轻点：双击选整行、单击收起选区
                         // （与 Mac 同语义）。**次序不能反**——反了在选字模式下就点不开图钉了。
                         tap -> bookmarkHit(tx, ty)?.let { onBookmarkTap(it) }
+                            ?: reviewHit(tx, ty)?.let { onReviewTap(it) }
                             ?: run {
                                 if (!onFingerTap(tx, ty) && !tapNote(tx, ty) && !onFingerTapLate(tx, ty) &&
                                     mode == MODE_TEXT

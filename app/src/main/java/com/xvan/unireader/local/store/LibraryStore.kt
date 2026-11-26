@@ -675,6 +675,74 @@ class LibraryStore(private val db: Db) : Closeable {
         upsertNote(old.copy(payload = BookmarkPayload.of(t).bytes(), updatedAt = nowIso()))
     }
 
+    // ---------- 自建目录（note kind=7）与回顾点（kind=8），`../docs/TOC-REVIEW-PLAN.md` ----------
+
+    private fun tocEntryOf(n: LibNote): LibTocEntry? {
+        val o = TocEntryPayload.parse(n.payload) ?: return null
+        return LibTocEntry(
+            n.id, n.page, n.anchorY.toFloat().coerceIn(0f, 1f),
+            o.optInt("level").coerceIn(0, LibTocEntry.MAX_LEVEL), o.optString("title"), o.optInt("seq"), n.createdAt,
+        )
+    }
+
+    private fun reviewOf(n: LibNote): LibReview? {
+        val o = ReviewPayload.parse(n.payload) ?: return null
+        return LibReview(
+            n.id, n.documentId, n.page, n.anchorY.toFloat().coerceIn(0f, 1f),
+            o.optString("tag"), o.optString("remark"), o.optInt("period", 1).coerceAtLeast(1),
+            o.optInt("reviews").coerceAtLeast(0), o.optString("last"), n.createdAt,
+        )
+    }
+
+    private fun notesOfKind(documentId: String, kind: Int): List<LibNote> = db.query(
+        "SELECT * FROM note WHERE document_id=? AND kind=? ORDER BY page ASC, created_at ASC", arrayOf(documentId, kind),
+    ) { note(it) }
+
+    /** 一篇文档的自建目录，按 [LibTocEntry.ORDER] 排好 */
+    fun customToc(documentId: String): List<LibTocEntry> =
+        notesOfKind(documentId, NoteKind.TOC_ENTRY).mapNotNull(::tocEntryOf).sortedWith(LibTocEntry.ORDER)
+
+    private fun tocNote(documentId: String, e: LibTocEntry, created: String, now: String) = LibNote(
+        id = e.id, documentId = documentId, kind = NoteKind.TOC_ENTRY, page = e.page,
+        anchorX = 0.0, anchorY = e.frac.toDouble(), anchorW = 0.0, anchorH = 0.0,
+        payload = TocEntryPayload.of(e.title, e.level, e.seq), createdAt = created, updatedAt = now,
+    )
+
+    /** 新建或修改一项（id 已存在就改：名字 / 层级 / 位置） */
+    fun upsertTocEntry(documentId: String, e: LibTocEntry) {
+        val now = nowIso()
+        upsertNote(tocNote(documentId, e, e.createdAt.ifEmpty { now }, now))
+    }
+
+    /** 整份替换：删 [oldIds]、写 [items]，一个事务（旧的由调用方先归档进回收站） */
+    fun replaceCustomToc(documentId: String, oldIds: List<String>, items: List<LibTocEntry>) = db.transaction {
+        deleteNotes(documentId, oldIds)
+        val now = nowIso()
+        for (e in items) upsertNote(tocNote(documentId, e, now, now))
+    }
+
+    /** 一篇文档的回顾点 */
+    fun reviews(documentId: String): List<LibReview> =
+        notesOfKind(documentId, NoteKind.REVIEW).mapNotNull(::reviewOf).sortedWith(LibReview.ORDER)
+
+    /** 整个工作区的回顾点（文档已不在的行不要） */
+    fun allReviews(): List<LibReview> = db.query(
+        "SELECT n.* FROM note n JOIN document d ON d.id = n.document_id WHERE n.kind=?", arrayOf(NoteKind.REVIEW),
+    ) { note(it) }.mapNotNull(::reviewOf)
+
+    /** 新建或修改几条回顾点（一个事务） */
+    fun upsertReviews(list: List<LibReview>) = db.transaction {
+        val now = nowIso()
+        for (r in list) upsertNote(
+            LibNote(
+                id = r.id, documentId = r.documentId, kind = NoteKind.REVIEW, page = r.page,
+                anchorX = 0.0, anchorY = r.frac.toDouble(), anchorW = 0.0, anchorH = 0.0,
+                payload = ReviewPayload.of(r.tag, r.remark, r.period.coerceAtLeast(1), r.reviews, r.last),
+                createdAt = r.createdAt.ifEmpty { now }, updatedAt = now,
+            ),
+        )
+    }
+
     /** 全部文字注解的锚定框（框选移动的命中判定用，见 [NoteAnchor]） */
     fun noteAnchors(documentId: String): List<NoteAnchor> = db.query(
         "SELECT id,page,anchor_x,anchor_y,anchor_w,anchor_h FROM note WHERE document_id=? AND kind=?",

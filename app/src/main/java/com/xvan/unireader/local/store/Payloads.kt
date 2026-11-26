@@ -352,6 +352,23 @@ class BookmarkPayload(val raw: JSONObject) {
     }
 }
 
+/** 自建目录项 payload（note kind=7），键名同 Mac `CustomTOCPayload`：`title` / `level` / `seq`。 */
+object TocEntryPayload {
+    fun of(title: String, level: Int, seq: Int): ByteArray =
+        JSONObject().put("title", title).put("level", level).put("seq", seq).toString().toByteArray(StandardCharsets.UTF_8)
+    fun parse(bytes: ByteArray): JSONObject? = try { JSONObject(String(bytes, StandardCharsets.UTF_8)) } catch (e: Exception) { null }
+}
+
+/** 回顾点 payload（note kind=8），键名同 Mac `ReviewPayload`：`tag` / `remark` / `period` / `reviews` / `last`。 */
+object ReviewPayload {
+    fun of(tag: String, remark: String, period: Int, reviews: Int, last: String): ByteArray {
+        val o = JSONObject().put("tag", tag).put("remark", remark).put("period", period).put("reviews", reviews)
+        if (last.isNotEmpty()) o.put("last", last)
+        return o.toString().toByteArray(StandardCharsets.UTF_8)
+    }
+    fun parse(bytes: ByteArray): JSONObject? = try { JSONObject(String(bytes, StandardCharsets.UTF_8)) } catch (e: Exception) { null }
+}
+
 class TextNotePayload(val raw: JSONObject) {
 
     val quote: String get() = raw.optString("quote")

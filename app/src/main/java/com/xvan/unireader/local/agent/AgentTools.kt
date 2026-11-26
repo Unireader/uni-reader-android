@@ -7,6 +7,8 @@ import com.xvan.unireader.local.MdNotes
 import com.xvan.unireader.local.PdfSource
 import com.xvan.unireader.local.store.LibAgentMemory
 import com.xvan.unireader.local.store.LibDocument
+import com.xvan.unireader.local.store.LibReview
+import com.xvan.unireader.local.store.LibTocEntry
 import com.xvan.unireader.local.store.LibraryStore
 import com.xvan.unireader.local.store.NoteKind
 import com.xvan.unireader.local.store.StoreQueue
@@ -108,6 +110,9 @@ interface AgentHost {
     /** 关掉开着这份网页的标签（删除之前）。 */
     fun closeWebPage(id: String) {}
 
+    /** 自建目录 / 回顾点在库里变了（`../docs/TOC-REVIEW-PLAN.md`）：开着的标签重读、抽屉刷新。 */
+    fun tocReviewChanged() {}
+
     /** 页面存的数据被 Agent 改了：开着的页面收到 `unireader:change`。 */
     fun webDataChanged() {}
 }
@@ -163,6 +168,8 @@ class AgentToolset(private val host: AgentHost) {
         // 网页（静态 HTML 课件，2026-11-19，同 Mac 批 9，`../docs/WEB-DOC-PLAN.md §7.1`）
         ListWebPages(), ReadWebPage(), UpdateWebPage(), CreateWebPage(), OpenWebPage(),
         ReadWebPageData(), WriteWebPageData(), DeleteWebPage(),
+        // 自建目录 + 回顾点（2026-11-26，同 Mac `MCPTools+TOCReview.swift`，`../docs/TOC-REVIEW-PLAN.md §4`）
+        SetToc(), ListReviews(), AddReviews(), UpdateReviews(), DeleteReviews(),
     )
 
     // ---------------- 小工具 ----------------
@@ -1420,6 +1427,7 @@ class AgentToolset(private val host: AgentHost) {
         opt = listOf(
             str("document", "document id (or title); default = the PDF in the current tab"),
             bool("include_toc", "include the outline (default true)"),
+            str("toc_source", "auto (default: the custom contents if the document has any, else the PDF's own outline) / custom / pdf"),
         ),
     ) {
         override suspend fun run(args: JSONObject): String {
@@ -1431,13 +1439,27 @@ class AgentToolset(private val host: AgentHost) {
             if (doc.group.isNotEmpty()) sb.append(", group ${doc.group}")
             sb.append(", read up to page ${doc.readPage + 1}, OCR text on $ocrPages page(s).")
             if (args.optBoolean("include_toc", true)) {
-                loaded(doc)
-                val toc = main { documentToc(doc.id) }.orEmpty()
-                if (toc.isEmpty()) sb.append("\nThe PDF has no outline.")
-                else {
-                    sb.append("\nOutline:")
-                    for (t in toc.take(500)) sb.append("\n").append("  ".repeat(t.depth)).append("- ${t.label} (p.${t.page + 1})")
-                    if (toc.size > 500) sb.append("\n(… ${toc.size - 500} more entries)")
+                val src = args.optString("toc_source", "auto").ifEmpty { "auto" }
+                require(src in listOf("auto", "custom", "pdf")) { "toc_source must be auto, custom or pdf" }
+                val custom = db("Agent 读自建目录") { s -> s.customToc(doc.id) }
+                if (src == "custom" || (src == "auto" && custom.isNotEmpty())) {
+                    if (custom.isEmpty()) sb.append("\nNo custom contents.")
+                    else {
+                        sb.append("\nCustom contents (stored in the workspace, the PDF is unchanged):")
+                        for (e in custom.take(500)) sb.append("\n").append("  ".repeat(e.level)).append("- ${e.title} (p.${e.page + 1}) [${e.id.take(8)}]")
+                        if (custom.size > 500) sb.append("\n(… ${custom.size - 500} more entries)")
+                        sb.append("\n(The PDF's own outline: pass toc_source \"pdf\".)")
+                    }
+                } else {
+                    loaded(doc)
+                    val toc = main { documentToc(doc.id) }.orEmpty()
+                    if (toc.isEmpty()) sb.append("\nThe PDF has no outline.")
+                    else {
+                        sb.append("\nOutline:")
+                        for (t in toc.take(500)) sb.append("\n").append("  ".repeat(t.depth)).append("- ${t.label} (p.${t.page + 1})")
+                        if (toc.size > 500) sb.append("\n(… ${toc.size - 500} more entries)")
+                    }
+                    if (custom.isNotEmpty()) sb.append("\n(This document also has custom contents: pass toc_source \"custom\".)")
                 }
             }
             return sb.toString()
@@ -2025,6 +2047,201 @@ class AgentToolset(private val host: AgentHost) {
                 ?: throw IllegalStateException("could not add bookmark")
             main { bookmarksChanged() }
             return "Added bookmark \"$title\" at page $page · id $id"
+        }
+    }
+
+    // ================= 自建目录 + 回顾点（`../docs/TOC-REVIEW-PLAN.md §4`，名字参数同 Mac）=================
+
+    private inner class SetToc : T(
+        "set_toc",
+        "Write a table of contents for a PDF without changing the PDF file: it is stored in the workspace as the document's custom contents, shown in the Contents page in place of the PDF's own outline (the user can switch back), and returned by get_document. Use it when a PDF has no outline (typical for scans) or a poor one: read the contents pages or chapter headings first, then send the whole list in reading order. Each call replaces the whole custom contents; the previous one goes to the Trash. An empty list removes the custom contents. Pages are the PDF's page numbers (1-based), not the numbers printed on the pages — check the offset first.",
+        req = listOf(
+            ToolParameterDescriptor(
+                "entries", "all entries in reading order (at most 2000); [] clears the custom contents",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            str("title", "entry title"),
+                            int("page", "page where it starts (1-based)"),
+                            num("y", "where on that page: 0 = top … 1 = bottom (default 0)"),
+                            int("level", "1 = top level (chapter), 2 = section … up to 6"),
+                        ),
+                        listOf("title", "page"),
+                    ),
+                ),
+            ),
+        ),
+        opt = listOf(str("document", "document id (or title); default = the PDF in the current tab")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val list = args.optJSONArray("entries") ?: throw IllegalArgumentException("entries must be an array of objects")
+            require(list.length() <= 2000) { "at most 2000 entries per call" }
+            val doc = resolveDoc(args.optString("document", ""))
+            val items = (0 until list.length()).map { i ->
+                val o = list.optJSONObject(i) ?: throw IllegalArgumentException("entries[$i] must be an object")
+                val title = o.optString("title").trim()
+                require(title.isNotEmpty()) { "entries[$i]: title must not be empty" }
+                val page = o.optInt("page", 0)
+                require(page in 1..doc.pageCount) { "entries[$i]: page $page is outside 1…${doc.pageCount}. Nothing was changed." }
+                val y = o.optDouble("y", 0.0)
+                require(y in 0.0..1.0) { "entries[$i]: y must be between 0 and 1" }
+                val level = o.optInt("level", 1)
+                require(level in 1..(LibTocEntry.MAX_LEVEL + 1)) { "entries[$i]: level must be 1…${LibTocEntry.MAX_LEVEL + 1}" }
+                LibTocEntry(UUID.randomUUID().toString().uppercase(), page - 1, y.toFloat(), level - 1, title, i, "")
+            }
+            val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+            val old = db("Agent 写自建目录") { s -> com.xvan.unireader.local.TocReviewController.replaceToc(s, ws, doc.id, doc.title, items) }
+            main { tocReviewChanged() }
+            return if (items.isEmpty()) "Custom contents removed; the PDF's own outline is shown again."
+            else "Custom contents written for \"${doc.title}\": ${items.size} entries" + (if (old > 0) " (the previous $old entries are in the Trash)." else ".")
+        }
+    }
+
+    private fun reviewLine(r: LibReview, titles: Map<String, String>) = buildString {
+        append("- [${r.id.take(8)}] period ${r.period} · ${r.tag} · “${titles[r.documentId].orEmpty()}” p.${r.page + 1}")
+        if (r.reviews > 0) append(" · reviewed ${r.reviews}×")
+        if (r.remark.isNotEmpty()) append(" — ").append(r.remark.replace(Regex("\\s+"), " ").take(120))
+    }
+
+    private inner class ListReviews : T(
+        "list_reviews",
+        "List the user's review points (回顾点): spots in PDFs marked for periodic review, each with a tag, an optional remark and a period number n (\"look at it again in review period n\"; no dates). Several points usually share a tag. Filter by document, tag and period. Sorted by period, then document and page.",
+        opt = listOf(
+            str("document", "only this document (id or title)"),
+            str("tag", "only this tag (exact)"),
+            int("period", "only this period"),
+            int("max_period", "only periods up to this one (what is due by then)"),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            var all = db("Agent 列回顾点") { s -> s.allReviews() }
+            val titles = db("Agent 列文档") { s -> s.allDocuments() }.associate { it.id to it.title }
+            val tags = all.map { it.tag }.distinct().sorted()
+            args.optString("document", "").takeIf { it.isNotBlank() }?.let { d -> val doc = resolveDoc(d); all = all.filter { it.documentId == doc.id } }
+            args.optString("tag", "").takeIf { args.has("tag") }?.let { t -> all = all.filter { it.tag == t } }
+            if (args.has("period")) args.optInt("period").let { p -> all = all.filter { it.period == p } }
+            if (args.has("max_period")) args.optInt("max_period").let { p -> all = all.filter { it.period <= p } }
+            all = all.sortedWith(compareBy<LibReview>({ it.period }, { titles[it.documentId].orEmpty() }).then(LibReview.ORDER))
+            return (listOf("${all.size} review point(s)" + (if (tags.isEmpty()) "" else " · tags: ${tags.joinToString(", ")}")) +
+                all.map { reviewLine(it, titles) }).joinToString("\n")
+        }
+    }
+
+    private inner class AddReviews : T(
+        "add_reviews",
+        "Add review points to one PDF: each marks a spot to look at again in review period n, with a tag (several points can share it) and an optional remark. Add them only when the user asks.",
+        req = listOf(
+            ToolParameterDescriptor(
+                "items", "points to add (at most 200)",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            int("page", "page (1-based)"),
+                            num("y", "position on the page, 0 = top … 1 = bottom (default 0)"),
+                            str("tag", "tag (required)"),
+                            str("remark", "remark (optional)"),
+                            int("period", "review period number, default 1"),
+                        ),
+                        listOf("page", "tag"),
+                    ),
+                ),
+            ),
+        ),
+        opt = listOf(str("document", "document id (or title); default = the PDF in the current tab")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val list = args.optJSONArray("items")
+            require(list != null && list.length() > 0) { "items must be a non-empty array of objects" }
+            require(list.length() <= 200) { "at most 200 items per call" }
+            val doc = resolveDoc(args.optString("document", ""))
+            val marks = (0 until list.length()).map { i ->
+                val o = list.optJSONObject(i) ?: throw IllegalArgumentException("items[$i] must be an object")
+                val page = o.optInt("page", 0)
+                require(page in 1..doc.pageCount) { "items[$i]: page $page is outside 1…${doc.pageCount}. Nothing was added." }
+                val y = o.optDouble("y", 0.0)
+                require(y in 0.0..1.0) { "items[$i]: y must be between 0 and 1" }
+                val tag = o.optString("tag").trim()
+                require(tag.isNotEmpty()) { "items[$i]: tag must not be empty" }
+                val period = o.optInt("period", 1)
+                require(period >= 1) { "items[$i]: period must be ≥ 1" }
+                LibReview(UUID.randomUUID().toString().uppercase(), doc.id, page - 1, y.toFloat(), tag, o.optString("remark").trim(), period, 0, "", "")
+            }
+            db("Agent 加回顾点") { s -> s.upsertReviews(marks) }
+            main { tocReviewChanged() }
+            val titles = mapOf(doc.id to doc.title)
+            return (listOf("Added ${marks.size} review point(s):") + marks.map { reviewLine(it, titles) }).joinToString("\n")
+        }
+    }
+
+    private inner class UpdateReviews : T(
+        "update_reviews",
+        "Change review points in place: tag, remark, period, or mark one as reviewed with advance (period += advance, review count + 1). All changes in one call apply together; if any id is unknown, nothing is changed. Change them only when the user asks.",
+        req = listOf(
+            ToolParameterDescriptor(
+                "updates", "changes (at most 200); fields left out stay as they are",
+                ToolParameterType.List(
+                    ToolParameterType.Object(
+                        listOf(
+                            str("id", "review point id from list_reviews (full id or its 8-character prefix)"),
+                            str("tag", "new tag"),
+                            str("remark", "new remark (\"\" clears it)"),
+                            int("period", "set the period number"),
+                            int("advance", "mark it reviewed and move it this many periods later"),
+                        ),
+                        listOf("id"),
+                    ),
+                ),
+            ),
+        ),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val list = args.optJSONArray("updates")
+            require(list != null && list.length() > 0) { "updates must be a non-empty array of objects" }
+            require(list.length() <= 200) { "at most 200 updates per call" }
+            val all = db("Agent 列回顾点") { s -> s.allReviews() }
+            val byId = LinkedHashMap<String, LibReview>()
+            for (i in 0 until list.length()) {
+                val o = list.optJSONObject(i) ?: throw IllegalArgumentException("updates[$i] must be an object")
+                val key = o.optString("id").trim().uppercase()
+                val hits = if (key.length >= 8) all.filter { it.id.uppercase().startsWith(key) } else emptyList()
+                require(hits.size == 1) { "updates[$i]: " + (if (hits.isEmpty()) "no review point with id ${o.optString("id")}; take ids from list_reviews" else "id prefix matches several; pass the full id") + ". Nothing was changed." }
+                var r = byId[hits[0].id] ?: hits[0]
+                if (o.has("tag")) { val t = o.optString("tag").trim(); require(t.isNotEmpty()) { "updates[$i]: tag must not be empty" }; r = r.copy(tag = t) }
+                if (o.has("remark")) r = r.copy(remark = o.optString("remark").trim())
+                if (o.has("period")) { val p = o.optInt("period"); require(p >= 1) { "updates[$i]: period must be ≥ 1" }; r = r.copy(period = p) }
+                if (o.has("advance")) {
+                    val k = o.optInt("advance"); require(k >= 1) { "updates[$i]: advance must be ≥ 1" }
+                    r = r.copy(period = r.period + k, reviews = r.reviews + 1, last = com.xvan.unireader.local.store.nowIso())
+                }
+                byId[r.id] = r
+            }
+            db("Agent 改回顾点") { s -> s.upsertReviews(byId.values.toList()) }
+            main { tocReviewChanged() }
+            val titles = db("Agent 列文档") { s -> s.allDocuments() }.associate { it.id to it.title }
+            return (listOf("Changed ${byId.size} review point(s):") + byId.values.map { reviewLine(it, titles) }).joinToString("\n")
+        }
+    }
+
+    private inner class DeleteReviews : T(
+        "delete_reviews",
+        "Delete review points by id (from list_reviews; full id or 8-character prefix). They go to UniReader's Trash, one item per document, and can be put back. If any id is not found, nothing is deleted. Delete only when the user asks.",
+        req = listOf(strArray("ids", "review point ids (at most $MAX_DELETE_IDS)")),
+    ) {
+        override suspend fun run(args: JSONObject): String {
+            val raw = idList(args)
+            val ws = main { workspaceDir } ?: throw IllegalStateException("No workspace is open.")
+            val all = db("Agent 列回顾点") { s -> s.allReviews() }
+            val picked = resolveIds(raw, all, { it.id }, "list_reviews")
+            val titles = db("Agent 列文档") { s -> s.allDocuments() }.associate { it.id to it.title }
+            var n = 0
+            for ((docId, group) in picked.groupBy { it.documentId }) {
+                val head = group[0].remark.ifEmpty { group[0].tag }.take(24)
+                val title = if (group.size == 1) "“$head”" else main { string(com.xvan.unireader.R.string.agent_trash_and_more, head, group.size - 1) }
+                db("Agent 删回顾点") { s -> com.xvan.unireader.local.Trash.deleteAnnotations(s, ws, docId, titles[docId].orEmpty(), group.map { it.id }, title) }
+                n += group.size
+            }
+            main { tocReviewChanged() }
+            return "Deleted $n review point(s) (moved to the Trash)."
         }
     }
 

@@ -239,6 +239,23 @@ class ReaderActivity : Activity() {
 
     /** 左侧拉抽屉（目录 / 书库），与模式2 共用一份。目录由 [PdfSource.toc] 喂，书库由库队列读 */
     private lateinit var drawer: ReaderDrawer
+
+    /** 自建目录 + 回顾点（`../docs/TOC-REVIEW-PLAN.md`）：逻辑与弹层都在 [TocReviewController]，这里只接线 */
+    private val tocReview by lazy {
+        TocReviewController(
+            this, drawer,
+            queue = { queue },
+            workspace = { workspace },
+            currentDoc = { curTab()?.takeIf { it.pdf != null }?.docId },
+            currentPos = { cur()?.let { it.topVisiblePage() to it.topFrac() } },
+            pdfToc = { curTab()?.pdf?.toc },
+            docTitles = { libTitles },
+            jump = { page, frac, label -> jumpTo(page, frac, com.xvan.unireader.shared.JumpKind.LIST, label) },
+            openAt = { docId, page, frac -> openExerciseSource(docId, page, frac) },
+            onTocChanged = { docId -> if (curTab()?.docId == docId) pushDrawerToc() },
+            onMarks = { docId, marks -> tabs.filter { it.docId == docId }.forEach { it.canvas?.setReviewMarks(marks) } },
+        )
+    }
     private lateinit var openingLabel: TextView
 
     /** 草稿纸（模式1 全链路）：覆盖层画布 + 浮条 + 列表/纸样面板 + 库读写 */
@@ -380,6 +397,8 @@ class ReaderActivity : Activity() {
             tabs.filter { it.docId == documentId }.forEach { t -> t.canvas?.let { it.reloadNotes(); it.reloadImageNotes() } }
             pushDrawerBookmarks()
         }
+
+        override fun tocReviewChanged() = tocReview.reloadAll(tabs.filter { it.pdf != null }.map { it.docId })
 
         override fun string(id: Int, vararg args: Any): String = getString(id, *args)
 
@@ -883,6 +902,10 @@ class ReaderActivity : Activity() {
             onWebMore = { id -> showWebMenu(id) }
             // 习题（`../docs/EXERCISE-PLAN.md §10.2`）：点一组 = 在公用习题标签里换；长按 = 「在新标签页中打开」（同 Mac 右键）
             onOpenExercises = { key -> openExercises(key, newTab = false) }
+            // 自建目录（目录页最上面一行 + 长按自建的目录行）与「回顾」页（`../docs/TOC-REVIEW-PLAN.md`）
+            onTocMenu = { tocReview.showTocMenu() }
+            onTocLongPress = { i -> tocReview.onTocLongPress(i) }
+            buildReviews = { box -> tocReview.buildReviewPage(box) }
             onExercisesLongPress = { key -> showExerciseGroupMenu(key) }
             // Markdown 笔记（`../docs/MARKDOWN-NOTES-PLAN.md`）：书库页「笔记」一组
             onOpenNote = { rel -> openDoc(TabSet.mdKey(rel)) }
@@ -1339,6 +1362,7 @@ class ReaderActivity : Activity() {
         webPage.bind(null, null)
         libWebs = emptyList()
         pendingJump = null
+        tocReview.clear()
         for (t in tabs) saveProgress(t)
         saveTabSet()
         for (t in tabs) unload(t)
@@ -1575,11 +1599,16 @@ class ReaderActivity : Activity() {
     private fun pushDrawerToc() {
         val t = curTab()
         val id = t?.docId ?: ""
-        val toc = t?.pdf?.toc                     // 还在装载时是 null：先推空的占位，装载完再推真的
-        if (toc != null && id == drawerTocId) return
+        val pdf = t?.pdf?.toc                     // 还在装载时是 null：先推空的占位，装载完再推真的
+        // 自建目录优先（`../docs/TOC-REVIEW-PLAN.md §2`）；去重键带上它，切换 / 改了才重推
+        val toc = if (t?.pdf != null) tocReview.effectiveToc(id, pdf) else pdf
+        val key = if (toc != null) "$id#${tocReview.tocKey(id)}" else ""
+        drawer.tocMenuLabel = if (t?.pdf != null) tocReview.menuLabel(id) else ""
+        drawer.onTocMenu = if (t?.pdf != null) ({ tocReview.showTocMenu() }) else null
+        if (toc != null && key == drawerTocId) { drawer.refreshTocPage(); return }
         drawer.setDocV(id)                        // 与 setToc 的 docId 对上才敢渲染（同模式2 的核对）
         drawer.setToc(id, toc ?: emptyList())
-        drawerTocId = if (toc != null) id else ""
+        drawerTocId = key
         pushDrawerBookmarks()
     }
 
@@ -2339,6 +2368,7 @@ class ReaderActivity : Activity() {
         if (tables.any { it == "note" || it == "ink_layer" }) {
             for (t in tabs) t.canvas?.let { c -> c.reloadStrokes(); c.reloadNotes(); c.reloadImageNotes() }
         }
+        if ("note" in tables) tocReview.reloadAll(tabs.filter { it.pdf != null }.map { it.docId })
     }
 
     /** 回收站面板（⋯ 里）：恢复 / 彻底删除走这条队列；恢复完把书库、画板、开着的标签刷一遍 */
@@ -2349,6 +2379,7 @@ class ReaderActivity : Activity() {
             refreshDrawerLibrary()
             refreshBoards()
             for (t in tabs) t.canvas?.let { c -> c.reloadStrokes(); c.reloadNotes(); c.reloadImageNotes() }
+            tocReview.reloadAll(tabs.filter { it.pdf != null }.map { it.docId })
         }.show()
     }
 
@@ -2687,6 +2718,7 @@ class ReaderActivity : Activity() {
         t.contentHash = d.contentHash
         if (ScanEnhancePrefs.isOn(this, d.contentHash)) src.setEnhance(com.xvan.unireader.shared.ScanEnhance.Params())
         pushDrawerToc()   // 装载完才有 PdfSource，目录到这一步才拿得到（activate 那次是空的）
+        tocReview.load(t.docId)   // 自建目录 + 回顾点（到了再重推目录、给画布标记）
         t.layers = d.layers
         t.pads = d.pads
         canvasHost.addView(c, FrameLayout.LayoutParams(-1, -1))
@@ -2771,6 +2803,8 @@ class ReaderActivity : Activity() {
                 onDelete = { writeBookmark("删书签") { s -> s.deleteNote(b.id) } },
             )
         }
+        // 回顾点（页左缘淡紫圆点）：手指点 → 看完后推 / 编辑 / 删除
+        onReviewTap = { m -> tocReview.onMarkTap(m.id) }
         // 草稿纸图钉：手指单击打开对应那张纸（笔点不算——笔是用来写字的，见 PageCanvasView.onFingerTap）
         onPinTap = { padId -> scratch.openById(padId) }
         // 框选选中集有无变化 → 顶栏那两颗剪切/复制跟着灰掉或亮起（背景标签页不刷，同 onHud）

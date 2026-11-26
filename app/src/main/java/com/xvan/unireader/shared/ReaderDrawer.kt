@@ -40,6 +40,8 @@ class ReaderDrawer(private val a: Activity) {
         const val TAB_LIB = 1
         /** 习题（`../docs/EXERCISE-PLAN.md §10.1`）：工作区里有题才出现这一页 */
         const val TAB_EX = 2
+        /** 回顾（`../docs/TOC-REVIEW-PLAN.md §3`，模式1 专属：宿主设了 [buildReviews] 才有这一页） */
+        const val TAB_REVIEW = 3
 
         /** 当前标签页是哪一类（[pageKind]）：决定点开抽屉时默认停在哪一页 */
         const val KIND_PDF = 0
@@ -68,6 +70,9 @@ class ReaderDrawer(private val a: Activity) {
     private var tab = TAB_TOC
     /** 在 PDF 标签上用户自己选过的那一页（只有 PDF 有目录，别的标签不改它） */
     private var pdfTab = TAB_TOC
+
+    /** 面板宽（px）：屏宽的一定比例，平板上封顶 [MAX_W] */
+    private val panelW: Int = a.resources.displayMetrics.let { min((it.widthPixels * WIDTH_RATIO).toInt(), Ui.dp(a, MAX_W)) }
     /** 书库里停在哪一类（LIB_*）。画板 / 笔记 / 网页标签打开抽屉时换成对应那类，PDF 标签沿用上次 */
     private var libSub = LIB_DOCS
 
@@ -179,9 +184,39 @@ class ReaderDrawer(private val a: Activity) {
     /** 长按一组（模式1：「在新标签页中打开」）；null = 不支持长按。错题本那一行不会调（同 Mac 右键菜单）。 */
     var onExercisesLongPress: ((String) -> Unit)? = null
 
+    /**
+     * 目录页最上面一行「目录操作」（自建目录：显示哪份 / 加一项 / 复制 PDF 目录 / 清空，`../docs/TOC-REVIEW-PLAN.md §2`）。
+     * 模式1 设，模式2 不设 = 没有这一行。[tocMenuLabel] 是那一行的字（如「自建目录」）。
+     */
+    var onTocMenu: (() -> Unit)? = null
+    var tocMenuLabel: String = ""
+
+    /** 长按目录一行（参数 = 它在 [setToc] 那份表里的下标）。宿主自己判断是不是自建的那几项；不设 = 不能长按 */
+    var onTocLongPress: ((Int) -> Unit)? = null
+
+    /** 「回顾」页的内容由宿主现建（筛选 + 列表都在宿主那边）；不设 = 没有这一页 */
+    var buildReviews: ((LinearLayout) -> Unit)? = null
+        set(v) {
+            field = v
+            revTab.visibility = if (v == null) View.GONE else View.VISIBLE
+        }
+
+    /** 回顾数据变了：正显示着回顾页就重建 */
+    fun refreshReviews() {
+        if (isOpen && tab == TAB_REVIEW) rebuild()
+    }
+
+    /** 自建目录的行显示 / 菜单字样变了（不换目录数据）：正显示着目录页就重建 */
+    fun refreshTocPage() {
+        if (isOpen && tab == TAB_TOC) rebuild()
+    }
+
     private val tocTab = tabButton("目录", R.drawable.ic_list) { switchTo(TAB_TOC) }
     private val libTab = tabButton("书库", R.drawable.ic_book) { switchTo(TAB_LIB) }
     private val exTab = tabButton(a.getString(R.string.ex_title), R.drawable.ic_exercise) { switchTo(TAB_EX) }.apply {
+        visibility = View.GONE
+    }
+    private val revTab = tabButton(a.getString(R.string.review_title), R.drawable.ic_review) { switchTo(TAB_REVIEW) }.apply {
         visibility = View.GONE
     }
 
@@ -216,10 +251,24 @@ class ReaderDrawer(private val a: Activity) {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(a.dp(10), a.dp(8), a.dp(10), a.dp(8))
-                addView(tocTab)
-                addView(libTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
-                addView(exTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
-                addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))   // 把关闭键顶到最右
+                // 页签放不下时横向滑（四个页签 + 关闭键在窄面板里排不开：最后那个被挤得只剩图标、关闭键被挤出去，2026-11-26 用户截图）；
+                // 关闭键在滑动区外面，永远在最右
+                val tabsRow = LinearLayout(a).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(tocTab)
+                    addView(libTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
+                    addView(exTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
+                    addView(revTab, LinearLayout.LayoutParams(-2, -2).apply { marginStart = a.dp(8) })
+                }
+                addView(
+                    android.widget.HorizontalScrollView(a).apply {
+                        isHorizontalScrollBarEnabled = false
+                        isFillViewport = false
+                        addView(tabsRow, FrameLayout.LayoutParams(-2, -2))
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f),
+                )
                 addView(Ui.iconButton(a, R.drawable.ic_close, "关闭", Ui.onSurface(a)) { close() })
             },
             LinearLayout.LayoutParams(-1, -2),
@@ -243,8 +292,7 @@ class ReaderDrawer(private val a: Activity) {
         setBackgroundColor(Color.argb(0x47, 0, 0, 0))
         isClickable = true
         setOnClickListener { close() }   // 点遮罩关抽屉
-        val dm = a.resources.displayMetrics
-        val w = min((dm.widthPixels * WIDTH_RATIO).toInt(), Ui.dp(a, MAX_W))
+        val w = panelW
         addView(panel, FrameLayout.LayoutParams(w, -1, Gravity.START))
     }
 
@@ -454,14 +502,18 @@ class ReaderDrawer(private val a: Activity) {
         tocTab.isSelected = tab == TAB_TOC
         libTab.isSelected = tab == TAB_LIB
         exTab.isSelected = tab == TAB_EX
+        revTab.isSelected = tab == TAB_REVIEW
+        paintTab(revTab, tab == TAB_REVIEW)
         paintTab(tocTab, tab == TAB_TOC)
         paintTab(libTab, tab == TAB_LIB)
         paintTab(exTab, tab == TAB_EX)
+        layoutTabs()
         rebuildSubBar()
         bodyBox.removeAllViews()
         when (tab) {
             TAB_TOC -> buildToc()
             TAB_EX -> buildExercises()
+            TAB_REVIEW -> buildReviews?.invoke(bodyBox) ?: buildLib()
             else -> buildLib()
         }
     }
@@ -548,6 +600,17 @@ class ReaderDrawer(private val a: Activity) {
         }
 
     private fun buildToc() {
+        // 「目录操作」（自建目录，模式1）在最上面
+        onTocMenu?.let { menu ->
+            bodyBox.addView(
+                PadPanels.iconRow(a, R.drawable.ic_list, tocMenuLabel, tint = Ui.onSurface(a),
+                    trailing = ImageView(a).apply {
+                        setImageResource(R.drawable.ic_chevron_down)
+                        imageTintList = ColorStateList.valueOf(Ui.onVariant(a))
+                    }) { menu() },
+                LinearLayout.LayoutParams(-1, -2),
+            )
+        }
         // 「添加书签」常驻在最上面：没目录的书也得能加（落点 = 当前视口顶，与 Mac ⌘D 同口径）
         bodyBox.addView(addBookmarkRow(), LinearLayout.LayoutParams(-1, -2))
         if (!tocReady && !bmReady) {
@@ -623,6 +686,10 @@ class ReaderDrawer(private val a: Activity) {
                     onJump(r.page, r.frac)
                     close()          // 跳完就收起，让出画布
                 }
+            }
+            onTocLongPress?.let { lp ->
+                isLongClickable = true
+                setOnLongClickListener { lp(r.i); true }
             }
         }
         addView(hit, LinearLayout.LayoutParams(0, -2, 1f))
@@ -1032,6 +1099,8 @@ class ReaderDrawer(private val a: Activity) {
 
     private fun tabButton(text: String, icon: Int, onClick: () -> Unit): TextView = TextView(a).apply {
         this.text = text
+        tag = text                      // 完整文字（窄排时没选中的页签只留图标，见 [layoutTabs]）
+        contentDescription = text
         textSize = 14f
         gravity = Gravity.CENTER_VERTICAL
         setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, 0, 0)
@@ -1040,6 +1109,31 @@ class ReaderDrawer(private val a: Activity) {
         isClickable = true
         setOnClickListener { onClick() }
         paintTab(this, false)
+    }
+
+    /**
+     * 页签一行排不下时（四个页签 + 关闭键，2026-11-26 用户：要滑动才看得到不好）：没选中的只留图标、选中的照旧图标 + 文字；
+     * 排得下就全部带文字。按面板宽度现算，不靠滑动。
+     */
+    private fun layoutTabs() {
+        val tabs = listOf(tocTab, libTab, exTab, revTab).filter { it.visibility == View.VISIBLE }
+        val avail = panelW - a.dp(20) - a.dp(Ui.TOUCH) - a.dp(8) * (tabs.size - 1)
+        fun fullW(v: TextView): Int {
+            v.text = v.tag as String
+            v.setPadding(a.dp(12), a.dp(7), a.dp(14), a.dp(7))
+            v.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+            return v.measuredWidth
+        }
+        val compact = tabs.sumOf { fullW(it) } > avail
+        for (v in tabs) {
+            if (compact && !v.isSelected) {
+                v.text = ""
+                v.compoundDrawablePadding = 0
+                v.setPadding(a.dp(12), a.dp(7), a.dp(12), a.dp(7))
+            } else {
+                v.compoundDrawablePadding = a.dp(6)
+            }
+        }
     }
 
     private fun paintTab(v: TextView, on: Boolean) {

@@ -417,6 +417,9 @@ python3 tools/icons/gen.py --sheet   # 顺带出 tools/icons/sheet.png 对照大
   删除（`delete_annotations` / `delete_memory`）只经 `Trash.deleteAnnotations` / `deleteAgentMemories`：先归档、条数对上才删（红线 11）。插桩测试 `AgentEngineTest`（假 SSE 服务，不要 Key）+ `AgentToolsTest`（真工作区 + 假宿主）。
   写入：批注 / 高亮写进开着的那篇走 `LocalCanvasView.writeNotesExternally`（先进撤销栈，同界面新建）；`edit_markdown` 改的是编辑器里的字
   （`MdNoteController.liveText` / `applyExternalText`，用户没存的输入保留），规则 `MdEdit` 逐条照 Mac `MCPMarkdownText`（`MdEditTest`）。
+- **自建目录 + 回顾点（2026-11-26，`../docs/TOC-REVIEW-PLAN.md §6`）**：note kind=7 / 8（不改表），库层 `LibraryStore` 一节、界面全在 `local/TocReviewController`
+  （抽屉目录页「自建目录 ⌄」一行 + 长按自建条目、抽屉「回顾」页签 `ReaderDrawer.buildReviews`、页左缘回顾点 `PageCanvasView.setReviewMarks`）；
+  生效目录 = 自建优先（`effectiveToc`，`pushDrawerToc` 的去重键带上它）。Agent 五个工具同 Mac。🔴 删除走 `Trash.deleteAnnotations`（先归档）。
 - **网页（静态 HTML 课件，2026-11-19，`../docs/WEB-DOC-PLAN.md §9`）** 全在 `local/web/`：`WebAssets`（文件层 `Web/<sha256>` + 清单，逐条照 Mac
   `Sources/Store/WebAssets.swift`）、`WebKV`（`window.unireader` 的读写规则，照 Mac `WorkspaceManager.webKV`）、`WebPageController`（整页：`WebView` +
   `shouldInterceptRequest` 从 `Web/` 读，地址 `https://<id>.unireader-web.invalid/…`，注入脚本 `WebBridge`）。标签 `web:<id>`；表 `web_doc` / `web_kv`。

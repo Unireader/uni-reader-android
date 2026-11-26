@@ -53,9 +53,12 @@ object TrashStore {
         var schedulePlan = 0
         var scheduleItem = 0
         var webDoc = 0
+        /** 自建目录项 kind=7 / 回顾点 kind=8（`../docs/TOC-REVIEW-PLAN.md`） */
+        var tocEntry = 0
+        var review = 0
         val total: Int get() =
             ink + text + highlight + bookmark + image + aiThread + scratchInk + boardInk + boardImage + exercise +
-                agentContext + agentMemory + schedulePlan + scheduleItem + webDoc
+                agentContext + agentMemory + schedulePlan + scheduleItem + webDoc + tocEntry + review
 
         fun toJson(): JSONObject = JSONObject()
             .put("ink", ink).put("text", text).put("highlight", highlight).put("bookmark", bookmark)
@@ -64,6 +67,7 @@ object TrashStore {
             .put("boardInk", boardInk).put("boardImage", boardImage).put("exercise", exercise)
             .put("agentContext", agentContext).put("agentMemory", agentMemory)
             .put("schedulePlan", schedulePlan).put("scheduleItem", scheduleItem).put("webDoc", webDoc)
+            .put("tocEntry", tocEntry).put("review", review)
 
         companion object {
             /** 老条目少键：缺了就是 0（同 Mac 的 decodeIfPresent） */
@@ -76,6 +80,7 @@ object TrashStore {
                 agentContext = o.optInt("agentContext"); agentMemory = o.optInt("agentMemory")
                 schedulePlan = o.optInt("schedulePlan"); scheduleItem = o.optInt("scheduleItem")
                 webDoc = o.optInt("webDoc")
+                tocEntry = o.optInt("tocEntry"); review = o.optInt("review")
             }
         }
     }
@@ -324,6 +329,8 @@ object TrashStore {
                         4 -> counts.scratchInk++
                         5 -> counts.bookmark++
                         6 -> { counts.image++; sha(c.getBlob(1)) }
+                        7 -> counts.tocEntry++
+                        8 -> counts.review++
                     }
                 }
             }
