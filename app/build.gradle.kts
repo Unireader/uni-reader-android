@@ -27,8 +27,8 @@ android {
         applicationId = "com.xvan.unireader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "0.3.26"
+        versionCode = 30
+        versionName = "0.3.27"
 
         // 数据层的测试只能跑在设备上：android.database.sqlite 在 JVM 单测里是空壳
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
